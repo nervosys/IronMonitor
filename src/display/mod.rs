@@ -227,9 +227,29 @@ impl DisplayMonitor {
                 .then(|| wide_to_string(&monitor.DeviceID))
                 .and_then(|id| hardware_id(&id));
 
-            let meta = monitor_id
-                .as_ref()
-                .and_then(|id| wmi.iter().find(|m| m.hardware_id.as_deref() == Some(id)));
+            // Where several WMI nodes carry the same hardware id, prefer one
+            // that states a connection.
+            //
+            // The join used to take the first match and the doc comment above
+            // argued that the ambiguity could not reach any value taken from
+            // it, because two panels of a model share their EDID name,
+            // connection family and size. On this machine it reached one: the
+            // single LG enumerates twice in `root\wmi`, once per adapter path,
+            // and the first node reports `D3DKMDT_VOT_UNINITIALIZED` while the
+            // second reports HDMI. The display's connection was published as an
+            // absence with a stated value sitting in the row beside it.
+            //
+            // This is still a tie-break within one hardware id, not a guess
+            // across panels: every candidate describes a monitor of this model,
+            // and the choice is only between one that answered and one that did
+            // not.
+            let meta = monitor_id.as_ref().and_then(|id| {
+                let matching =
+                    || wmi.iter().filter(|m| m.hardware_id.as_deref() == Some(id.as_str()));
+                matching()
+                    .find(|m| m.connection != DisplayConnection::Unknown)
+                    .or_else(|| matching().next())
+            });
 
             // `DeviceString` for the monitor is the driver's name for it --
             // "Generic PnP Monitor" -- so the EDID name from WMI is preferred
@@ -342,6 +362,14 @@ impl DisplayMonitor {
                         Some(9) | Some(10) => DisplayConnection::DisplayPort,
                         Some(11) => DisplayConnection::Internal,
                         Some(6) | Some(14) => DisplayConnection::Edp,
+                        // `D3DKMDT_VOT_UNINITIALIZED` is `0xFFFFFFFF`, and
+                        // arrives from WMI as an unsigned 4294967295 rather
+                        // than as -1. It is the driver saying the field was
+                        // never filled in, which is an absence and not a
+                        // connection type -- and this machine's LG has one WMI
+                        // node saying that and another saying HDMI. See the
+                        // join in `refresh_windows`.
+                        Some(4_294_967_295) | Some(-1) => DisplayConnection::Unknown,
                         _ => DisplayConnection::Unknown,
                     },
                     physical_width_mm: mm("WidthCm"),

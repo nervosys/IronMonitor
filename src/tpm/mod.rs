@@ -94,6 +94,32 @@ pub struct TpmMonitor {
     tpm_info: Option<TpmInfo>,
 }
 
+/// The TPM specification a Windows security device node declares.
+///
+/// The ACPI hardware id is the declaration: `MSFT0101` is the TPM 2.0 device
+/// and `PNP0C31` the TPM 1.2 one, both assigned rather than descriptive. This
+/// is not the friendly name "Trusted Platform Module 2.0" that sits beside it
+/// -- reading the version out of a display string is the substring guessing
+/// this crate removes wherever it finds it, and the same node would answer in a
+/// localised name on another machine.
+///
+/// The list may hold several security devices; on the development host it holds
+/// the AMD PSP alongside the TPM. Anything that is not one of the two known ids
+/// is passed over rather than treated as a TPM of unknown version.
+#[cfg(target_os = "windows")]
+fn version_from_node(pnp_ids: &str) -> Option<TpmVersion> {
+    pnp_ids.lines().find_map(|line| {
+        let upper = line.trim().to_uppercase();
+        if upper.starts_with(r"ACPI\MSFT0101") {
+            Some(TpmVersion::V2_0)
+        } else if upper.starts_with(r"ACPI\PNP0C31") {
+            Some(TpmVersion::V1_2)
+        } else {
+            None
+        }
+    })
+}
+
 impl TpmMonitor {
     /// Create a new TpmMonitor and detect TPM.
     pub fn new() -> Result<Self, SimonError> {
@@ -259,6 +285,10 @@ impl TpmMonitor {
         // error. This is the same rule as `usb::refresh_windows`.
         const WMI_TPM: &str = "Get-CimInstance -Namespace 'root/cimv2/Security/MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction SilentlyContinue | Select-Object IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, ManufacturerIdTxt, ManufacturerVersion, SpecVersion, PhysicalPresenceVersionInfo | ConvertTo-Json -Compress";
         const TPM_SERVICE: &str = r#"if (Test-Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\TPM') { 'present' } else { 'absent' }"#;
+        // The security device's own node, which an ordinary account can read.
+        // Its ACPI hardware id names the specification: `MSFT0101` is the
+        // TPM 2.0 device and `PNP0C31` the TPM 1.2 one. See `version_from_node`.
+        const TPM_DEVICE_NODE: &str = "Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='SecurityDevices'\" | Select-Object -ExpandProperty PNPDeviceID";
 
         let wmi =
             crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", WMI_TPM]);
@@ -329,15 +359,37 @@ impl TpmMonitor {
         };
 
         if present {
+            // The version is readable here without elevation, from the ACPI
+            // hardware id of the security device node. `Win32_Tpm.SpecVersion`
+            // above is the better source and answers "Access denied" on an
+            // ordinary account, which left this path reporting `Unknown` and
+            // the ontology saying "a TPM is present but its specification
+            // version could not be determined" -- while `ACPI\MSFT0101\1` sat
+            // in the device tree, readable, saying 2.0.
+            let version = crate::core::command::capture(
+                "powershell",
+                &["-NoProfile", "-Command", TPM_DEVICE_NODE],
+            )
+            .ok()
+            .and_then(|text| version_from_node(&text))
+            .unwrap_or(TpmVersion::Unknown);
+
             self.tpm_info = Some(TpmInfo {
                 device: "tpm0".into(),
-                version: TpmVersion::Unknown,
+                version,
+                // Still unknown, and deliberately: a started driver is not the
+                // TPM's own enabled flag, and `TPM_PT_PERMANENT` is what that
+                // question asks. Reporting "enabled" because a device node is
+                // in state OK would answer a different question in this one's
+                // name -- and for a security property that is the wrong way to
+                // be wrong.
                 status: TpmStatus::Unknown,
                 manufacturer: String::new(),
                 firmware_version: String::new(),
                 device_path: r"\\.\TPM".into(),
                 is_primary: true,
-                // This path learned only that the TPM service is registered.
+                // This path learned that the TPM service is registered and
+                // which specification the device node declares.
                 algorithms: None,
                 pcr_banks: None,
                 measured_boot: Self::measured_boot_windows(),
@@ -474,5 +526,34 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("tpm0"));
         let _: TpmInfo = serde_json::from_str(&json).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_version_tests {
+    use super::{version_from_node, TpmVersion};
+
+    /// The exact output of the device-node query on the development host,
+    /// where the AMD PSP is listed first and the TPM second.
+    #[test]
+    fn the_acpi_hardware_id_names_the_specification() {
+        let listing = "PCI\\VEN_1022&DEV_1649&SUBSYS_88771043&REV_00\\4&1EBE6A9C&0&0241\nACPI\\MSFT0101\\1\n";
+        assert_eq!(version_from_node(listing), Some(TpmVersion::V2_0));
+    }
+
+    #[test]
+    fn a_tpm_12_node_reads_as_12() {
+        assert_eq!(version_from_node("ACPI\\PNP0C31\\0"), Some(TpmVersion::V1_2));
+    }
+
+    #[test]
+    fn a_listing_with_no_tpm_node_states_nothing() {
+        // A security device that is not a TPM must not be read as a TPM of
+        // unknown version: the caller reports the absence instead.
+        assert_eq!(
+            version_from_node("PCI\\VEN_1022&DEV_1649&SUBSYS_88771043&REV_00\\4&1EBE6A9C&0&0241"),
+            None
+        );
+        assert_eq!(version_from_node(""), None);
     }
 }

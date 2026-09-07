@@ -131,6 +131,43 @@ pub struct PrinterMonitor {
     printers: Vec<PrinterInfo>,
 }
 
+/// The queue state, from whichever of the spooler's two enumerations holds one.
+///
+/// `Win32_Printer` describes the same queue twice and neither column is
+/// reliably the specific one. On this machine's four printers, `PrinterStatus`
+/// says 3 (Idle) for the three virtual queues while `ExtendedPrinterStatus`
+/// says 2 (Unknown) for them -- and for the Brother on a WSD port it is the
+/// other way round: `PrinterStatus` says 1 (Other) while
+/// `ExtendedPrinterStatus` says 7 (Offline), which the
+/// `PRINTER_STATUS_OFFLINE` bit in `PrinterState` confirms.
+///
+/// Reading only `PrinterStatus` published that printer's state as an absence --
+/// "reader returned \"Unknown\", which names an absence rather than a value" --
+/// while the spooler was saying "offline" in two other columns, one of which
+/// the query already selected and then ignored.
+///
+/// Neither column is preferred over the other on principle: whichever names a
+/// state, answers. 1 (Other) and 2 (Unknown) name an absence rather than a
+/// state in both enumerations, and so does any code this crate has no variant
+/// for -- those stay `Unknown`, which the resolver reports as unavailable.
+#[cfg(target_os = "windows")]
+fn status_from_cim(extended: u64, basic: u64) -> PrinterStatus {
+    fn specific(code: u64) -> Option<PrinterStatus> {
+        match code {
+            3 => Some(PrinterStatus::Idle),
+            4 => Some(PrinterStatus::Printing),
+            // 5 is Warmup and 6 is Stopped Printing in both enumerations; 8 is
+            // Paused, and exists in the extended one only.
+            5 | 6 | 8 => Some(PrinterStatus::Paused),
+            7 => Some(PrinterStatus::Offline),
+            _ => None,
+        }
+    }
+    specific(extended)
+        .or_else(|| specific(basic))
+        .unwrap_or(PrinterStatus::Unknown)
+}
+
 impl PrinterMonitor {
     /// Create a new PrinterMonitor and detect printers.
     pub fn new() -> Result<Self, SimonError> {
@@ -380,7 +417,7 @@ impl PrinterMonitor {
 
     #[cfg(target_os = "windows")]
     fn refresh_windows(&mut self) -> Result<(), SimonError> {
-        const QUERY: &str = "Get-CimInstance Win32_Printer | Select-Object Name, DriverName, PortName, PrinterStatus, Comment, Location, Shared, Capabilities, Default, PrinterState, JobCountSinceLastReset, Network | ConvertTo-Json -Compress";
+        const QUERY: &str = "Get-CimInstance Win32_Printer | Select-Object Name, DriverName, PortName, PrinterStatus, ExtendedPrinterStatus, Comment, Location, Shared, Capabilities, Default, PrinterState, JobCountSinceLastReset, Network | ConvertTo-Json -Compress";
 
         let Some(val) =
             crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])?
@@ -410,20 +447,23 @@ impl PrinterMonitor {
                 let is_default = item["Default"].as_bool().unwrap_or(false);
                 let is_network = item["Network"].as_bool().unwrap_or(false);
 
-                let wmi_status = item["PrinterStatus"].as_u64().unwrap_or(0);
-                let status = match wmi_status {
-                    1 | 2 => PrinterStatus::Unknown, // Other, Unknown
-                    3 => PrinterStatus::Idle,
-                    4 => PrinterStatus::Printing,
-                    5 => PrinterStatus::Paused, // Warmup
-                    6 => PrinterStatus::Paused, // Stopped Printing
-                    7 => PrinterStatus::Offline,
-                    _ => PrinterStatus::Unknown,
-                };
+                let status = status_from_cim(
+                    item["ExtendedPrinterStatus"].as_u64().unwrap_or(0),
+                    item["PrinterStatus"].as_u64().unwrap_or(0),
+                );
 
+                let port_lower = port.to_lowercase();
                 let connection = if is_network {
                     PrinterConnection::Network
-                } else if port.to_lowercase().contains("usb") {
+                } else if port_lower.starts_with("wsd-") {
+                    // A WSD port is Web Services on Devices, which is network
+                    // printing by definition -- the port monitor's own name for
+                    // the transport, not a word found in the printer's title.
+                    // `Win32_Printer.Network` is false for it because the queue
+                    // is installed locally, so the only thing that had a view
+                    // said nothing and the connection was published absent.
+                    PrinterConnection::Network
+                } else if port_lower.contains("usb") {
                     PrinterConnection::USB
                 } else if name.to_lowercase().contains("pdf")
                     || name.to_lowercase().contains("xps")
@@ -584,5 +624,31 @@ mod tests {
         assert_eq!(PrinterStatus::Idle.to_string(), "Idle");
         assert_eq!(PrinterStatus::Printing.to_string(), "Printing");
         assert_eq!(PrinterConnection::USB.to_string(), "USB");
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_status_tests {
+    use super::{status_from_cim, PrinterStatus};
+
+    /// Codes read off this machine's four queues with
+    /// `Get-CimInstance Win32_Printer`.
+    #[test]
+    fn whichever_column_names_a_state_answers() {
+        // The Brother on a WSD port: Other, then Offline.
+        assert_eq!(status_from_cim(7, 1), PrinterStatus::Offline);
+        // The three virtual queues: Unknown, then Idle.
+        assert_eq!(status_from_cim(2, 3), PrinterStatus::Idle);
+    }
+
+    #[test]
+    fn two_absences_stay_an_absence() {
+        // Neither column names a state, so neither is invented. The resolver
+        // reports this as unavailable rather than as a queue state.
+        assert_eq!(status_from_cim(2, 1), PrinterStatus::Unknown);
+        assert_eq!(status_from_cim(0, 0), PrinterStatus::Unknown);
+        // A code from a future spooler that this crate has no variant for is
+        // an absence too, not a nearest match.
+        assert_eq!(status_from_cim(18, 2), PrinterStatus::Unknown);
     }
 }

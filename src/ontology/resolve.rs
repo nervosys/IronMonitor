@@ -1416,6 +1416,60 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         return;
     }
 
+    // Six of these entities used to name the driver or the vendor as the party
+    // that reported nothing -- "driver reports no power telemetry", "vendor
+    // publishes no thermal limit for this adapter". On this machine's AMD
+    // integrated GPU all six were false in the same way: the Windows AMD
+    // backend sets `clocks` and `power` to `None` without consulting anything,
+    // and the Intel one says so in a comment ("nothing is read on this
+    // platform, so nothing is reported"). AMD's ADL libraries are installed
+    // here -- `atiadlxx.dll` and `amdadlx64.dll` are both in System32 -- so the
+    // driver does publish this and simon has no binding to ask it.
+    //
+    // The reasons now say what was read rather than what a vendor supposedly
+    // withholds. They stay true for an NVIDIA card, where NVML *was* asked and
+    // declined.
+    const NO_ADAPTER_TEMPERATURE: &str = concat!(
+        "no temperature was read for this adapter. NVML answers for NVIDIA ",
+        "cards; on Windows an AMD or Intel adapter has no source in simon but ",
+        "an OpenHardwareMonitor or LibreHardwareMonitor WMI namespace, which ",
+        "exists only where one of those tools is installed. An adapter with no ",
+        "sensor and a simon with no binding to the vendor SDK are ",
+        "indistinguishable from here"
+    );
+    const NO_ADAPTER_THERMAL_LIMIT: &str = concat!(
+        "no thermal limit was read for this adapter. NVML publishes one for ",
+        "NVIDIA cards; the Windows AMD and Intel backends fill this field with ",
+        "nothing, without asking the driver whether it has one"
+    );
+    const NO_ADAPTER_SHUTDOWN_THRESHOLD: &str = concat!(
+        "no shutdown threshold was read for this adapter. NVML publishes one ",
+        "for NVIDIA cards; the Windows AMD and Intel backends fill this field ",
+        "with nothing, without asking the driver whether it has one"
+    );
+    const NO_ADAPTER_POWER_DRAW: &str = concat!(
+        "no power draw was read for this adapter. NVML reports it for NVIDIA ",
+        "cards; the Windows AMD and Intel backends set this field to nothing ",
+        "without consulting the driver, and both vendors expose it through a ",
+        "library simon does not bind"
+    );
+    const NO_ADAPTER_POWER_CAP: &str = concat!(
+        "no enforced power cap was read for this adapter. See the power draw ",
+        "beside it: on Windows the AMD and Intel backends consult nothing for ",
+        "either figure"
+    );
+    const NO_ADAPTER_CLOCK: &str = concat!(
+        "no graphics clock was read for this adapter. NVML reports it for ",
+        "NVIDIA cards, the Linux sysfs readers report it for AMD and Intel, ",
+        "and the Windows AMD and Intel backends consult nothing -- there is no ",
+        "clock in the Windows GPU performance counters, and the vendor ",
+        "libraries that do carry one are not bound"
+    );
+    const NO_ADAPTER_CLOCK_CEILING: &str = concat!(
+        "no graphics clock ceiling was read for this adapter. See the clock ",
+        "beside it"
+    );
+
     for (i, gpu) in gpus.iter().enumerate() {
         let base = format!("gpu.{i}");
         push_text(out, format!("{base}.name"), &gpu.static_info.name);
@@ -1439,7 +1493,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
             format!("{base}.thermal.temperature"),
             dynamic.thermal.temperature.map(|t| serde_json::json!(t)),
             Some(Unit::Celsius),
-            "no temperature sensor exposed for this adapter",
+            NO_ADAPTER_TEMPERATURE,
         );
         push_opt(
             out,
@@ -1449,7 +1503,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
                 .max_temperature
                 .map(|t| serde_json::json!(t)),
             Some(Unit::Celsius),
-            "vendor publishes no thermal limit for this adapter",
+            NO_ADAPTER_THERMAL_LIMIT,
         );
         push_opt(
             out,
@@ -1459,35 +1513,35 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
                 .critical_temperature
                 .map(|t| serde_json::json!(t)),
             Some(Unit::Celsius),
-            "vendor publishes no shutdown threshold for this adapter",
+            NO_ADAPTER_SHUTDOWN_THRESHOLD,
         );
         push_opt(
             out,
             format!("{base}.power.draw"),
             dynamic.power.draw.map(|p| serde_json::json!(p)),
             Some(Unit::Milliwatts),
-            "driver reports no power telemetry",
+            NO_ADAPTER_POWER_DRAW,
         );
         push_opt(
             out,
             format!("{base}.power.limit"),
             dynamic.power.limit.map(|p| serde_json::json!(p)),
             Some(Unit::Milliwatts),
-            "driver exposes no enforced power cap",
+            NO_ADAPTER_POWER_CAP,
         );
         push_opt(
             out,
             format!("{base}.clocks.graphics"),
             dynamic.clocks.graphics.map(|c| serde_json::json!(c)),
             Some(Unit::Megahertz),
-            "driver reports no graphics clock",
+            NO_ADAPTER_CLOCK,
         );
         push_opt(
             out,
             format!("{base}.clocks.graphics.max"),
             dynamic.clocks.graphics_max.map(|c| serde_json::json!(c)),
             Some(Unit::Megahertz),
-            "vendor publishes no graphics clock ceiling",
+            NO_ADAPTER_CLOCK_CEILING,
         );
 
         // Each figure stands on its own now. The old gate was `total > 0`,
