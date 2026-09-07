@@ -154,9 +154,86 @@ Since the tag, on `master` and green on all three platforms:
 | `e6d5259` | The transport a HID node's parent names |
 | `59e6268` | A rated figure published as measured, on 24 rows |
 | `64e5cf3` | The mixer binding the absence reasons said did not exist |
+| `ada6755` | Four absence reasons that blamed the platform for a column nobody selected |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### Four reasons that blamed the platform for a column nobody selected
+
+Four more absence reasons checked and **all four false**, on the same method:
+group the snapshot's absences by reason, take one, and ask Windows the question
+the reason answers. Nineteen readings that were absent are now present, and the
+snapshot went from 465 absences to 446.
+
+**A root hub's class was in the property the query did not select.** The USB
+reader has a hub branch matching `ROOT_HUB` and `_HUB`, written with a comment
+arguing that a structured identifier from the bus driver is not the same thing
+as finding "hub" in a display name. It was correct and it was unreachable by the
+devices it was written for: Windows leaves `CompatibleID` **empty** on all six
+root hubs here and records `USB\ROOT_HUB30` in `HardwareID`, which the query did
+not select. The published reason said "no interface class or hub identifier was
+recorded for it" while the platform was recording one, three times per hub.
+
+The same reason was wrong a second way for the nine nodes that stay absent: it
+asserted a *device descriptor* saying the class is per-interface. A USBSTOR disk
+node and a USB4 router have no USB device descriptor at all — they are enumerated
+on another bus, and their class, where one exists, sits on a sibling node. The
+reason now names the composite parent and the foreign-bus node separately.
+
+**`board.input.{n}.product` was `String::new()` on Windows**, under "reader
+returned an empty string" — which is true about the reader and says nothing about
+the platform. The entity reads "product name **or numeric id**, whichever the
+platform gave"; the id is in the instance path; `usb::parse_vid_pid` already
+parses that exact shape; and the Linux reader has published `0x046d` from
+`/proc/bus/input/devices` since it was written. Eleven readings, from making
+`parse_vid_pid` `pub(crate)` rather than writing a second parser for the two
+readers to disagree with.
+
+The `vendor` half is the more interesting one. It was fixed once already, in
+`dbe64e0`, by selecting `Manufacturer` and rejecting Windows' parenthesised
+driver-package providers — and the fix left five of this machine's six input
+devices publishing no vendor at all, because three keyboards report a blank
+manufacturer and two mice report "(Standard system devices)". The numeric id was
+in their paths the whole time. **A fix that removes a wrong value is not the same
+as a fix that produces the right one**, and the absence it leaves behind reads as
+settled.
+
+**A camera's driver is `Win32_PnPEntity.Service`** — `usbvideo` on both cameras
+here, the direct analogue of the `device/driver` symlink the Linux reader follows
+to `uvcvideo`. Not selected; field hardcoded empty; same reason published. That is
+the third time in this audit that the answer was a column beside the ones already
+being read.
+
+**And an ECC absence blamed on an interface nobody consulted.** Three
+`memory.ecc.*` rows carried "no memory controller exposed ECC reporting; the
+platform interface exists but enumerated nothing". No interface exists here and
+none was asked: `EdacMonitor::scan()` returned an empty overview on every
+platform but Linux. The resolver's *other* branch — the one that would have told
+the truth — carries the comment "on Windows and macOS there is no EDAC equivalent
+simon reads, so this is the common path", and was unreachable. The module header
+said Windows read `wmic memorychip`; no code in it has ever run anything on
+Windows.
+
+Non-Linux `scan()` now returns an error naming the absence, and on Linux an
+absent `/sys/devices/system/edac` is reported as **no EDAC driver loaded** rather
+than as a loaded driver finding no controller — a different fact, and the
+difference between "this machine reports no ECC errors" and "nothing here counts
+them".
+
+`Win32_PhysicalMemoryArray.MemoryErrorCorrection` is 3, "None", on this host, and
+it is tempting to publish `memory.ecc.active = false` from it. That answers
+whether the modules carry ECC, which is the per-slot entity and is already read;
+it does not answer whether a controller is reporting corrections, which is what
+these three ask and what the entity's own text warns against conflating.
+
+**One reason checked true, where the fix would have been wrong.** "This entry
+carries no USB vendor id; root hubs and virtual devices have none" survives the
+hardware ids that just fixed the class beside it: `USB\ROOT_HUB30&VID1022&PID43FD`
+does carry a vendor and a product. They are the **PCI** ids of the AMD host
+controller, reused by Windows to name a synthetic device. Publishing them in a
+USB vendor field would have been a category error arriving as a bug fix, in the
+same commit, from the same property.
 
 ### An honest reason for an unfinished reader
 
@@ -5621,13 +5698,14 @@ feature stayed broken through eight published versions.
    truth to check against before trusting the result; Windows reports this
    nowhere else.
 
-3. **The absence-reason audit is a third of the way through.** Every
+3. **The absence-reason audit is about a third of the way through.** Every
    `unavailable` reading carries a prose reason, and those reasons are *claims
    about the platform* that can be checked against it. On this machine there are
-   **465 absences across 53 distinct reasons**, out of 1797 readings.
+   now **446 absences across 53 distinct reasons**, out of 1797 readings — down
+   from 465 as this pass closed nineteen.
 
-   Ten reasons were checked. **Five were false**, and each was a reading the
-   platform does provide:
+   Nineteen reasons have been checked. **Nine were false**, and each was a
+   reading the platform does provide:
 
    | Reason | Rows | What was actually true |
    | --- | --- | --- |
@@ -5636,24 +5714,59 @@ feature stayed broken through eight published versions.
    | "the CPUID family/model/stepping triple was not read on this platform" | 3 | `Win32_Processor.Description` is "AMD64 Family 26 Model 68 Stepping 0" |
    | "the platform reported no line size for this cache" (+ sharing) | 6 | `GetLogicalProcessorInformationEx`, which this module's own docs claimed to use |
    | "simon has no mixer binding on this platform" (+ default endpoint) | 12 | `IAudioEndpointVolume`. True about the reader, not about Windows |
+   | "this device declares no class of its own … no interface class or hub identifier was recorded" | 6 | `USB\ROOT_HUB30` is in every root hub's `HardwareID`. The query selected `CompatibleID`, which Windows leaves empty on a root hub |
+   | "reader returned an empty string" — `board.input.{n}.vendor` and `.product` | 11 | The vendor and product ids are in the instance path, the entity asks for "name **or numeric id**", and the Linux reader has always published them |
+   | "reader returned an empty string" — `board.camera.{n}.driver` | 2 | `Win32_PnPEntity.Service` is `usbvideo`, the direct analogue of the `device/driver` symlink the Linux reader follows. Not selected |
+   | "no memory controller exposed ECC reporting; the platform interface exists but enumerated nothing" | 3 | No interface exists and none was consulted: `EdacMonitor::scan()` returned an empty overview on every platform but Linux |
 
-   **Five were true** and are recorded so nobody re-checks them: no NUMA affinity
+   **Nine were true** and are recorded so nobody re-checks them: no NUMA affinity
    on any of 64 PCI devices, no negotiated link rate on WAN miniports and
    disconnected adapters, no minimum core frequency anywhere in `Win32_Processor`,
-   no port count in `Win32_SCSIController.MaxNumberControlled`, and no NVMe data
-   on `disk.0` — which is a USB mass-storage gadget, while the three real NVMe
-   drives report everything.
+   no port count in `Win32_SCSIController.MaxNumberControlled`, no NVMe data on
+   `disk.0` — a USB mass-storage gadget, while the three real NVMe drives report
+   everything — no driver on exactly 15 of 64 PCI devices, blank `Description` on
+   all four printers, class `00` on all nine remaining classless USB nodes, and a
+   hypervisor masking the CPU virtualization bits (`HypervisorPresent` is true,
+   VBS is running, and `Win32_Processor.VMMonitorModeExtensions` reads false while
+   `VirtualizationFirmwareEnabled` reads true).
+
+   **A tenth reason was true but the tempting fix is wrong, which is worth more
+   than the check.** "This entry carries no USB vendor id; root hubs and virtual
+   devices have none" (8 rows) survives contact with the hardware ids that just
+   fixed the class beside it: `USB\ROOT_HUB30&VID1022&PID43FD` does carry a
+   vendor and a product. They are the *PCI* ids of the AMD host controller,
+   reused by Windows to name a synthetic device — publishing them in a USB
+   vendor field would be a category error dressed as a fix, and the six root
+   hubs would have reported a USB vendor that never appeared on a USB bus.
 
    **The method is the point, and it is cheap.** Group the absences by reason,
    take the largest, and ask Windows the question the reason answers — usually
    one `Get-CimInstance` or `Get-PnpDeviceProperty`. Reading the code instead
-   finds nothing: in four of the five failures the code was internally consistent
-   and a comment stated the false belief outright.
+   finds nothing: in every failure so far the code was internally consistent,
+   and a comment or a doc line stated the false belief outright. The EDAC
+   module's header said "**Windows**: `wmic memorychip` for ECC support
+   detection" above a function that has never run anything on Windows, and the
+   resolver's comment for the branch that would have told the truth began "on
+   Windows and macOS there is no EDAC equivalent simon reads, so this is the
+   common path" — of a branch that was unreachable.
 
-   Forty-three reasons remain unchecked. The next largest are the camera frame
-   rate (15), "no driver is bound to this device" (15, and that one is **true** —
-   exactly 15 of 64 PCI devices have no `Service`), the USB composite-class
-   absences (15), and the printer queue state (4).
+   **Two shapes account for the four found this pass.** Two were *a column the
+   query did not select* — `HardwareID` for the root hubs, `Service` for the
+   cameras, joining `ConfiguredVoltage` from the DIMM voltage that started all
+   this. Two were *a field hardcoded empty beneath a reason that blamed the
+   device*: `product: String::new()` on every Windows input device, and an empty
+   overview returned by an EDAC scan that consults nothing off Linux. Both
+   shapes are invisible from inside the module and obvious from one line of
+   PowerShell.
+
+   **Thirty-six of the 53 reasons in the current snapshot have not been
+   checked.** The largest are the 40 rate rows and 8 throughput rows, which are
+   true by construction — one sample cannot make a rate — and the 15
+   `gpu.codec.{n}.max_fps` rows, which the last handoff filed as a camera frame
+   rate and which are not that. After those, nothing unchecked is larger than
+   eight rows. The four `board.camera.{n}.max_*` rows now carry an honest
+   reason, but the reading still needs `VIDIOC_ENUM_FRAMESIZES` or the Media
+   Foundation frame-size attribute to exist at all.
 
 4. **`hardware_ai` was audited on one machine, and only one.** Every conclusion
    corrected in `a584dd0` and `7607401` was verifiably wrong on this desktop, and
