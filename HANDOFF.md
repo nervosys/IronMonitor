@@ -155,9 +155,87 @@ Since the tag, on `master` and green on all three platforms:
 | `59e6268` | A rated figure published as measured, on 24 rows |
 | `64e5cf3` | The mixer binding the absence reasons said did not exist |
 | `ada6755` | Four absence reasons that blamed the platform for a column nobody selected |
+| `b329677` | Three absences the platform had answered, and six reasons that blamed a driver nobody asked |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### A guard that caught the handoff, and ten more reasons
+
+Fourteen more absence reasons checked, ten false. First, though, the thing that
+found itself: **`every_documented_command_exists` failed on the previous commit's
+own handoff prose.** The guard flags any documentation line *beginning* with
+`simon `, and a paragraph wrapped so that a quoted comment -- "there is no EDAC
+equivalent simon reads, so this is the common path" -- started one. The
+verification run for that commit had been made *before* the docs were written, so
+the code was green and the prose was never put to the suite. **Run the suite after
+the last edit, not after the last edit you think matters.** Rewrapping the line
+fixed it; the guard was right.
+
+**A printer's state was in a column the query selected and then ignored.**
+`Win32_Printer` describes the same queue twice, and neither column is reliably
+the specific one:
+
+| Queue | `PrinterStatus` | `ExtendedPrinterStatus` | `PrinterState` |
+| --- | --- | --- | --- |
+| Three virtual queues | 3, Idle | 2, Unknown | 0 |
+| Brother, on a WSD port | 1, Other | **7, Offline** | **128, `PRINTER_STATUS_OFFLINE`** |
+
+Reading only `PrinterStatus` published the Brother's state as an absence while
+the spooler was saying "offline" in two other columns, one of which the query
+already selected. `status_from_cim` now takes whichever column names a state --
+neither is preferred on principle, because either can be the one holding it --
+and 1 (Other) and 2 (Unknown) remain an absence in both.
+
+**Its connection, too.** The port is `WSD-<guid>`: Web Services on Devices,
+network printing by definition, named by the port monitor rather than found in
+the printer's title. `Win32_Printer.Network` is *false* for it, because the queue
+is installed locally -- so the one column the reader consulted said nothing while
+the port string said everything.
+
+**A display's connection sat on the second of two nodes for one panel.** The
+single LG here enumerates twice in `root\wmi`, once per adapter path. The first
+node reports `D3DKMDT_VOT_UNINITIALIZED`, which arrives from WMI as an unsigned
+`4294967295` rather than as -1; the second reports 5, HDMI. The join took the
+first match, under a doc comment arguing that the ambiguity between two panels of
+a model could not reach any value taken from it, since they share their EDID
+name, connection family and size. **It reached this one** — and the panels here
+are not two panels but one, counted twice. The join now prefers a node that
+states a connection, which is a tie-break inside one hardware id rather than a
+guess across panels.
+
+**A TPM version that needed no elevation.** `Win32_Tpm` really does answer
+"Access denied" on an ordinary account — checked, and the reason for *that*
+absence stands — but the security device node `ACPI\MSFT0101\1` is readable by
+anyone, and `MSFT0101` is the assigned id of the TPM 2.0 device (`PNP0C31` is the
+1.2 one). The friendly name beside it says "Trusted Platform Module 2.0" and is
+not what is read: a version taken out of a display string is the substring
+guessing this crate removes wherever it finds it, and that string is localisable.
+`board.tpm.status` stays absent on purpose — a started driver is not the TPM's
+own enabled flag.
+
+**Six GPU reasons named a party that was never asked.** On the AMD integrated
+GPU: "driver reports no power telemetry", "driver exposes no enforced power cap",
+"driver reports no graphics clock", "vendor publishes no graphics clock ceiling",
+"vendor publishes no thermal limit for this adapter", "vendor publishes no
+shutdown threshold for this adapter". The Windows AMD backend sets `clocks` and
+`power` to `None` without consulting anything; the Intel one does the same and
+says so in a comment. The temperature's only source is an OpenHardwareMonitor or
+LibreHardwareMonitor WMI namespace, and neither exists unless somebody installed
+one — while `atiadlxx.dll` and `amdadlx64.dll`, AMD's own telemetry libraries,
+are both in System32 on this machine.
+
+No reading was gained there and none is claimed: the reasons now say what was
+read rather than what a vendor supposedly withholds, and stay true for an NVIDIA
+card, where NVML *was* asked and declined. **A reason that names a culprit is the
+most persuasive kind, and the easiest to get wrong.**
+
+**Four checked and true.** No property of `Win32_Printer` answers CUPS'
+accepting-jobs — checked against the whole property list, not a guess at which
+one might; both USB nodes without a manufacturer really report a blank one; the
+TPM's enabled flag and manufacturer are behind the elevation boundary; and
+`gpu.codec.{n}.max_fps` is a deliberate refusal to estimate rather than a missing
+read, which the entity and the reader agree on.
 
 ### Four reasons that blamed the platform for a column nobody selected
 
@@ -210,10 +288,10 @@ being read.
 platform interface exists but enumerated nothing". No interface exists here and
 none was asked: `EdacMonitor::scan()` returned an empty overview on every
 platform but Linux. The resolver's *other* branch — the one that would have told
-the truth — carries the comment "on Windows and macOS there is no EDAC equivalent
-simon reads, so this is the common path", and was unreachable. The module header
-said Windows read `wmic memorychip`; no code in it has ever run anything on
-Windows.
+the truth — carries the comment "on Windows and macOS there is no EDAC
+equivalent simon reads, so this is the common path", and was unreachable. The
+module header said Windows read `wmic memorychip`; no code in it has ever run
+anything on Windows.
 
 Non-Linux `scan()` now returns an error naming the absence, and on Linux an
 absent `/sys/devices/system/edac` is reported as **no EDAC driver loaded** rather
@@ -5698,14 +5776,16 @@ feature stayed broken through eight published versions.
    truth to check against before trusting the result; Windows reports this
    nowhere else.
 
-3. **The absence-reason audit is about a third of the way through.** Every
-   `unavailable` reading carries a prose reason, and those reasons are *claims
-   about the platform* that can be checked against it. On this machine there are
-   now **446 absences across 53 distinct reasons**, out of 1797 readings — down
-   from 465 as this pass closed nineteen.
+3. **The absence-reason audit is half done.** Every `unavailable` reading
+   carries a prose reason, and those reasons are *claims about the platform* that
+   can be checked against it. On this machine there are now **442 absences across
+   50 distinct reasons**, out of 1797 readings — down from 465, as two passes
+   closed twenty-three readings between them.
 
-   Nineteen reasons have been checked. **Nine were false**, and each was a
-   reading the platform does provide:
+   **Twenty-six of the 50 reasons in the current snapshot have been checked**, and
+   thirty-three across every snapshot taken. **Nineteen were false**, and each was
+   a reading the platform does provide — the first nine here, the rest in the
+   sections above:
 
    | Reason | Rows | What was actually true |
    | --- | --- | --- |
@@ -5759,14 +5839,20 @@ feature stayed broken through eight published versions.
    shapes are invisible from inside the module and obvious from one line of
    PowerShell.
 
-   **Thirty-six of the 53 reasons in the current snapshot have not been
-   checked.** The largest are the 40 rate rows and 8 throughput rows, which are
-   true by construction — one sample cannot make a rate — and the 15
-   `gpu.codec.{n}.max_fps` rows, which the last handoff filed as a camera frame
-   rate and which are not that. After those, nothing unchecked is larger than
-   eight rows. The four `board.camera.{n}.max_*` rows now carry an honest
-   reason, but the reading still needs `VIDIOC_ENUM_FRAMESIZES` or the Media
-   Foundation frame-size attribute to exist at all.
+   **Twenty-four reasons have not been checked, and most of the rows behind them
+   are true by construction.** The 40 rate rows and 8 throughput rows are one
+   sample where two are needed; the process list, the RAPL absence and the boot
+   duration each name a boundary rather than a device. What is left that could
+   still be wrong is small and specific: the two ATA attribute groups (4 rows
+   each, and no SATA drive on this machine to settle them — see item 5), the six
+   controller addresses that are not PCI addresses, the four `disk.0` SMART
+   fields, and the board sensors, which are the same missing hwmon binding as the
+   CPU temperature in item 1.
+
+   And one that is checked, true, and worth restating because 15 rows is a
+   tempting target: `gpu.codec.{n}.max_fps` is a **deliberate** refusal, not a gap. The entity declares a derivation and the
+   crate declines to invent the arithmetic; NVENC's `NV_ENC_CAPS_MB_PER_SEC_MAX`
+   is the real source for it, and nobody has bound it.
 
 4. **`hardware_ai` was audited on one machine, and only one.** Every conclusion
    corrected in `a584dd0` and `7607401` was verifiably wrong on this desktop, and
