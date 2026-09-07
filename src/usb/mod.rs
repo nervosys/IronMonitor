@@ -111,9 +111,9 @@ fn class_from_code(code: u8) -> UsbDeviceClass {
     }
 }
 
-/// The USB class Windows records in a device's compatible ids.
+/// The USB class Windows records in a device's hardware and compatible ids.
 ///
-/// Two forms appear there and they answer different questions:
+/// Two forms appear in the compatible ids and they answer different questions:
 ///
 /// * `USB\DevClass_08&SubClass_06&Prot_50` is `bDeviceClass` from the *device*
 ///   descriptor. `DevClass_00` is not "unknown" -- the specification uses it to
@@ -134,8 +134,16 @@ fn class_from_code(code: u8) -> UsbDeviceClass {
 /// device's *name*: "hub" meant Hub, "disk" meant MassStorage, "camera" meant
 /// Video. That is the same shape as the speed heuristic removed in this file --
 /// what a device is called standing in for what it declares.
+///
+/// **Hardware ids are read as well as compatible ids, because a root hub's
+/// declaration is only in the former.** Windows leaves `CompatibleID` empty on
+/// all six of this machine's root hubs and records `USB\ROOT_HUB30` in
+/// `HardwareID`; reading one property and not the other made the hub branch
+/// below unreachable for exactly the devices it was written for, and the
+/// absence reason that resulted said the platform recorded no hub identifier
+/// while the platform was recording one.
 #[cfg(target_os = "windows")]
-fn class_from_compatible_ids(ids: &[String]) -> Option<UsbDeviceClass> {
+fn class_from_device_ids(hardware: &[String], compatible: &[String]) -> Option<UsbDeviceClass> {
     fn code_after(haystack: &str, marker: &str) -> Option<u8> {
         let rest = haystack.split(marker).nth(1)?;
         let hex: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
@@ -144,7 +152,10 @@ fn class_from_compatible_ids(ids: &[String]) -> Option<UsbDeviceClass> {
             .flatten()
     }
 
-    let upper: Vec<String> = ids.iter().map(|i| i.to_uppercase()).collect();
+    // Only the compatible ids carry class codes; the hardware ids carry the
+    // vendor, product and revision, and -- for a hub -- the bus driver's own
+    // name for what the device is.
+    let upper: Vec<String> = compatible.iter().map(|i| i.to_uppercase()).collect();
 
     // The device's own declaration, when it makes one.
     for id in &upper {
@@ -162,12 +173,16 @@ fn class_from_compatible_ids(ids: &[String]) -> Option<UsbDeviceClass> {
             }
         }
     }
-    // Hubs carry neither form. Windows gives them a dedicated compatible id
-    // instead -- `USB\ROOT_HUB30`, `USB\USB30_HUB`, `USB\USB20_HUB`. That is the
-    // bus driver declaring what the device is, in a structured identifier, and
-    // is not the same thing as finding "hub" in a display name.
-    if upper
+    // Hubs carry neither form. Windows gives them a dedicated identifier
+    // instead -- `USB\USB30_HUB` and `USB\USB20_HUB` among the compatible ids
+    // of an external hub, and `USB\ROOT_HUB30` among the *hardware* ids of a
+    // root hub, which has no compatible ids at all. That is the bus driver
+    // declaring what the device is, in a structured identifier, and is not the
+    // same thing as finding "hub" in a display name.
+    if hardware
         .iter()
+        .chain(compatible.iter())
+        .map(|id| id.to_uppercase())
         .any(|id| id.contains("ROOT_HUB") || id.ends_with("_HUB"))
     {
         return Some(UsbDeviceClass::Hub);
@@ -492,8 +507,12 @@ impl UsbMonitor {
                 concat!(
                     "Get-CimInstance Win32_PnPEntity | ",
                     "Where-Object { $_.PNPDeviceID -like 'USB*' } | ",
+                    // HardwareID is selected because a root hub's hub
+                    // identifier lives there and nowhere else. Not selecting a
+                    // column is how the platform comes to be blamed for an
+                    // absence the query created.
                     "Select-Object Name, Manufacturer, PNPDeviceID, Description, ",
-                    "Status, CompatibleID | ConvertTo-Json -Compress"
+                    "Status, HardwareID, CompatibleID | ConvertTo-Json -Compress"
                 ),
             ])
             .output()
@@ -530,17 +549,20 @@ impl UsbMonitor {
                     // a device is *called* standing in for what it *declares*
                     // -- and it is wrong in both directions, silently. A
                     // descriptor byte is available and is not a guess.
-                    let compatible: Vec<String> = item
-                        .get("CompatibleID")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(str::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let class =
-                        class_from_compatible_ids(&compatible).unwrap_or(UsbDeviceClass::Unknown);
+                    let string_array = |field: &str| -> Vec<String> {
+                        item.get(field)
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    };
+                    let hardware = string_array("HardwareID");
+                    let compatible = string_array("CompatibleID");
+                    let class = class_from_device_ids(&hardware, &compatible)
+                        .unwrap_or(UsbDeviceClass::Unknown);
 
                     // Not read on Windows.
                     //
@@ -676,7 +698,11 @@ impl UsbMonitor {
 /// every virtual device. One of the two callers already guarded on
 /// `vid != 0 || pid != 0`, so the sentinel was known to be meaningless there;
 /// the other did not, which is how `[0000:0000]` reached the screen.
-fn parse_vid_pid(pnp_id: &str) -> (Option<u16>, Option<u16>) {
+///
+/// `pub(crate)` for `input`, whose Windows reader needs the same two numbers
+/// out of the same shape of instance id. A second copy of this parser is how
+/// the two readers would come to disagree about the same device.
+pub(crate) fn parse_vid_pid(pnp_id: &str) -> (Option<u16>, Option<u16>) {
     let upper = pnp_id.to_uppercase();
     let vid = upper
         .find("VID_")
@@ -844,6 +870,80 @@ mod tests {
             let deserialized: UsbSpeed = serde_json::from_str(&json).unwrap();
             assert_eq!(speed, deserialized);
         }
+    }
+
+    /// The ids in this test were read off one Windows host with
+    /// `Get-CimInstance Win32_PnPEntity | Select HardwareID, CompatibleID`,
+    /// not composed to match the parser.
+    ///
+    /// The root-hub case is the reason the function takes both lists: Windows
+    /// leaves `CompatibleID` empty on a root hub, so a reader that looked only
+    /// there classified all six of this machine's root hubs `Unknown` and
+    /// published an absence reason saying no hub identifier was recorded.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_root_hub_is_a_hub_by_the_identifier_windows_puts_in_its_hardware_ids() {
+        let hardware = [
+            r"USB\ROOT_HUB30&VID1022&PID43FD&REV0001".to_string(),
+            r"USB\ROOT_HUB30&VID1022&PID43FD".to_string(),
+            r"USB\ROOT_HUB30".to_string(),
+        ];
+        assert_eq!(
+            class_from_device_ids(&hardware, &[]),
+            Some(UsbDeviceClass::Hub),
+            "a root hub declares itself in its hardware ids and carries no \
+             compatible ids at all"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn an_interface_class_still_wins_over_the_hardware_ids_beside_it() {
+        // A Logitech receiver interface: the hardware ids name the vendor and
+        // product, and the class is in the compatible ids.
+        let hardware = [
+            r"USB\VID_046D&PID_C548&REV_0503&MI_01".to_string(),
+            r"USB\VID_046D&PID_C548&MI_01".to_string(),
+        ];
+        let compatible = [
+            r"USB\COMPAT_VID_046d&Class_03&SubClass_01&Prot_02".to_string(),
+            r"USB\Class_03".to_string(),
+        ];
+        assert_eq!(
+            class_from_device_ids(&hardware, &compatible),
+            Some(UsbDeviceClass::Hid)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_composite_parent_and_a_usbstor_disk_both_decline() {
+        let composite_hw = [r"USB\VID_046D&PID_C548&REV_0503".to_string()];
+        let composite_co = [
+            r"USB\COMPAT_VID_046D&DevClass_00&SubClass_00&Prot00".to_string(),
+            r"USB\DevClass_00".to_string(),
+            r"USB\COMPOSITE".to_string(),
+        ];
+        assert_eq!(
+            class_from_device_ids(&composite_hw, &composite_co),
+            None,
+            "class 00 is the device saying its interfaces answer this, not a class"
+        );
+
+        let stor_hw = [
+            r"USBSTOR\DiskLinux___File-Stor_Gadget0515".to_string(),
+            r"USBSTOR\GenDisk".to_string(),
+        ];
+        let stor_co = [
+            r"USBSTOR\Disk".to_string(),
+            r"USBSTOR\RAW".to_string(),
+            "GenDisk".to_string(),
+        ];
+        assert_eq!(
+            class_from_device_ids(&stor_hw, &stor_co),
+            None,
+            "a storage-stack child node has no USB descriptor to declare a class"
+        );
     }
 
     #[test]

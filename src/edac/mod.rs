@@ -6,9 +6,14 @@
 //!
 //! ## Platform Support
 //!
-//! - **Linux**: `/sys/devices/system/edac/mc*/`
-//! - **Windows**: `wmic memorychip` for ECC support detection
-//! - **macOS**: Not typically available
+//! - **Linux**: `/sys/devices/system/edac/mc*/`, when an EDAC driver is loaded
+//! - **Windows**: nothing. This line used to read "`wmic memorychip` for ECC
+//!   support detection", and no code here has ever run `wmic` or read anything
+//!   else on Windows -- `scan()` returned an empty overview, which the ontology
+//!   published as "the platform interface exists but enumerated nothing".
+//!   Whether the *modules* carry ECC is a different question and is read, from
+//!   SMBIOS, for `memory.dimm.{n}.ecc`.
+//! - **macOS**: nothing, for the same reason
 
 use crate::error::SimonError;
 use serde::{Deserialize, Serialize};
@@ -160,19 +165,18 @@ impl EdacMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan() -> Result<EdacOverview, SimonError> {
-        let edac_path = std::path::Path::new("/sys/devices/system/edac/mc");
-
-        if !edac_path.exists() {
-            // Try parent
-            let parent = std::path::Path::new("/sys/devices/system/edac");
-            if !parent.exists() {
-                return Ok(Self::empty_overview());
-            }
-        }
-
+        // An absent `edac` directory is the driver not being loaded, which is
+        // not the same fact as a loaded driver finding no controller -- and an
+        // empty overview said the second while meaning the first. The
+        // distinction is the whole difference between "this machine reports no
+        // ECC errors" and "nothing here counts them".
         let mc_base = std::path::Path::new("/sys/devices/system/edac");
         if !mc_base.exists() {
-            return Ok(Self::empty_overview());
+            return Err(SimonError::FeatureNotAvailable(
+                "the kernel exposes no /sys/devices/system/edac: no EDAC driver \
+                 is loaded for this memory controller"
+                    .into(),
+            ));
         }
 
         let mut controllers = Vec::new();
@@ -345,9 +349,32 @@ impl EdacMonitor {
             .and_then(|s| s.trim().parse().ok())
     }
 
+    /// There is no EDAC equivalent this crate reads off Linux, and saying so
+    /// is not the same as reporting zero controllers.
+    ///
+    /// This returned an empty overview, which the ontology resolver read as
+    /// "the platform interface exists but enumerated nothing" and published as
+    /// the reason three ECC entities were absent. Nothing had been asked: the
+    /// function consulted no interface on any platform but Linux. The
+    /// resolver's other branch -- the one whose comment already said "on
+    /// Windows and macOS there is no EDAC equivalent simon reads, so this is
+    /// the common path" -- was unreachable, and the comment described what the
+    /// author believed rather than what the code did.
+    ///
+    /// Windows does report the array's error-correction type in SMBIOS, as
+    /// `Win32_PhysicalMemoryArray.MemoryErrorCorrection` (3, "None", on the
+    /// development host). That answers whether the modules carry ECC, which is
+    /// the per-slot `memory.dimm.{n}.ecc` entity and is already read; it does
+    /// not answer whether a controller is *reporting* corrections, which is
+    /// what these three entities ask and what no Windows interface exposes.
     #[cfg(not(target_os = "linux"))]
     fn scan() -> Result<EdacOverview, SimonError> {
-        Ok(Self::empty_overview())
+        Err(SimonError::UnsupportedPlatform(
+            "ECC error counts are read from /sys/devices/system/edac, which \
+             exists on Linux only; this platform exposes no interface simon \
+             reads for correctable and uncorrectable counts"
+                .into(),
+        ))
     }
 
     fn empty_overview() -> EdacOverview {

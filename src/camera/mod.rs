@@ -375,7 +375,13 @@ impl CameraMonitor {
                 // "can this machine see". Windows 10 1703 and later put every
                 // webcam under `Camera`, so nothing real is lost by asking only
                 // for that.
-                "Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Camera' } | Select-Object Name, Manufacturer, DeviceID, Status, PNPClass | ConvertTo-Json -Compress"],
+                // `Service` is the driver bound to the device -- `usbvideo`
+                // for both cameras on the development host, the direct
+                // analogue of the `device/driver` symlink the Linux reader
+                // follows to `uvcvideo`. It was not selected, so `driver` was
+                // hardcoded empty and the ontology reported "reader returned
+                // an empty string" for a column nobody had asked for.
+                "Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Camera' } | Select-Object Name, Manufacturer, DeviceID, Status, PNPClass, Service | ConvertTo-Json -Compress"],
         )?;
         let Some(val) = json else {
             return Ok(());
@@ -404,8 +410,11 @@ impl CameraMonitor {
                 name,
                 connection,
                 device_path: device_id,
-                driver: String::new(),
+                driver: item["Service"].as_str().unwrap_or("").to_string(),
                 vendor,
+                // No reader on any platform fills these; see the absence
+                // reason in `ontology::resolve`, which now says so instead of
+                // reporting that the camera listed no modes.
                 max_width: 0,
                 max_height: 0,
                 formats: Vec::new(),

@@ -206,14 +206,48 @@ fn interface_from_device_tree(instance_id: &str) -> InputInterface {
 ///
 /// Verified on this machine: `Win32_PointingDevice` reports "Microsoft" for one
 /// device and "(Standard system devices)" for another, and `Win32_Keyboard`
-/// reports an empty string for every keyboard.
+/// reports an empty string for all three keyboards.
+///
+/// Where the column says nothing usable the *numeric* vendor id in the device's
+/// instance path does, and the entity asks for "vendor name or numeric id,
+/// whichever the platform gave" -- so the fallback below is the entity being
+/// answered rather than a second-best guess. Before it, five of this machine's
+/// six input devices published no vendor at all while `USB\VID_0557` sat in
+/// their instance paths.
 #[cfg(target_os = "windows")]
-fn device_vendor(item: &serde_json::Value) -> String {
+fn device_vendor(item: &serde_json::Value, instance_id: &str) -> String {
     let raw = item["Manufacturer"].as_str().unwrap_or("").trim();
-    if raw.starts_with('(') {
-        return String::new();
+    if !raw.is_empty() && !raw.starts_with('(') {
+        return raw.to_string();
     }
-    raw.to_string()
+    // "Vendor name **or numeric id**, whichever the platform gave" -- and the
+    // platform gave one, in the instance path: `USB\VID_0557&PID_220E&MI_00`.
+    // The Linux reader has always published `0x046d` from
+    // `/proc/bus/input/devices`; this branch is what makes Windows answer the
+    // same entity the same way instead of reporting an empty reader.
+    match crate::usb::parse_vid_pid(instance_id).0 {
+        Some(vid) => format!("0x{vid:04x}"),
+        None => String::new(),
+    }
+}
+
+/// The numeric product id in an input device's instance path.
+///
+/// This was `String::new()` for every Windows input device -- hardcoded, with
+/// the ontology reporting "reader returned an empty string" as though the
+/// platform had been asked. It had not been: `HID\VID_046D&PID_C548&MI_01&COL01`
+/// carries the product id, the crate already has a parser for that shape in
+/// `usb`, and Linux publishes the same field from the same kind of id.
+///
+/// Empty for a device whose path carries no `PID_` -- a PS/2 keyboard on
+/// `ACPI\PNP0303`, a virtual device on `ROOT\` -- which the resolver then
+/// reports absent, honestly this time.
+#[cfg(target_os = "windows")]
+fn device_product(instance_id: &str) -> String {
+    match crate::usb::parse_vid_pid(instance_id).1 {
+        Some(pid) => format!("0x{pid:04x}"),
+        None => String::new(),
+    }
 }
 
 impl InputMonitor {
@@ -347,8 +381,20 @@ impl InputMonitor {
                 name: name.to_string(),
                 device_type,
                 interface,
-                vendor: format!("0x{}", vendor_id),
-                product: format!("0x{}", product_id),
+                // `format!("0x{}", ...)` on an id the `I:` line did not carry
+                // produced the string `"0x"` -- a non-empty value naming
+                // nothing, which the resolver would publish as a reading. An
+                // absent id stays absent.
+                vendor: if vendor_id.is_empty() {
+                    String::new()
+                } else {
+                    format!("0x{vendor_id}")
+                },
+                product: if product_id.is_empty() {
+                    String::new()
+                } else {
+                    format!("0x{product_id}")
+                },
                 physical_path: sysfs.to_string(),
                 is_active: Some(handlers.contains("event")),
                 capabilities: caps,
@@ -535,10 +581,11 @@ impl InputMonitor {
                     // not before -- the field was hardcoded empty and the
                     // ontology reported "reader returned an empty string" for
                     // it. On this machine `Win32_Keyboard.Manufacturer` really
-                    // is blank, so keyboards keep that absence honestly, while
-                    // `Win32_PointingDevice` carries a real value.
-                    vendor: device_vendor(item),
-                    product: String::new(),
+                    // is blank on all three keyboards, so the numeric vendor id
+                    // in the instance path answers instead; see
+                    // `device_vendor`.
+                    vendor: device_vendor(item, &device_id),
+                    product: device_product(&device_id),
                     physical_path: device_id,
                     is_active: Some(item["Status"].as_str() == Some("OK")),
                     capabilities: vec!["keys".into()],
@@ -582,8 +629,8 @@ impl InputMonitor {
                     name,
                     device_type,
                     interface: iface,
-                    vendor: device_vendor(item),
-                    product: String::new(),
+                    vendor: device_vendor(item, &device_id),
+                    product: device_product(&device_id),
                     physical_path: device_id,
                     is_active: Some(item["Status"].as_str() == Some("OK")),
                     capabilities: caps,
@@ -796,36 +843,75 @@ mod enumerator_tests {
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_vendor_tests {
-    use super::device_vendor;
+    use super::{device_product, device_vendor};
     use serde_json::json;
+
+    /// A PS/2 keyboard's instance path: no `VID_`, no `PID_`, so there is
+    /// nothing to fall back to and the absence stands.
+    const NO_IDS: &str = r"ACPI\PNP0303\4&1";
+    /// This machine's KVM keyboard, whose manufacturer Windows leaves blank.
+    const ATEN_KEYBOARD: &str = r"USB\VID_0557&PID_220E&MI_00\B&2F3F2B&0&0000";
 
     /// Windows' parenthesised driver-provider strings are not vendors.
     #[test]
     fn a_driver_package_provider_is_not_a_device_vendor() {
         // Real values from `Win32_PointingDevice` on the development host.
         assert_eq!(
-            device_vendor(&json!({"Manufacturer": "Microsoft"})),
+            device_vendor(&json!({"Manufacturer": "Microsoft"}), NO_IDS),
             "Microsoft"
         );
         assert_eq!(
-            device_vendor(&json!({"Manufacturer": "(Standard system devices)"})),
+            device_vendor(&json!({"Manufacturer": "(Standard system devices)"}), NO_IDS),
             ""
         );
         assert_eq!(
-            device_vendor(&json!({"Manufacturer": "(Standard keyboards)"})),
+            device_vendor(&json!({"Manufacturer": "(Standard keyboards)"}), NO_IDS),
             ""
         );
 
         // An absent or blank column stays absent rather than becoming a name.
-        assert_eq!(device_vendor(&json!({"Manufacturer": ""})), "");
-        assert_eq!(device_vendor(&json!({})), "");
+        assert_eq!(device_vendor(&json!({"Manufacturer": ""}), NO_IDS), "");
+        assert_eq!(device_vendor(&json!({}), NO_IDS), "");
 
         // A real vendor that merely contains a bracket keeps it; only a
         // leading one marks the convention.
         assert_eq!(
-            device_vendor(&json!({"Manufacturer": "Logitech (Suisse) SA"})),
+            device_vendor(&json!({"Manufacturer": "Logitech (Suisse) SA"}), NO_IDS),
             "Logitech (Suisse) SA"
         );
+    }
+
+    /// The entity is "vendor name **or numeric id**, whichever the platform
+    /// gave", and the instance path gives one where the column does not.
+    #[test]
+    fn a_blank_or_driver_provided_manufacturer_falls_back_to_the_numeric_id() {
+        assert_eq!(
+            device_vendor(&json!({"Manufacturer": ""}), ATEN_KEYBOARD),
+            "0x0557"
+        );
+        assert_eq!(
+            device_vendor(
+                &json!({"Manufacturer": "(Standard system devices)"}),
+                ATEN_KEYBOARD
+            ),
+            "0x0557"
+        );
+        // A real name still outranks the number.
+        assert_eq!(
+            device_vendor(&json!({"Manufacturer": "Microsoft"}), ATEN_KEYBOARD),
+            "Microsoft"
+        );
+    }
+
+    /// `product` was hardcoded empty on Windows while the id sat in the path.
+    #[test]
+    fn the_product_id_comes_from_the_instance_path() {
+        assert_eq!(
+            device_product(r"HID\VID_046D&PID_C548&MI_01&COL01\A&27230CC3&0&0000"),
+            "0xc548"
+        );
+        assert_eq!(device_product(ATEN_KEYBOARD), "0x220e");
+        assert_eq!(device_product(NO_IDS), "");
     }
 }
 

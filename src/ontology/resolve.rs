@@ -1135,10 +1135,14 @@ fn resolve_usb(out: &mut Vec<Reading>) {
                 format!("{base}.class"),
                 Some(Unit::Identifier),
                 concat!(
-                    "this device declares no class of its own: its device ",
-                    "descriptor says the class is defined per interface, and ",
-                    "no interface class or hub identifier was recorded for it. ",
-                    "Composite parents and virtual devices are the usual case"
+                    "no class was recorded for this node: no device-descriptor ",
+                    "class, no interface class, and no hub identifier, in ",
+                    "either its hardware or its compatible ids. The usual cases ",
+                    "are a composite parent, which declares class 00 to say the ",
+                    "class is defined per interface and leaves its interfaces to ",
+                    "answer, and a node enumerated on another bus -- a USBSTOR ",
+                    "disk or a USB4 router -- which has no USB device descriptor ",
+                    "to declare one from"
                 ),
             )),
             c => push_id(
@@ -2815,21 +2819,32 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
             &format!("{:?}", c.connection),
         );
         push_id(out, format!("{base}.driver"), &c.driver);
-        // A camera that lists no modes reports zeros here. Zero pixels is not a
-        // frame size; it is the absence of a mode list.
+        // Zero pixels is not a frame size, so it is reported absent -- but the
+        // reason used to say "this camera reports no supported mode list",
+        // which is a claim about the device, and no reader on any platform has
+        // ever asked it. The Linux path carries the comment "would need v4l2
+        // ioctl", Windows and macOS fill zero without comment, and the
+        // ontology attributed all three silences to the camera.
+        const NO_MODE_LIST: &str = concat!(
+            "no reader asks this camera for its mode list on any platform: the ",
+            "Linux path would need the VIDIOC_ENUM_FRAMESIZES ioctl and the ",
+            "Windows path the Media Foundation frame-size attribute, and ",
+            "neither is implemented. This is simon not looking, not a camera ",
+            "that answered with nothing"
+        );
         push_opt(
             out,
             format!("{base}.max_width"),
             (c.max_width > 0).then(|| serde_json::json!(c.max_width)),
             Some(Unit::Count),
-            "this camera reports no supported mode list",
+            NO_MODE_LIST,
         );
         push_opt(
             out,
             format!("{base}.max_height"),
             (c.max_height > 0).then(|| serde_json::json!(c.max_height)),
             Some(Unit::Count),
-            "this camera reports no supported mode list",
+            NO_MODE_LIST,
         );
         push_opt(
             out,
