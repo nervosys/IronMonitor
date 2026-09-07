@@ -623,13 +623,30 @@ impl StorageControllerMonitor {
                     _ => default_iface.clone(),
                 };
 
+                // `DeviceID` is a device instance path, not an address. For a
+                // controller on a PCI bus Windows records the address in the
+                // same registry value the PCI enumeration reads, so ask for it:
+                // all three NVMe controllers here resolve to `0000:02:00.0`,
+                // `0000:06:00.0` and `0000:0d:00.0`, each of which is a node in
+                // `pci.*` in the same snapshot. The ontology was refusing the
+                // instance path -- correctly -- under a reason claiming the
+                // address could not be joined against `pci.*`.
+                //
+                // The path is kept when there is no address to be had: a
+                // `ROOT\SPACEPORT\0000` or `SWD\XVDDENUM\...` controller is not
+                // on a PCI bus, the ontology declines to publish it, and the
+                // absence reason quotes the path, which says exactly that.
+                let device_id = item["DeviceID"].as_str().unwrap_or("").to_string();
+                let pci_address = crate::pci_devices::pci_address_of(&device_id)
+                    .unwrap_or_else(|| device_id.clone());
+
                 self.controllers.push(StorageControllerInfo {
                     name: name.clone(),
                     vendor,
                     model: name,
                     driver,
                     interface,
-                    pci_address: item["DeviceID"].as_str().unwrap_or("").to_string(),
+                    pci_address,
                     ports: 0,
                     nvme_info: None,
                 });

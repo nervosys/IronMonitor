@@ -85,6 +85,33 @@ pub struct KernelParamsMonitor {
     report: KernelParamsReport,
 }
 
+/// The TCP auto-tuning level every template agrees on, if they do.
+///
+/// `Get-NetTCPSetting` returns one row per template rather than one row for the
+/// machine, and the reader took `Select-Object -First 1` -- which is the
+/// `Automatic` template, the selector, carrying no level of its own and
+/// returning an empty line. The other six rows on the development host all say
+/// `Normal`, so the ontology reported "no kernel parameter was readable here"
+/// about a setting the machine states six times.
+///
+/// Rows that state nothing are skipped. Rows that disagree describe different
+/// destinations rather than one machine-wide level, and `None` is returned
+/// rather than one of them being chosen to stand for all -- the answer to
+/// "which template applies to this connection" is not this parameter.
+#[cfg(target_os = "windows")]
+fn agreed_tcp_level(cmdlet_output: &str) -> Option<String> {
+    let levels: Vec<&str> = cmdlet_output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let first = levels.first()?;
+    levels
+        .iter()
+        .all(|l| l.eq_ignore_ascii_case(first))
+        .then(|| (*first).to_string())
+}
+
 impl KernelParamsMonitor {
     /// Create a new kernel parameters monitor.
     pub fn new() -> Result<Self, SimonError> {
@@ -447,30 +474,42 @@ impl KernelParamsMonitor {
         // Read some Windows-equivalent tuning via registry/powershell
         let mut params = Vec::new();
 
-        // TCP auto-tuning
+        // TCP auto-tuning.
+        //
+        // `Get-NetTCPSetting` returns one row per template, not one row for the
+        // machine, and `Select-Object -First 1` took the `Automatic` template --
+        // the selector, which carries no level of its own and returns an empty
+        // string. Every other row on this host says `Normal`, so the reader
+        // reported "no kernel parameter was readable here" about a setting the
+        // machine states six times.
+        //
+        // The rows that carry a level are read, and their value is published
+        // only when they agree. Templates that disagree describe different
+        // destinations rather than one machine-wide level, and picking one of
+        // them would answer a question nobody asked; that case is left absent.
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
-                "Get-NetTCPSetting | Select-Object -First 1 -ExpandProperty AutoTuningLevelLocal",
+                "Get-NetTCPSetting | ForEach-Object { $_.AutoTuningLevelLocal }",
             ])
             .output();
 
         if let Ok(out) = output {
-            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
             // A missing powershell, a failed cmdlet and a machine that genuinely
-            // reports nothing all arrive here as an empty string. Pushing the
+            // reports nothing all arrive here as no lines at all. Pushing the
             // parameter anyway published a named setting whose value was "",
             // which reads as a setting that exists and is blank rather than one
             // that was never read.
-            if !val.is_empty() {
+            if let Some(val) = agreed_tcp_level(&String::from_utf8_lossy(&out.stdout)) {
                 params.push(KernelParam {
                     name: "net.tcp.autotuninglevel".into(),
                     value: val.clone(),
                     category: ParamCategory::Network,
                     is_recommended: val.to_lowercase() == "normal",
                     recommended: Some("Normal".into()),
-                    description: "TCP auto-tuning level".into(),
+                    description: "TCP auto-tuning level, agreed by every template that states one"
+                        .into(),
                 });
             }
         }
@@ -645,5 +684,29 @@ mod tests {
         let json = serde_json::to_string(&param).unwrap();
         assert!(json.contains("tcp_syncookies"));
         let _: KernelParam = serde_json::from_str(&json).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tcp_tests {
+    use super::agreed_tcp_level;
+
+    /// The cmdlet's output on the development host: the `Automatic` template
+    /// first, stating nothing, and six templates stating `Normal`.
+    #[test]
+    fn the_empty_first_template_does_not_hide_the_six_that_answer() {
+        let out = "\nNormal\nNormal\nNormal\nNormal\nNormal\nNormal\n";
+        assert_eq!(agreed_tcp_level(out).as_deref(), Some("Normal"));
+    }
+
+    #[test]
+    fn templates_that_disagree_state_nothing_machine_wide() {
+        assert_eq!(agreed_tcp_level("Normal\nDisabled\n"), None);
+    }
+
+    #[test]
+    fn no_output_is_no_reading() {
+        assert_eq!(agreed_tcp_level(""), None);
+        assert_eq!(agreed_tcp_level("\n  \n"), None);
     }
 }

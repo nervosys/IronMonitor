@@ -324,6 +324,25 @@ impl Default for Ontology {
     }
 }
 
+/// The ontology domain a writable setting belongs to.
+///
+/// Shared with the resolver, which publishes each setting's current value under
+/// the id this mapping builds. Two copies would let the entity and the reading
+/// drift into different ids, and the drift would show up as an entity that is
+/// declared, never produced, and reported "no resolver bound" -- which is
+/// exactly the state this function was written to get out of.
+pub(crate) fn setting_domain(subsystem: crate::profile::Subsystem) -> Domain {
+    match subsystem {
+        crate::profile::Subsystem::Gpu => Domain::Gpu,
+        crate::profile::Subsystem::Cpu => Domain::Cpu,
+        crate::profile::Subsystem::Memory => Domain::Memory,
+        // NVMe parameters are disk-level; display has no ontology domain of its
+        // own and its settings are board-level firmware state.
+        crate::profile::Subsystem::Nvme => Domain::Disk,
+        crate::profile::Subsystem::Display => Domain::Board,
+    }
+}
+
 impl Ontology {
     /// Construct the ontology. Pure — no hardware is touched, so this is safe to call
     /// on any machine and produces identical output everywhere, which is what makes
@@ -3055,15 +3074,7 @@ impl Ontology {
         // agent could only read, while `simon profile set` could write.
         for handler in crate::profile::apply::builtin_handlers() {
             let setting_id = handler.setting_id();
-            let domain = match handler.subsystem() {
-                crate::profile::Subsystem::Gpu => D::Gpu,
-                crate::profile::Subsystem::Cpu => D::Cpu,
-                crate::profile::Subsystem::Memory => D::Memory,
-                // NVMe parameters are disk-level; display has no ontology domain of
-                // its own and its settings are board-level firmware state.
-                crate::profile::Subsystem::Nvme => D::Disk,
-                crate::profile::Subsystem::Display => D::Board,
-            };
+            let domain = setting_domain(handler.subsystem());
             let mut entity = Entity::new(
                 &format!("{}.setting.{}", domain.as_str(), setting_id),
                 domain,

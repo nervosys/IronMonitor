@@ -140,6 +140,7 @@ pub fn snapshot() -> Vec<Reading> {
     resolve_storage_controllers(&mut out);
     resolve_power_profiles(&mut out);
     resolve_codecs(&mut out);
+    resolve_settings(&mut out);
 
     // Anything the ontology names but nothing above produced.
     let produced: std::collections::HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
@@ -2528,6 +2529,67 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
             Some(Unit::Count),
             "this controller reports no port count",
         );
+    }
+}
+
+/// The current value of every setting this build can write.
+///
+/// `EntityKind::Setting` entities are generated from the apply-handler registry,
+/// and nothing read them: `cpu.setting.active_scheme_guid` was published as "no
+/// resolver bound on this build — the entity is defined but simon does not yet
+/// read it here" **while `simon profile explain active_scheme_guid` printed the
+/// GUID from `profile::cpu` in the same binary**. Two surfaces over one machine,
+/// disagreeing about whether the machine could be read at all.
+///
+/// `read_current` is the same call `ApplyHandler` uses to record what a write
+/// overwrote, through the same retry that keeps a transient failure from being
+/// mistaken for an unreadable setting. A handler that does not implement it is
+/// one-way by construction — it can change the machine and cannot say what the
+/// machine currently says — and that is what the absence reports.
+fn resolve_settings(out: &mut Vec<Reading>) {
+    for handler in crate::profile::apply::builtin_handlers() {
+        let id = format!(
+            "{}.setting.{}",
+            super::setting_domain(handler.subsystem()).as_str(),
+            handler.setting_id()
+        );
+        match crate::profile::apply::read_current_with_retry(handler.as_ref()) {
+            // `Unreadable` carries its own reason and is not a value: rendering
+            // it would publish the string "<unreadable: ...>" as the setting.
+            Some(crate::profile::SettingValue::Unreadable(why)) => out.push(
+                Reading::unavailable(id, Some(Unit::Identifier), format!(
+                    "the handler for this setting reported it unreadable: {why}"
+                )),
+            ),
+            Some(value) => {
+                // Every setting entity is declared `Unit::Identifier`, because a
+                // setting's value space is its own -- a governor name, a GUID, a
+                // frequency. The rendering here is exact for each variant;
+                // `Display` is not used, because it decorates a `Uint` with its
+                // hex form, and "3 (0x3)" is a label rather than a value.
+                use crate::profile::SettingValue as V;
+                let text = match &value {
+                    V::Bool(b) => b.to_string(),
+                    V::Int(i) => i.to_string(),
+                    V::Uint(u) => u.to_string(),
+                    V::Float(x) => x.to_string(),
+                    V::Text(s) | V::Hex(s) => s.clone(),
+                    V::Unreadable(_) => unreachable!("handled above"),
+                };
+                push_id(out, id, &text);
+            }
+            None => out.push(Reading::unavailable(
+                id,
+                Some(Unit::Identifier),
+                concat!(
+                    "this setting has a write handler and no reader: the handler ",
+                    "implements no `read_current`, so simon can change it and ",
+                    "cannot say what it currently holds. That also makes the ",
+                    "write one-way -- `revert_setting` refuses rather than ",
+                    "writing a default it never read"
+                ),
+            )),
+        }
     }
 }
 

@@ -116,7 +116,7 @@ pub fn builtin_handlers() -> Vec<Box<dyn ApplyHandler>> {
 /// Observed once during testing, where `PowerGetActiveScheme` returned failure
 /// on a machine running several compiles, then read normally on the next
 /// attempt. Three tries, because the failure was transient, not persistent.
-fn read_current_with_retry(handler: &dyn ApplyHandler) -> Option<SettingValue> {
+pub(crate) fn read_current_with_retry(handler: &dyn ApplyHandler) -> Option<SettingValue> {
     for attempt in 0..3 {
         if let Some(v) = handler.read_current() {
             return Some(v);

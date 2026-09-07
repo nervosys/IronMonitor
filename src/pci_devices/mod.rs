@@ -132,6 +132,25 @@ pub struct PciDeviceMonitor {
     devices: Vec<PciDeviceInfo>,
 }
 
+/// The `domain:bus:device.function` address Windows records for a PnP device.
+///
+/// The same registry lookup the PCI enumeration uses, exposed for readers that
+/// hold a device instance path and want the address it corresponds to. The
+/// storage-controller reader is the first: `Win32_SCSIController.DeviceID` is
+/// an instance path like
+/// `PCI\VEN_144D&DEV_A810&SUBSYS_A801144D&REV_00\4&2EC11BF&0&000A`, which was
+/// published as this crate's `pci_address` field and then correctly refused by
+/// the ontology, under a reason saying it "cannot be joined against `pci.*`".
+/// It can: that device's `LocationInformation` says PCI bus 2, device 0,
+/// function 0, and `pci.0000_02_00_0` is in the same snapshot.
+///
+/// `None` for a device Windows records no location for -- a `ROOT\` or `SWD\`
+/// instance path is not on a PCI bus at all, and there is nothing to find.
+#[cfg(target_os = "windows")]
+pub(crate) fn pci_address_of(pnp_id: &str) -> Option<String> {
+    PciDeviceMonitor::registry_location_and_service(pnp_id).0
+}
+
 impl PciDeviceMonitor {
     pub fn new() -> Result<Self, SimonError> {
         let mut monitor = Self {
