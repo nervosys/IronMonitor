@@ -156,9 +156,78 @@ Since the tag, on `master` and green on all three platforms:
 | `64e5cf3` | The mixer binding the absence reasons said did not exist |
 | `ada6755` | Four absence reasons that blamed the platform for a column nobody selected |
 | `b329677` | Three absences the platform had answered, and six reasons that blamed a driver nobody asked |
+| `beaef09` | The settings the binary could already read, and three PCI addresses it had |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The reader was in the same binary
+
+Three more reasons checked, all three false, five absences closed. One of them
+is not a question about Windows at all.
+
+**`cpu.setting.active_scheme_guid` was published as "no resolver bound on this
+build — the entity is defined but simon does not yet read it here".** In the
+same binary:
+
+```
+$ simon profile explain active_scheme_guid
+  value:     381b4222-f694-41f0-9685-ff5bb260df2e
+```
+
+`EntityKind::Setting` entities are generated from the apply-handler registry —
+that was itself a fix, so the ontology could not promise a write no handler
+backs — and nothing ever read one *back*. Every setting fell into the sweep that
+reports an entity nothing produced. So the ontology said the machine could not be
+read while another surface over the same machine was reading it, using a
+`read_current()` that item 18 of this file describes and that
+`ApplyHandler` already calls on every write to record what it overwrote.
+
+`resolve_settings` now publishes it, through the same retry that keeps a
+transient failure from being mistaken for an unreadable setting. A handler with
+no `read_current` is one-way by construction, and the absence says so instead of
+blaming the build. **The lesson is narrower than "check the reasons": an absence
+reason is a claim about *simon*, too, and this crate has more than one surface
+over the same hardware.**
+
+**Three PCI addresses that were in the registry all along.**
+`Win32_SCSIController.DeviceID` is a device instance path, not an address, and
+the ontology's `looks_like_pci_address` guard correctly refused to publish it —
+under a reason claiming the value "cannot be joined against `pci.*`". It can:
+
+| Controller instance path | `LocationInformation` | Node in the same snapshot |
+| --- | --- | --- |
+| `PCI\VEN_144D&DEV_A810&…` | PCI bus 2, device 0, function 0 | `pci.0000_02_00_0` |
+| `PCI\VEN_144D&DEV_A808&…` | PCI bus 13, device 0, function 0 | `pci.0000_0d_00_0` |
+| `PCI\VEN_144D&DEV_A80C&…` | PCI bus 6, device 0, function 0 | `pci.0000_06_00_0` |
+
+The lookup was already written, in `pci_devices`, for the PCI enumeration's own
+use. **A guard that refuses a bad value is not the same as a reader that finds
+the good one**, and the reason attached to the refusal is where the difference
+gets recorded.
+
+The `ROOT\SPACEPORT\0000` and `SWD\XVDDENUM\…` controllers keep their instance
+path and their absence, because that reason is the informative answer: they are
+not on a PCI bus.
+
+**And a TCP setting hidden behind `Select-Object -First 1`.**
+`Get-NetTCPSetting` returns one row per *template*, not one row for the machine,
+and the first is `Automatic` — the selector, which carries no level of its own
+and returns an empty line. The other six all say `Normal`. So
+`system.kernel_param.<none>` reported "no kernel parameter was readable here"
+about a setting the machine states six times, and the whole kernel-parameter
+domain was empty on Windows because of a `-First 1`.
+
+`agreed_tcp_level` reads every row that states a level and publishes the value
+only when they agree. Templates that disagree describe different destinations
+rather than one machine-wide level, and picking one of them would answer a
+question nobody asked.
+
+**Two `-First 1` defects in two passes** — this one and the display connection in
+`b329677`, where the first of two WMI nodes for one panel said
+`D3DKMDT_VOT_UNINITIALIZED` and the second said HDMI. Worth a grep: taking the
+first row of a list the platform did not promise was ordered is a shape, not a
+coincidence.
 
 ### A guard that caught the handoff, and ten more reasons
 
@@ -5776,15 +5845,15 @@ feature stayed broken through eight published versions.
    truth to check against before trusting the result; Windows reports this
    nowhere else.
 
-3. **The absence-reason audit is half done.** Every `unavailable` reading
-   carries a prose reason, and those reasons are *claims about the platform* that
-   can be checked against it. On this machine there are now **442 absences across
-   50 distinct reasons**, out of 1797 readings — down from 465, as two passes
-   closed twenty-three readings between them.
+3. **The absence-reason audit is past half.** Every `unavailable` reading carries
+   a prose reason, and those reasons are *claims about the platform — and
+   sometimes about simon* — that can be checked. On this machine there are now
+   **437 absences across 45 distinct reasons**, out of 1799 readings, down from
+   465 across 53; three passes closed twenty-eight readings between them.
 
-   **Twenty-six of the 50 reasons in the current snapshot have been checked**, and
-   thirty-three across every snapshot taken. **Nineteen were false**, and each was
-   a reading the platform does provide — the first nine here, the rest in the
+   **Twenty-nine of the 45 reasons in the current snapshot have been checked**,
+   and thirty-six across every snapshot taken. **Twenty-two were false**, and each
+   was a reading something already had — the first nine here, the rest in the
    sections above:
 
    | Reason | Rows | What was actually true |
@@ -5839,20 +5908,38 @@ feature stayed broken through eight published versions.
    shapes are invisible from inside the module and obvious from one line of
    PowerShell.
 
-   **Twenty-four reasons have not been checked, and most of the rows behind them
-   are true by construction.** The 40 rate rows and 8 throughput rows are one
-   sample where two are needed; the process list, the RAPL absence and the boot
-   duration each name a boundary rather than a device. What is left that could
-   still be wrong is small and specific: the two ATA attribute groups (4 rows
-   each, and no SATA drive on this machine to settle them — see item 5), the six
-   controller addresses that are not PCI addresses, the four `disk.0` SMART
-   fields, and the board sensors, which are the same missing hwmon binding as the
-   CPU temperature in item 1.
+   **Sixteen reasons have not been checked, and most of the rows behind them are
+   true by construction.** The 40 rate rows and 8 throughput rows are one sample
+   where two are needed; the process list, the RAPL absence and the boot duration
+   each name a boundary rather than a device. What is left that could still be
+   wrong is small and specific: the two ATA attribute groups (4 rows each, and no
+   SATA drive on this machine to settle them — see item 5), the four `disk.0`
+   SMART fields, `disk.0.temperature`, `cpu.crypto.feature.3.throughput`, and the
+   board sensors, which are the same missing hwmon binding as the CPU temperature
+   in item 1.
 
    And one that is checked, true, and worth restating because 15 rows is a
-   tempting target: `gpu.codec.{n}.max_fps` is a **deliberate** refusal, not a gap. The entity declares a derivation and the
-   crate declines to invent the arithmetic; NVENC's `NV_ENC_CAPS_MB_PER_SEC_MAX`
-   is the real source for it, and nobody has bound it.
+   tempting target: `gpu.codec.{n}.max_fps` is a **deliberate** refusal, not a gap.
+   The entity declares a derivation and the crate declines to invent the
+   arithmetic; NVENC's `NV_ENC_CAPS_MB_PER_SEC_MAX` is the real source for it, and
+   nobody has bound it.
+
+   **Four shapes have accounted for every false reason found:**
+
+   - *A column the query did not select* — `ConfiguredVoltage`, `HardwareID`,
+     `Service`, `ExtendedPrinterStatus`, `LocationInformation`.
+   - *A field hardcoded empty or zero beneath a reason blaming the device* — the
+     input `product`, the camera modes, the EDAC overview, the AMD GPU's clocks
+     and power.
+   - *The first row of a list the platform never promised was ordered* — the
+     display's two WMI nodes, `Get-NetTCPSetting`'s `Automatic` template.
+   - *A reader that exists on another of this crate's own surfaces* — the active
+     power scheme, read by `simon profile explain` and reported unbound by the
+     ontology.
+
+   The first three are invisible from inside the module and visible in one line
+   of PowerShell. The fourth is invisible from PowerShell and visible only by
+   asking the binary the same question twice, through two surfaces.
 
 4. **`hardware_ai` was audited on one machine, and only one.** Every conclusion
    corrected in `a584dd0` and `7607401` was verifiably wrong on this desktop, and
