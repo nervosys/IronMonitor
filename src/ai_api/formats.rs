@@ -269,13 +269,42 @@ impl AgentManifest {
         })
     }
 
+    /// The manifest as linked data, **including the tools it is a manifest of**.
+    ///
+    /// This arm ignored `self.tools` entirely. Every sibling exporter maps the
+    /// catalogue into its format's tool schema; this one emitted six fixed keys
+    /// naming the application and stopped, so `simon ai manifest --format
+    /// jsonld` returned 295 bytes where `--format openai` returns 25 KB. Not an
+    /// error and not an empty list with a reason: a well-formed document that
+    /// describes the program and claims nothing about what it can do, offered
+    /// in the CLI's help on equal footing with the formats that answer.
+    ///
+    /// `potentialAction` is schema.org's property for the actions an entity
+    /// supports, which is what a tool is. The parameter schema has no
+    /// schema.org vocabulary, so it goes under the `simon:` prefix the context
+    /// already declares -- the same choice `ontology::jsonld` makes for
+    /// `simon:unavailableReason`.
     fn to_json_ld(&self) -> Value {
+        let actions: Vec<Value> = self
+            .tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "@type": "Action",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "simon:parameters": tool.parameters,
+                })
+            })
+            .collect();
         json!({
             "@context": { "@vocab": "https://schema.org/", "simon": "https://schema.siliconmonitor.dev/" },
             "@type": "SoftwareApplication",
             "name": self.name,
             "description": self.description,
-            "applicationCategory": "SystemUtility"
+            "applicationCategory": "SystemUtility",
+            "softwareVersion": self.version,
+            "potentialAction": actions
         })
     }
 
@@ -370,5 +399,50 @@ mod model_staleness_tests {
                 );
             }
         }
+    }
+    /// Every format is a manifest *of the tools*, so every format must carry
+    /// them.
+    ///
+    /// `to_json_ld` did not. It emitted six fixed keys about the application
+    /// and dropped the catalogue, and nothing noticed because the document was
+    /// valid, the CLI exited zero, and the only test over these formats checked
+    /// that they had stopped shipping a frozen model list. A consumer asking
+    /// for linked data got a well-formed answer with no tools in it.
+    ///
+    /// This counts occurrences of a tool's name in the serialised output rather
+    /// than knowing each format's shape, deliberately: the assertion should
+    /// hold for a format added next year by someone who never reads this file.
+    #[test]
+    fn every_format_carries_every_tool() {
+        let manifest = AgentManifest::new();
+        assert!(
+            !manifest.tools.is_empty(),
+            "the manifest has no tools, so the assertion below would pass \
+             vacuously for every format"
+        );
+        let names: Vec<String> = manifest.tools.iter().map(|t| t.name.clone()).collect();
+
+        let mut missing: Vec<String> = Vec::new();
+        for format in ALL_FORMATS {
+            let text = manifest.export(*format).to_string();
+            let absent: Vec<&String> = names
+                .iter()
+                .filter(|n| !text.contains(n.as_str()))
+                .collect();
+            if !absent.is_empty() {
+                missing.push(format!(
+                    "{format:?} omits {} of {} tools, starting with {}",
+                    absent.len(),
+                    names.len(),
+                    absent[0]
+                ));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "a manifest format dropped the tools it is a manifest of:\n  {}",
+            missing.join("\n  ")
+        );
     }
 }
