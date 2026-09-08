@@ -173,6 +173,7 @@ Since the tag, on `master` and green on all three platforms:
 | `7abbd92` | The agent tool surface's numbers, against the ontology's |
 | `282fbaf` | The JSON-LD manifest had no tools in it |
 | `a42350d` | Two macOS arms fabricating beside the readers that refused to |
+| `742427e` | One parser for `vm.swapusage`, not two |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -216,6 +217,23 @@ found in a hand-rolled reader, the question is not "where else is this bug" but
 
 Both arms now call the readers the macOS CI job exercises, which is better
 verification than this machine can offer for either.
+
+**Then the rule was run as a grep, which is the point of writing it down.**
+`Command::new("sysctl")` and friends outside `src/platform/` and `src/gui/`:
+twenty-one files, two of them in `ai_api/tools.rs`. One was the frequency arm
+above. The other, `tool_get_swap_status`, turned out to be **correct** — every
+figure an `Option`, after an earlier fix whose comment it still carried — and it
+was still worth changing, because it held a second parser for `vm.swapusage`
+beside `platform::macos::parse_swapusage`.
+
+**A right duplicate is a wrong one that has not diverged yet.** That is exactly
+how the two Prometheus renderers came to disagree by 1024: both were correct
+when written, and only one of them was corrected. `742427e` deletes the copy.
+
+The remaining nineteen files are unexamined. `cpu_microarch` (7 sites),
+`silicon/apple` (4), `memory_management` (4) and `hardware_ai` (4) are the
+largest, and the question to ask of each is not whether its parsing is right
+today but whether `platform::macos` already owns it.
 
 ### Two renderers, one machine, and a factor of 1024
 
