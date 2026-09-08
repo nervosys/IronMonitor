@@ -1704,41 +1704,32 @@ impl AiDataApi {
             }))
         }
 
+        // macOS, through the same reader the other two arms use.
+        //
+        // This arm was already honest -- every figure an `Option`, `None` where
+        // the sysctl did not answer, after the fix whose comment it carried:
+        // "a failed `sysctl` used to land in `unwrap_or_default()`, giving an
+        // empty string that both parses read as `0`". What it still had was a
+        // **second parser for `vm.swapusage`**, beside `platform::macos`'s
+        // `parse_swapusage`, which `read_memory_stats` already calls.
+        //
+        // Two parsers for one sysctl is how the two Prometheus renderers came
+        // to disagree by a factor of 1024 (`367429a`): both were correct when
+        // written, and only one of them was corrected. The rule from `a42350d`
+        // applies to a *right* duplicate as much as a wrong one -- the question
+        // is where else the reader is hand-rolled, not where else it is broken.
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
-            use std::process::Command;
-            // A failed `sysctl` used to land in `unwrap_or_default()`, giving an
-            // empty string that both parses read as `0` -- so the tool answered
-            // "swap total 0, used 0", which an agent reads as a machine with no
-            // swap configured rather than as a command that did not run. Same
-            // defect as the Windows pagefile reader in `15a60ab`, mirrored.
-            let raw = Command::new("sysctl")
-                .args(["-n", "vm.swapusage"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok());
-
-            let parse_swap = |text: &str, key: &str| -> Option<u64> {
-                text.split_whitespace()
-                    .collect::<Vec<_>>()
-                    .windows(3)
-                    .find(|w| w[0] == key && w[1] == "=")
-                    .and_then(|w| w[2].trim_end_matches('M').parse::<f64>().ok())
-                    .map(|v| v as u64)
-            };
-            let total = raw.as_deref().and_then(|t| parse_swap(t, "total"));
-            let used = raw.as_deref().and_then(|t| parse_swap(t, "used"));
+            let stats = crate::platform::macos::read_memory_stats()
+                .map_err(|e| SimonError::MemoryError(e.to_string()))?;
 
             Ok(json!({
-                "total_kb": total.map(|v| v * 1024),
-                "used_kb": used.map(|v| v * 1024),
-                // Never read on this platform. `0` claimed a measurement of
-                // nothing cached, which is not the same as not having looked.
-                "cached_kb": serde_json::Value::Null,
-                "total_mb": total,
-                "used_mb": used,
-                "usage_percent": match (total, used) {
+                "total_kb": stats.swap.total,
+                "used_kb": stats.swap.used,
+                "cached_kb": stats.swap.cached,
+                "total_mb": stats.swap.total.map(|v| v / 1024),
+                "used_mb": stats.swap.used.map(|v| v / 1024),
+                "usage_percent": match (stats.swap.total, stats.swap.used) {
                     (Some(t), Some(u)) if t > 0 => json!(u as f64 / t as f64 * 100.0),
                     // A machine with a zero-sized swap file is not 0% used, it
                     // has no ratio to report.
