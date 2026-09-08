@@ -1984,12 +1984,46 @@ fn resolve_disk_health(out: &mut Vec<Reading>, base: &str, disk: &dyn crate::dis
 
     match disk.smart_info() {
         Ok(s) => {
+            // Each absence below is explained by *which source answered*, which
+            // `SmartInfo` now carries. Before it, every one of these was a claim
+            // about the drive -- "the drive did not report a power cycle count",
+            // "this device exposes no thermal sensor" -- made without knowing
+            // whether the drive had been asked. On this machine's USB drive none
+            // of them had: its counters come from
+            // `Get-StorageReliabilityCounter`, which fails unelevated for every
+            // disk here, so four absences blamed a device that was never
+            // consulted.
+            use crate::disk::SmartSource;
+            let from_the_drive = matches!(
+                s.source,
+                SmartSource::NvmeLogPage | SmartSource::AtaAttributes
+            );
+            let counter_absent = |what: &str| -> String {
+                if from_the_drive {
+                    format!("the drive did not report a {what}")
+                } else {
+                    format!(
+                        "no {what} was read: this drive's counters come from the \
+                         operating system's storage stack rather than from the \
+                         drive -- `Get-StorageReliabilityCounter` on Windows, which \
+                         needs Administrator -- and it returned nothing here. The \
+                         drive was not asked"
+                    )
+                }
+            };
+
             push_opt(
                 out,
                 format!("{base}.temperature"),
                 s.temperature.map(|t| serde_json::json!(t)),
                 Some(Unit::Celsius),
-                "this device exposes no thermal sensor",
+                if from_the_drive {
+                    "this device exposes no thermal sensor"
+                } else {
+                    "no temperature was read: it would come from the storage \
+                     stack's reliability counters, which returned nothing here. \
+                     Whether the device has a sensor is not established either way"
+                },
             );
             push_opt(
                 out,
@@ -2008,38 +2042,61 @@ fn resolve_disk_health(out: &mut Vec<Reading>, base: &str, disk: &dyn crate::dis
                 format!("{base}.smart.power_on_hours"),
                 s.power_on_hours.map(|v| serde_json::json!(v)),
                 Some(Unit::Hours),
-                "the drive did not report a power-on hour count",
+                &counter_absent("power-on hour count"),
             );
             push_opt(
                 out,
                 format!("{base}.smart.power_cycles"),
                 s.power_cycle_count.map(|v| serde_json::json!(v)),
                 Some(Unit::Count),
-                "the drive did not report a power cycle count",
+                &counter_absent("power cycle count"),
             );
             // NVMe has no sector reallocation concept. Reporting 0 here would
             // assert a clean count that was never measured, which is exactly the
             // substitution this module exists to refuse.
+            //
+            // The reason said "not an NVMe concept; on ATA, the drive did not
+            // report attribute 5" for every drive -- a disjunction that names two
+            // situations and says which applies to neither. The source says.
+            let sector_absent = |attribute: u8, what: &str| -> String {
+                match s.source {
+                    SmartSource::NvmeLogPage => format!(
+                        "not an NVMe concept: this drive answered from its NVMe \
+                         SMART/Health log page, which has no {what} -- attribute \
+                         {attribute} is an ATA notion and does not exist here"
+                    ),
+                    SmartSource::AtaAttributes => format!(
+                        "the drive returned an ATA attribute table of {} attributes \
+                         and none of them is {attribute} ({what})",
+                        s.attributes.len()
+                    ),
+                    SmartSource::StorageStack => format!(
+                        "no {what} was read: no ATA attribute table was obtained \
+                         from this drive at all, so attribute {attribute} was \
+                         neither present nor absent -- it was never looked for"
+                    ),
+                }
+            };
             push_opt(
                 out,
                 format!("{base}.smart.reallocated_sectors"),
                 s.reallocated_sectors.map(|v| serde_json::json!(v)),
                 Some(Unit::Count),
-                "not an NVMe concept; on ATA, the drive did not report attribute 5",
+                &sector_absent(5, "reallocated sector count"),
             );
             push_opt(
                 out,
                 format!("{base}.smart.pending_sectors"),
                 s.pending_sectors.map(|v| serde_json::json!(v)),
                 Some(Unit::Count),
-                "not an NVMe concept; on ATA, the drive did not report attribute 197",
+                &sector_absent(197, "pending sector count"),
             );
             push_opt(
                 out,
                 format!("{base}.smart.uncorrectable_sectors"),
                 s.uncorrectable_sectors.map(|v| serde_json::json!(v)),
                 Some(Unit::Count),
-                "the drive did not report an uncorrectable count",
+                &counter_absent("uncorrectable sector count"),
             );
         }
         Err(e) => {

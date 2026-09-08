@@ -263,6 +263,9 @@ impl DiskDevice for LinuxDisk {
             reallocated_sectors: disk.reallocated_sectors,
             pending_sectors: disk.pending_sectors,
             uncorrectable_sectors: disk.uncorrectable_errors,
+            // `smartctl`/`nvme` output, parsed by the SMART collector -- the
+            // drive answered, but this reader did not ask it directly.
+            source: SmartSource::StorageStack,
         })
     }
 

@@ -44,7 +44,7 @@ pub mod macos;
 // Re-export commonly used types
 pub use traits::{
     DiskDevice, DiskHealth, DiskInfo, DiskIoStats, DiskType, Error, FilesystemInfo, NvmeInfo,
-    SmartAttribute, SmartInfo,
+    SmartAttribute, SmartInfo, SmartSource,
 };
 
 /// Enumerate all disk devices in the system

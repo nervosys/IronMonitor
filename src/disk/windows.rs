@@ -484,6 +484,7 @@ impl DiskDevice for WindowsDisk {
                     reallocated_sectors: None,
                     pending_sectors: None,
                     uncorrectable_sectors: Some(health.media_errors.min(u64::MAX as u128) as u64),
+                    source: SmartSource::NvmeLogPage,
                 });
             }
         }
@@ -522,6 +523,7 @@ impl DiskDevice for WindowsDisk {
                     reallocated_sectors: smart.reallocated_sectors(),
                     pending_sectors: smart.pending_sectors(),
                     uncorrectable_sectors: smart.uncorrectable_sectors(),
+                    source: SmartSource::AtaAttributes,
                 });
             }
         }
@@ -565,6 +567,7 @@ impl DiskDevice for WindowsDisk {
             reallocated_sectors: disk.reallocated_sectors,
             pending_sectors: disk.pending_sectors,
             uncorrectable_sectors: disk.uncorrectable_errors,
+            source: SmartSource::StorageStack,
         })
     }
 

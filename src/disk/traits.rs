@@ -142,6 +142,34 @@ impl DiskIoStats {
         self.read_bytes + self.write_bytes
     }
 }
+/// Where a [`SmartInfo`] came from.
+///
+/// Every field on `SmartInfo` is an `Option`, and a `None` used to be reported
+/// as "the drive did not report a power cycle count" -- a claim about the drive,
+/// made without knowing whether the drive had been asked. On this development
+/// machine it was wrong for all four counters of the one USB drive:
+/// unelevated, `Get-StorageReliabilityCounter` fails for **every** disk here
+/// ("Access to a CIM resource was not available to the client"), so nothing had
+/// asked the drive anything.
+///
+/// The three sources answer different questions and fail for different reasons,
+/// and the resolver needs to know which one produced the absence in front of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SmartSource {
+    /// The drive's own NVMe SMART/Health log page, read from the controller
+    /// without elevation. Carries no sector counters: reallocated and pending
+    /// sectors are ATA attributes and have no NVMe equivalent.
+    NvmeLogPage,
+    /// The drive's own ATA attribute table, via `SMART READ DATA` through the
+    /// storage driver. A counter missing here is a counter this drive's table
+    /// does not contain, which *is* a fact about the drive.
+    AtaAttributes,
+    /// The operating system's storage stack rather than the drive -- Windows'
+    /// `Get-StorageReliabilityCounter`, which needs Administrator, or the
+    /// `smartctl`/`nvme` output the Linux reader parses. An absence here is
+    /// usually the query having been refused, not the drive having declined.
+    StorageStack,
+}
 
 /// SMART Information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +205,10 @@ pub struct SmartInfo {
     pub pending_sectors: Option<u64>,
     /// Uncorrectable sector count
     pub uncorrectable_sectors: Option<u64>,
+    /// Which of the three sources answered. See [`SmartSource`]: it is what
+    /// makes an absent counter explainable, and every absence reason for the
+    /// fields above is written from it.
+    pub source: SmartSource,
 }
 
 /// Individual SMART attribute

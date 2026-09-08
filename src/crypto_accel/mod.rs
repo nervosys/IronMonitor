@@ -160,7 +160,7 @@ impl CryptoAccelMonitor {
     fn detect() -> Result<CryptoAccelReport, SimonError> {
         let cpu_flags = Self::read_cpu_flags()?;
         let features = Self::detect_features(&cpu_flags);
-        let rng_sources = Self::detect_rng();
+        let rng_sources = Self::detect_rng(&features);
         let tpm_crypto = Self::detect_tpm();
 
         let accelerated_categories: Vec<CryptoCategory> = features
@@ -339,10 +339,43 @@ impl CryptoAccelMonitor {
         features
     }
 
-    fn detect_rng() -> Vec<HardwareRng> {
-        // Populated only on Linux; `mut` is unused on other platforms.
+    /// The hardware random sources this machine has, from the two places that
+    /// know: the instruction set, and the Linux device tree.
+    ///
+    /// The instruction half is new, and it closes a contradiction the ontology
+    /// was publishing about itself. This function consulted `/dev/hwrng` and
+    /// `/sys/class/misc/hw_random` and nothing else, so on Windows and macOS it
+    /// returned an empty list -- and `cpu.crypto.rng.<none>` said "the hardware
+    /// random source probe enumerated nothing, but the feature list above
+    /// reports a random number instruction". Two rows of the same snapshot, one
+    /// naming RDRAND and RDSEED and the other reporting no random source, with
+    /// the reason left to apologise for the difference.
+    ///
+    /// `RngSource::CpuInstruction` was declared for exactly this and produced by
+    /// nothing. The features were already detected from CPUID by the caller;
+    /// they are passed in rather than re-detected, so the two answers cannot
+    /// disagree.
+    ///
+    /// `quality` stays `None`: RDRAND declares no entropy-bits-per-sample figure
+    /// anywhere readable, and the entity's absence reason says that assuming one
+    /// would be worse than saying nothing.
+    fn detect_rng(features: &[CryptoFeature]) -> Vec<HardwareRng> {
+        // `mut` for the Linux block below, which is the only one that pushes
+        // after this; on every other platform the instruction sources are all
+        // there is.
         #[allow(unused_mut)]
-        let mut sources = Vec::new();
+        let mut sources: Vec<HardwareRng> = features
+            .iter()
+            .filter(|f| {
+                f.hardware_accelerated && f.category == CryptoCategory::RandomNumberGen
+            })
+            .map(|f| HardwareRng {
+                name: f.name.clone(),
+                available: true,
+                quality: None,
+                source_type: RngSource::CpuInstruction,
+            })
+            .collect();
 
         #[cfg(target_os = "linux")]
         {
