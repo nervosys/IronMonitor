@@ -169,9 +169,54 @@ Since the tag, on `master` and green on all three platforms:
 | `e629af8` | The crash with no panic: COM interfaces released after their apartment |
 | `448a289` | A two-GPU machine graded on one GPU's power budget |
 | `9df8e67` | The CPU's own power limit, where the platform states one |
+| `367429a` | 93.6 GiB of RAM published as 98 MB, and the test that found it |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### Two renderers, one machine, and a factor of 1024
+
+The open-work list had run out of things this machine could settle, so this is a
+new check rather than an old item: **`PrometheusExporter` and
+`ontology::resolve::snapshot()` are two independent collection paths over the
+same hardware, and nothing had ever compared their values.**
+`prometheus_exposition.rs` checks names, headers, label syntax and dashboard
+coverage. All of it passes while a renderer reports kilobytes under a name
+ending in `_bytes`.
+
+It did:
+
+```
+simon_memory_total_bytes = 98191140      memory.total = 100547727360
+```
+
+Exactly 1024x. `RamInfo` is in KB — its own doc comment says so on every field —
+and the exporter published `mem.ram.total` unscaled, so a 93.6 GiB machine
+reported 98 MB of RAM. **The swap block three lines below has always scaled**,
+with the comment "`SwapInfo` is in KB; the metric name says bytes" sitting right
+there. Somebody saw it for swap and not for the three fields above it.
+
+The served endpoint in `http_server.rs` renders from `pipeline::Snapshot`, a
+different type in the correct unit, and was right all along — so the two
+renderers had disagreed by three orders of magnitude for as long as both have
+existed, and **each looked correct when read on its own**. That is what a
+cross-surface check buys: neither surface is wrong in a way it can detect.
+
+**`tests/prometheus_agreement.rs` compares only what cannot move.** Installed
+memory, swap size, an adapter's total VRAM. Everything else differs between two
+reads for reasons that are not defects — this machine reported 80.8% CPU through
+the endpoint and 22.4% through the ontology in the same minute, and both were
+right. A test that compared everything would fail constantly and be deleted; one
+that compares the stable half fails only when something is wrong. It also
+asserts that it compared *something*, because a surface that stops publishing
+totals would otherwise make it pass by having nothing left to check.
+
+**Where to point this next.** The same technique applies to every pair of
+surfaces this crate has over one machine, and it has now found two defects in
+two attempts: the active power scheme (`simon profile explain` versus a "no
+resolver bound" absence) and this. The remaining pairs are the agent tool
+surface, `simon cli`'s human output, and the AI export formats — none of which
+has ever been checked against the ontology it claims to describe.
 
 ### The other half of the envelope
 
