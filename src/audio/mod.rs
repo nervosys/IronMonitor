@@ -103,7 +103,22 @@ fn windows_endpoint_mixer() -> std::collections::HashMap<String, EndpointMixer> 
     let mut out = std::collections::HashMap::new();
 
     // SAFETY: every call below is on interfaces obtained from the call above
-    // it, and `CoUninitialize` balances the initialisation on every path out.
+    // it; every interface is created and dropped inside the `'com` block, and
+    // `CoUninitialize` runs after that block on every path out.
+    //
+    // **The block is the fix for a crash, not a tidy-up.** `enumerator` is a
+    // reference-counted COM interface whose `Drop` calls `Release`, and Rust
+    // drops it at the end of the scope it was declared in -- which was the same
+    // scope as `CoUninitialize()`, and *after* it. Releasing an interface on a
+    // thread whose COM apartment has already been torn down is undefined, and
+    // on Windows it presents as an access violation: the process dies with no
+    // panic and the test harness reports only "test exited abnormally".
+    //
+    // Which is what every Windows CI run has done since 2026-09-03, the day
+    // this reader landed. It survives on the development machine because
+    // something else -- the `wmi` crate, usually -- has already initialised COM
+    // on that thread, so `initialised` is false and `CoUninitialize` never runs.
+    // A first-in wins, and on a fresh runner thread this reader is first in.
     unsafe {
         // The audio service is apartment-threaded. A failure here usually means
         // COM is already initialised on this thread with a different model,
@@ -111,68 +126,69 @@ fn windows_endpoint_mixer() -> std::collections::HashMap<String, EndpointMixer> 
         // deliberately not propagated, only the uninitialise is skipped.
         let initialised = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
 
-        let enumerator: Result<IMMDeviceEnumerator, _> =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL);
-        let Ok(enumerator) = enumerator else {
-            if initialised {
-                CoUninitialize();
-            }
-            return out;
-        };
+        'com: {
+            let enumerator: Result<IMMDeviceEnumerator, _> =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL);
+            let Ok(enumerator) = enumerator else {
+                break 'com;
+            };
 
-        // Which endpoint each direction routes to. A machine with no output at
-        // all has no default, which is why this is an `Option` rather than a
-        // sentinel.
-        let mut defaults: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for flow in [eRender, eCapture] {
-            if let Ok(device) = enumerator.GetDefaultAudioEndpoint(flow, eConsole) {
-                if let Ok(id) = device.GetId() {
-                    if let Some(guid) = endpoint_guid(&id.to_string().unwrap_or_default()) {
-                        defaults.insert(guid);
+            // Which endpoint each direction routes to. A machine with no output at
+            // all has no default, which is why this is an `Option` rather than a
+            // sentinel.
+            let mut defaults: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for flow in [eRender, eCapture] {
+                if let Ok(device) = enumerator.GetDefaultAudioEndpoint(flow, eConsole) {
+                    if let Ok(id) = device.GetId() {
+                        if let Some(guid) = endpoint_guid(&id.to_string().unwrap_or_default()) {
+                            defaults.insert(guid);
+                        }
                     }
                 }
             }
-        }
 
-        for flow in [eRender, eCapture] {
-            let Ok(collection) = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) else {
-                continue;
-            };
-            let count = collection.GetCount().unwrap_or(0);
-            for i in 0..count {
-                let Ok(device) = collection.Item(i) else {
+            for flow in [eRender, eCapture] {
+                let Ok(collection) = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)
+                else {
                     continue;
                 };
-                let Ok(id) = device.GetId() else { continue };
-                let Some(guid) = endpoint_guid(&id.to_string().unwrap_or_default()) else {
-                    continue;
-                };
+                let count = collection.GetCount().unwrap_or(0);
+                for i in 0..count {
+                    let Ok(device) = collection.Item(i) else {
+                        continue;
+                    };
+                    let Ok(id) = device.GetId() else { continue };
+                    let Some(guid) = endpoint_guid(&id.to_string().unwrap_or_default()) else {
+                        continue;
+                    };
 
-                let volume: Result<IAudioEndpointVolume, _> = device.Activate(CLSCTX_ALL, None);
-                let (level, muted) = match volume {
-                    Ok(v) => (
-                        // The scalar is 0.0-1.0; the entity is a percentage.
-                        v.GetMasterVolumeLevelScalar()
-                            .ok()
-                            .map(|s| (s * 100.0).round().clamp(0.0, 100.0) as u8),
-                        v.GetMute().ok().map(|m| m.as_bool()),
-                    ),
-                    // An endpoint whose volume interface will not activate
-                    // reports no level, rather than a default one.
-                    Err(_) => (None, None),
-                };
+                    let volume: Result<IAudioEndpointVolume, _> = device.Activate(CLSCTX_ALL, None);
+                    let (level, muted) = match volume {
+                        Ok(v) => (
+                            // The scalar is 0.0-1.0; the entity is a percentage.
+                            v.GetMasterVolumeLevelScalar()
+                                .ok()
+                                .map(|s| (s * 100.0).round().clamp(0.0, 100.0) as u8),
+                            v.GetMute().ok().map(|m| m.as_bool()),
+                        ),
+                        // An endpoint whose volume interface will not activate
+                        // reports no level, rather than a default one.
+                        Err(_) => (None, None),
+                    };
 
-                out.insert(
-                    guid.clone(),
-                    EndpointMixer {
-                        volume: level,
-                        muted,
-                        is_default: defaults.contains(&guid),
-                        is_render: flow == eRender,
-                    },
-                );
+                    out.insert(
+                        guid.clone(),
+                        EndpointMixer {
+                            volume: level,
+                            muted,
+                            is_default: defaults.contains(&guid),
+                            is_render: flow == eRender,
+                        },
+                    );
+                }
             }
         }
+        // Every interface above is out of scope and released by here.
 
         if initialised {
             CoUninitialize();
