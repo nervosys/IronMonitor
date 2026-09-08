@@ -255,7 +255,30 @@ thing they have in common is that each surface looked correct when read on its
 own — which is the argument for checking surfaces *against each other* rather
 than more carefully one at a time.
 
-Still unchecked: `simon cli`'s human output.
+**The fifth and last pair is `simon cli`, and its human output is right.**
+`simon cli memory` prints `62.68 / 93.64 GB`, which is the ontology's
+100,547,727,360 bytes to the digit. The renderer converts correctly; nothing to
+fix.
+
+**Its JSON mode is a different matter, and it is queued rather than changed.**
+`simon cli memory --format json` serialises the library struct as it stands, so
+it emits `"total": 98191140` — kilobytes, under a key that does not say so, on a
+machine whose other three surfaces all report bytes:
+
+| Surface | `memory.total` |
+| --- | --- |
+| `simon snapshot` | 100547727360 (entity declares bytes) |
+| `/api/v1/metrics/prometheus` | 100547727360 (name says bytes) |
+| `simon cli memory` (human) | 93.64 GB |
+| `simon cli memory --format json` | 98191140 (kilobytes, unmarked) |
+
+Nothing here is *wrong* — `RamInfo` documents KB on every field — but the number
+cannot be interpreted from the output alone, and this is the third convention
+across one set of surfaces. **That is the same fault line the exporter fell over
+in `367429a`**, which published the same field unscaled under a `_bytes` name.
+Changing the JSON's units or adding a unit marker is a change to a public output
+format, so it is item 7 of the 7.0.0 list rather than a fix made at the end of a
+session.
 
 ### The other half of the envelope
 
@@ -6871,6 +6894,31 @@ it uncovers are, and there are always more than expected. Item 1 turned up five.
    caller sets), and a decision about what happens when the window does not reach
    back as far as the question — which is an absence with a reason, not an
    interpolation.
+
+7. **`simon cli --format json` emits kilobytes under keys that do not say so.**
+   `RamInfo` and `SwapInfo` are in KB — documented on every field — and the CLI
+   serialises them verbatim, so `"total": 98191140` is the same machine whose
+   `simon snapshot` reports `memory.total = 100547727360` and whose Prometheus
+   endpoint reports bytes. The human renderer beside it converts correctly and
+   prints `93.64 GB`.
+
+   **It is not a wrong number; it is an uninterpretable one**, and it sits on the
+   fault line that produced `367429a`, where the exporter published this exact
+   field unscaled under a `_bytes` name and reported a 93.6 GiB machine as having
+   98 MB of RAM.
+
+   Two ways to close it, and they differ in what they break:
+
+   - **Scale at the CLI boundary**, so `--format json` reports bytes like every
+     other machine-readable surface. Changes values a consumer may be parsing
+     today.
+   - **Name the unit in the output** — `total_kb`, or a `units` field. Additive,
+     but it spreads a per-struct convention into every serialisation of these
+     types, including the agent surface.
+
+   The first is the one that ends the inconsistency; the second only documents
+   it. Either is a breaking change to a published format, which is why this is
+   here and not in a commit.
 
 **Both were found by the fallback grep, and it is nowhere near exhausted:** 780
 `unwrap_or(0|false|…)` / `unwrap_or_default()` sites outside tests and the GUI.
