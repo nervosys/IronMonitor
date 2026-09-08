@@ -1416,41 +1416,46 @@ impl AiDataApi {
             Ok(json!(freqs))
         }
 
+        // macOS, through the same reader the other two arms use.
+        //
+        // This shelled out to `hw.cpufrequency`, an Intel-era sysctl that does
+        // not exist on Apple Silicon at all, and fell back to `0` -- so every
+        // core of every M-series Mac was published to an agent as
+        // `current_mhz: 0, min_mhz: 0, max_mhz: 0`. `min` fell back to
+        // `freq_hz / 2` and `max` to `freq_hz`, so the zero propagated into all
+        // three.
+        //
+        // `platform::macos::read_cpu_stats` sets `frequency: None` and says why
+        // in a comment: "No unelevated source of live per-core frequency on
+        // macOS. `None` says that; a nominal figure would repeat the mistake
+        // Windows makes with `CurrentMhz`." The tool surface was making exactly
+        // that mistake, one function away from the reader that had decided not
+        // to. **A reader is not adopted until its callers use it**, and this is
+        // the fifth consumer in this crate found fabricating beside one.
+        //
+        // The `filter_map` is the same as the Linux and Windows arms above, so
+        // a platform reporting no per-core frequency yields an empty array --
+        // the honest answer, and one an agent can act on.
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
-            use std::process::Command;
-            let freq_hz = Command::new("sysctl")
-                .args(["-n", "hw.cpufrequency"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(0);
-            let freq_min = Command::new("sysctl")
-                .args(["-n", "hw.cpufrequency_min"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(freq_hz / 2);
-            let freq_max = Command::new("sysctl")
-                .args(["-n", "hw.cpufrequency_max"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(freq_hz);
-            let ncpu = num_cpus::get();
-            let freqs: Vec<_> = (0..ncpu)
-                .map(|i| {
-                    json!({
-                        "core_id": i,
-                        "current_mhz": freq_hz / 1_000_000,
-                        "min_mhz": freq_min / 1_000_000,
-                        "max_mhz": freq_max / 1_000_000,
+            let stats = crate::platform::macos::read_cpu_stats()
+                .map_err(|e| SimonError::CpuError(e.to_string()))?;
+
+            let freqs: Vec<_> = stats
+                .cores
+                .iter()
+                .filter_map(|c| {
+                    c.frequency.as_ref().map(|f| {
+                        json!({
+                            "core_id": c.id,
+                            "current_mhz": f.current,
+                            "min_mhz": f.min,
+                            "max_mhz": f.max,
+                        })
                     })
                 })
                 .collect();
+
             Ok(json!(freqs))
         }
     }
@@ -1614,47 +1619,41 @@ impl AiDataApi {
             }))
         }
 
+        // macOS, through the same reader the other two arms use.
+        //
+        // This arm hand-rolled `sysctl hw.memsize` and `vm_stat` and carried
+        // every defect the handoff records fixing in `tool_get_memory_status`,
+        // which is the function immediately above it: a hardcoded
+        // `page_size = 16384` that reports memory four times too large on an
+        // Intel Mac, a failed `hw.memsize` giving a total of 0, and a failed
+        // `vm_stat` falling to zero free pages -- which publishes 100% memory
+        // used, on a machine nobody measured.
+        //
+        // It also emitted `buffers_kb: 0` and `shared_kb: 0` where the Linux
+        // and Windows arms publish `Option`s, so two absences arrived as
+        // measurements of zero.
+        //
+        // The fix there was to adopt `platform::macos::read_memory_stats`. The
+        // fix here is the same, and the fact that it had to be made twice is
+        // the point: **the defect was fixed per function rather than per
+        // cause**, and the function next door kept it.
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
-            use std::process::Command;
-            let memsize = Command::new("sysctl")
-                .args(["-n", "hw.memsize"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(0);
-            let total_kb = memsize / 1024;
-            let vm_stat = Command::new("vm_stat")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
-            let page_size: u64 = 16384;
-            let mut free_pages: u64 = 0;
-            let mut purgeable_pages: u64 = 0;
-            for line in vm_stat.lines() {
-                let val = || -> Option<u64> {
-                    line.split(':')
-                        .nth(1)?
-                        .trim()
-                        .trim_end_matches('.')
-                        .parse()
-                        .ok()
-                };
-                if line.starts_with("Pages free") {
-                    free_pages = val().unwrap_or(0);
-                } else if line.starts_with("Pages purgeable") {
-                    purgeable_pages = val().unwrap_or(0);
-                }
-            }
-            let free_kb = free_pages * page_size / 1024;
-            let used_kb = total_kb.saturating_sub(free_kb);
+            let stats = crate::platform::macos::read_memory_stats()
+                .map_err(|e| SimonError::MemoryError(e.to_string()))?;
+
             Ok(json!({
-                "total_kb": total_kb, "used_kb": used_kb, "free_kb": free_kb,
-                "buffers_kb": 0, "cached_kb": purgeable_pages * page_size / 1024, "shared_kb": 0,
-                "total_mb": total_kb / 1024, "used_mb": used_kb / 1024, "free_mb": free_kb / 1024,
-                "buffers_mb": 0, "cached_mb": purgeable_pages * page_size / 1024 / 1024,
+                "total_kb": stats.ram.total,
+                "used_kb": stats.ram.used,
+                "free_kb": stats.ram.free,
+                "buffers_kb": stats.ram.buffers,
+                "cached_kb": stats.ram.cached,
+                "shared_kb": stats.ram.shared,
+                "total_mb": stats.ram.total / 1024,
+                "used_mb": stats.ram.used / 1024,
+                "free_mb": stats.ram.free / 1024,
+                "buffers_mb": stats.ram.buffers.map(|v| v / 1024),
+                "cached_mb": stats.ram.cached.map(|v| v / 1024),
             }))
         }
     }
