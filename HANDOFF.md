@@ -172,9 +172,50 @@ Since the tag, on `master` and green on all three platforms:
 | `367429a` | 93.6 GiB of RAM published as 98 MB, and the test that found it |
 | `7abbd92` | The agent tool surface's numbers, against the ontology's |
 | `282fbaf` | The JSON-LD manifest had no tools in it |
+| `a42350d` | Two macOS arms fabricating beside the readers that refused to |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### Fixed per function, not per cause
+
+The cross-surface list was finished, so this is the fallback grep the queued
+section recommends — 793 `unwrap_or(0|false|…)` sites outside tests and the GUI,
+triaged by blast radius rather than in file order. Starting with the file an LLM
+reads: fifteen sites in `ai_api/tools.rs`, of which two are macOS arms that
+publish invented numbers.
+
+**`get_cpu_frequency`** shelled out to `hw.cpufrequency` — an Intel-era sysctl
+that does not exist on Apple Silicon — and fell back to `0`, with `min` falling
+back to `freq_hz / 2` and `max` to `freq_hz`, so the zero reached all three. Every
+core of every M-series Mac was published to an agent as `0 MHz`.
+
+One function away, `platform::macos::read_cpu_stats` sets `frequency: None` with
+a comment saying *"a nominal figure would repeat the mistake Windows makes with
+`CurrentMhz`"*. **The tool surface was making that exact mistake beside the
+reader that had decided not to** — the fifth consumer in this crate found doing
+that.
+
+**`get_memory_breakdown`** is the sharper one. It hand-rolled `hw.memsize` and
+`vm_stat` and carried *every* defect this file already records fixing in
+`tool_get_memory_status` — the function immediately above it in the same file:
+
+| Defect | Fixed in `get_memory_status` | Still in `get_memory_breakdown` |
+| --- | --- | --- |
+| Hardcoded `page_size = 16384` | yes | yes — 4x too large on an Intel Mac |
+| `hw.memsize` failure → total of 0 | yes | yes |
+| `vm_stat` failure → 0 free pages | yes | yes — publishes **100% memory used** |
+| `buffers`/`shared` as zero not `None` | yes | yes |
+
+**The fix was applied per function rather than per cause.** Someone found four
+defects, fixed them where they were looking, and the function next door kept all
+four — with the corrected version visible on the same screen. When a defect is
+found in a hand-rolled reader, the question is not "where else is this bug" but
+**"where else is this reader hand-rolled"**, and the answer is a grep for the
+`Command::new` it should not have been doing.
+
+Both arms now call the readers the macOS CI job exercises, which is better
+verification than this machine can offer for either.
 
 ### Two renderers, one machine, and a factor of 1024
 
