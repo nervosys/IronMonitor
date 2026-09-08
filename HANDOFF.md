@@ -6309,13 +6309,15 @@ feature stayed broken through eight published versions.
    Note `--lib --tests` skips doc-tests; run those before a release.
 
    **`cargo`'s output does not go to `./target` on this machine.**
-   `~/.cargo/config.toml` sets a `target-dir` outside the repo, and
-   `./target` still holds a stale tree from before that line was added. Running
-   `./target/debug/simon.exe` therefore runs *whatever was built before the
-   redirect*, silently. It cost a wrong conclusion during the USB speed work:
-   every device read `unavailable` from a binary that predated the reader, and
-   the finished feature looked broken. Invoke `cargo run --bin simon`, or the
-   path `cargo build` prints.
+   `~/.cargo/config.toml` sets a `target-dir` outside the repo, at
+   `C:/Users/adamm/.cargo-target`. `./target` used to hold a stale tree from
+   before that line was added, so running `./target/debug/simon.exe` ran
+   *whatever was built before the redirect*, silently — it cost a wrong
+   conclusion during the USB speed work, where every device read `unavailable`
+   from a binary that predated the reader and the finished feature looked broken.
+   **That stale tree is deleted** (7.4 GB, in the disk-full recovery below), so
+   the trap is gone until something recreates it. Invoke `cargo run --bin simon`,
+   or the path `cargo build` prints.
 
    **Three failure modes here are the machine, not the code, and all three lie
    about it.** `error[E0463]: can't find crate for simonlib`, `error[E0786]:
@@ -6327,6 +6329,33 @@ feature stayed broken through eight published versions.
    45 GB of the machine's 94 GB. `cargo test -j 2` finishes where the default
    parallelism dies. Check `df -h` and free memory *before* concluding a change
    broke the build -- this has been misread as a tool bug four times.
+
+   **It happened a third time, and the symptoms were different enough to fool
+   another session.** The disk hit **0 bytes free of 3.7 TB** while the shared
+   target directory held **235 GB**. What that looked like, in order:
+
+   - builds dying at exit 255 mid-compile, with no error text at all;
+   - a background task killed with "the system is running low on memory", on a
+     machine with 24 GB free — the page file cannot grow on a full disk;
+   - and finally the real message, `link.exe` **1140**, **1318** and **1201**,
+     which are all PDB-write failures and all mean "no space" without saying so.
+
+   Recovery was `Remove-Item` over the shared target directory (repeat the pass:
+   files held open by other builds fail the first time) plus this repo's stale
+   `./target`. That returned **224 GB**. `git fsck` afterwards showed only
+   dangling objects and no corruption, which is worth checking every time —
+   `~/.cargo/config.toml` records a git ref corrupted mid-commit by an earlier
+   occurrence.
+
+   **The lock is shared, and so is the queue.** `target-dir` is machine-wide, so
+   *every* Rust project on this box serialises on one build-directory lock. With
+   six other projects building — `tabinator-core`, `forgectl`,
+   `robotcontrolleros-drivers`, `buildingops-service`, `aircom-ffi`,
+   `avatar-processor` — a `cargo test` here can sit in "Blocking waiting for file
+   lock on build directory" for tens of minutes and then be killed by whatever
+   timeout is watching it. **That is not a broken build and not a broken tool.**
+   `Get-CimInstance Win32_Process -Filter "Name='cargo.exe'" | Select CommandLine`
+   shows who holds it. Do not kill them: they belong to other people's work.
 
 
 16. **Two Dewey bugs found during the port, recorded because they are real
