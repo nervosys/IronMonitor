@@ -537,13 +537,17 @@ mod windows_version_tests {
     /// where the AMD PSP is listed first and the TPM second.
     #[test]
     fn the_acpi_hardware_id_names_the_specification() {
-        let listing = "PCI\\VEN_1022&DEV_1649&SUBSYS_88771043&REV_00\\4&1EBE6A9C&0&0241\nACPI\\MSFT0101\\1\n";
+        let listing =
+            "PCI\\VEN_1022&DEV_1649&SUBSYS_88771043&REV_00\\4&1EBE6A9C&0&0241\nACPI\\MSFT0101\\1\n";
         assert_eq!(version_from_node(listing), Some(TpmVersion::V2_0));
     }
 
     #[test]
     fn a_tpm_12_node_reads_as_12() {
-        assert_eq!(version_from_node("ACPI\\PNP0C31\\0"), Some(TpmVersion::V1_2));
+        assert_eq!(
+            version_from_node("ACPI\\PNP0C31\\0"),
+            Some(TpmVersion::V1_2)
+        );
     }
 
     #[test]

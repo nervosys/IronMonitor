@@ -861,7 +861,10 @@ mod windows_vendor_tests {
             "Microsoft"
         );
         assert_eq!(
-            device_vendor(&json!({"Manufacturer": "(Standard system devices)"}), NO_IDS),
+            device_vendor(
+                &json!({"Manufacturer": "(Standard system devices)"}),
+                NO_IDS
+            ),
             ""
         );
         assert_eq!(

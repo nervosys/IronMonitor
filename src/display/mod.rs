@@ -244,8 +244,10 @@ impl DisplayMonitor {
             // and the choice is only between one that answered and one that did
             // not.
             let meta = monitor_id.as_ref().and_then(|id| {
-                let matching =
-                    || wmi.iter().filter(|m| m.hardware_id.as_deref() == Some(id.as_str()));
+                let matching = || {
+                    wmi.iter()
+                        .filter(|m| m.hardware_id.as_deref() == Some(id.as_str()))
+                };
                 matching()
                     .find(|m| m.connection != DisplayConnection::Unknown)
                     .or_else(|| matching().next())

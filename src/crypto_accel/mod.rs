@@ -366,9 +366,7 @@ impl CryptoAccelMonitor {
         #[allow(unused_mut)]
         let mut sources: Vec<HardwareRng> = features
             .iter()
-            .filter(|f| {
-                f.hardware_accelerated && f.category == CryptoCategory::RandomNumberGen
-            })
+            .filter(|f| f.hardware_accelerated && f.category == CryptoCategory::RandomNumberGen)
             .map(|f| HardwareRng {
                 name: f.name.clone(),
                 available: true,

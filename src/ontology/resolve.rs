@@ -2613,11 +2613,11 @@ fn resolve_settings(out: &mut Vec<Reading>) {
         match crate::profile::apply::read_current_with_retry(handler.as_ref()) {
             // `Unreadable` carries its own reason and is not a value: rendering
             // it would publish the string "<unreadable: ...>" as the setting.
-            Some(crate::profile::SettingValue::Unreadable(why)) => out.push(
-                Reading::unavailable(id, Some(Unit::Identifier), format!(
-                    "the handler for this setting reported it unreadable: {why}"
-                )),
-            ),
+            Some(crate::profile::SettingValue::Unreadable(why)) => out.push(Reading::unavailable(
+                id,
+                Some(Unit::Identifier),
+                format!("the handler for this setting reported it unreadable: {why}"),
+            )),
             Some(value) => {
                 // Every setting entity is declared `Unit::Identifier`, because a
                 // setting's value space is its own -- a governor name, a GUID, a
