@@ -183,6 +183,15 @@ pub struct ThermalEnvelope {
     pub estimated_total_tdp_watts: f32,
     /// CPU TDP
     pub cpu_tdp_watts: f32,
+    /// Whether [`Self::cpu_tdp_watts`] is the package power limit the platform
+    /// enforces or this crate's name table standing in for it.
+    ///
+    /// False on Windows and macOS, which expose no such limit unprivileged, so
+    /// the figure there is one number for a whole processor family: `ryzen 9`
+    /// answers 120 W, which is right for a 9900X and wrong for a 9950X (170 W)
+    /// and a 5950X (105 W). The total beside it can mix a measured GPU budget
+    /// with a guessed CPU one, and this is how a consumer tells.
+    pub cpu_tdp_measured: bool,
     /// GPU TDP
     pub gpu_tdp_watts: f32,
     /// How many adapters [`Self::gpu_tdp_watts`] is the sum of.
@@ -308,6 +317,10 @@ struct HardwareFeatures {
     is_server_cpu: bool,
     has_ecc: bool,
     cpu_tdp_watts: f32,
+    /// Whether `cpu_tdp_watts` is the package power limit the platform enforces
+    /// or the model-name table's stand-in for it. False on Windows and macOS,
+    /// which expose no such limit to an unprivileged reader.
+    cpu_tdp_measured: bool,
 
     // Memory features
     ram_total_gb: f32,
@@ -563,7 +576,18 @@ impl HardwareInferenceEngine {
             || model_lower.contains("silver");
 
         // Infer TDP from model
-        self.features.cpu_tdp_watts = Self::infer_cpu_tdp(&model_lower);
+        // The package power limit the platform enforces, where one is readable,
+        // and the model-name table only where it is not.
+        match Self::measured_cpu_power_cap_watts() {
+            Some(watts) => {
+                self.features.cpu_tdp_watts = watts;
+                self.features.cpu_tdp_measured = true;
+            }
+            None => {
+                self.features.cpu_tdp_watts = Self::infer_cpu_tdp(&model_lower);
+                self.features.cpu_tdp_measured = false;
+            }
+        }
     }
 
     fn extract_memory_features(&mut self) {
@@ -2162,6 +2186,7 @@ impl HardwareInferenceEngine {
         ThermalEnvelope {
             estimated_total_tdp_watts: total_tdp,
             cpu_tdp_watts: cpu_tdp,
+            cpu_tdp_measured: f.cpu_tdp_measured,
             gpu_tdp_watts: gpu_tdp,
             gpu_adapters_counted: f.gpu_adapters_counted.max(1),
             gpu_tdp_measured: f.gpu_tdp_measured,
@@ -2169,6 +2194,38 @@ impl HardwareInferenceEngine {
             cooling_score,
             recommendations,
         }
+    }
+
+    /// The CPU package power limit the platform enforces, in watts.
+    ///
+    /// RAPL's `constraint_0_power_limit_uw` is the long-term package limit --
+    /// the configured TDP, which is what `analyze_thermal_envelope` wants and
+    /// what `infer_cpu_tdp` guesses at from a model name. `rapl::RaplMonitor`
+    /// already reads and parses it; this only picks the package domains out and
+    /// sums them, so a two-socket machine is priced as two sockets.
+    ///
+    /// **`None` on Windows and macOS**, where `RaplMonitor::new()` fails
+    /// outright: the MSRs behind RAPL need a kernel driver on Windows and there
+    /// is no sysfs equivalent. The table answers there, and
+    /// `cpu_tdp_measured` says so.
+    ///
+    /// **Unverified on the platform it is for.** No Linux machine was available
+    /// to the session that wrote this, so the Windows half — the `Err` path, the
+    /// table, the flag reading false — is the only half that has run. The parse
+    /// it depends on is covered by `rapl`'s own tests; the wiring is not. This
+    /// is the shape item 18 of the handoff warns about, recorded rather than
+    /// hidden.
+    fn measured_cpu_power_cap_watts() -> Option<f32> {
+        use crate::rapl::PowerDomain;
+        let monitor = crate::rapl::RaplMonitor::new().ok()?;
+        let watts: f64 = monitor
+            .readings()
+            .iter()
+            .filter(|r| r.domain == PowerDomain::Package)
+            .filter_map(|r| r.power_limit_uw)
+            .map(|uw| uw as f64 / 1_000_000.0)
+            .sum();
+        (watts > 0.0).then_some(watts as f32)
     }
 
     fn infer_cpu_tdp(model_lower: &str) -> f32 {
@@ -2561,6 +2618,7 @@ mod tests {
                 is_server_cpu: false,
                 has_ecc: false,
                 cpu_tdp_watts: 125.0,
+                cpu_tdp_measured: false,
                 ram_total_gb: 32.0,
                 ram_channels: 2,
                 ram_speed_mhz: 3600,
@@ -2611,6 +2669,7 @@ mod tests {
                 is_server_cpu: true,
                 has_ecc: true,
                 cpu_tdp_watts: 225.0,
+                cpu_tdp_measured: false,
                 ram_total_gb: 512.0,
                 ram_channels: 8,
                 ram_speed_mhz: 4800,
@@ -2663,6 +2722,7 @@ mod tests {
                 is_server_cpu: false,
                 has_ecc: false,
                 cpu_tdp_watts: 15.0,
+                cpu_tdp_measured: false,
                 ram_total_gb: 8.0,
                 ram_channels: 2,
                 ram_speed_mhz: 3200,

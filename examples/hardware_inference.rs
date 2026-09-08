@@ -44,8 +44,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Thermal envelope ---");
     let t = &report.thermal_envelope;
     println!(
-        "  CPU TDP:        {:.0} W (from the model-name table)",
-        t.cpu_tdp_watts
+        "  CPU TDP:        {:.0} W ({})",
+        t.cpu_tdp_watts,
+        if t.cpu_tdp_measured {
+            "the package power limit the platform enforces"
+        } else {
+            "the model-name table; no package limit was readable"
+        }
     );
     println!(
         "  GPU TDP:        {:.0} W over {} adapter(s) ({})",
