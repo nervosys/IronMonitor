@@ -158,9 +158,79 @@ Since the tag, on `master` and green on all three platforms:
 | `b329677` | Three absences the platform had answered, and six reasons that blamed a driver nobody asked |
 | `beaef09` | The settings the binary could already read, and three PCI addresses it had |
 | `8fe9da9` | A source for every SMART absence, and the RNG the feature list already named |
+| `f4ea43d` | The current year from the clock, and the power cap from the driver |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### A hardcoded year, and a guess beside a measurement
+
+The absence audit has run out of things this machine can decide, so this is item
+4: `infer_gpu_year` and the TDP tables, which the last handoff recorded as
+unaudited. Three things were wrong, and one of them was wrong about the calendar.
+
+**`let current = 2025.0;`** — the year every age in the report is measured
+against, written into the source in three places. It is not a stale constant
+that will be noticed; it is one that ages a year every January while continuing
+to produce plausible numbers. On this machine, in 2026, every age was a year
+short. **A hardcoded release year is a fact about a product. A hardcoded current
+year is a fact about whoever last edited the function.**
+
+The test for it asserts the property rather than the value — that
+`current_year()` tracks the clock — because a test that asserted `2026.7` would
+be the same defect with a green tick on it.
+
+**The 3090 Ti dated from the RTX 30 series**, which the handoff already knew:
+2020 by the `rtx 30` rule, 2022 in fact. Two years out for the one card this
+table has ever been checked against. Refreshes with known dates are matched
+before the series rule now, and no further: a rule per card would be a release
+database, and this is a heuristic that reports 0.85 confidence — which is still
+high for a substring table, and still item 4.
+
+**And the GPU TDP was a guess sitting beside a measurement.** `infer_gpu_tdp`
+returns 350 W for anything matching "3090". This machine's 3090 Ti enforces a
+450 W cap, and NVML reports it to the same process through this crate's own GPU
+monitor — the fourth appearance of "the reader was in the same binary", and the
+first where the wrong number propagated: `analyze_thermal_envelope` sums the TDPs
+and grades cooling from the total.
+
+`ThermalEnvelope::gpu_tdp_measured` now says which of the two a consumer holds.
+**A measured 450 W and a guessed 350 W are different claims, and they were
+reported identically** — the same distinction `Measured` and `Derived` draw in
+the ontology, which the analysis surface did not have.
+
+**The report on this machine, which nobody had ever printed:**
+
+```
+class:            Workstation (confidence 0.60)
+performance tier: Ultra (score 83)
+CPU year:   Some(2024)      GPU year:   Some(2022)
+age:        3.7 years (confidence 0.85)
+CPU TDP:    120 W (from the model-name table)
+GPU TDP:    450 W (the cap the driver enforces)
+total:      600 W   headroom: Marginal   cooling score: 40
+```
+
+Before the fixes: GPU year 2020, age 2.5 years, GPU TDP 350 W, total 500 W.
+
+**`examples/hardware_inference.rs` is new because the handoff asked for something
+that could not be run.** Item 4 says to run `full_analysis()` on a real laptop
+and read the report; there was no surface that did, so doing what the handoff
+asked meant writing this file first. It exists now: one command, and the report
+above is what it prints.
+
+**Two things the report shows that are still wrong, and are not fixed here:**
+
+- **The envelope counts one GPU.** This machine has two 3090 Ti cards and the
+  model carries a single `gpu_tdp_watts`, so 600 W is 450 W short of what the
+  machine can draw. The name table had the same limit, so this is not a
+  regression — but reading a real cap makes the single-adapter shape worth
+  naming.
+- **`infer_cpu_tdp` is still a table**, and `ryzen 9` returns 120 W for every
+  chip in the family. That is right for this 9900X and wrong for a 9950X (170 W)
+  and a 5950X (105 W). Windows exposes no CPU TDP, and RAPL needs a driver here,
+  so unlike the GPU there is no measurement to prefer — the table is the only
+  answer available and it is at least labelled as one now.
 
 ### Which source said nothing
 
@@ -6023,9 +6093,20 @@ feature stayed broken through eight published versions.
      `HardwareInformation.qwMemorySize`. Those adapters get no VRAM reading at
      all, which is the intended failure — but nobody has watched it happen.
 
-   Also still imprecise, in a heuristic table rather than a reader: the RTX 3090
+   ~~Also still imprecise, in a heuristic table rather than a reader: the RTX 3090
    Ti dates to 2020 because it matches the RTX 30 series rule, and the Ti shipped
-   in 2022. `infer_gpu_year` and the TDP tables were not audited.
+   in 2022. `infer_gpu_year` and the TDP tables were not audited.~~ **Audited in
+   `f4ea43d`.** The current year was the literal `2025.0` in three places; the Ti
+   refresh is dated from its own release now; and the GPU TDP is the cap the
+   driver enforces where one is reported, with `ThermalEnvelope::gpu_tdp_measured`
+   saying which. Two limits remain and are described in the section above: the
+   envelope counts one GPU on a two-GPU machine, and `infer_cpu_tdp` is still a
+   family-wide table with no measurement available to prefer.
+
+   **`cargo run --example hardware_inference --features cli` prints the report**,
+   which is what this item asks you to read on a laptop. That example did not
+   exist until `f4ea43d`; the instruction above could not be followed without
+   writing it.
 
 5. **The Windows ATA SMART path has never met a SATA drive.** 3.3.0 reads the
    attribute table unelevated through `IOCTL_STORAGE_PREDICT_FAILURE`, and the
