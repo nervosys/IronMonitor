@@ -157,9 +157,65 @@ Since the tag, on `master` and green on all three platforms:
 | `ada6755` | Four absence reasons that blamed the platform for a column nobody selected |
 | `b329677` | Three absences the platform had answered, and six reasons that blamed a driver nobody asked |
 | `beaef09` | The settings the binary could already read, and three PCI addresses it had |
+| `8fe9da9` | A source for every SMART absence, and the RNG the feature list already named |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### Which source said nothing
+
+Two more reasons checked, both false, and both the same mistake in a different
+module: **the reader attributing its own silence to the hardware.**
+
+**Four SMART counters blamed a drive nobody asked.** `disk.0` is the USB
+mass-storage gadget, and its counters come from `Get-StorageReliabilityCounter`
+— which on this machine fails for *every* disk unelevated:
+
+```
+0 [NVMe]: FAILED - Access to a CIM resource was not available to the client.
+3 [USB]:  FAILED - Access to a CIM resource was not available to the client.
+```
+
+The rows said "the drive did not report a power cycle count", "…a power-on hour
+count", "…an uncorrectable count", and — the one that is a claim about hardware —
+"this device exposes no thermal sensor".
+
+`SmartInfo` is four `Option`s and no record of which of three paths filled them,
+so the resolver had one sentence for every `None`. It carries `SmartSource` now:
+
+| Source | What a `None` means there |
+| --- | --- |
+| `NvmeLogPage` | The drive answered from its own log page. A missing sector counter is a fact about NVMe, which has none |
+| `AtaAttributes` | The drive returned its own attribute table. A missing counter is a fact about *this drive's* table |
+| `StorageStack` | The operating system was asked, not the drive. An absence is usually the query being refused |
+
+The same field fixes a disjunction that was wrong on all four disks:
+`"not an NVMe concept; on ATA, the drive did not report attribute 5"` names two
+situations and says which applies to neither. **A reason that covers every case
+explains none of them** — and it is the tempting shape to write when the type
+in front of you cannot tell them apart. The fix was to make the type able to say.
+
+**And a random source the same report already named.** `detect_rng` read
+`/dev/hwrng` and `/sys/class/misc/hw_random`, on Linux only, so on Windows
+`cpu.crypto.rng.<none>` said "the probe enumerated nothing, but the feature list
+above reports a random number instruction — this is a gap in the probe on this
+platform rather than a machine without an RNG". In the same snapshot:
+
+```
+cpu.crypto.feature.2.name = RDRAND
+cpu.crypto.feature.3.name = RDSEED
+cpu.crypto.rng.<none>     = the probe enumerated nothing
+```
+
+The features come from CPUID and are detected two lines above the probe.
+`RngSource::CpuInstruction` was declared for exactly this case and produced by
+nothing. Passing the features in closes it: two sources, `quality` absent because
+neither declares an entropy figure anywhere readable.
+
+**This one raises the absence count**, from 437 to 438, and that is the right
+direction: one diagnostic saying the machine had no random source is replaced by
+six readings and two honest per-source absences. *Fewer absences is not the
+goal.*
 
 ### The reader was in the same binary
 
@@ -5848,13 +5904,13 @@ feature stayed broken through eight published versions.
 3. **The absence-reason audit is past half.** Every `unavailable` reading carries
    a prose reason, and those reasons are *claims about the platform — and
    sometimes about simon* — that can be checked. On this machine there are now
-   **437 absences across 45 distinct reasons**, out of 1799 readings, down from
-   465 across 53; three passes closed twenty-eight readings between them.
+   **438 absences across 47 distinct reason strings**, out of 1804 readings, down
+   from 465 out of 1797; four passes closed twenty-eight readings and opened six
+   more that a contradiction had been hiding.
 
-   **Twenty-nine of the 45 reasons in the current snapshot have been checked**,
-   and thirty-six across every snapshot taken. **Twenty-two were false**, and each
-   was a reading something already had — the first nine here, the rest in the
-   sections above:
+   **Forty of the 47 have been checked, and seven have not.** Twenty-four checks
+   came back false, and each was a reading something already had — the first nine
+   here, the rest in the sections above:
 
    | Reason | Rows | What was actually true |
    | --- | --- | --- |
@@ -5908,15 +5964,18 @@ feature stayed broken through eight published versions.
    shapes are invisible from inside the module and obvious from one line of
    PowerShell.
 
-   **Sixteen reasons have not been checked, and most of the rows behind them are
-   true by construction.** The 40 rate rows and 8 throughput rows are one sample
-   where two are needed; the process list, the RAPL absence and the boot duration
-   each name a boundary rather than a device. What is left that could still be
-   wrong is small and specific: the two ATA attribute groups (4 rows each, and no
-   SATA drive on this machine to settle them — see item 5), the four `disk.0`
-   SMART fields, `disk.0.temperature`, `cpu.crypto.feature.3.throughput`, and the
-   board sensors, which are the same missing hwmon binding as the CPU temperature
-   in item 1.
+   **Seven reasons have not been checked, and every one of them looks true by
+   construction.** The 40 rate rows and 8 throughput rows are one sample where two
+   are needed; the process list, the RAPL absence and the boot duration each name
+   a boundary rather than a device; the board sensors are the missing hwmon
+   binding of item 1, with `MSAcpi_ThermalZoneTemperature` answering "Not
+   supported" on this board and no OpenHardwareMonitor namespace installed. **The
+   two ATA attribute groups are the only ones that could still be wrong, and this
+   machine cannot settle them** — it has no SATA drive, which is item 5.
+
+   That is the end of what this machine can decide. **The next real progress on
+   this item needs different hardware**, not more checking here: a laptop, a SATA
+   drive, an Intel or AMD GPU on Linux.
 
    And one that is checked, true, and worth restating because 15 rows is a
    tempting target: `gpu.codec.{n}.max_fps` is a **deliberate** refusal, not a gap.
@@ -5924,7 +5983,7 @@ feature stayed broken through eight published versions.
    arithmetic; NVENC's `NV_ENC_CAPS_MB_PER_SEC_MAX` is the real source for it, and
    nobody has bound it.
 
-   **Four shapes have accounted for every false reason found:**
+   **Five shapes have accounted for every false reason found:**
 
    - *A column the query did not select* — `ConfiguredVoltage`, `HardwareID`,
      `Service`, `ExtendedPrinterStatus`, `LocationInformation`.
@@ -5935,7 +5994,10 @@ feature stayed broken through eight published versions.
      display's two WMI nodes, `Get-NetTCPSetting`'s `Automatic` template.
    - *A reader that exists on another of this crate's own surfaces* — the active
      power scheme, read by `simon profile explain` and reported unbound by the
-     ontology.
+     ontology; the RNG instructions, detected two lines above the probe that
+     reported none.
+   - *A type that cannot say which path produced the absence*, so one sentence
+     covers every case and fits none — the SMART counters, before `SmartSource`.
 
    The first three are invisible from inside the module and visible in one line
    of PowerShell. The fourth is invisible from PowerShell and visible only by
