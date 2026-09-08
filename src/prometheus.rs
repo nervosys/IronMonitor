@@ -442,20 +442,34 @@ impl PrometheusExporter {
     fn collect_memory_metrics(&mut self) {
         // Reads the platform, for the reason above.
         if let Ok(mem) = crate::stats::platform_memory_stats() {
+            // `RamInfo` is in KB and every one of these names ends in
+            // `_bytes`, so each figure is scaled -- which the swap block below
+            // has always done, with a comment saying why, three lines further
+            // down. The RAM figures above it did not, so this exporter reported
+            // a 93.6 GiB machine as having 98 MB of memory: the right number
+            // under the wrong unit, off by exactly 1024, which is small enough
+            // to look like a plausible reading of something.
+            //
+            // Caught by `tests/prometheus_agreement.rs`, which compares this
+            // exporter's stable quantities against the ontology's. The served
+            // endpoint in `http_server.rs` reads a different type and was
+            // right; the two renderers had disagreed by a factor of 1024 for
+            // as long as both have existed.
+            const KB: u64 = 1024;
             self.add(MetricFamily::gauge(
                 &self.prefixed("memory_total_bytes"),
                 "Total physical memory in bytes",
-                mem.ram.total as f64,
+                (mem.ram.total * KB) as f64,
             ));
             self.add(MetricFamily::gauge(
                 &self.prefixed("memory_used_bytes"),
                 "Used physical memory in bytes",
-                mem.ram.used as f64,
+                (mem.ram.used * KB) as f64,
             ));
             self.add(MetricFamily::gauge(
                 &self.prefixed("memory_free_bytes"),
                 "Free physical memory in bytes",
-                mem.ram.free as f64,
+                (mem.ram.free * KB) as f64,
             ));
             if mem.ram.total > 0 {
                 self.add(MetricFamily::gauge(
@@ -472,8 +486,9 @@ impl PrometheusExporter {
                 self.add(MetricFamily::gauge(
                     &self.prefixed("swap_used_bytes"),
                     "Swap or pagefile bytes in use",
-                    // `SwapInfo` is in KB; the metric name says bytes.
-                    (used * 1024) as f64,
+                    // `SwapInfo` is in KB; the metric name says bytes. Same
+                    // scaling as the RAM figures above.
+                    (used * KB) as f64,
                 ));
             }
         }
