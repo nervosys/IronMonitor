@@ -185,6 +185,13 @@ pub struct ThermalEnvelope {
     pub cpu_tdp_watts: f32,
     /// GPU TDP
     pub gpu_tdp_watts: f32,
+    /// How many adapters [`Self::gpu_tdp_watts`] is the sum of.
+    ///
+    /// `1` for a single-GPU machine and for any machine where no adapter
+    /// reported a cap. Before this existed the figure was the *first* adapter's
+    /// cap whatever the machine held, so a desktop with two RTX 3090 Ti was
+    /// graded on half its GPU budget.
+    pub gpu_adapters_counted: u32,
     /// Whether [`Self::gpu_tdp_watts`] is the power cap the driver enforces or
     /// this crate's name table standing in for it.
     ///
@@ -320,6 +327,10 @@ struct HardwareFeatures {
     /// measured 450 W and a guessed 350 W are different claims about the same
     /// card and only one of them was checked against the hardware.
     gpu_tdp_measured: bool,
+    /// How many adapters `gpu_tdp_watts` is the sum of. `1` for a single card
+    /// and for every unmeasured machine, whose figure comes from a table keyed
+    /// on one model name.
+    gpu_adapters_counted: u32,
 
     // Storage features
     has_nvme: bool,
@@ -745,16 +756,23 @@ impl HardwareInferenceEngine {
         let measured = self
             .features
             .has_discrete_gpu
-            .then(Self::measured_gpu_power_cap_watts)
+            .then(Self::measured_gpu_power_caps_watts)
             .flatten();
         match measured {
-            Some(watts) => {
+            Some((watts, adapters)) => {
                 self.features.gpu_tdp_watts = watts;
                 self.features.gpu_tdp_measured = true;
+                self.features.gpu_adapters_counted = adapters;
             }
             None => {
+                // One name, one figure. The table is keyed on the model string
+                // and this machine has one of those however many cards it has,
+                // so an unmeasured multi-GPU machine is priced as one card
+                // rather than multiplied by a count the table knows nothing
+                // about. `gpu_adapters_counted` says so: 1.
                 self.features.gpu_tdp_watts = Self::infer_gpu_tdp(&gpu_lower);
                 self.features.gpu_tdp_measured = false;
+                self.features.gpu_adapters_counted = 1;
             }
         }
     }
@@ -2145,6 +2163,7 @@ impl HardwareInferenceEngine {
             estimated_total_tdp_watts: total_tdp,
             cpu_tdp_watts: cpu_tdp,
             gpu_tdp_watts: gpu_tdp,
+            gpu_adapters_counted: f.gpu_adapters_counted.max(1),
             gpu_tdp_measured: f.gpu_tdp_measured,
             headroom,
             cooling_score,
@@ -2202,22 +2221,33 @@ impl HardwareInferenceEngine {
         65.0 // default guess
     }
 
-    /// The enforced power cap of the first adapter that reports one, in watts.
+    /// The enforced power caps of every adapter that reports one: their sum in
+    /// watts, and how many adapters contributed.
     ///
-    /// This is what the driver will actually let the card draw, which is the
+    /// This is what the drivers will actually let the cards draw, which is the
     /// number the thermal model wants; the name table below is a stand-in for
     /// when nothing reports it. NVML reports it for NVIDIA cards; the Windows
-    /// AMD and Intel backends report nothing, and this returns `None` for them
-    /// so the table still answers.
+    /// AMD and Intel backends report nothing, so they contribute nothing here
+    /// and the table answers for a machine where no adapter reports a cap.
+    ///
+    /// **It sums because a machine can have more than one card, and this one
+    /// does.** Taking the first adapter's cap gave a 450 W GPU budget for a
+    /// desktop with two RTX 3090 Ti in it — 450 W short — and the thermal
+    /// envelope graded the cooling of a 600 W machine that can draw 1050 W. The
+    /// count is carried alongside so a consumer can see the figure is a sum and
+    /// over how many adapters.
     ///
     /// Milliwatts in the reading, watts here, because every threshold in
     /// `analyze_thermal_envelope` is written in watts.
-    fn measured_gpu_power_cap_watts() -> Option<f32> {
+    fn measured_gpu_power_caps_watts() -> Option<(f32, u32)> {
         let monitor = crate::SiliconMonitor::new().ok()?;
         let gpus = monitor.snapshot_gpus().ok()?;
-        gpus.iter()
-            .find_map(|g| g.dynamic_info.power.limit)
+        let caps: Vec<f32> = gpus
+            .iter()
+            .filter_map(|g| g.dynamic_info.power.limit)
             .map(|mw| mw as f32 / 1000.0)
+            .collect();
+        (!caps.is_empty()).then(|| (caps.iter().sum(), caps.len() as u32))
     }
 
     fn infer_gpu_tdp(model_lower: &str) -> f32 {
@@ -2542,8 +2572,9 @@ mod tests {
                 has_rt_cores: true,
                 gpu_tdp_watts: 285.0,
                 // Synthetic features, so the figure above is the table's, not a
-                // driver's.
+                // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
+                gpu_adapters_counted: 1,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 2000.0,
@@ -2591,8 +2622,9 @@ mod tests {
                 has_rt_cores: false,
                 gpu_tdp_watts: 0.0,
                 // Synthetic features, so the figure above is the table's, not a
-                // driver's.
+                // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
+                gpu_adapters_counted: 1,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 15000.0,
@@ -2642,8 +2674,9 @@ mod tests {
                 has_rt_cores: true,
                 gpu_tdp_watts: 100.0,
                 // Synthetic features, so the figure above is the table's, not a
-                // driver's.
+                // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
+                gpu_adapters_counted: 1,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 512.0,

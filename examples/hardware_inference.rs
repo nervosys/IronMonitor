@@ -48,10 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         t.cpu_tdp_watts
     );
     println!(
-        "  GPU TDP:        {:.0} W ({})",
+        "  GPU TDP:        {:.0} W over {} adapter(s) ({})",
         t.gpu_tdp_watts,
+        t.gpu_adapters_counted,
         if t.gpu_tdp_measured {
-            "the cap the driver enforces"
+            "the caps the drivers enforce"
         } else {
             "the model-name table; no driver reported a cap"
         }
