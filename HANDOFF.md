@@ -167,9 +167,40 @@ Since the tag, on `master` and green on all three platforms:
 | `f4ea43d` | The current year from the clock, and the power cap from the driver |
 | `001f764` | The line that made every Linux job red since 2026-09-03 |
 | `e629af8` | The crash with no panic: COM interfaces released after their apartment |
+| `448a289` | A two-GPU machine graded on one GPU's power budget |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The second card
+
+Reading a real power cap instead of a table guess had a tail: the reader took the
+**first** adapter that reported one, and this desktop has two RTX 3090 Ti. The
+envelope priced 450 W of a 900 W GPU budget and graded a 1050 W machine as a
+600 W one.
+
+```
+GPU TDP:  900 W over 2 adapter(s) (the caps the drivers enforce)
+total:    1050 W
+```
+
+`ThermalEnvelope::gpu_adapters_counted` is new, and it is the point of the
+commit as much as the sum is: **"450 W" and "900 W over two adapters" are
+different claims and the number alone cannot tell them apart.** The same
+distinction as `gpu_tdp_measured` beside it, one level up.
+
+The AMD integrated GPU in the same machine reports no cap, so it contributes
+nothing and is not counted — not priced at zero, not guessed at. Where *no*
+adapter reports a cap the name table still answers and the count is 1, because
+the table is keyed on a single model string; multiplying it by an adapter count
+would be compounding a guess with a fact.
+
+**Worth noticing about the shape of this session:** the defect was created by the
+fix two commits earlier, and it was recorded in the handoff at the time — item 4
+said "the envelope counts one GPU on a machine with two" — before anyone fixed
+it. Writing the limitation down is what made it cheap to close later. **A known
+limitation in a file someone reads is worth more than a fix nobody remembers
+making.**
 
 ### The crash with no panic
 
@@ -330,11 +361,9 @@ above is what it prints.
 
 **Two things the report shows that are still wrong, and are not fixed here:**
 
-- **The envelope counts one GPU.** This machine has two 3090 Ti cards and the
-  model carries a single `gpu_tdp_watts`, so 600 W is 450 W short of what the
-  machine can draw. The name table had the same limit, so this is not a
-  regression — but reading a real cap makes the single-adapter shape worth
-  naming.
+- ~~**The envelope counts one GPU.**~~ **Fixed in `448a289`**: the caps of every
+  adapter that reports one are summed, and `ThermalEnvelope::gpu_adapters_counted`
+  says how many did. This machine reads 900 W over two adapters, 1050 W total.
 - **`infer_cpu_tdp` is still a table**, and `ryzen 9` returns 120 W for every
   chip in the family. That is right for this 9900X and wrong for a 9950X (170 W)
   and a 5950X (105 W). Windows exposes no CPU TDP, and RAPL needs a driver here,
@@ -6216,8 +6245,9 @@ feature stayed broken through eight published versions.
    refresh is dated from its own release now; and the GPU TDP is the cap the
    driver enforces where one is reported, with `ThermalEnvelope::gpu_tdp_measured`
    saying which. Two limits remain and are described in the section above: the
-   envelope counts one GPU on a two-GPU machine, and `infer_cpu_tdp` is still a
-   family-wide table with no measurement available to prefer.
+   envelope counted one GPU on a two-GPU machine — fixed in `448a289`, see *The
+   second card* — and `infer_cpu_tdp` is still a family-wide table with no
+   measurement available to prefer.
 
    **`cargo run --example hardware_inference --features cli` prints the report**,
    which is what this item asks you to read on a laptop. That example did not
@@ -6294,6 +6324,8 @@ feature stayed broken through eight published versions.
    sweep spawns `smartctl` once per drive and the old shape was quadratic.
 
 9. **The ontology names 255 entities; the library has 93 subsystem modules.**
+   Both re-counted on 2026-09-08 and both still exact — `simon describe --format
+   json` for the first, the module file list for the second.
    (Counted, not estimated: `simon describe --format json | .entity_count`, and
    the module files under `src/`. The previous figures here, ~232 and ~88, had
    drifted.)
