@@ -159,9 +159,54 @@ Since the tag, on `master` and green on all three platforms:
 | `beaef09` | The settings the binary could already read, and three PCI addresses it had |
 | `8fe9da9` | A source for every SMART absence, and the RNG the feature list already named |
 | `f4ea43d` | The current year from the clock, and the power cap from the driver |
+| `001f764` | The line that made every Linux job red since 2026-09-03 |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The line that made every Linux job red
+
+**`gh run list` was the last thing on the verification list and the first thing
+that should have been run.** Master's most recent CI run — `ae2cd74`, the handoff
+commit this session started from — has been **red since 2026-09-03**: Check,
+Clippy, Test (ubuntu) and Feature combinations all failing, macOS green, and
+twelve local commits stacked on top of it before anybody looked.
+
+One line, in `src/platform/linux/gpu.rs`:
+
+```rust
+let load = utilization.map(|u| u.gpu as f32).unwrap_or(0.0);
+```
+
+`GpuStatus::load` became `Option<f32>` in `549ca3e` — the fix that stopped a card
+at 0% and a card whose counter could not be read being the same number. This path
+kept its `unwrap_or(0.0)`, so it kept publishing the second as the first, and
+because the field is now an `Option` it also stopped compiling: `error[E0308]`,
+one file, every Linux job.
+
+**Three independent things had to line up for it to survive four days:**
+
+- The block is `#[cfg(feature = "nvml")]`, so a Windows compiler never reads it.
+- `nvml = ["nvidia"]` is a *separate* feature from `nvidia`, and the handoff's
+  cross-check feature list named `nvidia` and not `nvml`. **The documented local
+  Linux check compiled the file's neighbours and not the file.**
+- The last green run was two days earlier, and nothing between them ran
+  `gh run list`.
+
+The fix is `let load = device.utilization_rates().ok().map(|u| u.gpu as f32);` —
+the same shape `549ca3e` applied everywhere else, and the compile error and the
+honesty defect had exactly one cause. The cross-check command in *Verification
+that is worth repeating* now carries `nvml`, and the Jetson-shaped
+`gpu_type: GpuType::Integrated, // Could be discrete` two lines below it now says
+`Discrete`, which is what an NVML-enumerated card on a desktop is.
+
+**The lesson is the one already written three paragraphs above it, and it still
+had to be learnt again.** "Read CI before believing a green local run" is in this
+file, in bold, with the last occurrence spelled out — and a session that ran
+`cargo fmt`, `cargo clippy -D warnings`, the MSRV check, both cross-target checks
+and fourteen integration suites still did not run the one command that would have
+shown a red pipeline in two seconds. **Local verification tells you your changes
+are fine. It cannot tell you the branch was already broken.**
 
 ### A hardcoded year, and a guess beside a measurement
 
@@ -5857,9 +5902,16 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo test --all-features
 cargo test                       # default features: the `vault` tests must drop out
 cargo +1.89 check --all-features --all-targets  # the declared MSRV, actually built
-cargo check --target x86_64-unknown-linux-gnu --all-targets --no-default-features --features cpu,npu,io,network,amd,nvidia,intel
+cargo check --target x86_64-unknown-linux-gnu --all-targets --no-default-features --features cpu,npu,io,network,amd,nvidia,intel,nvml
 cargo check --target aarch64-apple-darwin --all-targets --no-default-features --features cpu,npu,io,network,apple,nvidia,num_cpus
 ```
+
+**`nvml` is in that list because leaving it out cost four days of red CI.**
+`nvml = ["nvidia"]` gates `src/platform/linux/gpu.rs`'s NVML reader, and enabling
+`nvidia` alone does *not* enable it — so the feature subset above compiled
+happily while `cargo check --all-features` on Linux did not. See
+*The line that made every Linux job red* below. When adding a feature to
+`Cargo.toml`, add it here too, or it joins the set of code no local check reads.
 
 **The cross-checks cannot use `--all-features`, and the reason is not obvious.**
 `gui` pulls `egui_extras → ehttp → ureq → rustls → ring`, and `ring`'s build
@@ -6310,7 +6362,7 @@ feature stayed broken through eight published versions.
 
    **`cargo`'s output does not go to `./target` on this machine.**
    `~/.cargo/config.toml` sets a `target-dir` outside the repo, at
-   `C:/Users/adamm/.cargo-target`. `./target` used to hold a stale tree from
+   `~/.cargo-target`. `./target` used to hold a stale tree from
    before that line was added, so running `./target/debug/simon.exe` ran
    *whatever was built before the redirect*, silently — it cost a wrong
    conclusion during the USB speed work, where every device read `unavailable`
