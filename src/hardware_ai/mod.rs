@@ -185,6 +185,15 @@ pub struct ThermalEnvelope {
     pub cpu_tdp_watts: f32,
     /// GPU TDP
     pub gpu_tdp_watts: f32,
+    /// Whether [`Self::gpu_tdp_watts`] is the power cap the driver enforces or
+    /// this crate's name table standing in for it.
+    ///
+    /// The two are different claims and were reported identically. The name
+    /// table returns 350 W for anything matching "3090"; the RTX 3090 Ti this
+    /// engine was audited on enforces 450 W, and NVML reports that figure to
+    /// the same process. A consumer that cannot tell a read cap from a guessed
+    /// one cannot tell which of its conclusions rest on the hardware.
+    pub gpu_tdp_measured: bool,
     /// Thermal headroom assessment
     pub headroom: ThermalHeadroom,
     /// Cooling adequacy score (0-100)
@@ -306,6 +315,11 @@ struct HardwareFeatures {
     has_tensor_cores: bool,
     has_rt_cores: bool,
     gpu_tdp_watts: f32,
+    /// Whether `gpu_tdp_watts` is the cap the driver enforces or the name
+    /// table's stand-in for it. The thermal envelope reports which, because a
+    /// measured 450 W and a guessed 350 W are different claims about the same
+    /// card and only one of them was checked against the hardware.
+    gpu_tdp_measured: bool,
 
     // Storage features
     has_nvme: bool,
@@ -714,7 +728,35 @@ impl HardwareInferenceEngine {
             || gpu_lower.contains("apple m");
         self.features.has_rt_cores =
             gpu_lower.contains("rtx") || gpu_lower.contains("m3") || gpu_lower.contains("m4");
-        self.features.gpu_tdp_watts = Self::infer_gpu_tdp(&gpu_lower);
+        // The driver's own enforced power cap, where there is one, and the name
+        // table only where there is not.
+        //
+        // `infer_gpu_tdp` returns 350 W for anything matching "3090"; the RTX
+        // 3090 Ti in this machine reports an enforced cap of 450 W through the
+        // same crate's GPU monitor, in the same process. That figure feeds
+        // `analyze_thermal_envelope`, so a 100 W error propagates into a cooling
+        // verdict -- and the correct number was already being read on another
+        // surface, which is the shape recorded in the handoff as "the reader was
+        // in the same binary".
+        // Only where there is a discrete GPU to ask about. The lookup builds a
+        // `SiliconMonitor` and snapshots every adapter, which costs seconds --
+        // worth paying for a real card's real cap, not worth paying to learn
+        // that an integrated-only machine has no cap to report.
+        let measured = self
+            .features
+            .has_discrete_gpu
+            .then(Self::measured_gpu_power_cap_watts)
+            .flatten();
+        match measured {
+            Some(watts) => {
+                self.features.gpu_tdp_watts = watts;
+                self.features.gpu_tdp_measured = true;
+            }
+            None => {
+                self.features.gpu_tdp_watts = Self::infer_gpu_tdp(&gpu_lower);
+                self.features.gpu_tdp_measured = false;
+            }
+        }
     }
 
     fn extract_storage_features(&mut self) {
@@ -1764,14 +1806,20 @@ impl HardwareInferenceEngine {
         let cpu_year = Self::infer_cpu_year(&cpu_lower);
         let gpu_year = Self::infer_gpu_year(&gpu_lower);
 
+        // The current year, from the clock, not from whoever last edited this
+        // function. It was the literal `2025.0` in three places, so every age in
+        // the report was a year short the moment the year turned and grew a year
+        // more wrong for each one after -- silently, because an age is plausible
+        // at any value. A hardcoded *release* year is a fact about a product; a
+        // hardcoded *current* year is a fact about the editor's calendar.
+        let current = Self::current_year();
         let years = match (cpu_year, gpu_year) {
             (Some(cy), Some(gy)) => {
                 let avg = (cy + gy) as f32 / 2.0;
-                let current = 2025.0;
                 (current - avg).max(0.0)
             }
-            (Some(cy), None) => (2025.0 - cy as f32).max(0.0),
-            (None, Some(gy)) => (2025.0 - gy as f32).max(0.0),
+            (Some(cy), None) => (current - cy as f32).max(0.0),
+            (None, Some(gy)) => (current - gy as f32).max(0.0),
             (None, None) => {
                 // Guess from specs
                 if f.cpu_cores_physical >= 16 && f.has_nvme {
@@ -1925,6 +1973,21 @@ impl HardwareInferenceEngine {
         None
     }
 
+    /// The current year, as a float, from the system clock.
+    ///
+    /// Seconds since the epoch divided by the mean Gregorian year (365.2425
+    /// days) -- close enough for an age in years, and it needs no calendar
+    /// crate. A clock before 1970 yields 1970, which will look wrong in a report
+    /// rather than producing a negative age.
+    fn current_year() -> f32 {
+        const SECONDS_PER_YEAR: f32 = 365.2425 * 24.0 * 60.0 * 60.0;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f32())
+            .unwrap_or(0.0);
+        1970.0 + secs / SECONDS_PER_YEAR
+    }
+
     fn infer_gpu_year(model: &str) -> Option<u16> {
         // NVIDIA GeForce
         if model.contains("rtx 50") || model.contains("5090") || model.contains("5080") {
@@ -1932,6 +1995,23 @@ impl HardwareInferenceEngine {
         }
         if model.contains("rtx 40") || model.contains("4090") || model.contains("4080") {
             return Some(2022);
+        }
+        // A refresh ships after the series it belongs to, so the specific model
+        // has to be matched before the series rule swallows it. The 3090 Ti in
+        // the development machine dated to 2020 by the `rtx 30` rule and shipped
+        // in March 2022 -- the age estimate was two years out for the one card
+        // this table was checked against.
+        //
+        // Only refreshes whose date is known are listed. A rule for every card
+        // would be a release database, and this is a heuristic that says so:
+        // `estimate_hardware_age` reports 0.85 confidence when both years are
+        // guessed here, which is high for a substring table and is item 4 of the
+        // handoff.
+        if model.contains("3090 ti") {
+            return Some(2022);
+        }
+        if model.contains("3080 ti") || model.contains("3070 ti") {
+            return Some(2021);
         }
         if model.contains("rtx 30") || model.contains("3090") || model.contains("3080") {
             return Some(2020);
@@ -2065,6 +2145,7 @@ impl HardwareInferenceEngine {
             estimated_total_tdp_watts: total_tdp,
             cpu_tdp_watts: cpu_tdp,
             gpu_tdp_watts: gpu_tdp,
+            gpu_tdp_measured: f.gpu_tdp_measured,
             headroom,
             cooling_score,
             recommendations,
@@ -2119,6 +2200,24 @@ impl HardwareInferenceEngine {
             return 5.0;
         }
         65.0 // default guess
+    }
+
+    /// The enforced power cap of the first adapter that reports one, in watts.
+    ///
+    /// This is what the driver will actually let the card draw, which is the
+    /// number the thermal model wants; the name table below is a stand-in for
+    /// when nothing reports it. NVML reports it for NVIDIA cards; the Windows
+    /// AMD and Intel backends report nothing, and this returns `None` for them
+    /// so the table still answers.
+    ///
+    /// Milliwatts in the reading, watts here, because every threshold in
+    /// `analyze_thermal_envelope` is written in watts.
+    fn measured_gpu_power_cap_watts() -> Option<f32> {
+        let monitor = crate::SiliconMonitor::new().ok()?;
+        let gpus = monitor.snapshot_gpus().ok()?;
+        gpus.iter()
+            .find_map(|g| g.dynamic_info.power.limit)
+            .map(|mw| mw as f32 / 1000.0)
     }
 
     fn infer_gpu_tdp(model_lower: &str) -> f32 {
@@ -2442,6 +2541,9 @@ mod tests {
                 has_tensor_cores: true,
                 has_rt_cores: true,
                 gpu_tdp_watts: 285.0,
+                // Synthetic features, so the figure above is the table's, not a
+                // driver's.
+                gpu_tdp_measured: false,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 2000.0,
@@ -2488,6 +2590,9 @@ mod tests {
                 has_tensor_cores: false,
                 has_rt_cores: false,
                 gpu_tdp_watts: 0.0,
+                // Synthetic features, so the figure above is the table's, not a
+                // driver's.
+                gpu_tdp_measured: false,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 15000.0,
@@ -2536,6 +2641,9 @@ mod tests {
                 has_tensor_cores: true,
                 has_rt_cores: true,
                 gpu_tdp_watts: 100.0,
+                // Synthetic features, so the figure above is the table's, not a
+                // driver's.
+                gpu_tdp_measured: false,
                 has_nvme: true,
                 has_ssd: true,
                 total_storage_gb: 512.0,
@@ -2604,6 +2712,55 @@ mod tests {
         assert_eq!(
             HardwareInferenceEngine::infer_cpu_year("amd ryzen 7 7700x"),
             Some(2022)
+        );
+    }
+
+    /// The year the report ages hardware against comes from the clock.
+    ///
+    /// It was the literal `2025.0`, in three places. A test that asserted the
+    /// literal would have passed forever while the answer drifted, so this
+    /// asserts the property instead: the value tracks the system clock, and no
+    /// build of this crate is pinned to the year it was written in.
+    #[test]
+    fn the_current_year_comes_from_the_clock_not_from_the_source() {
+        let year = HardwareInferenceEngine::current_year();
+        assert!(
+            year > 2024.0 && year < 2100.0,
+            "current_year() returned {year}, which is not a plausible year from a \
+             working clock"
+        );
+
+        // And it is not the constant that used to be here: this crate was
+        // written in 2025 and is expected to keep running afterwards.
+        let from_the_clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_secs_f32()
+            / (365.2425 * 24.0 * 60.0 * 60.0)
+            + 1970.0;
+        assert!(
+            (year - from_the_clock).abs() < 0.01,
+            "current_year() {year} does not match the clock {from_the_clock}"
+        );
+    }
+
+    /// A refresh ships after the series it belongs to.
+    #[test]
+    fn a_ti_refresh_is_not_dated_from_its_series() {
+        // The card this engine was audited on. `rtx 30` would answer 2020; the
+        // 3090 Ti shipped in March 2022.
+        assert_eq!(
+            HardwareInferenceEngine::infer_gpu_year("nvidia geforce rtx 3090 ti"),
+            Some(2022)
+        );
+        assert_eq!(
+            HardwareInferenceEngine::infer_gpu_year("nvidia geforce rtx 3080 ti"),
+            Some(2021)
+        );
+        // The base cards keep the series year.
+        assert_eq!(
+            HardwareInferenceEngine::infer_gpu_year("nvidia geforce rtx 3090"),
+            Some(2020)
         );
     }
 
