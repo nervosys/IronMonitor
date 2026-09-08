@@ -47,9 +47,17 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
             name = name.replace("NVIDIA ", "");
         }
 
-        // Get utilization
-        let utilization = device.utilization_rates().ok();
-        let load = utilization.map(|u| u.gpu as f32).unwrap_or(0.0);
+        // Get utilization.
+        //
+        // `GpuStatus::load` became `Option<f32>` in `549ca3e`, so that a card at
+        // 0% and a card whose counter could not be read stop being the same
+        // number. This path kept `unwrap_or(0.0)` and so kept publishing the
+        // second as the first -- and, because the field is now an `Option`, it
+        // also stopped compiling. **Every Linux CI job has been red since
+        // 2026-09-03 for this one line**: `error[E0308]` in a
+        // `cfg(feature = "nvml")` block that a Windows compiler never reads and
+        // that the handoff's cross-check feature list does not enable.
+        let load = device.utilization_rates().ok().map(|u| u.gpu as f32);
 
         // Get memory info
         let memory_info = device.memory_info().ok();
@@ -104,7 +112,11 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
         };
 
         let info = GpuInfo {
-            gpu_type: GpuType::Integrated, // Could be discrete
+            // An NVML-enumerated device on Linux is a discrete card. The
+            // integrated case is Jetson, which `read_jetson_gpus` below
+            // enumerates through devfreq instead and labels correctly. This
+            // said `Integrated` with the comment "Could be discrete" beside it.
+            gpu_type: GpuType::Discrete,
             status,
             frequency,
             power_control: "nvml".to_string(),
