@@ -7,7 +7,13 @@ Current as of 6.0.0. This file is excluded from the published crate
 
 Merged to `master` as a fast-forward and tagged **`v6.0.0`** at `1947426`, with
 **CI green on all three platforms**. Not published to crates.io — declined for
-5.2.0 and 6.0.0, tag only. `master` and the tag point at the same commit.
+5.2.0 and 6.0.0, tag only.
+
+**`master` has moved on since the tag, and CI is green again as of `e629af8`** —
+all seven jobs, Windows included, for the first time since 2026-09-02. It had
+been red for five days on two separate faults, one per platform, and neither was
+visible from a local run on this machine. Both are described below under *The
+line that made every Linux job red* and *The crash with no panic*.
 
 | Commit | What |
 |---|---|
@@ -160,9 +166,67 @@ Since the tag, on `master` and green on all three platforms:
 | `8fe9da9` | A source for every SMART absence, and the RNG the feature list already named |
 | `f4ea43d` | The current year from the clock, and the power cap from the driver |
 | `001f764` | The line that made every Linux job red since 2026-09-03 |
+| `e629af8` | The crash with no panic: COM interfaces released after their apartment |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The crash with no panic
+
+Pushing the Linux fix turned four jobs green and left one red: **Test
+(windows-latest)**, dying with
+
+```
+error: test failed, to rerun pass `--lib`
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+```
+
+No panic, no assertion, no failing test named — the lib test binary simply gone,
+61 tests in. The same signature is in the previous run, four days earlier, so it
+was not something this session introduced; the last fully green run was
+2026-09-02, and **the Windows fault and the Linux one arrived in the same batch
+of commits.**
+
+The 61 completed tests are alphabetically early, and the last one printed is
+`audio::tests::test_audio_device_serialization`. The three audio tests that
+construct an `AudioMonitor` were the ones still running. `64e5cf3` — the mixer
+binding, landed 2026-09-03 — is in the batch.
+
+```rust
+let initialised = CoInitializeEx(...).is_ok();
+let enumerator: IMMDeviceEnumerator = CoCreateInstance(...);
+...
+if initialised { CoUninitialize(); }
+// <- `enumerator` dropped HERE, after the apartment is gone
+```
+
+`IMMDeviceEnumerator` is reference-counted and its `Drop` calls `Release`. Rust
+drops it at the end of the scope it was *declared* in — the same scope as the
+`CoUninitialize()`, and therefore after it. **Releasing a COM interface into a
+torn-down apartment is undefined, and on Windows it is an access violation: a
+process that dies without a panic, which is the only thing the harness can
+report.** Every interface now lives in a labelled `'com` block that closes before
+the uninitialise.
+
+**Why 896 local tests never saw it.** COM is per-thread and first-in wins. On
+this machine the `wmi` crate has usually already initialised COM on the thread
+that runs these tests, so `CoInitializeEx` finds the apartment up, `initialised`
+is false, and `CoUninitialize` never runs — the bug is real on every machine and
+*fires* only where this reader is first in, which on a fresh runner thread it is.
+
+**Three lessons, and the third is the one worth keeping.**
+
+- A crash is not a test failure. `--lib` with no test name and "exited
+  abnormally" means a signal or an access violation, and no amount of reading
+  assertions will find it. Look for undefined behaviour, and look at what was
+  running rather than what failed.
+- Alphabetical position is evidence. The harness starts tests in order, so the
+  last few printed bound the region where the process died.
+- **A latent UB bug is a coin the environment flips.** This one was written
+  correctly enough to pass review, pass 896 local tests, and destroy a CI runner
+  — the difference being whether some *other* library got to COM first. The
+  local suite could not have caught it, and no amount of running it more times
+  would have.
 
 ### The line that made every Linux job red
 
