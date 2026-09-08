@@ -168,9 +168,38 @@ Since the tag, on `master` and green on all three platforms:
 | `001f764` | The line that made every Linux job red since 2026-09-03 |
 | `e629af8` | The crash with no panic: COM interfaces released after their apartment |
 | `448a289` | A two-GPU machine graded on one GPU's power budget |
+| `9df8e67` | The CPU's own power limit, where the platform states one |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The other half of the envelope
+
+Item 4's last open limit, and the answer is the same shape as the GPU's: the
+platform states a power limit, and the crate was guessing one from a model name.
+RAPL's `constraint_0_power_limit_uw` is the long-term package limit -- the
+configured TDP -- and `rapl::RaplMonitor` already reads and parses it. The
+envelope takes it where it exists, sums the package domains so a two-socket
+machine is priced as two, and `ThermalEnvelope::cpu_tdp_measured` says which of
+the two figures a consumer holds.
+
+That flag is the point. The envelope's total mixes a **measured** 900 W GPU
+budget with a **guessed** 120 W CPU one, and nothing distinguished them:
+
+```
+CPU TDP:  120 W (the model-name table; no package limit was readable)
+GPU TDP:  900 W over 2 adapter(s) (the caps the drivers enforce)
+total:    1050 W
+```
+
+**Half of this is unverified, and it is the half that reads.** `RaplMonitor::new()`
+fails on Windows -- the MSRs need a kernel driver, there is no sysfs equivalent --
+so this machine exercises the `Err` path, the table, and the flag reading false.
+No Linux machine was available. The parse it depends on is covered by `rapl`'s
+own tests; the wiring is not. **`measured_cpu_power_cap_watts` says that in its
+own doc comment**, which is the difference between a known gap and a surprise:
+item 18 of this file exists because a reader written by inspection and not
+labelled as such is indistinguishable from one that has run.
 
 ### The second card
 
@@ -364,11 +393,13 @@ above is what it prints.
 - ~~**The envelope counts one GPU.**~~ **Fixed in `448a289`**: the caps of every
   adapter that reports one are summed, and `ThermalEnvelope::gpu_adapters_counted`
   says how many did. This machine reads 900 W over two adapters, 1050 W total.
-- **`infer_cpu_tdp` is still a table**, and `ryzen 9` returns 120 W for every
-  chip in the family. That is right for this 9900X and wrong for a 9950X (170 W)
-  and a 5950X (105 W). Windows exposes no CPU TDP, and RAPL needs a driver here,
-  so unlike the GPU there is no measurement to prefer — the table is the only
-  answer available and it is at least labelled as one now.
+- ~~**`infer_cpu_tdp` is still a table**~~ **Addressed in `9df8e67`**, as far as
+  this machine can: RAPL's package power limit is preferred where the platform
+  states one, and `ThermalEnvelope::cpu_tdp_measured` says whether it did.
+  Windows states none, so the table still answers here — `ryzen 9` returns 120 W
+  for a whole family, right for this 9900X and wrong for a 9950X (170 W) — and
+  the flag reads false. **The reading half has never run**: it needs a Linux
+  machine, and that is what is left of item 4.
 
 ### Which source said nothing
 
@@ -6246,8 +6277,10 @@ feature stayed broken through eight published versions.
    driver enforces where one is reported, with `ThermalEnvelope::gpu_tdp_measured`
    saying which. Two limits remain and are described in the section above: the
    envelope counted one GPU on a two-GPU machine — fixed in `448a289`, see *The
-   second card* — and `infer_cpu_tdp` is still a family-wide table with no
-   measurement available to prefer.
+   second card* — and `infer_cpu_tdp` was a family-wide table, now preferring
+   RAPL's package limit where a platform states one (`9df8e67`), which Windows
+   does not. **What is left of this item is a Linux machine**: for the classifier
+   weights, and to run the CPU power-limit path that has never executed.
 
    **`cargo run --example hardware_inference --features cli` prints the report**,
    which is what this item asks you to read on a laptop. That example did not
