@@ -170,6 +170,7 @@ Since the tag, on `master` and green on all three platforms:
 | `448a289` | A two-GPU machine graded on one GPU's power budget |
 | `9df8e67` | The CPU's own power limit, where the platform states one |
 | `367429a` | 93.6 GiB of RAM published as 98 MB, and the test that found it |
+| `7abbd92` | The agent tool surface's numbers, against the ontology's |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -212,11 +213,28 @@ asserts that it compared *something*, because a surface that stops publishing
 totals would otherwise make it pass by having nothing left to check.
 
 **Where to point this next.** The same technique applies to every pair of
-surfaces this crate has over one machine, and it has now found two defects in
-two attempts: the active power scheme (`simon profile explain` versus a "no
-resolver bound" absence) and this. The remaining pairs are the agent tool
-surface, `simon cli`'s human output, and the AI export formats — none of which
-has ever been checked against the ontology it claims to describe.
+surfaces this crate has over one machine, and it had found two defects in two
+attempts when this was written: the active power scheme (`simon profile explain`
+versus a "no resolver bound" absence) and the exporter above.
+
+**The third attempt came back clean**, and that is worth as much in a file like
+this: `tests/agent_agreement.rs` (`7abbd92`) compares `AiDataApi::call_tool` --
+what an LLM reads through MCP -- against the ontology, and installed memory,
+swap size and the logical core count all match exactly. Nobody needs to wonder
+about that pair again.
+
+Its first draft, though, **passed while comparing almost nothing**. It looked for
+`cores.physical` in `get_cpu_status`, which reports `core_count`; the pair
+silently skipped and the test went green on the memory figures alone. A missing
+path is a failure there now, with a message saying the field was renamed or
+dropped. **In an agreement test the dangerous outcome is not a wrong comparison
+but an absent one**, because both look identical from the outside — green.
+
+Verified by mutation, which is the cheapest possible way to find out whether an
+agreement test can fail at all: pointing `core_count` at `cpu.cores.physical`
+turns it red with `24 (x1 = 24) but cpu.cores.physical = 12`.
+
+Still unchecked: `simon cli`'s human output and the AI export formats.
 
 ### The other half of the envelope
 
