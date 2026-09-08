@@ -171,6 +171,7 @@ Since the tag, on `master` and green on all three platforms:
 | `9df8e67` | The CPU's own power limit, where the platform states one |
 | `367429a` | 93.6 GiB of RAM published as 98 MB, and the test that found it |
 | `7abbd92` | The agent tool surface's numbers, against the ontology's |
+| `282fbaf` | The JSON-LD manifest had no tools in it |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -234,7 +235,27 @@ Verified by mutation, which is the cheapest possible way to find out whether an
 agreement test can fail at all: pointing `core_count` at `cpu.cores.physical`
 turns it red with `24 (x1 = 24) but cpu.cores.physical = 12`.
 
-Still unchecked: `simon cli`'s human output and the AI export formats.
+**The fourth attempt found the largest omission yet, and not by comparing
+numbers.** `simon ai manifest --format jsonld` returns 295 bytes; every other
+format returns 21-25 KB. `to_json_ld` ignored `self.tools` and emitted six fixed
+keys naming the application — a manifest of nothing, offered in the CLI's help
+beside the nine formats that answer. **The CLI exits zero and the JSON parses**,
+which is why a surface can stay empty for as long as this one did: it is not a
+failure, it is a valid answer to a question nobody asked.
+
+`every_format_carries_every_tool` (`282fbaf`) counts tool names in each format's
+serialised output rather than knowing any format's shape, so it holds for a
+format added by someone who never reads this file. Without the fix: `JsonLd omits
+52 of 52 tools, starting with get_system_summary`.
+
+**Four pairs checked, three defects, and they were not the same kind.** A unit
+error (KB under a `_bytes` name), a reader that existed on another surface (the
+active power scheme), and an exporter that dropped its payload entirely. The only
+thing they have in common is that each surface looked correct when read on its
+own — which is the argument for checking surfaces *against each other* rather
+than more carefully one at a time.
+
+Still unchecked: `simon cli`'s human output.
 
 ### The other half of the envelope
 
@@ -6590,6 +6611,21 @@ feature stayed broken through eight published versions.
    dangling objects and no corruption, which is worth checking every time —
    `~/.cargo/config.toml` records a git ref corrupted mid-commit by an earlier
    occurrence.
+
+   **It refilled in nine hours and took a file with it.** The six other projects
+   rebuilt everything that had been deleted, at roughly 30 GB an hour, and the
+   disk hit zero again the same evening — this time in the middle of a script
+   rewriting `HANDOFF.md`. Python's `open(path, "w")` truncates before it writes,
+   so the failure left **a zero-byte handoff**, and the only reason nothing was
+   lost is that the file had been committed twenty minutes earlier:
+   `git checkout -- HANDOFF.md` brought it back whole.
+
+   **Write through a temporary file and rename.** `os.replace` is atomic on
+   Windows and on POSIX, so a full disk costs you the write and not the file.
+   Every script in this session that edited a tracked file used the truncating
+   form, and on any other evening that would have been fine — which is the point:
+   the practice has to be in place before the disk fills, because afterwards
+   there is nothing to fix it with except the last commit.
 
    **The lock is shared, and so is the queue.** `target-dir` is machine-wide, so
    *every* Rust project on this box serialises on one build-directory lock. With
