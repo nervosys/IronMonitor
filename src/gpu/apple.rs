@@ -10,7 +10,14 @@ use crate::error::Error;
 pub struct AppleGpu {
     index: u32,
     name: String,
-    cores: u32,
+    /// GPU core count, where `system_profiler` reported one.
+    ///
+    /// `None` rather than a default. This was `u32` seeded with `8` and parsed
+    /// with `unwrap_or(8)`, and it reached `GpuStaticInfo::shader_cores` as
+    /// `Some(8)` -- a sentinel wrapped in the very type that exists to say
+    /// whether anything was read. `shader_cores` is `Option<u32>` precisely so
+    /// that an unread count can be `None`, and the reader filled it in anyway.
+    cores: Option<u32>,
 }
 
 impl AppleGpu {
@@ -21,7 +28,7 @@ impl AppleGpu {
     /// escaped as though they were: `max_frequency` was reported as the GPU's
     /// `graphics_max` clock, and `max_power` was the denominator of a power
     /// `usage_percent`. Apple exposes neither figure, so both are now `None`.
-    pub fn new(index: u32, name: String, cores: u32) -> Self {
+    pub fn new(index: u32, name: String, cores: Option<u32>) -> Self {
         Self { index, name, cores }
     }
 
@@ -35,13 +42,20 @@ impl AppleGpu {
 
         let text = String::from_utf8_lossy(&output.stdout);
         let mut gpus = Vec::new();
-        let mut cores = 8; // Default
 
-        // Parse for GPU cores
+        // `None` until `system_profiler` states a count.
+        //
+        // This was `let mut cores = 8; // Default`, parsed with
+        // `unwrap_or(8)`. Eight is the GPU core count of a base M1 and M2, so
+        // a machine whose `system_profiler` output lacked the line -- or whose
+        // count failed to parse -- was reported as one of those, and an M3 Max
+        // with forty cores would have been reported as having eight.
+        let mut cores: Option<u32> = None;
+
         for line in text.lines() {
             if line.contains("Total Number of Cores") {
                 if let Some(cores_str) = line.split(':').nth(1) {
-                    cores = cores_str.trim().parse().unwrap_or(8);
+                    cores = cores_str.trim().parse().ok();
                 }
             }
         }
@@ -85,7 +99,7 @@ impl Gpu for AppleGpu {
             vbios_version: None,
             driver_version: None,
             compute_capability: None,
-            shader_cores: Some(self.cores),
+            shader_cores: self.cores,
             l2_cache: None,
             num_engines: None,
             integrated: true, // Apple Silicon GPUs are always integrated
