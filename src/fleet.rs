@@ -276,18 +276,29 @@ impl FleetManager {
                 let cpu_score = 100.0 - m.cpu_usage_percent;
                 let mem_score = 100.0 - m.memory_usage_percent;
                 let disk_score = 100.0 - m.disk_usage_percent;
-                let gpu_score = m
-                    .gpu_temperature_max
-                    .map(|t| {
-                        if t < 80.0 {
-                            100.0
-                        } else {
-                            100.0 - (t - 80.0) * 5.0
-                        }
-                    })
-                    .unwrap_or(100.0);
-                (cpu_score * 0.3 + mem_score * 0.3 + disk_score * 0.2 + gpu_score * 0.2)
-                    .clamp(0.0, 100.0)
+
+                // The GPU term is weighted in only when there is a temperature
+                // to weigh.
+                //
+                // `unwrap_or(100.0)` gave a host with no GPU reading the full
+                // twenty points for being cool -- so an unread sensor and a
+                // perfectly cool card scored identically, and a host whose
+                // thermal probe had failed looked *better* than one reporting
+                // 85 C. Rescaling by the weight actually used scores a host on
+                // what is known about it rather than crediting it for what is
+                // not.
+                let mut weighted = cpu_score * 0.3 + mem_score * 0.3 + disk_score * 0.2;
+                let mut weight = 0.8;
+                if let Some(t) = m.gpu_temperature_max {
+                    let gpu_score = if t < 80.0 {
+                        100.0
+                    } else {
+                        100.0 - (t - 80.0) * 5.0
+                    };
+                    weighted += gpu_score * 0.2;
+                    weight += 0.2;
+                }
+                (weighted / weight).clamp(0.0, 100.0)
             }
         }
     }
@@ -406,4 +417,75 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(gpu_temperature_max: Option<f64>) -> HostInfo {
+        HostInfo {
+            host_id: "h".into(),
+            hostname: "h".into(),
+            address: None,
+            tags: HashMap::new(),
+            status: HostStatus::Online,
+            last_seen: 0,
+            latest_metrics: Some(HostMetrics {
+                cpu_usage_percent: 20.0,
+                memory_usage_percent: 20.0,
+                gpu_temperature_max,
+                gpu_utilization_max: None,
+                disk_usage_percent: 20.0,
+                network_rx_bytes_sec: 0.0,
+                network_tx_bytes_sec: 0.0,
+                process_count: 0,
+                uptime_seconds: 0,
+                timestamp: 0,
+            }),
+        }
+    }
+
+    /// An unread GPU temperature must not earn the points a cool one does.
+    ///
+    /// The GPU term was `unwrap_or(100.0)`, so a host with no temperature
+    /// collected the full twenty points for being cool. That made an unread
+    /// sensor and a perfectly cool card score identically, and left a host
+    /// whose probe had failed scoring **higher** than one honestly reporting
+    /// 85 C.
+    #[test]
+    fn a_missing_gpu_temperature_is_not_a_cool_gpu() {
+        let cool = FleetManager::host_health_score(&host(Some(40.0)));
+        let hot = FleetManager::host_health_score(&host(Some(90.0)));
+        let unread = FleetManager::host_health_score(&host(None));
+
+        assert!(
+            hot < cool,
+            "a hotter GPU must score lower: {hot} is not below {cool}"
+        );
+        // An unread GPU neither earns the cool card's bonus nor takes the hot
+        // card's penalty: the host is scored on the three components that were
+        // measured, which at 20% usage each is 80.
+        assert!(
+            (unread - 80.0).abs() < 0.001,
+            "an unread GPU term should leave the weighted mean of the measured \
+             components, 80, and gave {unread}"
+        );
+        assert!(
+            hot < unread && unread < cool,
+            "an unread temperature belongs between a hot and a cool one, not \
+             level with either: {hot} < {unread} < {cool}"
+        );
+    }
+
+    /// The weights still sum to one when every component is present.
+    #[test]
+    fn a_host_with_every_component_is_scored_on_all_of_them() {
+        // 80 + 80 + 80 across cpu/memory/disk, and a cool GPU at 100.
+        let score = FleetManager::host_health_score(&host(Some(40.0)));
+        assert!(
+            (score - 84.0).abs() < 0.001,
+            "0.3*80 + 0.3*80 + 0.2*80 + 0.2*100 = 84, got {score}"
+        );
+    }
 }
