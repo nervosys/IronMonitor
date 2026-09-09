@@ -178,9 +178,42 @@ Since the tag, on `master` and green on all three platforms:
 | `be68e21` | The third copy of the page size that must not be assumed |
 | `ee73edd` | A failed sysctl described every Mac as a base M1 |
 | `b638e46` | Eight shader cores, wrapped in `Some` to say they were read |
+| `c8bc480` | A core that reported no idle time is not a core at 0% busy |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### Eight copies, six surfaces, one expression
+
+`100.0 - c.idle.unwrap_or(100.0)`. "Assume fully idle", which comes back out as
+a **measured, idle core**. This file records it being fixed twice — in the tsdb
+writer and in `simon serve`'s snapshot path — and eight copies were still live,
+on every surface the crate has:
+
+| Surface | What a consumer saw |
+| --- | --- |
+| `prometheus.rs` | A per-core gauge at 0%, on a dashboard |
+| `agent/state.rs` ×2 | "Core3: 0%" in a sentence an LLM reasons from |
+| `observability/api.rs` ×2 | `0.0` in the REST API's JSON |
+| `backend.rs` | 0% through the pipeline |
+| `tui/app.rs` | An empty bar, which reads as idle |
+
+`CpuCore::idle` has been `Option<f32>` all along, for exactly this reason. The
+four structs downstream were `Vec<f32>` — **a type with no way to say "not
+read"**, the fault the queued section is about — and the expression bridged the
+two by inventing the number the type could not omit.
+
+**The fix is not one fix.** Each surface says it in its own idiom: Prometheus
+emits no series at all (the rule its own temperature block already followed), the
+agent leaves the core out of the sentence while keeping the others' indices, the
+REST API and pipeline serialise `null`, and the TUI prints `unread` rather than
+an empty gauge. A `Vec<Option<f32>>` in the middle is what lets each of them
+choose.
+
+**Why eight.** The two earlier fixes each corrected the copy in front of them.
+Nothing greped for the expression, so the other eight sat there — and this is the
+third entry in this file with the same moral. The grep is
+`idle.unwrap_or(100`, and it takes a second.
 
 ### Fixed per function, not per cause
 
