@@ -86,8 +86,14 @@ pub struct NumaSummary {
     pub total_memory_bytes: u64,
     /// Whether the system is truly NUMA (vs UMA)
     pub is_numa: bool,
-    /// Maximum inter-node distance
-    pub max_distance: u32,
+    /// Maximum inter-node distance, or `None` when the SLIT was not readable.
+    ///
+    /// This was a bare `u32` falling back to `10`, which is ACPI SLIT's code for
+    /// *local* — so a machine whose distance matrix could not be read asserted
+    /// uniform memory access, the one conclusion the absence cannot support. The
+    /// fallback was inside the valid range, so no consumer's bounds check could
+    /// tell it from a reading.
+    pub max_distance: Option<u32>,
     /// Memory imbalance ratio (max_node_mem / min_node_mem)
     pub memory_imbalance_ratio: f64,
     /// CPU imbalance ratio
@@ -160,8 +166,7 @@ impl NumaMonitor {
         let max_distance = self
             .distance_matrix
             .as_ref()
-            .map(|d| d.distances.iter().copied().max().unwrap_or(10))
-            .unwrap_or(10);
+            .and_then(|d| d.distances.iter().copied().max());
 
         let mem_vals: Vec<u64> = self
             .nodes
@@ -593,5 +598,59 @@ mod tests {
         assert_eq!(NumaMonitor::parse_cpu_list("0-3"), vec![0, 1, 2, 3]);
         assert_eq!(NumaMonitor::parse_cpu_list("0,2,4"), vec![0, 2, 4]);
         assert_eq!(NumaMonitor::parse_cpu_list("0-1,4-5"), vec![0, 1, 4, 5]);
+    }
+}
+
+#[cfg(test)]
+mod absent_slit_tests {
+    use super::*;
+
+    fn node(id: u32) -> NumaNode {
+        NumaNode {
+            id,
+            cpus: vec![],
+            memory_total_bytes: 0,
+            memory_free_bytes: 0,
+            memory_used_bytes: 0,
+            hugepages_total: 0,
+            hugepages_free: 0,
+            pci_devices: vec![],
+        }
+    }
+
+    #[test]
+    fn an_unreadable_distance_matrix_does_not_assert_local_memory() {
+        // No matrix at all: the summary must decline rather than report 10,
+        // which is ACPI SLIT's own code for "local" and would describe an
+        // unread machine as uniform-memory.
+        let monitor = NumaMonitor {
+            nodes: vec![node(0), node(1)],
+            distance_matrix: None,
+        };
+        assert_eq!(monitor.summary().max_distance, None);
+    }
+
+    #[test]
+    fn an_empty_distance_matrix_does_not_assert_local_memory() {
+        let monitor = NumaMonitor {
+            nodes: vec![node(0)],
+            distance_matrix: Some(NumaDistanceMatrix {
+                size: 0,
+                distances: vec![],
+            }),
+        };
+        assert_eq!(monitor.summary().max_distance, None);
+    }
+
+    #[test]
+    fn a_read_matrix_reports_its_maximum() {
+        let monitor = NumaMonitor {
+            nodes: vec![node(0), node(1)],
+            distance_matrix: Some(NumaDistanceMatrix {
+                size: 2,
+                distances: vec![10, 21, 21, 10],
+            }),
+        };
+        assert_eq!(monitor.summary().max_distance, Some(21));
     }
 }
