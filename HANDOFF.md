@@ -395,6 +395,41 @@ blocks on the target lock with no output and looks exactly like the hang it is
 waiting behind. Use a second target dir when running a build beside a test run,
 or the first symptom you diagnose will be the wrong one.
 
+### Two dead GUI dependencies, and a migration that stays reversed
+
+`egui_extras` and `egui_plot` were declared and pulled in by the `gui` feature
+and **referenced by nothing**. No `use`, no path, no macro — zero mentions in any
+`.rs` file in the repo. `cargo build --all-features` and the full suite (924 lib
+tests, 21 suites) are green with both deleted from the manifest and from the
+`gui` feature list.
+
+`egui_plot` is explained by this project's own changelog: the hand-drawn CPU
+history chart *replaced* the `egui_plot` graph, and the dependency was left
+behind. A dependency outlives its last caller silently, because nothing fails.
+
+**It buys less than it looks like it should**, and the two guesses made while
+removing it were both wrong:
+
+- The MSRV floor is unaffected. `image 0.25.10` is what forces 1.88, and
+  `cargo tree -i image` puts it under `eframe` directly, not `egui_extras`.
+- The cross-target `--all-features` check is still blocked. See the corrected
+  chain under *Verification that is worth repeating*.
+
+So this is a smaller, plainer change than it first appeared: two dependencies
+nothing uses, deleted. Worth doing, and worth not overclaiming.
+
+**On replacing the interfaces.** Switching the TUI to HawkTUI and the GUI to
+DeweyGUI was raised and **declined**. The Dewey port was already tried across
+4.0.0-4.0.4 and withdrawn in 5.0.0, and a reversal is evidence: the argument for
+going back has to be stronger than the argument that produced the retreat, and
+"the dependency has had a year of work since" is not that. DeweyGUI is at 1.2.0
+and HawkTUI at 2.0.0, both actively developed, so the option stays open — but
+the standing decision is that ratatui and egui remain the interfaces, and
+anyone reopening it should read the withdrawal note in *Open work 13* first.
+
+The consequence for the three open dependabot PRs is that they are **live
+questions, not superseded ones** — see below.
+
 ### The rest of the fifty, triaged
 
 The `unwrap_or(<non-zero>)` list, read to the end. Recorded so nobody reads them
@@ -6577,8 +6612,16 @@ happily while `cargo check --all-features` on Linux did not. See
 `Cargo.toml`, add it here too, or it joins the set of code no local check reads.
 
 **The cross-checks cannot use `--all-features`, and the reason is not obvious.**
-`gui` pulls `egui_extras → ehttp → ureq → rustls → ring`, and `ring`'s build
-script needs a C cross-compiler for the target. Without one the check dies in a
+`ring`'s build script needs a C cross-compiler for the target.
+
+**The chain named here was `egui_extras → ehttp → ureq → rustls → ring`, and
+that is no longer the route.** `cargo tree -i ring --all-features` says `ring`
+arrives through `reqwest → rustls`, by way of both this crate and `ironvault`.
+Removing `egui_extras` therefore bought no cross-check relief at all, which was
+the guess when it was removed and was wrong. `reqwest` is not optional the way
+`gui` is, so this constraint is now structural rather than a GUI cost. Re-run the
+`cargo tree` before believing any dependency chain written down here — this one
+was accurate when recorded and quietly stopped being so. Without one the check dies in a
 build script having compiled none of this crate's own code, which reads at a
 glance like a broken toolchain rather than a missing one. Keep the feature lists
 above; `cargo tree -i ring --target <t> -e normal,dev` is how that was traced.
