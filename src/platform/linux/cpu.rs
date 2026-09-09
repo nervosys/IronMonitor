@@ -15,8 +15,9 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     let proc_stat = fs::read_to_string("/proc/stat")?;
     let cpu_times = parse_proc_stat(&proc_stat)?;
 
-    // Get number of CPUs
-    let cpu_count = get_cpu_count();
+    // Get number of CPUs. `/proc/stat` is passed as the last resort because it
+    // is already in hand and lists one line per online CPU.
+    let cpu_count = get_cpu_count(&cpu_times);
 
     // Read per-core information
     for cpu_id in 0..cpu_count {
@@ -30,29 +31,52 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     Ok(stats)
 }
 
-fn get_cpu_count() -> usize {
-    let online = fs::read_to_string("/sys/devices/system/cpu/online")
+/// The number of CPUs to enumerate, or 0 when none of the three sources could be
+/// read.
+///
+/// Zero is deliberate. This count is a loop bound, so a wrong value under-reports
+/// rather than inventing a figure — but it used to fall back to `1`, and a
+/// container with a restricted `/sys` would then describe a 24-core host as a
+/// single-core machine. One is inside the range of counts a real machine has, so
+/// every guard downstream that tests `physical_cores > 0` accepts it; zero fails
+/// that guard, which is the whole point of the guard. Same class as the
+/// `unwrap_or(1)` in `cpu_microarch` and the base-M1 default in `silicon/apple`.
+fn get_cpu_count(cpu_times: &[(String, Vec<u64>)]) -> usize {
+    if let Some(count) = fs::read_to_string("/sys/devices/system/cpu/online")
         .ok()
-        .and_then(|s| parse_cpu_range(&s));
-
-    if let Some(count) = online {
-        count
-    } else {
-        // Fallback to counting CPU directories
-        fs::read_dir("/sys/devices/system/cpu")
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_name().to_string_lossy().starts_with("cpu")
-                            && e.file_name().to_string_lossy()[3..]
-                                .chars()
-                                .all(|c| c.is_ascii_digit())
-                    })
-                    .count()
-            })
-            .unwrap_or(1)
+        .and_then(|s| parse_cpu_range(&s))
+    {
+        return count;
     }
+
+    // Then the per-CPU directories, which are present even for offline CPUs.
+    let dirs = fs::read_dir("/sys/devices/system/cpu")
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| is_cpu_n(&e.file_name().to_string_lossy()))
+                .count()
+        })
+        .unwrap_or(0);
+    if dirs > 0 {
+        return dirs;
+    }
+
+    // Finally `/proc/stat`, which the caller has already read. It carries one
+    // `cpuN` line per online CPU beside the `cpu` aggregate, which is skipped.
+    count_proc_stat_cpus(cpu_times)
+}
+
+/// `cpu0`, `cpu17` — not `cpufreq`, `cpuidle`, or the bare `cpu` aggregate.
+fn is_cpu_n(name: &str) -> bool {
+    match name.strip_prefix("cpu") {
+        Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+fn count_proc_stat_cpus(cpu_times: &[(String, Vec<u64>)]) -> usize {
+    cpu_times.iter().filter(|(name, _)| is_cpu_n(name)).count()
 }
 
 fn parse_cpu_range(range: &str) -> Option<usize> {
@@ -97,11 +121,17 @@ fn read_cpu_core(cpu_id: usize, cpu_times: &[(String, Vec<u64>)]) -> Result<CpuC
 
     // Get CPU times for this core
     let cpu_name = format!("cpu{}", cpu_id);
+    // A core with no `/proc/stat` line was not measured. It used to fall back to
+    // `Some(100.0)` — a *measured, fully idle* core — which is the same expression
+    // this crate has now removed from eight consumer surfaces, here at its source.
+    // `/proc/stat` lists only online CPUs while `get_cpu_count` counts from the
+    // sysfs `online` range, which is `max + 1`, so any machine with an offline CPU
+    // below the highest reaches this arm.
     let (user, nice, system, idle) = cpu_times
         .iter()
         .find(|(name, _)| name == &cpu_name)
         .map(|(_, times)| calculate_cpu_percentages(times))
-        .unwrap_or((None, None, None, Some(100.0)));
+        .unwrap_or((None, None, None, None));
 
     // Read CPU model
     let model = read_cpu_model();
@@ -225,7 +255,14 @@ fn read_coretemp_temperature(_cpu_id: usize) -> Option<i32> {
 /// Get CPU temperatures for all cores
 pub fn read_all_cpu_temperatures() -> HashMap<usize, i32> {
     let mut temperatures = HashMap::new();
-    let cpu_count = get_cpu_count();
+    // This caller has no `/proc/stat` in hand, so it reads one for the last-resort
+    // count. An unreadable `/proc/stat` leaves the slice empty, which is the
+    // "could not tell" answer rather than a machine with one core.
+    let cpu_times = fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|s| parse_proc_stat(&s).ok())
+        .unwrap_or_default();
+    let cpu_count = get_cpu_count(&cpu_times);
 
     for cpu_id in 0..cpu_count {
         if let Some(temp) = read_cpu_temperature(cpu_id) {
@@ -333,5 +370,76 @@ fn calculate_total(cores: &[CpuCore]) -> CpuTotal {
         nice: online_cores.iter().filter_map(|c| c.nice).sum::<f32>() / count,
         system: online_cores.iter().filter_map(|c| c.system).sum::<f32>() / count,
         idle: online_cores.iter().filter_map(|c| c.idle).sum::<f32>() / count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_n_directories_are_told_from_the_other_cpu_entries() {
+        assert!(is_cpu_n("cpu0"));
+        assert!(is_cpu_n("cpu23"));
+        // `/sys/devices/system/cpu` holds these beside the per-CPU directories,
+        // and the old predicate's `[3..]` slice counted the bare aggregate.
+        assert!(!is_cpu_n("cpufreq"));
+        assert!(!is_cpu_n("cpuidle"));
+        assert!(!is_cpu_n("cpu"));
+        assert!(!is_cpu_n("possible"));
+    }
+
+    #[test]
+    fn proc_stat_cpus_are_counted_without_the_aggregate() {
+        let times =
+            parse_proc_stat("cpu  100 0 50 900\ncpu0 50 0 25 450\ncpu1 50 0 25 450\nintr 12\n")
+                .unwrap();
+        // Three lines start with "cpu"; two of them are CPUs.
+        assert_eq!(times.len(), 3);
+        assert_eq!(count_proc_stat_cpus(&times), 2);
+    }
+
+    #[test]
+    fn an_unreadable_cpu_count_is_zero_and_not_one() {
+        // The property, stated against the last resort: with nothing to count,
+        // the answer is 0. A fallback of 1 is inside the range of real counts,
+        // so every downstream `> 0` guard would accept a failed read as a
+        // single-core machine.
+        assert_eq!(count_proc_stat_cpus(&[]), 0);
+        assert_eq!(
+            count_proc_stat_cpus(&[("cpu".to_string(), vec![1, 2, 3, 4])]),
+            0
+        );
+    }
+
+    #[test]
+    fn a_core_absent_from_proc_stat_is_unread_not_idle() {
+        // cpu1 is offline, so `/proc/stat` has no line for it while the sysfs
+        // `online` range still reports 2 CPUs.
+        let times = parse_proc_stat("cpu  100 0 50 900\ncpu0 50 0 25 450\n").unwrap();
+        let core = read_cpu_core(1, &times).unwrap();
+        assert_eq!(
+            core.idle, None,
+            "an unmeasured core must not report as 100% idle"
+        );
+        assert_eq!(core.user, None);
+        assert_eq!(core.system, None);
+    }
+
+    #[test]
+    fn a_core_present_in_proc_stat_reports_its_measurement() {
+        let times = parse_proc_stat("cpu  100 0 50 900\ncpu0 50 0 25 425\n").unwrap();
+        let core = read_cpu_core(0, &times).unwrap();
+        assert!(core.idle.is_some(), "cpu0 has a line and must be measured");
+        // 425 idle of 500 total.
+        assert!((core.idle.unwrap() - 85.0).abs() < 0.01, "{:?}", core.idle);
+    }
+
+    #[test]
+    fn cpu_ranges_parse_as_a_count() {
+        assert_eq!(parse_cpu_range("0-23"), Some(24));
+        assert_eq!(parse_cpu_range("0"), Some(1));
+        assert_eq!(parse_cpu_range("0,2-5,7"), Some(8));
+        assert_eq!(parse_cpu_range(""), None);
     }
 }
