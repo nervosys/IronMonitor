@@ -179,9 +179,58 @@ Since the tag, on `master` and green on all three platforms:
 | `ee73edd` | A failed sysctl described every Mac as a base M1 |
 | `b638e46` | Eight shader cores, wrapped in `Some` to say they were read |
 | `c8bc480` | A core that reported no idle time is not a core at 0% busy |
+| `e04a0b3` | An unread GPU temperature was worth twenty points of health |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
+
+### The rest of the fifty, triaged
+
+The `unwrap_or(<non-zero>)` list, read to the end. Recorded so nobody reads them
+twice.
+
+**Fixed.**
+
+- `gpu/apple.rs` — eight shader cores wrapped in `Some` (`b638e46`).
+- The eight copies of `100.0 - c.idle.unwrap_or(100.0)` (`c8bc480`).
+- `fleet.rs` — an unread GPU temperature scoring the full twenty points of a
+  host's health, so a failed probe outscored a card honestly reporting 85 C
+  (`e04a0b3`). That file had **no test module at all**; it has one now, and it
+  caught my first attempt at stating the property — I asserted an unread GPU
+  should score level with a cool one, and the code was right and the assertion
+  wrong.
+
+**Checked and correct, with the reason, so they are not re-opened.**
+
+- `cgroup_monitor`'s `unwrap_or(100)` and `unwrap_or(100_000)` are `cpu.weight`
+  and `cpu.max`'s **own documented kernel defaults**: the value the interface
+  has when the file says nothing.
+- `datacenter/chassis.rs`'s `unwrap_or(2)` is SMBIOS chassis type **2, which is
+  "Unknown"** — the specification's own code for the absence, which is the
+  honest fallback rather than a guess at the hardware.
+- `gpu/amd_rocm.rs` and `gpu/intel_levelzero.rs` fall back to `255` for
+  `pwm1_max`, which is that sysfs attribute's default.
+- `hwmon/smart.rs`'s `unwrap_or(40)` is a **string length** bounding a slice, not
+  a temperature.
+- `observability/api.rs`'s `retry_after ... unwrap_or(60)` is an HTTP policy, and
+  the `max_tokens`/`limit`/`count` defaults on the agent surface are request
+  parameters, not readings.
+
+**Noted, not fixed, because the fix needs a machine this session did not have.**
+
+- `platform/linux/cpu.rs`'s `get_cpu_count()` falls back to `1` when
+  `/sys/devices/system/cpu` cannot be read. It is a **loop bound**, so the
+  result is an under-enumeration rather than an invented figure — but a
+  container with a restricted `/sys` would report a single core. The fix is to
+  count the `cpuN` lines in `/proc/stat`, which the loop reads from anyway, and
+  it wants a Linux box to confirm.
+- `numa/mod.rs` falls back to a maximum distance of `10`, which is ACPI SLIT's
+  code for **local**, so an unreadable matrix asserts a uniform-memory machine.
+- `ai_workload.rs` reads `TPU_NUM_CORES` and falls back to `8`. Same family as
+  the M1 default: a plausible number for a machine nobody looked at.
+- `process_monitor.rs` and `memory_bandwidth` fall back to `1` and `4.0` core
+  counts used as **divisors**. Defined arithmetic matters more than the value
+  there, but the resulting figures are derived from an invented denominator.
 
 ### Eight copies, six surfaces, one expression
 
