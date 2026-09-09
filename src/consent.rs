@@ -290,6 +290,20 @@ impl ConsentManager {
         Ok(config_dir.join("ironmon").join("consent.toml"))
     }
 
+    /// A consent record left at the pre-rename path, when this install has none.
+    ///
+    /// **Deliberately not adopted.** `config.toml` and the profile audit log are
+    /// copied forward by [`crate::legacy_paths::adopt`]; consent is not. Copying
+    /// it would silently restore a privilege grant a user made to a program
+    /// under a different name, and this crate's standing rule is that absent
+    /// consent is asked for rather than assumed — the failure stays in the safe
+    /// direction. What a caller can honestly do is *tell* the user the old file
+    /// is there, which is what this reports.
+    pub fn legacy_record() -> Option<std::path::PathBuf> {
+        let current = Self::default_path().ok()?;
+        crate::legacy_paths::legacy_consent_exists(&current)
+    }
+
     /// Load consent configuration from default path
     pub fn load() -> Result<Self> {
         let path = Self::default_path()?;

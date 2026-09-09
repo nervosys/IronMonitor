@@ -194,6 +194,11 @@ impl Config {
         let config_dir = Self::default_path()?;
         let config_file = config_dir.join("config.toml");
 
+        // The rename moved this directory out from under an existing install.
+        // Adopt the pre-rename file if this one is absent; the call is
+        // idempotent and does nothing once a current file exists.
+        let _ = crate::legacy_paths::adopt(&config_file);
+
         if !config_file.exists() {
             return Ok(Self::default());
         }

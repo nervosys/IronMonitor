@@ -179,6 +179,7 @@ pub mod fetch; // neofetch-style summary: logo beside the machine, unknowns name
 pub mod gpu; // GPU abstraction layer
 pub mod health; // System health scoring and alerts
 pub mod hwmon; // Hardware monitoring (temperatures, voltages, fans) - native implementation
+pub mod legacy_paths; // Adoption of files stranded by the simon -> IronMonitor rename
 pub mod memory_management; // Memory and swap management (jetson_stats style)
 pub mod motherboard; // Motherboard sensors, BIOS, system information
 pub mod network_monitor; // Network interface monitoring

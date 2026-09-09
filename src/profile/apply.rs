@@ -323,6 +323,10 @@ fn audit_log(outcome: &ApplyOutcome) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // Carry forward the pre-rename log so the history of applied settings is
+    // continuous across the rename rather than restarting at it. Idempotent:
+    // once this file exists, adoption is a no-op.
+    let _ = crate::legacy_paths::adopt(&path);
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
