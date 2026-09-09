@@ -1067,7 +1067,17 @@ impl CpuMicroarchMonitor {
             .unwrap_or("Unknown CPU")
             .trim()
             .to_string();
-        let cores = val["NumberOfCores"].as_u64().unwrap_or(1) as u32;
+        // `0`, not `1`. The resolver decides whether a core count was read by
+        // testing `physical_cores > 0` and reports "the platform reported no
+        // physical core count" when it is zero -- so a fallback of 1 does not
+        // merely guess low, it **defeats the guard**: `cpu.cores.physical`,
+        // `cpu.microarch.physical_cores` and `cpu.microarch.logical_cores` all
+        // publish 1 as a measurement, and `smt_enabled` publishes false.
+        //
+        // Same shape as the cache line size that sat at a sentinel of 64 and
+        // slipped past the guard written to catch it. The Linux arm has always
+        // used 0 here, and so does `Default`.
+        let cores = val["NumberOfCores"].as_u64().unwrap_or(0) as u32;
         let threads = val["NumberOfLogicalProcessors"]
             .as_u64()
             .unwrap_or(cores as u64) as u32;
@@ -1165,12 +1175,15 @@ impl CpuMicroarchMonitor {
             .map(|s| s.to_lowercase())
             .collect();
 
+        // `0` for the same reason as the Windows arm above: the resolver reads
+        // zero as "not reported" and says so, and a fallback of 1 publishes a
+        // single-core machine instead.
         let cores = std::process::Command::new("sysctl")
             .args(["-n", "hw.physicalcpu"])
             .output()
             .ok()
             .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-            .unwrap_or(1);
+            .unwrap_or(0);
 
         let threads = std::process::Command::new("sysctl")
             .args(["-n", "hw.logicalcpu"])
@@ -1182,9 +1195,15 @@ impl CpuMicroarchMonitor {
         Ok((brand, family, model, stepping, flags, cores, threads))
     }
 
+    /// A platform with no reader here reports nothing, including no core count.
+    ///
+    /// This returned `1, 1` -- one physical core and one logical -- which the
+    /// resolver publishes as a measurement, because its "was this read" test is
+    /// `> 0`. Every other field in the tuple was already empty or zero for
+    /// exactly that reason; the two counts were the exception.
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn read_cpu_info() -> Result<CpuInfoFields, SimonError> {
-        Ok((String::new(), 0, 0, 0, Vec::new(), 1, 1))
+        Ok((String::new(), 0, 0, 0, Vec::new(), 0, 0))
     }
 }
 
