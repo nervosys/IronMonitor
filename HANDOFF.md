@@ -174,6 +174,7 @@ Since the tag, on `master` and green on all three platforms:
 | `282fbaf` | The JSON-LD manifest had no tools in it |
 | `a42350d` | Two macOS arms fabricating beside the readers that refused to |
 | `742427e` | One parser for `vm.swapusage`, not two |
+| `3ad6eb9` | A fallback of 1 core, defeating the guard that tests for 0 |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -230,10 +231,31 @@ beside `platform::macos::parse_swapusage`.
 how the two Prometheus renderers came to disagree by 1024: both were correct
 when written, and only one of them was corrected. `742427e` deletes the copy.
 
-The remaining nineteen files are unexamined. `cpu_microarch` (7 sites),
-`silicon/apple` (4), `memory_management` (4) and `hardware_ai` (4) are the
-largest, and the question to ask of each is not whether its parsing is right
-today but whether `platform::macos` already owns it.
+**`cpu_microarch` was next, and it had a worse problem than duplication.** The
+resolver decides whether a physical core count was read by testing
+`physical_cores > 0`, and says "the platform reported no physical core count"
+when it is zero. The Linux arm and `Default` both use 0. Three paths used **1**:
+the Windows arm's `unwrap_or(1)` on `NumberOfCores`, the macOS arm's on
+`hw.physicalcpu`, and the arm for every other platform, which returned `1, 1`
+while each of its other five fields was empty or zero.
+
+**A sentinel inside the valid range is worse than no sentinel**, because it
+defeats the check rather than failing it. A failed WMI query publishes
+`cpu.cores.physical = 1`, `cpu.microarch.physical_cores = 1`,
+`cpu.microarch.logical_cores = 1` and a measured `smt_enabled = false`, and the
+guard passes every one, because 1 > 0. This is the third time in this file:
+the cache line size at a sentinel of 64, the drive with no SMART returning
+`passed: true`, and now this. Fixed in `3ad6eb9`.
+
+It fires only on a failed read, so no test here reaches it without injecting the
+failure. What the fix buys is that the guard the resolver already had starts
+working.
+
+The remaining eighteen files are unexamined. `silicon/apple` (4 sites),
+`memory_management` (4) and `hardware_ai` (4) are the largest, and there are two
+questions to ask of each, not one: whether `platform::macos` already owns the
+reading, **and whether its fallback is a value the consumer's guard would
+accept.**
 
 ### Two renderers, one machine, and a factor of 1024
 
