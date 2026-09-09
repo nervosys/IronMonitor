@@ -176,6 +176,7 @@ Since the tag, on `master` and green on all three platforms:
 | `742427e` | One parser for `vm.swapusage`, not two |
 | `3ad6eb9` | A fallback of 1 core, defeating the guard that tests for 0 |
 | `be68e21` | The third copy of the page size that must not be assumed |
+| `ee73edd` | A failed sysctl described every Mac as a base M1 |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -270,11 +271,30 @@ day it was written. The grep that finds them takes a second; the alternative is
 finding them one incident at a time, which is what the last three entries in this
 file are.
 
-The remaining eighteen files are unexamined. `silicon/apple` (4 sites) and
-`hardware_ai` (4) are the largest, and there are two questions to ask of each,
-not one: whether `platform::macos` already owns the reading, **and whether its
-fallback is a value the consumer's guard would accept.** `hardware_ai`'s four
-were checked in passing and use `unwrap_or(0)`, which the guards read as unread.
+**`silicon/apple` had the most convincing fabrication of the session.**
+`detect_soc_info` fell back to `4` efficiency cores, `4` performance cores and
+`8` GPU cores — which is an M1, exactly. A failed
+`hw.perflevel0/1.logicalcpu` did not produce a broken answer; it produced **a
+specific, entirely plausible machine**, and `core_ids: (0..4)` looked like a
+topology somebody had measured.
+
+**A `1` is implausible enough to be noticed. A `4` is not.** The core count in
+`3ad6eb9` fell back to 1 and defeated a guard; this one defeated the reader, and
+would have gone on doing so on every Mac whose sysctl failed. *The more
+reasonable the invented value, the longer it survives* — which inverts the
+instinct to pick a sensible default.
+
+Zero means unread now, and `(0..0)` gives an empty `core_ids` while the cluster
+keeps the frequency and utilisation `powermetrics` measured: an unknown
+composition rather than an unknown cluster (`ee73edd`).
+
+Four of the twenty-one sites are closed. Seventeen files remain, and the triage
+questions are now three: whether `platform::macos` already owns the reading,
+whether the fallback is a value the consumer's guard would accept, **and whether
+it is a value a reader would believe.**
+
+`hardware_ai`'s four sites were checked in passing and use `unwrap_or(0)`, which
+the guards read as unread.
 
 ### Two renderers, one machine, and a factor of 1024
 
