@@ -240,6 +240,149 @@ The archived `release/v0.1.0/` was deliberately left alone: it is a record of
 what shipped under the old name, and rewriting it would make it a record of
 nothing.
 
+### WSL2 is a Linux box, and it found a reader that never returns
+
+Every Linux item in *The plan for what is left* was written as "needs a Linux
+box". This machine has had one the whole time: **WSL2 runs a real kernel with a
+real `/proc` and `/sys`**, and setting it up took under a minute. `cargo` is in
+the Debian image; point `CARGO_TARGET_DIR` at the ext4 home rather than the 9p
+mount and a full build is under a minute:
+
+```bash
+wsl -d Debian -e bash -lc 'cd /mnt/c/.../IronMonitor && \
+  CARGO_TARGET_DIR=~/im-target cargo test \
+  --no-default-features --features cpu,npu,io,network'
+```
+
+**What it is not:** a virtualized kernel. `/sys/class/{iommu,watchdog,dma}` are
+empty, there are no `thermal_zone*` (only `cooling_device*`), no
+`/sys/class/regulator`, no DMI, and the block devices are VHDs with no SMART. So
+it does **not** close items A or D, and it does not prove a sysfs reader works
+against a populated tree. What it does close is whether a reader is
+*implemented*, which is what half the open Linux work actually was.
+
+**The first thing it found is the worst defect in this file.**
+`ironmon` hangs forever on Linux. `bluetoothctl devices` blocks indefinitely on
+a host where the binary is installed but `bluetoothd` is not answering — it
+waits on D-Bus, and **a null stdin does not release it** — `.output()` already
+nulled stdin, and `timeout 5 bluetoothctl devices < /dev/null` still exits 124.
+Only a deadline fixes it. `probe_readers` sat for six
+minutes at 0.2% CPU; a `cargo test` run sat for sixteen and left **twelve
+`bluetoothctl` processes alive** behind it, one per test that reached the
+reader.
+
+Three things about it are worth keeping:
+
+- **CI is green because the runners cannot reproduce it.** GitHub's images do
+  not install `bluetoothctl`, so the spawn fails immediately and the reader
+  reports an honest absence. The pipeline was measuring a machine on which the
+  bug cannot occur. That is the fourth entry in this file with the same moral,
+  and the first where the constant being returned was *success*.
+- **The reader bypassed the helper written for exactly this.**
+  `src/core/command.rs` exists because sixteen enumerators swallowed their
+  failure reasons, and its own module doc names `bluetoothctl`. The macOS arm of
+  this same function goes through `capture`; the Linux arm called
+  `std::process::Command` directly. *Fixed per function, not per cause*, once
+  more — the corrected version was forty lines below the broken one.
+- **`capture` had no timeout, so routing through it would not have been
+  enough.** A helper that reports every failure honestly still hangs forever if
+  the program never exits. `capture` now drains both
+  pipes on their own threads (a full stdout pipe is its own deadlock, and needs
+  no missing daemon), polls `try_wait` against a deadline, and kills and reaps
+  on expiry. Ten seconds, chosen against the slowest legitimate caller: a cold
+  PowerShell start plus a WMI query measures 1.1–1.3 s on this desktop, so the
+  bound has roughly 8x headroom and throttles nothing that works.
+
+**The generalisable rule: a reader that waits forever is worse than one that
+fails.** A failure is a reason an agent can publish. A hang is a monitoring tool
+that has stopped monitoring, and it takes the test suite with it.
+
+### The probe table, on Linux
+
+`examples/probe_readers.rs` on WSL2, beside the Windows column recorded above.
+**Five of the ten readers listed as silent on Windows answer here:**
+
+| Reader | Windows | WSL2 | What the Linux result means |
+| --- | --- | --- | --- |
+| `interrupt_map` | none | **ok 27** | implemented; reads `/proc/interrupts` |
+| `io_scheduler` | none | **ok 4** | implemented; reads `/sys/block/*/queue/scheduler` |
+| `gpu_topology` | none | **ok 3** | implemented |
+| `kernel_params` | *guessed 1* | **ok 30** | implemented; the Windows count was the hardcoded literal |
+| `security_mitigations` | none | **ok 1** | implemented; the vulnerabilities directory has 19 files |
+| `iommu` | none | none | `/sys/class/iommu` empty on this kernel — absent, not unimplemented |
+| `dma_engine` | none | none | `/sys/class/dma` empty — absent |
+| `thermal_zone` | none | none | no `thermal_zone*`, only `cooling_device*` — absent |
+| `voltage_regulator` | none | none | no `/sys/class/regulator` — absent |
+| `watchdog` | none | none | `/sys/class/watchdog` empty — absent |
+
+Each of the five bottom rows was checked against the sysfs tree by hand before
+being called absent, because *"read the silent column carefully, because it was
+over-read once already"* is already the standing warning here. **`none` on WSL2
+means the hardware is not exposed to this kernel, not that the reader is
+missing.** Confirming they read *populated* trees still wants bare metal.
+
+`security_mitigations` returning one item against nineteen vulnerability files
+is not explained, and is the obvious next thing to look at.
+
+### The four items marked "needs a machine this session did not have"
+
+All four are closed, and one of them was hiding a fifth.
+
+| Was | Now |
+| --- | --- |
+| `platform/linux/cpu.rs` `get_cpu_count()` fell back to `1` | Falls back to counting `cpuN` lines in `/proc/stat`, which the caller already holds, then to `0`. Verified against this 24-core box. |
+| `numa/mod.rs` fell back to a max distance of `10` | `NumaSummary::max_distance` is `Option<u32>`. Ten is ACPI SLIT's code for *local*, so the fallback asserted uniform memory on a machine nobody could read. |
+| `ai_workload.rs` `TPU_NUM_CORES` fell back to `8` | `TpuConfig::num_cores` is `Option<u32>`. `tpu_type` and `topology` were the string `"unknown"` — the literal `resolve.rs` rejects — and are `Option<String>` now too. |
+| `process_monitor.rs` divided by `1.0` | One shared `logical_cpu_count() -> Option<f32>`, from four copies. Absent skips normalisation rather than performing it with an invented denominator; `cpu_percent_is_normalized()` says which happened. |
+
+**The fifth was two lines from the first.** `read_cpu_core` filled an unmatched
+core with `(None, None, None, Some(100.0))` — a *measured, fully idle* core.
+That is `idle.unwrap_or(100.0)`, the expression this file records removing from
+eight consumer surfaces, **at its source in the reader**. It is reachable:
+`/proc/stat` lists only online CPUs while the count comes from the sysfs
+`online` range, which is `max + 1`, so any machine with an offline CPU below the
+highest hits it. `platform/linux/cpu.rs` had no test module at all and now has
+six.
+
+**`cpu_percent` was left as `f32` on purpose.** Making it `Option` is the right
+fix and it is a 97-call-site change across the GUI, TUI, agent surface and
+Prometheus renderer — the same class as the `Vec<f32>` to `Vec<Option<f32>>`
+change already queued. The accessor is the honest interim: the figure is
+per-core rather than per-machine when the divisor is absent, and a consumer can
+now ask which it got.
+
+### Files stranded by the rename are adopted, except the one that must not be
+
+`src/legacy_paths.rs`, one module because there are three call sites — the
+count-the-copies rule applied before writing rather than after. `config.toml`
+and the profile audit log are **copied** forward from `<config>/simon/` on load:
+idempotent, never overwriting a current file, and never moving, so a downgrade
+still has its file and a bad migration has destroyed nothing.
+
+**`consent.toml` is deliberately not adopted.** Copying it would silently
+restore a privilege grant made to a program under a different name, and the
+standing rule is that absent consent is asked for rather than assumed — the
+current failure is already in the safe direction.
+`ConsentManager::legacy_record()` reports the old file's path instead, so a
+caller can tell the user it is there. That is the honest half of the job, and it
+is the half that does not decide on the user's behalf.
+
+### Two traps in the tooling
+
+**Do not run `cargo fmt` from WSL against the Windows working tree.** It
+rewrites every file it touches to LF, and this repo is checked out CRLF under
+`core.autocrlf=true`. `git diff` from Windows stays clean, because the index is
+normalised either way — so the damage is invisible from the side you are most
+likely to check it from, and appears as an 18,000-line diff from the other.
+Format from Windows; `cargo test` and `clippy` from WSL are fine because they
+only read. Recovery is `git checkout-index -f -z --stdin` fed the file list
+minus whatever is genuinely modified.
+
+**Two `cargo` invocations against one `CARGO_TARGET_DIR` serialise.** The second
+blocks on the target lock with no output and looks exactly like the hang it is
+waiting behind. Use a second target dir when running a build beside a test run,
+or the first symptom you diagnose will be the wrong one.
+
 ### The rest of the fifty, triaged
 
 The `unwrap_or(<non-zero>)` list, read to the end. Recorded so nobody reads them
@@ -6399,7 +6542,7 @@ Publishing to crates.io was explicitly declined by the maintainer for 6.0.0 and
 | 5.0.0 | **The Dewey port is withdrawn and the egui GUI restored.** Claimed MSRV back to 1.70 — which was not true, see 5.2.0. Published, tagged `v5.0.0`. See open work 9. |
 | 5.1.0 | Applied settings are reversible: `read_current`, `ApplyOutcome.previous`, `revert_setting`, `revert_cycle`. Published, tagged `v5.1.0`. See open work 13. |
 | 5.2.0 | `ironmon ai models` reads an IronVault vault, behind an optional `vault` feature. **MSRV corrected to 1.88**, having been wrong since 5.0.0. The tuning loop is closed (open work 13). **CI made green after twelve consecutive failures**; macOS CPU/memory wired into the resolver. Tagged `v5.2.0`, **not published**. |
-| 6.0.0 | **Zero-constructors renamed to `empty()`** and the `Option` refactor on `SwapInfo`/`RamInfo` done — all three "queued for the next major version" items closed. Ontology grew a capability and vocabulary layer with tests derived from the declarations; JSON-LD output with QUDT units; `ironmon status` (coloured, per-OS ASCII art); network and file intrusion detection; the tuning ledger. **Not tagged, not published.** |
+| 6.0.0 | **Zero-constructors renamed to `empty()`** and the `Option` refactor on `SwapInfo`/`RamInfo` done — all three "queued for the next major version" items closed. Ontology grew a capability and vocabulary layer with tests derived from the declarations; JSON-LD output with QUDT units; `ironmon status` (coloured, per-OS ASCII art); network and file intrusion detection; the tuning ledger. Tagged `v6.0.0` at `1947426`; **not published**. |
 | 2.1.5 | Committed, never published. Documentation only; superseded by 3.0.0. |
 
 ## Verification that is worth repeating
