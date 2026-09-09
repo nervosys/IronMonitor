@@ -1,6 +1,6 @@
-//! # Silicon Monitor (simon)
+//! # IronMonitor (ironmon)
 //!
-//! A comprehensive, cross-platform Rust library for hardware monitoring. Silicon Monitor provides
+//! A comprehensive, cross-platform Rust library for hardware monitoring. IronMonitor provides
 //! a unified API for monitoring CPUs, GPUs (NVIDIA/AMD/Intel), memory, disks, motherboards,
 //! processes, and network interfaces across Windows, Linux, and macOS.
 //!
@@ -18,7 +18,7 @@
 //! ### GPU Monitoring
 //!
 //! ```no_run
-//! use simonlib::gpu::GpuCollection;
+//! use ironmonlib::gpu::GpuCollection;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Auto-detect all available GPUs
@@ -55,7 +55,7 @@
 //! ### Process Monitoring with GPU Attribution
 //!
 //! ```no_run
-//! use simonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonlib::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -78,7 +78,7 @@
 //! ### Network Monitoring
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -105,7 +105,7 @@
 //! to query hardware monitoring data:
 //!
 //! ```no_run
-//! use simonlib::ai_api::{AiDataApi, ToolCategory};
+//! use ironmonlib::ai_api::{AiDataApi, ToolCategory};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut api = AiDataApi::new()?;
@@ -296,8 +296,8 @@ pub use core::{
     process::{ProcessInfo, ProcessStats},
     temperature::TemperatureStats,
 };
-pub use error::{Error, Result, SimonError};
-pub use stats::{Simon, Snapshot};
+pub use error::{Error, IronError, Result};
+pub use stats::{IronMonitor, Snapshot};
 
 // Re-export unified GPU interface (legacy)
 pub use gpu::{
@@ -655,17 +655,17 @@ pub use watchdog::{
 ///
 /// Provides a single struct that wraps all available hardware monitors (GPU,
 /// CPU, memory, disk, network, and processes).
-pub struct SiliconMonitor {
+pub struct UnifiedMonitor {
     gpus: GpuCollection,
     process_monitor: Option<ProcessMonitor>,
     network_monitor: Option<NetworkMonitor>,
 }
 
-impl SiliconMonitor {
+impl UnifiedMonitor {
     /// Create new silicon monitor with auto-detection of all subsystems.
     pub fn new() -> Result<Self> {
         let gpus = GpuCollection::auto_detect()
-            .map_err(|e| SimonError::InitializationError(e.to_string()))?;
+            .map_err(|e| IronError::InitializationError(e.to_string()))?;
 
         let process_monitor = ProcessMonitor::new().ok();
         let network_monitor = NetworkMonitor::new().ok();
@@ -681,7 +681,7 @@ impl SiliconMonitor {
     pub fn snapshot_gpus(&self) -> Result<Vec<GpuInfo>> {
         self.gpus
             .snapshot_all()
-            .map_err(|e| SimonError::Other(e.to_string()))
+            .map_err(|e| IronError::Other(e.to_string()))
     }
 
     /// Get GPU collection reference.
@@ -755,7 +755,7 @@ impl SiliconMonitor {
     }
 }
 
-impl Default for SiliconMonitor {
+impl Default for UnifiedMonitor {
     fn default() -> Self {
         Self::new().unwrap_or_else(|_| Self {
             gpus: GpuCollection::new(),
@@ -766,8 +766,8 @@ impl Default for SiliconMonitor {
 }
 
 // Backward compatibility alias
-#[deprecated(since = "0.3.0", note = "Use `SiliconMonitor` directly instead")]
-pub type GpuInterface = SiliconMonitor;
+#[deprecated(since = "0.3.0", note = "Use `UnifiedMonitor` directly instead")]
+pub type GpuInterface = UnifiedMonitor;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

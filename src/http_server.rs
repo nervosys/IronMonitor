@@ -1,4 +1,4 @@
-//! HTTP Server for Silicon Monitor REST API
+//! HTTP Server for IronMonitor REST API
 //!
 //! Provides a lightweight HTTP/1.1 server built on tokio that exposes all
 //! monitoring data via the Observability API. Supports JSON endpoints,
@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::http_server::{HttpServer, HttpServerConfig};
+//! use ironmonlib::http_server::{HttpServer, HttpServerConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,7 +71,7 @@ impl Default for HttpServerConfig {
     }
 }
 
-/// HTTP server that exposes Silicon Monitor data
+/// HTTP server that exposes IronMonitor data
 #[allow(dead_code)]
 pub struct HttpServer {
     config: HttpServerConfig,
@@ -114,12 +114,12 @@ impl HttpServer {
                 api_config.allow_anonymous_read = false;
                 api_config
                     .keys
-                    .push(ApiKey::read_only("simon-http-server", key.clone()));
+                    .push(ApiKey::read_only("ironmon-http-server", key.clone()));
             }
             None => {
                 // No key configured. Permit unauthenticated reads, which is only
                 // sound because binding defaults to loopback — a local user can read
-                // this telemetry by running simon directly anyway. Callers exposing
+                // this telemetry by running ironmon directly anyway. Callers exposing
                 // the server on a routable address are expected to supply a key.
                 // As above: inert. What actually permits the keyless read
                 // is `allow_anonymous: config.api_key.is_none()` on the
@@ -158,13 +158,11 @@ impl HttpServer {
         let addr = format!("{}:{}", self.config.bind_address, self.config.port);
         let listener = TcpListener::bind(&addr)
             .await
-            .map_err(|e| crate::SimonError::Other(format!("Failed to bind to {}: {}", addr, e)))?;
+            .map_err(|e| crate::IronError::Other(format!("Failed to bind to {}: {}", addr, e)))?;
 
         if self.config.request_logging {
-            eprintln!("[silicon-monitor] HTTP server listening on http://{}", addr);
-            eprintln!(
-                "[silicon-monitor] Endpoints: /health, /api/v1/*, /api/v1/metrics/prometheus"
-            );
+            eprintln!("[iron-monitor] HTTP server listening on http://{}", addr);
+            eprintln!("[iron-monitor] Endpoints: /health, /api/v1/*, /api/v1/metrics/prometheus");
         }
 
         // Start metric collection background task
@@ -178,7 +176,7 @@ impl HttpServer {
             let (mut stream, peer_addr) = match listener.accept().await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("[silicon-monitor] Accept error: {}", e);
+                    eprintln!("[iron-monitor] Accept error: {}", e);
                     continue;
                 }
             };
@@ -211,7 +209,7 @@ impl HttpServer {
 
                 if log {
                     eprintln!(
-                        "[silicon-monitor] {} {} {} from {}",
+                        "[iron-monitor] {} {} {} from {}",
                         obs_request.method,
                         obs_request.path,
                         obs_request
@@ -272,7 +270,7 @@ impl HttpServer {
     /// Run the HTTP server (stub when cli feature is not enabled)
     #[cfg(not(feature = "cli"))]
     pub async fn run(&self) -> crate::Result<()> {
-        Err(crate::SimonError::NotImplemented(
+        Err(crate::IronError::NotImplemented(
             "HTTP server requires the 'cli' feature (for tokio)".into(),
         ))
     }
@@ -337,8 +335,8 @@ impl HttpServer {
     ///    `MemoryStats::new()`, the generic constructors, rather than the platform
     ///    collectors — so on Windows the endpoint served `cpu_usage_percent 0` and
     ///    `memory_total_bytes 0` on a 93 GB machine, while GPU values were real.
-    /// 2. **The names had no `simon_` prefix**, but every dashboard in `grafana/`
-    ///    queries `simon_cpu_usage_percent`, `simon_gpu_temperature_celsius` and so
+    /// 2. **The names had no `ironmon_` prefix**, but every dashboard in `grafana/`
+    ///    queries `ironmon_cpu_usage_percent`, `ironmon_gpu_temperature_celsius` and so
     ///    on. All three dashboards therefore rendered empty against a live server.
     /// 3. **`GpuCollection::auto_detect()` ran every interval**, re-initializing the
     ///    vendor drivers on each pass rather than once.
@@ -366,14 +364,14 @@ impl HttpServer {
     /// loop needs a live pipeline and a tokio runtime, so for as long as this
     /// logic lived inside it the only way to check a metric name or a label
     /// was to read the code -- which is how the instance ended up baked into
-    /// the name (`simon_gpu_0_utilization_percent`) and a rate ended up under
+    /// the name (`ironmon_gpu_0_utilization_percent`) and a rate ended up under
     /// a `_total` name, both for the life of the endpoint.
     ///
     /// Takes a plain `&Snapshot`, which `Default` can construct, so a test
     /// can assert on exactly the metrics one snapshot produces.
     pub(crate) fn record_snapshot(collector: &MetricCollector, snap: &crate::pipeline::Snapshot) {
         if let Some(ref cpu) = snap.cpu {
-            collector.record("simon_cpu_usage_percent", (100.0 - cpu.total.idle) as f64);
+            collector.record("ironmon_cpu_usage_percent", (100.0 - cpu.total.idle) as f64);
             // Omit the series rather than record 0 MHz, the same way the
             // Prometheus exporter omits an absent GPU temperature.
             if let Some(mhz) = cpu
@@ -382,7 +380,7 @@ impl HttpServer {
                 .and_then(|c| c.frequency.as_ref())
                 .and_then(|f| f.current)
             {
-                collector.record("simon_cpu_frequency_mhz", mhz as f64);
+                collector.record("ironmon_cpu_frequency_mhz", mhz as f64);
             }
         }
 
@@ -390,16 +388,16 @@ impl HttpServer {
             // Platform collectors report kilobytes; the dashboards plot bytes.
             let used = mem.ram.used as f64 * 1024.0;
             let total = mem.ram.total as f64 * 1024.0;
-            collector.record("simon_memory_used_bytes", used);
-            collector.record("simon_memory_total_bytes", total);
+            collector.record("ironmon_memory_used_bytes", used);
+            collector.record("ironmon_memory_total_bytes", total);
             // Recorded only when the pagefile was actually read. A swap
             // gauge of zero states that nothing is paged out, which is a
             // measurement; `used_or_zero()` manufactured it from an absence.
             if let Some(used) = mem.swap.used {
-                collector.record("simon_swap_used_bytes", used as f64 * 1024.0);
+                collector.record("ironmon_swap_used_bytes", used as f64 * 1024.0);
             }
             if total > 0.0 {
-                collector.record("simon_memory_usage_percent", (used / total) * 100.0);
+                collector.record("ironmon_memory_usage_percent", (used / total) * 100.0);
             }
         }
 
@@ -409,9 +407,9 @@ impl HttpServer {
             let Some(gpu) = gpu.as_ref() else { continue };
             // The index goes in a label, not in the metric name.
             //
-            // This recorded `simon_gpu_0_utilization_percent`, and every
+            // This recorded `ironmon_gpu_0_utilization_percent`, and every
             // bundled dashboard queries
-            // `simon_gpu_utilization_percent{gpu="0"}` -- so the panels
+            // `ironmon_gpu_utilization_percent{gpu="0"}` -- so the panels
             // could never match, whatever the values were. Encoding an
             // instance in the name also defeats aggregation: `sum by (gpu)`
             // has nothing to group on when each card is a different metric.
@@ -422,31 +420,31 @@ impl HttpServer {
             };
 
             if let Some(util) = gpu.utilization {
-                put("simon_gpu_utilization_percent", util as f64);
+                put("ironmon_gpu_utilization_percent", util as f64);
             }
             // Recorded only where the device reported a figure, like the
             // temperature below and unlike the zeros these used to publish.
             if let Some(used) = gpu.memory.used {
-                put("simon_gpu_memory_used_bytes", used as f64);
+                put("ironmon_gpu_memory_used_bytes", used as f64);
             }
             if let Some(total) = gpu.memory.total {
-                put("simon_gpu_memory_total_bytes", total as f64);
+                put("ironmon_gpu_memory_total_bytes", total as f64);
             }
 
             if let Some(temp) = gpu.thermal.temperature {
-                put("simon_gpu_temperature_celsius", temp as f64);
+                put("ironmon_gpu_temperature_celsius", temp as f64);
             }
             if let Some(power) = gpu.power.draw {
-                put("simon_gpu_power_watts", power as f64 / 1000.0);
+                put("ironmon_gpu_power_watts", power as f64 / 1000.0);
             }
             if let Some(fan) = gpu.thermal.fan_speed {
-                put("simon_gpu_fan_speed_percent", fan as f64);
+                put("ironmon_gpu_fan_speed_percent", fan as f64);
             }
             if let Some(clock) = gpu.clocks.graphics {
-                put("simon_gpu_clock_graphics_mhz", clock as f64);
+                put("ironmon_gpu_clock_graphics_mhz", clock as f64);
             }
             if let Some(clock) = gpu.clocks.memory {
-                put("simon_gpu_clock_memory_mhz", clock as f64);
+                put("ironmon_gpu_clock_memory_mhz", clock as f64);
             }
         }
 
@@ -464,14 +462,14 @@ impl HttpServer {
             // Emitted only where a rate exists. The pipeline reports none on
             // Windows, whose disk path reads capacity and no counters.
             if let Some(rate) = disk.read_rate {
-                collector.record_with_labels("simon_disk_read_bytes_per_sec", rate, device);
+                collector.record_with_labels("ironmon_disk_read_bytes_per_sec", rate, device);
             }
             if let Some(rate) = disk.write_rate {
-                collector.record_with_labels("simon_disk_write_bytes_per_sec", rate, device);
+                collector.record_with_labels("ironmon_disk_write_bytes_per_sec", rate, device);
             }
             if disk.total > 0 {
                 collector.record_with_labels(
-                    "simon_disk_usage_percent",
+                    "ironmon_disk_usage_percent",
                     (disk.used as f64 / disk.total as f64) * 100.0,
                     device,
                 );
@@ -484,7 +482,7 @@ impl HttpServer {
         // claim about a machine whose temperature nobody could measure.
         for sensor in &snap.cpu_temperatures {
             collector.record_with_labels(
-                "simon_cpu_temperature_celsius",
+                "ironmon_cpu_temperature_celsius",
                 sensor.value as f64,
                 &[("sensor", sensor.name.as_str())],
             );
@@ -499,12 +497,12 @@ impl HttpServer {
         for io in &snap.disk_io {
             let device = &[("device", io.device.as_str())];
             collector.record_with_labels(
-                "simon_disk_read_bytes_total",
+                "ironmon_disk_read_bytes_total",
                 io.read_bytes as f64,
                 device,
             );
             collector.record_with_labels(
-                "simon_disk_write_bytes_total",
+                "ironmon_disk_write_bytes_total",
                 io.write_bytes as f64,
                 device,
             );
@@ -514,7 +512,7 @@ impl HttpServer {
         //
         // They used to carry `total_rx_rate()` -- a bytes/sec figure, summed
         // over interfaces, published unlabelled under a counter's name. The
-        // bundled fleet dashboard plots `rate(simon_network_rx_bytes_total[5m])`,
+        // bundled fleet dashboard plots `rate(ironmon_network_rx_bytes_total[5m])`,
         // so it was taking the rate of change *of a rate*: near zero under
         // steady traffic, and a spike shaped like the derivative of the load
         // rather than the load. The library exporter has published the true
@@ -529,12 +527,12 @@ impl HttpServer {
         for iface in &snap.network {
             let interface = &[("interface", iface.name.as_str())];
             collector.record_with_labels(
-                "simon_network_rx_bytes_total",
+                "ironmon_network_rx_bytes_total",
                 iface.rx_bytes as f64,
                 interface,
             );
             collector.record_with_labels(
-                "simon_network_tx_bytes_total",
+                "ironmon_network_tx_bytes_total",
                 iface.tx_bytes as f64,
                 interface,
             );
@@ -542,23 +540,23 @@ impl HttpServer {
             // Rates go under their own names, and only once one exists: a
             // collector handed `0` cannot tell it from a quiet link.
             if let Some(rate) = iface.rx_rate {
-                collector.record_with_labels("simon_network_rx_bytes_per_sec", rate, interface);
+                collector.record_with_labels("ironmon_network_rx_bytes_per_sec", rate, interface);
             }
             if let Some(rate) = iface.tx_rate {
-                collector.record_with_labels("simon_network_tx_bytes_per_sec", rate, interface);
+                collector.record_with_labels("ironmon_network_tx_bytes_per_sec", rate, interface);
             }
         }
-        collector.record("simon_process_count", snap.processes.len() as f64);
+        collector.record("ironmon_process_count", snap.processes.len() as f64);
 
         if let Some(ref stats) = snap.system_stats {
             if let Some(ref load) = stats.load_average {
-                collector.record("simon_load_average_1m", load.one);
-                collector.record("simon_load_average_5m", load.five);
+                collector.record("ironmon_load_average_1m", load.one);
+                collector.record("ironmon_load_average_5m", load.five);
             }
             // Queried by the bundled host dashboard, and sitting unread in the
             // same struct the load average was already taken from.
             if let Some(uptime) = stats.uptime_seconds {
-                collector.record("simon_uptime_seconds", uptime as f64);
+                collector.record("ironmon_uptime_seconds", uptime as f64);
             }
         }
     }
@@ -634,7 +632,7 @@ mod snapshot_recording_tests {
     /// `record_snapshot` was inline in an async loop needing a live pipeline, so
     /// nothing about the names it emits could be asserted. Two defects lived
     /// there for the life of the endpoint as a result: the instance was baked
-    /// into the metric name, so `simon_gpu_utilization_percent{gpu="0"}` — what
+    /// into the metric name, so `ironmon_gpu_utilization_percent{gpu="0"}` — what
     /// every bundled dashboard queries — never matched anything, and a disk
     /// *rate* was recorded under a `_total` name.
     fn rendered(snap: &Snapshot) -> String {
@@ -660,22 +658,22 @@ mod snapshot_recording_tests {
         let text = rendered(&snap);
 
         assert!(
-            text.contains("simon_disk_read_bytes_per_sec{device=\"PhysicalDrive0\"} 4096"),
+            text.contains("ironmon_disk_read_bytes_per_sec{device=\"PhysicalDrive0\"} 4096"),
             "a per-device rate needs a device label and a rate's name: {text}"
         );
         assert!(
-            text.contains("simon_disk_usage_percent{device=\"PhysicalDrive0\"} 25"),
+            text.contains("ironmon_disk_usage_percent{device=\"PhysicalDrive0\"} 25"),
             "usage should be labelled and computed from used/total: {text}"
         );
         assert!(
-            !text.contains("simon_disk_0_"),
+            !text.contains("ironmon_disk_0_"),
             "an index belongs in a label, not in the metric name: {text}"
         );
         // A `_total` may be published only from a genuine cumulative counter,
         // and now there is one: `Snapshot::disk_io`. This snapshot's `disks`
         // carry rates and no counters, so nothing may claim a total from them.
         assert!(
-            !text.contains("simon_disk_read_bytes_total"),
+            !text.contains("ironmon_disk_read_bytes_total"),
             "the counters come from `disk_io`, which this snapshot leaves \
              empty, so no total may appear: {text}"
         );
@@ -691,7 +689,7 @@ mod snapshot_recording_tests {
         use crate::hwmon::{HwSensor, HwSensorType, HwType};
 
         assert!(
-            !rendered(&Snapshot::default()).contains("simon_cpu_temperature_celsius"),
+            !rendered(&Snapshot::default()).contains("ironmon_cpu_temperature_celsius"),
             "a snapshot with no sensors must publish no temperature"
         );
 
@@ -708,7 +706,7 @@ mod snapshot_recording_tests {
         };
         let text = rendered(&snap);
         assert!(
-            text.contains("simon_cpu_temperature_celsius{sensor=\"Core 0\"} 47.5"),
+            text.contains("ironmon_cpu_temperature_celsius{sensor=\"Core 0\"} 47.5"),
             "a sensor needs its own label and its reading: {text}"
         );
     }
@@ -730,11 +728,13 @@ mod snapshot_recording_tests {
 
         let text = rendered(&snap);
         assert!(
-            text.contains("simon_disk_read_bytes_total{device=\"PhysicalDrive0\"} 8111574792192"),
+            text.contains("ironmon_disk_read_bytes_total{device=\"PhysicalDrive0\"} 8111574792192"),
             "a cumulative counter needs its device label and its full value: {text}"
         );
         assert!(
-            text.contains("simon_disk_write_bytes_total{device=\"PhysicalDrive0\"} 5613750109184"),
+            text.contains(
+                "ironmon_disk_write_bytes_total{device=\"PhysicalDrive0\"} 5613750109184"
+            ),
             "the write counter had no counterpart: {text}"
         );
     }
@@ -745,10 +745,10 @@ mod snapshot_recording_tests {
         let text = rendered(&Snapshot::default());
 
         for absent in [
-            "simon_cpu_usage_percent",
-            "simon_memory_used_bytes",
-            "simon_gpu_utilization_percent",
-            "simon_network_rx_bytes_total",
+            "ironmon_cpu_usage_percent",
+            "ironmon_memory_used_bytes",
+            "ironmon_gpu_utilization_percent",
+            "ironmon_network_rx_bytes_total",
         ] {
             assert!(
                 !text.contains(absent),
@@ -808,10 +808,10 @@ mod dashboard_coverage_tests {
         // Names this snapshot carries the data for. CPU, memory, GPU and
         // load average need readings a synthetic snapshot has no source for.
         for required in [
-            "simon_disk_usage_percent",
-            "simon_disk_read_bytes_per_sec",
-            "simon_network_rx_bytes_total",
-            "simon_process_count",
+            "ironmon_disk_usage_percent",
+            "ironmon_disk_read_bytes_per_sec",
+            "ironmon_network_rx_bytes_total",
+            "ironmon_process_count",
         ] {
             assert!(
                 emitted.contains(required),

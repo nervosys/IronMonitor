@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// CPU vulnerability status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +193,7 @@ pub struct SecurityMitigationsMonitor {
 
 impl SecurityMitigationsMonitor {
     /// Create a new monitor, detecting all mitigations.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let vulnerabilities = Self::detect_vulnerabilities()?;
         let security_modules = Self::detect_security_modules()?;
         let hardening = Self::detect_hardening()?;
@@ -208,7 +208,7 @@ impl SecurityMitigationsMonitor {
     }
 
     /// Refresh all data.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.vulnerabilities = Self::detect_vulnerabilities()?;
         self.security_modules = Self::detect_security_modules()?;
         self.hardening = Self::detect_hardening()?;
@@ -327,7 +327,8 @@ impl SecurityMitigationsMonitor {
             None => findings.push(SecurityFinding {
                 severity: "info".into(),
                 title: "Secure Boot state not read".into(),
-                description: "simon could not read the Secure Boot state on this platform.".into(),
+                description: "IronMonitor could not read the Secure Boot state on this platform."
+                    .into(),
                 remediation: "Check it in the UEFI firmware settings directly.".into(),
             }),
         }
@@ -354,7 +355,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, SimonError> {
+    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, IronError> {
         let vuln_dir = std::path::Path::new("/sys/devices/system/cpu/vulnerabilities");
         let mut vulns = Vec::new();
 
@@ -480,46 +481,46 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, SimonError> {
+    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, IronError> {
         // Returning an empty list meant `unmitigated()` reported zero, which
         // reads as "this machine has no unmitigated CPU vulnerabilities" when
         // it means "nothing was checked". Of every absence in this crate that
         // one is the least acceptable to guess at: a reassuring security
         // reading is acted on.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "CPU vulnerability status is read from `/sys/devices/system/cpu/vulnerabilities`; Windows exposes it only through Get-SpeculationControlSettings, which needs Administrator"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, SimonError> {
+    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, IronError> {
         // Returning an empty list meant `unmitigated()` reported zero, which
         // reads as "this machine has no unmitigated CPU vulnerabilities" when
         // it means "nothing was checked". Of every absence in this crate that
         // one is the least acceptable to guess at: a reassuring security
         // reading is acted on.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "CPU vulnerability status is read from `/sys/devices/system/cpu/vulnerabilities`; macOS does not expose it"
                 .into(),
         ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, SimonError> {
+    fn detect_vulnerabilities() -> Result<Vec<CpuVulnerability>, IronError> {
         // Returning an empty list meant `unmitigated()` reported zero, which
         // reads as "this machine has no unmitigated CPU vulnerabilities" when
         // it means "nothing was checked". Of every absence in this crate that
         // one is the least acceptable to guess at: a reassuring security
         // reading is acted on.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "CPU vulnerability status is read from `/sys/devices/system/cpu/vulnerabilities`; this platform does not expose it"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_security_modules() -> Result<Vec<LsmStatus>, SimonError> {
+    fn detect_security_modules() -> Result<Vec<LsmStatus>, IronError> {
         let mut modules = Vec::new();
 
         // Check active LSMs
@@ -567,7 +568,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_security_modules() -> Result<Vec<LsmStatus>, SimonError> {
+    fn detect_security_modules() -> Result<Vec<LsmStatus>, IronError> {
         // Check Windows Defender
         let defender = std::process::Command::new("powershell")
             .args([
@@ -598,7 +599,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_security_modules() -> Result<Vec<LsmStatus>, SimonError> {
+    fn detect_security_modules() -> Result<Vec<LsmStatus>, IronError> {
         let mut modules = Vec::new();
 
         // Check SIP status
@@ -622,12 +623,12 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_security_modules() -> Result<Vec<LsmStatus>, SimonError> {
+    fn detect_security_modules() -> Result<Vec<LsmStatus>, IronError> {
         Ok(Vec::new())
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_hardening() -> Result<KernelHardening, SimonError> {
+    fn detect_hardening() -> Result<KernelHardening, IronError> {
         let read_sysctl = |path: &str| -> String {
             std::fs::read_to_string(path)
                 .map(|s| s.trim().to_string())
@@ -691,7 +692,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_hardening() -> Result<KernelHardening, SimonError> {
+    fn detect_hardening() -> Result<KernelHardening, IronError> {
         // `Confirm-SecureBootUEFI` needs elevation and returned `false` for a
         // permission error. The registry carries the same state unelevated.
         let sb = crate::platform::windows::secure_boot_enabled();
@@ -713,7 +714,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_hardening() -> Result<KernelHardening, SimonError> {
+    fn detect_hardening() -> Result<KernelHardening, IronError> {
         Ok(KernelHardening {
             aslr_level: 2, // macOS always has ASLR
             // Linux tunables with no macOS equivalent; none of this is read.
@@ -732,7 +733,7 @@ impl SecurityMitigationsMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_hardening() -> Result<KernelHardening, SimonError> {
+    fn detect_hardening() -> Result<KernelHardening, IronError> {
         Ok(KernelHardening {
             aslr_level: 0,
             kptr_restrict: None,

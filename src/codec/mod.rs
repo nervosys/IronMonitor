@@ -14,7 +14,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::codec::CodecMonitor;
+//! use ironmonlib::codec::CodecMonitor;
 //!
 //! let monitor = CodecMonitor::new().unwrap();
 //! for cap in monitor.capabilities() {
@@ -23,7 +23,7 @@
 //! }
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Video codec type
@@ -146,7 +146,7 @@ pub struct CodecMonitor {
 }
 
 impl CodecMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
@@ -155,7 +155,7 @@ impl CodecMonitor {
         Ok(monitor)
     }
 
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.codec_caps.clear();
         self.compute_caps.clear();
 

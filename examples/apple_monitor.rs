@@ -6,7 +6,7 @@
 //! Uses powermetrics for GPU utilization, frequency, and power data.
 //! Note: powermetrics requires root/sudo for full metrics.
 
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Apple Silicon GPU Monitor ===\n");

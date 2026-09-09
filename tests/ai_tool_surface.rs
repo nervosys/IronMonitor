@@ -1,8 +1,8 @@
 //! What the `ai_api` tool surface actually returns.
 //!
-//! `tests/agentic_contract.rs` covers the argv surface — `simon describe`, `get`,
+//! `tests/agentic_contract.rs` covers the argv surface — `ironmon describe`, `get`,
 //! `snapshot` — and `tests/ontology_conformance.rs` covers readings. Neither
-//! covers `AiDataApi::call_tool`, which is the surface an LLM driving simon
+//! covers `AiDataApi::call_tool`, which is the surface an LLM driving ironmon
 //! through MCP touches, and nothing else did either. Three fabrications lived
 //! there undisturbed as a result: `uptime_seconds: 0` marked "would need
 //! platform-specific impl" next to a reader that had one, a macOS CPU arm
@@ -12,8 +12,8 @@
 //! These tests assert about *shape*, not about particular hardware, so they say
 //! the same thing on a developer's desktop and on a CI runner with no GPU.
 
+use ironmonlib::ai_api::AiDataApi;
 use serde_json::Value;
-use simonlib::ai_api::AiDataApi;
 
 fn api() -> AiDataApi {
     AiDataApi::new().expect("the tool surface must be constructible")
@@ -78,7 +78,7 @@ fn no_tool_returns_a_string_that_names_an_absence() {
 
     for (name, data) in successful_results() {
         walk_strings(&name, &data, &mut |path, s| {
-            if s.trim().is_empty() || simonlib::ontology::resolve::names_an_absence(s) {
+            if s.trim().is_empty() || ironmonlib::ontology::resolve::names_an_absence(s) {
                 bad.push(format!("{path} = {s:?}"));
             }
         });
@@ -116,7 +116,7 @@ fn a_successful_tool_call_carries_data() {
 ///
 /// The catalogue and the dispatch `match` are two hand-maintained lists of the
 /// same names. A tool advertised but not wired answers "Unknown tool", which an
-/// agent reads as its own mistake rather than as simon's.
+/// agent reads as its own mistake rather than as ironmon's.
 #[test]
 fn every_advertised_tool_is_dispatchable() {
     let mut api = api();

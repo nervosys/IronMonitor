@@ -12,7 +12,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::numa::NumaMonitor;
+//! use ironmonlib::numa::NumaMonitor;
 //!
 //! let monitor = NumaMonitor::new().unwrap();
 //! for node in monitor.nodes() {
@@ -24,7 +24,7 @@
 //! }
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// A single NUMA node and its resources.
@@ -101,7 +101,7 @@ pub struct NumaMonitor {
 }
 
 impl NumaMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             nodes: Vec::new(),
             distance_matrix: None,
@@ -125,7 +125,7 @@ impl NumaMonitor {
     /// matrix, and `memory.numa.is_numa` said `false` as a measurement. Each
     /// platform now builds its own single-node case where that is a reading,
     /// and reports a failure where it is not.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.nodes.clear();
         self.distance_matrix = None;
 
@@ -224,7 +224,7 @@ impl NumaMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         let node_base = std::path::Path::new("/sys/devices/system/node");
         if !node_base.exists() {
             // A kernel built without NUMA exposes no node directory, and that
@@ -368,7 +368,7 @@ impl NumaMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         use windows::Win32::System::Threading::{
             GetNumaAvailableMemoryNodeEx, GetNumaHighestNodeNumber,
         };
@@ -379,7 +379,7 @@ impl NumaMonitor {
         // answers the actual question directly.
         let mut highest: u32 = 0;
         unsafe { GetNumaHighestNodeNumber(&mut highest) }
-            .map_err(|e| SimonError::System(format!("GetNumaHighestNodeNumber failed: {e}")))?;
+            .map_err(|e| IronError::System(format!("GetNumaHighestNodeNumber failed: {e}")))?;
         let node_count = highest as u64 + 1;
 
         // Total physical memory, for the one case where attributing it to a
@@ -436,7 +436,7 @@ impl NumaMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // macOS is UMA, create a single node
         let mut total_mem = 0u64;
         let mut total_cpus = 0u32;

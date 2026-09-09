@@ -239,7 +239,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let title_text = format!(
-        "Silicon Monitor │ CPU:{:.0}% MEM:{:.0}% GPU:{} │ {}",
+        "IronMonitor │ CPU:{:.0}% MEM:{:.0}% GPU:{} │ {}",
         cpu_pct,
         mem_pct,
         app.accelerators.len(),
@@ -2256,11 +2256,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = app.tabs.iter().map(|t| Line::from(*t)).collect();
 
     let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Silicon Monitor"),
-        )
+        .block(Block::default().borders(Borders::ALL).title("IronMonitor"))
         .select(app.selected_tab)
         .style(Style::default().fg(Color::Cyan))
         .highlight_style(

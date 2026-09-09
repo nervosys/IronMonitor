@@ -25,13 +25,13 @@
 //! Terminating system processes or processes owned by other users requires
 //! appropriate permissions and can cause system instability.
 
-use simonlib::{ProcessGpuType, ProcessMonitor};
+use ironmonlib::{ProcessGpuType, ProcessMonitor};
 use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("[HW]  Silicon Monitor - Process Control Example\n");
+    println!("[HW]  IronMonitor - Process Control Example\n");
     println!("═══════════════════════════════════════════════════════════════\n");
 
     // Initialize process monitor with GPU detection
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Clear screen
         print!("\x1B[2J\x1B[1;1H");
 
-        println!("[HW]  Silicon Monitor - GPU Process Monitor");
+        println!("[HW]  IronMonitor - GPU Process Monitor");
         println!("═══════════════════════════════════════════════════════════════\n");
 
         // Get processes using GPU memory

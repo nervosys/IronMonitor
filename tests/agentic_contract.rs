@@ -1,23 +1,23 @@
-//! The contract an AI agent relies on when driving simon.
+//! The contract an AI agent relies on when driving ironmon.
 //!
-//! `simon describe` hands an agent a schema; `simon get` and `simon snapshot` hand
+//! `ironmon describe` hands an agent a schema; `ironmon get` and `ironmon snapshot` hand
 //! it values. Those are only useful together if they agree — a schema naming ids
 //! the resolver never produces, or a resolver emitting ids the schema never
 //! declared, sends an agent looking for things that do not exist.
 //!
 //! These tests drive the built binary rather than the library, because the argv
 //! surface is the part an agent actually touches. A library-level test would pass
-//! while `simon get` was broken.
+//! while `ironmon get` was broken.
 
 use std::process::Command;
 
-fn simon() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_simon"))
+fn ironmon() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_ironmon"))
 }
 
 /// Whether this platform has readers that produce live hardware values.
 ///
-/// The agent surface reads through `Simon::snapshot`, which requires every reader
+/// The agent surface reads through `IronMonitor::snapshot`, which requires every reader
 /// to succeed. macOS gained CPU, memory and uptime readers in 3.1.0, but GPU,
 /// power and temperature are still unimplemented there, so a snapshot never
 /// populates and the agent surface has no values to report. Tests that assert
@@ -29,16 +29,16 @@ fn simon() -> Command {
 /// This gates assertions about *values*. It deliberately does not gate the
 /// contract itself: the schema, the id vocabulary, exit codes for unknown ids, and
 /// the `describe`/`get`/`snapshot` agreement are all checked on every platform,
-/// because they are properties of simon rather than of the hardware beneath it.
+/// because they are properties of ironmon rather than of the hardware beneath it.
 fn platform_has_hardware_readers() -> bool {
     cfg!(any(target_os = "linux", target_os = "windows"))
 }
 
 fn run(args: &[&str]) -> (String, String, i32) {
-    let out = simon()
+    let out = ironmon()
         .args(args)
         .output()
-        .unwrap_or_else(|e| panic!("failed to run `simon {}`: {e}", args.join(" ")));
+        .unwrap_or_else(|e| panic!("failed to run `ironmon {}`: {e}", args.join(" ")));
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
@@ -50,7 +50,7 @@ fn json(args: &[&str]) -> serde_json::Value {
     let (stdout, stderr, _) = run(args);
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
-            "`simon {}` did not emit valid JSON: {e}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            "`ironmon {}` did not emit valid JSON: {e}\nstdout:\n{stdout}\nstderr:\n{stderr}",
             args.join(" ")
         )
     })
@@ -95,7 +95,7 @@ fn describe_emits_a_versioned_machine_readable_schema() {
 /// template expansion (`gpu.{n}.name` covering `gpu.0.name`).
 #[test]
 fn every_resolved_reading_is_declared_in_the_schema() {
-    use simonlib::ontology::Ontology;
+    use ironmonlib::ontology::Ontology;
 
     let ontology = Ontology::build();
     let snapshot = json(&["snapshot", "--format", "json"]);
@@ -254,7 +254,7 @@ fn the_write_surface_agrees_with_what_the_binary_accepts() {
         );
         assert!(
             listed.contains(via),
-            "the schema advertises writing {via:?} via {id}, but `simon profile \
+            "the schema advertises writing {via:?} via {id}, but `ironmon profile \
              writable` does not list it — an agent would attempt a write the \
              binary rejects.\nlisted:\n{listed}"
         );
@@ -412,13 +412,13 @@ fn the_gui_can_be_inspected_by_a_script() {
     use std::process::Stdio;
 
     fn run_script(script: &str) -> (String, String, i32) {
-        let mut child = simon()
+        let mut child = ironmon()
             .args(["gui", "--script", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn simon gui --script");
+            .expect("spawn ironmon gui --script");
         child
             .stdin
             .as_mut()
@@ -466,13 +466,13 @@ fn the_tui_can_be_driven_by_a_script() {
     use std::process::Stdio;
 
     fn run_script(script: &str) -> (String, String, i32) {
-        let mut child = simon()
+        let mut child = ironmon()
             .args(["tui", "--script", "-", "--width", "120", "--height", "12"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn simon tui --script");
+            .expect("spawn ironmon tui --script");
         child
             .stdin
             .as_mut()
@@ -514,7 +514,7 @@ fn the_tui_can_be_driven_by_a_script() {
     assert!(stderr.contains("frobnicate"), "got: {stderr}");
 }
 
-/// The schema must be a fact about simon, not about the machine it ran on —
+/// The schema must be a fact about ironmon, not about the machine it ran on —
 /// otherwise an agent cannot fetch it ahead of time or cache it across hosts.
 #[test]
 fn the_schema_is_stable_across_invocations() {
@@ -527,7 +527,7 @@ fn the_schema_is_stable_across_invocations() {
 /// reports seeing into something it can query.
 #[test]
 fn on_screen_labels_map_back_to_queryable_ids() {
-    use simonlib::ontology::labels;
+    use ironmonlib::ontology::labels;
 
     let ids = labels::ids_for_label("Total");
     assert!(

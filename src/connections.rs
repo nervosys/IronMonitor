@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::connections::{ConnectionMonitor, Protocol};
+//! use ironmonlib::connections::{ConnectionMonitor, Protocol};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let monitor = ConnectionMonitor::new()?;

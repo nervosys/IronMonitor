@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::storage_controller::StorageControllerMonitor;
+//! use ironmonlib::storage_controller::StorageControllerMonitor;
 //!
 //! let monitor = StorageControllerMonitor::new().unwrap();
 //! for ctrl in monitor.controllers() {
@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Storage interface type
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +154,7 @@ pub struct StorageControllerMonitor {
 
 impl StorageControllerMonitor {
     /// Create a new StorageControllerMonitor and detect controllers.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             controllers: Vec::new(),
             raid_arrays: Vec::new(),
@@ -169,7 +169,7 @@ impl StorageControllerMonitor {
     /// Returns `Err` when the enumeration failed, and `Ok` with an empty list
     /// only when it succeeded and found nothing -- which the resolver publishes
     /// as `disk.controller.<none>`. See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.controllers.clear();
         self.raid_arrays.clear();
 
@@ -225,7 +225,7 @@ impl StorageControllerMonitor {
     // ── Linux implementations ──
 
     #[cfg(target_os = "linux")]
-    fn refresh_nvme_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_nvme_linux(&mut self) -> Result<(), IronError> {
         let nvme_base = std::path::Path::new("/sys/class/nvme");
         if !nvme_base.exists() {
             // A real answer: this kernel exposes no such class.
@@ -233,7 +233,7 @@ impl StorageControllerMonitor {
         }
 
         let entries = std::fs::read_dir(nvme_base)
-            .map_err(|e| SimonError::System(format!("cannot read /sys/class/nvme: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read /sys/class/nvme: {e}")))?;
         {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -294,7 +294,7 @@ impl StorageControllerMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_scsi_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_scsi_linux(&mut self) -> Result<(), IronError> {
         let scsi_base = std::path::Path::new("/sys/class/scsi_host");
         if !scsi_base.exists() {
             // A real answer: this kernel exposes no such class.
@@ -302,7 +302,7 @@ impl StorageControllerMonitor {
         }
 
         let entries = std::fs::read_dir(scsi_base)
-            .map_err(|e| SimonError::System(format!("cannot read /sys/class/scsi_host: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read /sys/class/scsi_host: {e}")))?;
         {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -341,13 +341,13 @@ impl StorageControllerMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_mdstat_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_mdstat_linux(&mut self) -> Result<(), IronError> {
         // A kernel with no md subsystem has no /proc/mdstat, which is a real
         // answer; a file that will not open is not.
         let content = match std::fs::read_to_string("/proc/mdstat") {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(SimonError::System(format!("cannot read /proc/mdstat: {e}"))),
+            Err(e) => return Err(IronError::System(format!("cannot read /proc/mdstat: {e}"))),
         };
 
         let mut current: Option<RaidArrayInfo> = None;
@@ -472,7 +472,7 @@ impl StorageControllerMonitor {
     ///
     /// This collector used to spawn three separate `powershell.exe` processes. Each
     /// costs roughly 1.3s in interpreter startup alone, so enumeration took about
-    /// four seconds and dominated `simon profile` — 4000ms of its 4900ms total, for
+    /// four seconds and dominated `ironmon profile` — 4000ms of its 4900ms total, for
     /// twelve settings. The queries themselves are trivial.
     ///
     /// `wmi` is already a dependency and is used this way elsewhere in the crate.
@@ -483,20 +483,20 @@ impl StorageControllerMonitor {
     /// COM initialization, the namespace connection and the query itself all
     /// collapsed into `None`, which the caller read as "this namespace has no
     /// rows". Each now says which step failed.
-    fn query_wmi_json(namespace: &str, query: &str) -> Result<String, SimonError> {
+    fn query_wmi_json(namespace: &str, query: &str) -> Result<String, IronError> {
         use std::collections::HashMap;
         use wmi::{COMLibrary, Variant, WMIConnection};
 
         // COM may already be initialized on this thread (the collector thread holds a
         // guard); `COMLibrary::new` handles that case.
         let com = COMLibrary::new()
-            .map_err(|e| SimonError::System(format!("COM initialization failed: {e}")))?;
+            .map_err(|e| IronError::System(format!("COM initialization failed: {e}")))?;
         let conn = WMIConnection::with_namespace_path(namespace, com).map_err(|e| {
-            SimonError::System(format!("cannot connect to WMI namespace {namespace}: {e}"))
+            IronError::System(format!("cannot connect to WMI namespace {namespace}: {e}"))
         })?;
         let rows: Vec<HashMap<String, Variant>> = conn
             .raw_query(query)
-            .map_err(|e| SimonError::System(format!("WMI query failed in {namespace}: {e}")))?;
+            .map_err(|e| IronError::System(format!("WMI query failed in {namespace}: {e}")))?;
 
         // Re-serialize to the JSON shape the existing parsers expect, so the parsing
         // logic below is unchanged.
@@ -522,11 +522,11 @@ impl StorageControllerMonitor {
             .collect();
 
         serde_json::to_string(&json_rows)
-            .map_err(|e| SimonError::Parse(format!("cannot re-serialize WMI rows: {e}")))
+            .map_err(|e| IronError::Parse(format!("cannot re-serialize WMI rows: {e}")))
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // Three independent queries. A machine with no SCSI controller and a
         // machine whose WMI is unreachable both used to arrive here with an
         // empty list, so the rule is the one in `usb::refresh_windows`: any
@@ -577,7 +577,7 @@ impl StorageControllerMonitor {
         if any_ok {
             Ok(())
         } else {
-            Err(SimonError::System(format!(
+            Err(IronError::System(format!(
                 "no storage controller enumeration succeeded: {}",
                 failures.join("; ")
             )))
@@ -657,7 +657,7 @@ impl StorageControllerMonitor {
     // ── macOS implementation ──
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // NVMe controllers
         let nvme =
             crate::core::command::capture_json("system_profiler", &["SPNVMeDataType", "-json"])?;

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Silicon Monitor (simon) provides comprehensive motherboard sensor monitoring and detailed system information gathering across all major platforms.
+IronMonitor (ironmon) provides comprehensive motherboard sensor monitoring and detailed system information gathering across all major platforms.
 
 ## Features
 
@@ -151,7 +151,7 @@ Driver/module information:
 ### Basic Sensor Enumeration
 
 ```rust
-use simon::motherboard;
+use ironmon::motherboard;
 
 // Enumerate all sensor chips
 let sensors = motherboard::enumerate_sensors()?;
@@ -181,7 +181,7 @@ for sensor in sensors {
 ### System Information
 
 ```rust
-use simon::motherboard;
+use ironmon::motherboard;
 
 let info = motherboard::get_system_info()?;
 
@@ -210,7 +210,7 @@ println!("Cores: {} | Threads: {}",
 ### Driver Versions
 
 ```rust
-use simon::motherboard;
+use ironmon::motherboard;
 
 let drivers = motherboard::get_driver_versions()?;
 
@@ -226,7 +226,7 @@ for driver in drivers {
 ### Fan Control (Linux)
 
 ```rust
-use simon::motherboard::{self, FanControl};
+use ironmon::motherboard::{self, FanControl};
 
 let sensors = motherboard::enumerate_sensors()?;
 let sensor = &sensors[0];
@@ -244,7 +244,7 @@ sensor.set_fan_speed(0, FanControl::Automatic)?;
 ### Temperature Monitoring
 
 ```rust
-use simon::motherboard::{self, SensorType};
+use ironmon::motherboard::{self, SensorType};
 
 let sensors = motherboard::enumerate_sensors()?;
 

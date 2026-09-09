@@ -312,7 +312,7 @@ mod tests {
 
     fn tmpdir(tag: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
-        d.push(format!("simon-ids-test-{tag}-{}", std::process::id()));
+        d.push(format!("ironmon-ids-test-{tag}-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d
     }

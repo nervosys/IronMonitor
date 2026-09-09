@@ -1,4 +1,4 @@
-//! Custom widgets for Silicon Monitor GUI
+//! Custom widgets for IronMonitor GUI
 //!
 //! Cyber-styled widgets for displaying hardware metrics
 //! Now with Glances-style threshold colors and quicklook panel

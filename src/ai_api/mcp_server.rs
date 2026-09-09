@@ -3,7 +3,7 @@
 //! MCP server that allows AI agents like Claude to directly interact with hardware monitoring.
 
 use super::AiDataApi;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -58,7 +58,7 @@ impl McpServer {
         Ok(Self {
             api: AiDataApi::new()?,
             server_info: ServerInfo {
-                name: "silicon-monitor".to_string(),
+                name: "iron-monitor".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         })
@@ -70,7 +70,7 @@ impl McpServer {
         let reader = BufReader::new(stdin.lock());
 
         for line in reader.lines() {
-            let line = line.map_err(|e| SimonError::Io(std::io::Error::other(e)))?;
+            let line = line.map_err(|e| IronError::Io(std::io::Error::other(e)))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -90,12 +90,12 @@ impl McpServer {
             };
 
             let response_json = serde_json::to_string(&response)
-                .map_err(|e| SimonError::Io(std::io::Error::other(e)))?;
+                .map_err(|e| IronError::Io(std::io::Error::other(e)))?;
             writeln!(stdout, "{}", response_json)
-                .map_err(|e| SimonError::Io(std::io::Error::other(e)))?;
+                .map_err(|e| IronError::Io(std::io::Error::other(e)))?;
             stdout
                 .flush()
-                .map_err(|e| SimonError::Io(std::io::Error::other(e)))?;
+                .map_err(|e| IronError::Io(std::io::Error::other(e)))?;
         }
         Ok(())
     }
@@ -170,10 +170,10 @@ impl McpServer {
     fn handle_resources_list(&self) -> std::result::Result<Value, McpError> {
         Ok(json!({
             "resources": [
-                { "uri": "simon://system/summary", "name": "System Summary", "mimeType": "application/json" },
-                { "uri": "simon://gpu/status", "name": "GPU Status", "mimeType": "application/json" },
-                { "uri": "simon://cpu/status", "name": "CPU Status", "mimeType": "application/json" },
-                { "uri": "simon://memory/status", "name": "Memory Status", "mimeType": "application/json" }
+                { "uri": "ironmon://system/summary", "name": "System Summary", "mimeType": "application/json" },
+                { "uri": "ironmon://gpu/status", "name": "GPU Status", "mimeType": "application/json" },
+                { "uri": "ironmon://cpu/status", "name": "CPU Status", "mimeType": "application/json" },
+                { "uri": "ironmon://memory/status", "name": "Memory Status", "mimeType": "application/json" }
             ]
         }))
     }

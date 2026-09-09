@@ -2,11 +2,11 @@
 
 ## Overview
 
-Silicon Monitor now provides a **unified backend** (`src/backend.rs`) that ensures consistent data access and AI agent availability across all three frontend modes:
+IronMonitor now provides a **unified backend** (`src/backend.rs`) that ensures consistent data access and AI agent availability across all three frontend modes:
 
-1. **CLI Mode** (`simon-cli`) - Command-line interface for quick queries
-2. **TUI Mode** (`simon-cli tui`) - Terminal user interface with real-time monitoring
-3. **GUI Mode** (`simon`) - Graphical user interface with egui
+1. **CLI Mode** (`ironmon-cli`) - Command-line interface for quick queries
+2. **TUI Mode** (`ironmon-cli tui`) - Terminal user interface with real-time monitoring
+3. **GUI Mode** (`ironmon`) - Graphical user interface with egui
 
 ## Key Components
 
@@ -15,7 +15,7 @@ Silicon Monitor now provides a **unified backend** (`src/backend.rs`) that ensur
 The `MonitoringBackend` struct is the central data access point:
 
 ```rust
-use simon::{MonitoringBackend, BackendConfig};
+use ironmon::{MonitoringBackend, BackendConfig};
 
 // Create with default settings (agent enabled)
 let backend = MonitoringBackend::new()?;
@@ -78,7 +78,7 @@ The AI agent is now consistently available across all modes:
 All modes share the same history buffer implementation:
 
 ```rust
-use simon::HistoryBuffer;
+use ironmon::HistoryBuffer;
 
 let mut history: HistoryBuffer<f32> = HistoryBuffer::new(60);
 history.push(42.5);
@@ -126,7 +126,7 @@ let config = BackendConfig::default()
 ## Example Usage
 
 ```rust
-use simon::{MonitoringBackend, BackendConfig};
+use ironmon::{MonitoringBackend, BackendConfig};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

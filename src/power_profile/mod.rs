@@ -17,14 +17,14 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::power_profile::PowerProfileMonitor;
+//! use ironmonlib::power_profile::PowerProfileMonitor;
 //!
 //! let monitor = PowerProfileMonitor::new().unwrap();
 //! println!("Active profile: {:?}", monitor.active_profile());
 //! println!("Inferred behavior: {:?}", monitor.inferred_behavior());
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Named power profile.
@@ -137,7 +137,7 @@ pub struct PowerProfileMonitor {
 }
 
 impl PowerProfileMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             active_profile: PowerProfile::Unknown,
             power_plans: Vec::new(),
@@ -153,7 +153,7 @@ impl PowerProfileMonitor {
         Ok(monitor)
     }
 
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.power_plans.clear();
 
         #[cfg(target_os = "linux")]
@@ -323,7 +323,7 @@ impl PowerProfileMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         // Every source here is optional -- a kernel without cpufreq has no
         // governor, a desktop has no battery -- so nothing in this reader is
         // an enumeration whose failure means "no power profiles". The
@@ -482,7 +482,7 @@ impl PowerProfileMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // `powercfg /list` is the enumeration. It ships with Windows, so a
         // failure to run it is a failure -- and an empty plan list is what the
         // resolver publishes as `power.profile.<none>`, a claim that this
@@ -561,7 +561,7 @@ impl PowerProfileMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // `pmset` ships with macOS, so a failure to run it is a failure.
         {
             let text = crate::core::command::capture("pmset", &["-g", "custom"])?;

@@ -1,8 +1,8 @@
 # Contributor License Agreement (CLA)
 
-## Silicon Monitor — Individual Contributor License Agreement v1.0
+## IronMonitor — Individual Contributor License Agreement v1.0
 
-Thank you for your interest in contributing to **Silicon Monitor** (the "Project"),
+Thank you for your interest in contributing to **IronMonitor** (the "Project"),
 owned and maintained by **NERVOSYS** (the "Organization").
 
 By submitting a contribution (including but not limited to code, documentation,

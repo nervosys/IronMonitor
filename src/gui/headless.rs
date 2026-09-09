@@ -244,13 +244,13 @@ mod tests {
 #[cfg(test)]
 mod app_tab_tests {
     use super::*;
-    use crate::gui::app::SiliconMonitorApp;
+    use crate::gui::app::IronMonitorApp;
 
     /// Constructing the app enumerates GPUs and spawns collectors. That is slow but
     /// real, and a mock would defeat the purpose of the test.
-    fn app_and_ctx() -> (SiliconMonitorApp, egui::Context) {
+    fn app_and_ctx() -> (IronMonitorApp, egui::Context) {
         let ctx = egui::Context::default();
-        let app = SiliconMonitorApp::with_context(&ctx);
+        let app = IronMonitorApp::with_context(&ctx);
         (app, ctx)
     }
 
@@ -525,7 +525,7 @@ pub const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 /// Both `--frame` and `--script` go through this, so an agent asserting on a tab
 /// sees the same thing either way. Before it existed, `--script` captured the
 /// first frame — which for four tabs was their "Loading …" placeholder, forever.
-pub fn settled_tab_text(app: &mut super::app::SiliconMonitorApp, ctx: &Context) -> String {
+pub fn settled_tab_text(app: &mut super::app::IronMonitorApp, ctx: &Context) -> String {
     painted_text_until(
         ctx,
         SETTLE_DEADLINE,
@@ -539,7 +539,7 @@ pub fn settled_tab_text(app: &mut super::app::SiliconMonitorApp, ctx: &Context) 
 
 /// Run a GUI script against `app`.
 pub fn run_script(
-    app: &mut super::app::SiliconMonitorApp,
+    app: &mut super::app::IronMonitorApp,
     ctx: &Context,
     steps: &[Step],
 ) -> ScriptResult {
@@ -583,11 +583,11 @@ pub fn run_script(
 #[cfg(test)]
 mod script_tests {
     use super::*;
-    use crate::gui::app::SiliconMonitorApp;
+    use crate::gui::app::IronMonitorApp;
 
-    fn app_and_ctx() -> (SiliconMonitorApp, Context) {
+    fn app_and_ctx() -> (IronMonitorApp, Context) {
         let ctx = themed_context();
-        let app = SiliconMonitorApp::with_context(&ctx);
+        let app = IronMonitorApp::with_context(&ctx);
         (app, ctx)
     }
 

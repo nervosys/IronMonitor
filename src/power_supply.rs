@@ -8,7 +8,7 @@
 //! ## List all power supplies
 //!
 //! ```no_run
-//! use simonlib::power_supply::{PowerSupplyMonitor, PowerSupplyType};
+//! use ironmonlib::power_supply::{PowerSupplyMonitor, PowerSupplyType};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let monitor = PowerSupplyMonitor::new()?;
@@ -28,7 +28,7 @@
 use crate::error::Result;
 // Only the Linux enumeration path constructs an error value directly.
 #[cfg(target_os = "linux")]
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Type of power supply
@@ -396,7 +396,7 @@ impl PowerSupplyMonitor {
         }
 
         let entries = fs::read_dir(power_supply_path)
-            .map_err(|e| SimonError::System(format!("Failed to read power_supply: {}", e)))?;
+            .map_err(|e| IronError::System(format!("Failed to read power_supply: {}", e)))?;
 
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();

@@ -68,7 +68,7 @@ sudo apt-get install gcc-aarch64-linux-gnu
 cargo build --release --target aarch64-unknown-linux-gnu
 
 # The binary will be in:
-# target/aarch64-unknown-linux-gnu/release/simon
+# target/aarch64-unknown-linux-gnu/release/ironmon
 ```
 
 Using `cross` (easier):
@@ -182,7 +182,7 @@ cargo doc --no-deps --all-features --open
 # On the Jetson device
 cargo build --release --features full
 
-# The binary will be in: target/release/simon
+# The binary will be in: target/release/ironmon
 ```
 
 ### Linux Desktop with NVIDIA GPU
@@ -242,7 +242,7 @@ linker = "aarch64-linux-gnu-gcc"
 cargo build --release
 
 # Run with perf
-perf record --call-graph dwarf target/release/simon
+perf record --call-graph dwarf target/release/ironmon
 perf report
 ```
 
@@ -290,7 +290,7 @@ For maximum performance:
 RUSTFLAGS="-C target-cpu=native" cargo build --release --features full
 
 # Strip debug symbols (makes binary smaller)
-strip target/release/simon
+strip target/release/ironmon
 ```
 
 ## Quick Commands Reference

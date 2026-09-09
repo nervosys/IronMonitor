@@ -2,7 +2,7 @@
 
 use crate::agent::{Agent, AgentConfig, AgentResponse};
 use crate::silicon::NpuInfo;
-use crate::{ProcessMonitor, ProcessMonitorInfo, SiliconMonitor};
+use crate::{ProcessMonitor, ProcessMonitorInfo, UnifiedMonitor};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -2374,7 +2374,7 @@ impl App {
 
     /// Submit agent query
     /// Spawn the long-lived agent worker thread. It owns the agent plus a
-    /// fresh `SiliconMonitor` (the UI thread keeps its own), reads queries
+    /// fresh `UnifiedMonitor` (the UI thread keeps its own), reads queries
     /// off a channel, and sends results back. Called once when agent_init
     /// finishes.
     fn spawn_agent_worker(&mut self, agent: Agent) {
@@ -2390,7 +2390,7 @@ impl App {
             // The worker owns its own monitor to avoid sharing state with
             // the UI thread. agent.ask() reads from this monitor at call
             // time, so values reflect the moment the query runs.
-            let monitor = match SiliconMonitor::new() {
+            let monitor = match UnifiedMonitor::new() {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = response_tx.send(Err(format!("worker monitor init failed: {}", e)));
@@ -2419,7 +2419,7 @@ impl App {
 
     /// Hand a question to the agent worker thread.
     ///
-    /// Took a `&SiliconMonitor` it never used. Supplying that argument cost the TUI a
+    /// Took a `&UnifiedMonitor` it never used. Supplying that argument cost the TUI a
     /// blocking `GpuCollection::auto_detect` at startup, and it was fallible: a host
     /// where GPU enumeration errors could not open the terminal dashboard at all,
     /// over a value no code read.

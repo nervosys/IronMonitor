@@ -3,12 +3,12 @@
 //! Demonstrates unified process monitoring with GPU attribution.
 //! Shows all running processes with their CPU, memory, and GPU usage.
 
-use simonlib::{ProcessMonitor, Result};
+use ironmonlib::{ProcessMonitor, Result};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    println!("=== Silicon Monitor - Process Monitoring ===\n");
+    println!("=== IronMonitor - Process Monitoring ===\n");
 
     // Create process monitor with GPU attribution
     let mut monitor = ProcessMonitor::new()?;

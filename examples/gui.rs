@@ -1,4 +1,4 @@
-//! Silicon Monitor GUI Example
+//! IronMonitor GUI Example
 //!
 //! Launches the graphical user interface for hardware monitoring.
 //!
@@ -8,6 +8,6 @@
 //! ```
 
 fn main() -> Result<(), eframe::Error> {
-    println!("⚡ Starting Silicon Monitor GUI...");
-    simonlib::gui::run()
+    println!("⚡ Starting IronMonitor GUI...");
+    ironmonlib::gui::run()
 }

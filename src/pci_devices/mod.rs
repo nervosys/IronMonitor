@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::pci_devices::{PciDeviceMonitor, PciClass};
+//! use ironmonlib::pci_devices::{PciDeviceMonitor, PciClass};
 //!
 //! let monitor = PciDeviceMonitor::new().unwrap();
 //! for dev in monitor.devices() {
@@ -19,7 +19,7 @@
 //! println!("GPU devices: {}", monitor.devices_by_class(PciClass::DisplayController).len());
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// PCI device class (major categories)
@@ -152,7 +152,7 @@ pub(crate) fn pci_address_of(pnp_id: &str) -> Option<String> {
 }
 
 impl PciDeviceMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             devices: Vec::new(),
         };
@@ -171,7 +171,7 @@ impl PciDeviceMonitor {
     /// second: "no PCI devices enumerated on this machine". It was found by
     /// `resolution_is_stable_across_calls` going red once under a fully loaded
     /// test run, where one PowerShell spawn lost the race.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.devices.clear();
 
         #[cfg(target_os = "linux")]
@@ -254,7 +254,7 @@ impl PciDeviceMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         let pci_base = std::path::Path::new("/sys/bus/pci/devices");
         if !pci_base.exists() {
             // A real answer: this kernel exposes no PCI bus at all.
@@ -262,7 +262,7 @@ impl PciDeviceMonitor {
         }
 
         let entries = std::fs::read_dir(pci_base)
-            .map_err(|e| SimonError::System(format!("cannot read /sys/bus/pci/devices: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read /sys/bus/pci/devices: {e}")))?;
         for entry in entries.flatten() {
             let address = entry.file_name().to_string_lossy().to_string();
             let base = entry.path();
@@ -410,28 +410,28 @@ impl PciDeviceMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command",
                 r#"Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'PCI\*' } | Select-Object Name, Manufacturer, PNPDeviceID, Status, ConfigManagerErrorCode -First 500 | ConvertTo-Json -Compress"#])
             .output()
-            .map_err(|e| SimonError::CommandFailed(format!("powershell: {e}")))?;
+            .map_err(|e| IronError::CommandFailed(format!("powershell: {e}")))?;
         if !output.status.success() {
-            return Err(SimonError::CommandFailed(format!(
+            return Err(IronError::CommandFailed(format!(
                 "Win32_PnPEntity query exited {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
         let text = String::from_utf8(output.stdout)
-            .map_err(|e| SimonError::Parse(format!("Win32_PnPEntity output not UTF-8: {e}")))?;
+            .map_err(|e| IronError::Parse(format!("Win32_PnPEntity output not UTF-8: {e}")))?;
         if text.trim().is_empty() {
             // ConvertTo-Json of an empty result set prints nothing, so this is
             // the one shape that really does mean "no PCI devices".
             return Ok(());
         }
         let val: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| SimonError::Parse(format!("Win32_PnPEntity JSON: {e}")))?;
+            .map_err(|e| IronError::Parse(format!("Win32_PnPEntity JSON: {e}")))?;
         let items = match &val {
             serde_json::Value::Array(arr) => arr.clone(),
             obj @ serde_json::Value::Object(_) => vec![obj.clone()],
@@ -717,22 +717,22 @@ impl PciDeviceMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         let output = std::process::Command::new("system_profiler")
             .args(["SPPCIDataType", "-json"])
             .output()
-            .map_err(|e| SimonError::CommandFailed(format!("system_profiler: {e}")))?;
+            .map_err(|e| IronError::CommandFailed(format!("system_profiler: {e}")))?;
         if !output.status.success() {
-            return Err(SimonError::CommandFailed(format!(
+            return Err(IronError::CommandFailed(format!(
                 "system_profiler SPPCIDataType exited {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
         let text = String::from_utf8(output.stdout)
-            .map_err(|e| SimonError::Parse(format!("system_profiler output not UTF-8: {e}")))?;
+            .map_err(|e| IronError::Parse(format!("system_profiler output not UTF-8: {e}")))?;
         let val: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| SimonError::Parse(format!("SPPCIDataType JSON: {e}")))?;
+            .map_err(|e| IronError::Parse(format!("SPPCIDataType JSON: {e}")))?;
         if let Some(items) = val["SPPCIDataType"].as_array() {
             for item in items {
                 let name = item["_name"].as_str().unwrap_or("").to_string();

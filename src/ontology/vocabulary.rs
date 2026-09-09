@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2024 NervoSys
 
-//! The closed sets of values simon emits, and what each one means.
+//! The closed sets of values ironmon emits, and what each one means.
 //!
 //! # The gap this fills
 //!
 //! [`super::Entity`] says what a reading means. [`super::capability`] says
-//! whether simon can produce it here. Neither says what `"no_baseline"` is, and
+//! whether IronMonitor can produce it here. Neither says what `"no_baseline"` is, and
 //! an agent that receives
 //!
 //! ```json
@@ -18,7 +18,7 @@
 //! it and will be surprised by the next one.
 //!
 //! Every enum here is one an agent parses. Declaring the value set closes the
-//! last place where simon's output required prior knowledge that simon did not
+//! last place where ironmon's output required prior knowledge that ironmon did not
 //! supply.
 //!
 //! # Why this is derived rather than described
@@ -55,7 +55,7 @@ fn term(value: &str, meaning: &str) -> Term {
     }
 }
 
-/// A closed set of values simon emits in one field.
+/// A closed set of values ironmon emits in one field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vocabulary {
     /// Dotted id: `vocabulary.scan_status`.
@@ -76,7 +76,7 @@ fn vocab(id: &str, emitted_by: &str, summary: &str, values: Vec<Term>) -> Vocabu
     }
 }
 
-/// Every closed vocabulary simon emits.
+/// Every closed vocabulary ironmon emits.
 pub fn vocabularies() -> Vec<Vocabulary> {
     let mut out = vec![
         vocab(
@@ -104,7 +104,7 @@ pub fn vocabularies() -> Vec<Vocabulary> {
         vocab(
             "vocabulary.apply_status",
             "profile::apply::ApplyStatus, the `status` of every write attempt",
-            "what happened when simon tried to change a setting",
+            "what happened when ironmon tried to change a setting",
             vec![
                 term("applied", "the write took effect"),
                 term(
@@ -173,7 +173,7 @@ pub fn vocabularies() -> Vec<Vocabulary> {
             "vocabulary.severity",
             "ids::Severity, the `severity` of every finding",
             "how bad a finding would be if it is real — independent of how sure \
-             simon is that it is",
+             IronMonitor is that it is",
             vec![
                 term("info", "worth recording, not worth waking anyone"),
                 term("low", "worth looking at when convenient"),
@@ -185,7 +185,7 @@ pub fn vocabularies() -> Vec<Vocabulary> {
         vocab(
             "vocabulary.confidence",
             "ids::Confidence, the `confidence` of every finding",
-            "how sure simon is that a finding is what it says it is — orthogonal to \
+            "how sure IronMonitor is that a finding is what it says it is — orthogonal to \
              severity, and conflating the two is how alert fatigue starts",
             vec![
                 term(
@@ -207,7 +207,7 @@ pub fn vocabularies() -> Vec<Vocabulary> {
         vocab(
             "vocabulary.support",
             "ontology::capability::Support, the `support` of every capability",
-            "how well simon supports something on one platform",
+            "how well ironmon supports something on one platform",
             vec![
                 term(
                     "implemented",

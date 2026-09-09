@@ -12,7 +12,7 @@
 //! ## List All Interfaces
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -32,7 +32,7 @@
 //! ## Monitor Active Interfaces
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -55,7 +55,7 @@
 //! ## Calculate Bandwidth Rates
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //! use std::{thread, time::Duration};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -87,7 +87,7 @@
 //! ## Monitor Specific Interface
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -118,7 +118,7 @@
 //! ## Track Interface Health
 //!
 //! ```no_run
-//! use simonlib::NetworkMonitor;
+//! use ironmonlib::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -157,7 +157,7 @@
 //! - **mtu**: Maximum Transmission Unit
 //! - **address**: MAC address
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -380,7 +380,7 @@ mod linux {
 
         let sys_net = Path::new("/sys/class/net");
         if !sys_net.exists() {
-            return Err(SimonError::UnsupportedPlatform(
+            return Err(IronError::UnsupportedPlatform(
                 "/sys/class/net not available".to_string(),
             ));
         }
@@ -468,7 +468,7 @@ mod linux {
         content
             .trim()
             .parse()
-            .map_err(|e| SimonError::Parse(format!("Failed to parse {}: {}", stat_name, e)))
+            .map_err(|e| IronError::Parse(format!("Failed to parse {}: {}", stat_name, e)))
     }
 
     fn read_file_u32(path: &str) -> Option<u32> {
@@ -678,10 +678,7 @@ mod windows {
         unsafe {
             let result = GetIfTable2(&mut table);
             if result != NO_ERROR {
-                return Err(SimonError::System(format!(
-                    "GetIfTable2 failed: {}",
-                    result
-                )));
+                return Err(IronError::System(format!("GetIfTable2 failed: {}", result)));
             }
 
             if table.is_null() {
@@ -869,7 +866,7 @@ mod macos {
         unsafe {
             let mut addrs: *mut ifaddrs = ptr::null_mut();
             if getifaddrs(&mut addrs) != 0 {
-                return Err(SimonError::System("getifaddrs failed".to_string()));
+                return Err(IronError::System("getifaddrs failed".to_string()));
             }
 
             let mut current = addrs;

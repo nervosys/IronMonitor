@@ -8,7 +8,7 @@
 //! - **Linux**: `/sys/class/dma/`, `/sys/bus/dsa/devices/`
 //! - **Windows / macOS**: Not available
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// DMA engine type.
@@ -115,13 +115,13 @@ pub struct DmaEngineMonitor {
 
 impl DmaEngineMonitor {
     /// Create a new DMA engine monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -142,13 +142,13 @@ impl DmaEngineMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<DmaOverview, SimonError> {
+    fn scan() -> Result<DmaOverview, IronError> {
         let dma_path = std::path::Path::new("/sys/class/dma");
         let mut controllers: std::collections::HashMap<String, DmaController> =
             std::collections::HashMap::new();
 
         if dma_path.exists() {
-            let entries = std::fs::read_dir(dma_path).map_err(SimonError::Io)?;
+            let entries = std::fs::read_dir(dma_path).map_err(IronError::Io)?;
 
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -387,12 +387,12 @@ impl DmaEngineMonitor {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<DmaOverview, SimonError> {
+    fn scan() -> Result<DmaOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "DMA engine channels are read from `/sys/class/dma`, which this platform does not expose"
                 .into(),
         ))

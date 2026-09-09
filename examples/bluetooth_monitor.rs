@@ -4,7 +4,7 @@
 //!
 //! Run with: cargo run --example bluetooth_monitor
 
-use simonlib::bluetooth::{BluetoothDeviceType, BluetoothMonitor, BluetoothState};
+use ironmonlib::bluetooth::{BluetoothDeviceType, BluetoothMonitor, BluetoothState};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Bluetooth Monitor Example ===\n");

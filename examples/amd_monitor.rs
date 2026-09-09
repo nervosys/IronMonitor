@@ -1,11 +1,11 @@
 //! AMD GPU Monitoring Example
 
 #[cfg(feature = "amd")]
-use simonlib::gpu::amd_rocm;
+use ironmonlib::gpu::amd_rocm;
 
 #[cfg(feature = "amd")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Silicon Monitor - AMD GPU Monitoring\n");
+    println!("IronMonitor - AMD GPU Monitoring\n");
 
     let devices = match amd_rocm::enumerate() {
         Ok(devs) => devs,

@@ -1,12 +1,12 @@
-//! Process Monitoring Example using Silicon Monitor
+//! Process Monitoring Example using IronMonitor
 
-use simonlib::ProcessMonitor;
+use ironmonlib::ProcessMonitor;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("Silicon Monitor - Process Monitoring Example");
+    println!("IronMonitor - Process Monitoring Example");
     println!("============================================\n");
 
     let mut monitor = ProcessMonitor::new()?;

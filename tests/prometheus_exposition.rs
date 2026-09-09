@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use simonlib::prometheus::PrometheusExporter;
+use ironmonlib::prometheus::PrometheusExporter;
 
 fn exported() -> String {
-    let mut exporter = PrometheusExporter::new("simon");
+    let mut exporter = PrometheusExporter::new("ironmon");
     exporter.collect_system_metrics();
     exporter.export()
 }
@@ -24,7 +24,7 @@ fn sample_lines(text: &str) -> impl Iterator<Item = &str> {
 ///
 /// `PrometheusExporter::add` pushed a new family per sample, so the headers
 /// repeated once per disk, per GPU and per network interface — twenty times for
-/// `simon_network_rx_bytes_total` on the machine this was written on.
+/// `ironmon_network_rx_bytes_total` on the machine this was written on.
 #[test]
 fn each_metric_name_is_declared_once() {
     let text = exported();
@@ -60,7 +60,7 @@ fn each_metric_name_is_declared_once() {
 ///
 /// This is the fatal one. `collect_network_metrics` built an `interface` label
 /// and then called the unlabelled `MetricFamily::counter`, so every interface
-/// emitted `simon_network_rx_bytes_total` with no labels and its own value —
+/// emitted `ironmon_network_rx_bytes_total` with no labels and its own value —
 /// twenty identical series, which Prometheus rejects as duplicate samples,
 /// taking the whole endpoint down rather than just the network metrics.
 #[test]
@@ -95,8 +95,8 @@ fn no_two_samples_share_a_name_and_labels() {
 // to express -- a metric collected in a loop must be labelled -- is real, but
 // a test cannot see the loop, so it guessed from the name and needed an
 // exemption every time a legitimately whole-machine metric appeared:
-// `simon_gpu_count`, then `simon_swap_used_bytes`, then
-// `simon_uptime_seconds`. Three exemptions in one sitting, none of them a
+// `ironmon_gpu_count`, then `ironmon_swap_used_bytes`, then
+// `ironmon_uptime_seconds`. Three exemptions in one sitting, none of them a
 // defect.
 //
 // **A test that needs a growing allowlist to stay green has stopped testing an
@@ -111,10 +111,10 @@ fn no_two_samples_share_a_name_and_labels() {
 /// a name nothing exports renders empty against a live server, which looks like
 /// broken hardware rather than a broken dashboard. `http_server.rs` records that
 /// this whole class of failure already happened once — the names lacked the
-/// `simon_` prefix and all three dashboards were blank — and nothing prevented
+/// `ironmon_` prefix and all three dashboards were blank — and nothing prevented
 /// it recurring. Six queried names were unpublished when the first version of
-/// this check was written, including `simon_gpu_clock_graphics_mhz`, which the
-/// exporter published as `simon_gpu_clock_core_mhz`: the same number under a
+/// this check was written, including `ironmon_gpu_clock_graphics_mhz`, which the
+/// exporter published as `ironmon_gpu_clock_core_mhz`: the same number under a
 /// name no dashboard asks for.
 fn dashboard_metrics(root: &std::path::Path) -> std::collections::BTreeSet<String> {
     let mut queried = std::collections::BTreeSet::new();
@@ -129,7 +129,7 @@ fn dashboard_metrics(root: &std::path::Path) -> std::collections::BTreeSet<Strin
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for (idx, _) in text.match_indices("simon_") {
+        for (idx, _) in text.match_indices("ironmon_") {
             queried.insert(
                 text[idx..]
                     .chars()
@@ -152,7 +152,7 @@ fn dashboard_metrics(root: &std::path::Path) -> std::collections::BTreeSet<Strin
 ///
 /// And `#[cfg(test)]` modules, because splitting this check found the same hole
 /// again in a new place. `http_server.rs` contains
-/// `assert!(!text.contains("simon_disk_read_bytes_total"))` — a test pinning
+/// `assert!(!text.contains("ironmon_disk_read_bytes_total"))` — a test pinning
 /// that the name is *not* published — and a plain source search read that string
 /// literal as a publisher. The metric counted as covered on the strength of a
 /// test asserting it was missing.
@@ -218,8 +218,8 @@ fn unpublished_by(root: &std::path::Path, files: &[&str]) -> Vec<String> {
         .into_iter()
         .filter(|name| {
             // Emitted either as the full name or through `prefixed("...")`,
-            // which prepends `simon_`.
-            let bare = name.strip_prefix("simon_").unwrap_or(name);
+            // which prepends `ironmon_`.
+            let bare = name.strip_prefix("ironmon_").unwrap_or(name);
             !code.contains(&format!("\"{name}\"")) && !code.contains(&format!("\"{bare}\""))
         })
         .collect()
@@ -323,13 +323,13 @@ fn the_library_exporter_publishes_every_dashboard_metric() {
 /// invalid: Prometheus needs `name{gpu="0"}`, quoted and without the colon.
 #[test]
 fn the_served_renderer_emits_valid_label_syntax() {
-    use simonlib::observability::MetricCollector;
+    use ironmonlib::observability::MetricCollector;
 
     let collector = MetricCollector::new();
-    collector.record("simon_uptime_seconds", 1234.0);
-    collector.record_with_labels("simon_gpu_temperature_celsius", 42.0, &[("gpu", "0")]);
+    collector.record("ironmon_uptime_seconds", 1234.0);
+    collector.record_with_labels("ironmon_gpu_temperature_celsius", 42.0, &[("gpu", "0")]);
     collector.record_with_labels(
-        "simon_gpu_temperature_celsius",
+        "ironmon_gpu_temperature_celsius",
         37.0,
         &[("gpu", "1"), ("vendor", "NVIDIA")],
     );
@@ -341,15 +341,15 @@ fn the_served_renderer_emits_valid_label_syntax() {
         "the storage key leaked into the exposition, which no scraper parses: {text}"
     );
     assert!(
-        text.contains("simon_gpu_temperature_celsius{gpu=\"0\"} 42"),
+        text.contains("ironmon_gpu_temperature_celsius{gpu=\"0\"} 42"),
         "a single label should render as gpu=\"0\": {text}"
     );
     assert!(
-        text.contains("simon_gpu_temperature_celsius{gpu=\"1\",vendor=\"NVIDIA\"} 37"),
+        text.contains("ironmon_gpu_temperature_celsius{gpu=\"1\",vendor=\"NVIDIA\"} 37"),
         "several labels should render comma-separated and quoted: {text}"
     );
     assert!(
-        text.contains("simon_uptime_seconds 1234"),
+        text.contains("ironmon_uptime_seconds 1234"),
         "an unlabelled series should render unchanged: {text}"
     );
 }

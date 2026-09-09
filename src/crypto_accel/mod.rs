@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Category of cryptographic acceleration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -133,13 +133,13 @@ pub struct CryptoAccelMonitor {
 
 impl CryptoAccelMonitor {
     /// Create a new crypto acceleration monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let report = Self::detect()?;
         Ok(Self { report })
     }
 
     /// Refresh detection.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.report = Self::detect()?;
         Ok(())
     }
@@ -157,7 +157,7 @@ impl CryptoAccelMonitor {
             .any(|f| f.cpu_flag.eq_ignore_ascii_case(flag) && f.hardware_accelerated)
     }
 
-    fn detect() -> Result<CryptoAccelReport, SimonError> {
+    fn detect() -> Result<CryptoAccelReport, IronError> {
         let cpu_flags = Self::read_cpu_flags()?;
         let features = Self::detect_features(&cpu_flags);
         let rng_sources = Self::detect_rng(&features);
@@ -541,8 +541,8 @@ impl CryptoAccelMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_cpu_flags() -> Result<Vec<String>, SimonError> {
-        let content = std::fs::read_to_string("/proc/cpuinfo").map_err(SimonError::Io)?;
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
+        let content = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
         for line in content.lines() {
             if line.starts_with("flags") || line.starts_with("Features") {
                 if let Some((_, flags_str)) = line.split_once(':') {
@@ -554,7 +554,7 @@ impl CryptoAccelMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn read_cpu_flags() -> Result<Vec<String>, SimonError> {
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
         // Use PROCESSOR_IDENTIFIER and hard-coded detection on Windows
         let mut flags = Vec::new();
 
@@ -582,7 +582,7 @@ impl CryptoAccelMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn read_cpu_flags() -> Result<Vec<String>, SimonError> {
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
         let mut flags = Vec::new();
 
         let checks = &[
@@ -611,7 +611,7 @@ impl CryptoAccelMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn read_cpu_flags() -> Result<Vec<String>, SimonError> {
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
         Ok(Vec::new())
     }
 }

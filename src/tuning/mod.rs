@@ -339,7 +339,7 @@ pub fn classify(signals: &Signals) -> Classification {
         let discovery = BackendDiscovery::discover();
         // Only local backends. Sending a description of what someone is doing at
         // their desk to a hosted provider is not a trade this feature should make
-        // silently, and simon is deployed on the strength of keeping telemetry on
+        // silently, and IronMonitor is deployed on the strength of keeping telemetry on
         // the host.
         let Some(backend) = discovery
             .available()
@@ -506,7 +506,7 @@ enum Target {
 
 /// The policy table. Deliberately small and explicit.
 ///
-/// Every entry names a setting simon has a real apply handler for; a policy for
+/// Every entry names a setting IronMonitor has a real apply handler for; a policy for
 /// something unwritable would produce recommendations nobody can act on. It is
 /// keyed on setting id rather than on a category, because two GPUs' "performance
 /// mode" are not interchangeable and pretending otherwise is how a tuner ends up

@@ -1,10 +1,10 @@
 {
   "dashboard": {
     "id": null,
-    "uid": "simon-host-detail",
-    "title": "Simon Host Detail",
-    "description": "Single-host deep dive with Silicon Monitor",
-    "tags": ["simon", "host"],
+    "uid": "ironmon-host-detail",
+    "title": "IronMonitor Host Detail",
+    "description": "Single-host deep dive with IronMonitor",
+    "tags": ["ironmon", "host"],
     "timezone": "browser",
     "refresh": "5s",
     "time": { "from": "now-1h", "to": "now" },
@@ -13,7 +13,7 @@
         {
           "name": "instance",
           "type": "query",
-          "query": "label_values(simon_cpu_usage_percent, instance)"
+          "query": "label_values(ironmon_cpu_usage_percent, instance)"
         }
       ]
     },
@@ -22,20 +22,20 @@
         "title": "CPU Usage per Core",
         "type": "heatmap",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-        "targets": [{ "expr": "simon_cpu_usage_percent{instance=~\"$instance\"}", "legendFormat": "Core {{core}}" }]
+        "targets": [{ "expr": "ironmon_cpu_usage_percent{instance=~\"$instance\"}", "legendFormat": "Core {{core}}" }]
       },
       {
         "title": "CPU Frequency",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-        "targets": [{ "expr": "simon_cpu_frequency_mhz{instance=~\"$instance\"}", "legendFormat": "Core {{core}}" }],
+        "targets": [{ "expr": "ironmon_cpu_frequency_mhz{instance=~\"$instance\"}", "legendFormat": "Core {{core}}" }],
         "fieldConfig": { "defaults": { "unit": "rotmhz" } }
       },
       {
         "title": "CPU Temperature",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-        "targets": [{ "expr": "simon_cpu_temperature_celsius{instance=~\"$instance\"}" }],
+        "targets": [{ "expr": "ironmon_cpu_temperature_celsius{instance=~\"$instance\"}" }],
         "fieldConfig": { "defaults": { "unit": "celsius" } }
       },
       {
@@ -43,9 +43,9 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
         "targets": [
-          { "expr": "simon_memory_used_bytes{instance=~\"$instance\"}", "legendFormat": "Memory Used" },
-          { "expr": "simon_memory_total_bytes{instance=~\"$instance\"}", "legendFormat": "Memory Total" },
-          { "expr": "simon_swap_used_bytes{instance=~\"$instance\"}", "legendFormat": "Swap Used" }
+          { "expr": "ironmon_memory_used_bytes{instance=~\"$instance\"}", "legendFormat": "Memory Used" },
+          { "expr": "ironmon_memory_total_bytes{instance=~\"$instance\"}", "legendFormat": "Memory Total" },
+          { "expr": "ironmon_swap_used_bytes{instance=~\"$instance\"}", "legendFormat": "Swap Used" }
         ],
         "fieldConfig": { "defaults": { "unit": "bytes" } }
       },
@@ -54,8 +54,8 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
         "targets": [
-          { "expr": "simon_load_average_1m{instance=~\"$instance\"}", "legendFormat": "1m" },
-          { "expr": "simon_load_average_5m{instance=~\"$instance\"}", "legendFormat": "5m" }
+          { "expr": "ironmon_load_average_1m{instance=~\"$instance\"}", "legendFormat": "1m" },
+          { "expr": "ironmon_load_average_5m{instance=~\"$instance\"}", "legendFormat": "5m" }
         ]
       },
       {
@@ -63,8 +63,8 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
         "targets": [
-          { "expr": "rate(simon_disk_read_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "Read {{device}}" },
-          { "expr": "rate(simon_disk_write_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "Write {{device}}" }
+          { "expr": "rate(ironmon_disk_read_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "Read {{device}}" },
+          { "expr": "rate(ironmon_disk_write_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "Write {{device}}" }
         ],
         "fieldConfig": { "defaults": { "unit": "Bps" } }
       },
@@ -72,7 +72,7 @@
         "title": "Disk Usage",
         "type": "bargauge",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-        "targets": [{ "expr": "simon_disk_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{device}}" }],
+        "targets": [{ "expr": "ironmon_disk_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{device}}" }],
         "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" } }
       },
       {
@@ -80,8 +80,8 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
         "targets": [
-          { "expr": "rate(simon_network_rx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "RX {{interface}}" },
-          { "expr": "rate(simon_network_tx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "TX {{interface}}" }
+          { "expr": "rate(ironmon_network_rx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "RX {{interface}}" },
+          { "expr": "rate(ironmon_network_tx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "TX {{interface}}" }
         ],
         "fieldConfig": { "defaults": { "unit": "Bps" } }
       },
@@ -89,14 +89,14 @@
         "title": "System Uptime",
         "type": "stat",
         "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 },
-        "targets": [{ "expr": "simon_uptime_seconds{instance=~\"$instance\"}" }],
+        "targets": [{ "expr": "ironmon_uptime_seconds{instance=~\"$instance\"}" }],
         "fieldConfig": { "defaults": { "unit": "s" } }
       },
       {
         "title": "Process Count",
         "type": "stat",
         "gridPos": { "h": 4, "w": 6, "x": 6, "y": 32 },
-        "targets": [{ "expr": "simon_process_count{instance=~\"$instance\"}" }]
+        "targets": [{ "expr": "ironmon_process_count{instance=~\"$instance\"}" }]
       }
     ]
   }

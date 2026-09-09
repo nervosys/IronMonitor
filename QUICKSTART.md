@@ -1,6 +1,6 @@
-# Silicon Monitor — Quick Start Guide
+# IronMonitor — Quick Start Guide
 
-Get up and running with Silicon Monitor in under 5 minutes.
+Get up and running with IronMonitor in under 5 minutes.
 
 ## Prerequisites
 
@@ -17,21 +17,21 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-silicon-monitor = { version = "0.3", features = ["nvidia"] }
+iron-monitor = { version = "0.3", features = ["nvidia"] }
 
 # Or pick specific vendors:
-# silicon-monitor = { version = "0.3", features = ["nvidia", "amd", "intel"] }
+# iron-monitor = { version = "0.3", features = ["nvidia", "amd", "intel"] }
 
 # Or everything:
-# silicon-monitor = { version = "0.3", features = ["full"] }
+# iron-monitor = { version = "0.3", features = ["full"] }
 ```
 
 ### CLI Tool
 
 ```bash
 # Install from source
-git clone https://github.com/nervosys/SiliconMonitor
-cd SiliconMonitor
+git clone https://github.com/nervosys/IronMonitor
+cd IronMonitor
 cargo build --release --features cli
 
 # Run the TUI monitor
@@ -46,7 +46,7 @@ cargo run --release --features cli -- --format json all
 ## First Program
 
 ```rust
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect all available GPUs
@@ -82,7 +82,7 @@ cargo run --features nvidia
 ### Monitor CPU
 
 ```rust
-use simonlib::CpuStats;
+use ironmonlib::CpuStats;
 
 let stats = CpuStats::new()?;
 println!("Cores: {}, Online: {}", stats.core_count(), stats.online_count());
@@ -93,8 +93,8 @@ println!("User: {:.1}%  System: {:.1}%  Idle: {:.1}%",
 ### Monitor Memory
 
 ```rust
-use simonlib::MemoryMonitor;
-use simonlib::memory_management::format_bytes;
+use ironmonlib::MemoryMonitor;
+use ironmonlib::memory_management::format_bytes;
 
 let monitor = MemoryMonitor::new()?;
 println!("RAM: {} / {} ({:.1}% used)",
@@ -109,7 +109,7 @@ println!("Swap: {} / {}",
 ### Monitor Processes with GPU Attribution
 
 ```rust
-use simonlib::{ProcessMonitor, GpuCollection};
+use ironmonlib::{ProcessMonitor, GpuCollection};
 
 let gpus = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpus)?;
@@ -125,7 +125,7 @@ for proc in processes.iter().take(5) {
 ### Monitor Network Interfaces
 
 ```rust
-use simonlib::network_monitor::NetworkMonitor;
+use ironmonlib::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 let interfaces = monitor.interfaces()?;
@@ -142,7 +142,7 @@ for iface in interfaces {
 ### Network Diagnostics
 
 ```rust
-use simonlib::{ping, dns_lookup, scan_ports, traceroute};
+use ironmonlib::{ping, dns_lookup, scan_ports, traceroute};
 
 // Ping
 let result = ping("8.8.8.8", 4)?;
@@ -162,10 +162,10 @@ let hops = traceroute("google.com", 30)?;
 ### Use the AI Agent
 
 ```rust
-use simonlib::agent::{Agent, AgentConfig, ModelSize};
-use simonlib::SiliconMonitor;
+use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::IronMonitor;
 
-let monitor = SiliconMonitor::new()?;
+let monitor = IronMonitor::new()?;
 let config = AgentConfig::new(ModelSize::Medium);
 let mut agent = Agent::new(config)?;
 
@@ -188,7 +188,7 @@ amon query "What's my GPU temperature?"
 All metrics support JSON serialization via `serde`:
 
 ```rust
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 
 let gpus = GpuCollection::auto_detect()?;
 let snapshots = gpus.snapshot_all()?;

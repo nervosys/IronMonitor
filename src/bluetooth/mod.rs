@@ -159,7 +159,7 @@ pub struct BluetoothMonitor {
 }
 
 impl BluetoothMonitor {
-    pub fn new() -> Result<Self, crate::error::SimonError> {
+    pub fn new() -> Result<Self, crate::error::IronError> {
         let mut monitor = Self {
             adapters: Vec::new(),
             devices: Vec::new(),
@@ -167,7 +167,7 @@ impl BluetoothMonitor {
         monitor.refresh()?;
         Ok(monitor)
     }
-    pub fn refresh(&mut self) -> Result<(), crate::error::SimonError> {
+    pub fn refresh(&mut self) -> Result<(), crate::error::IronError> {
         self.adapters.clear();
         self.devices.clear();
         #[cfg(target_os = "windows")]
@@ -180,7 +180,7 @@ impl BluetoothMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), crate::error::IronError> {
         // Ask for every Bluetooth-class PnP entry and classify them here.
         //
         // The classification used to live in this PowerShell string and matched
@@ -250,7 +250,7 @@ impl BluetoothMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), crate::error::IronError> {
         use std::fs;
         use std::path::Path;
 
@@ -261,7 +261,7 @@ impl BluetoothMonitor {
         if bt_path.exists() {
             {
                 let entries = fs::read_dir(bt_path).map_err(|e| {
-                    crate::error::SimonError::System(format!(
+                    crate::error::IronError::System(format!(
                         "cannot read /sys/class/bluetooth: {e}"
                     ))
                 })?;
@@ -336,7 +336,7 @@ impl BluetoothMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), crate::error::IronError> {
         // `system_profiler` ships with macOS, so a failure to run it is a
         // failure rather than an absent optional tool.
         let stdout =
@@ -419,9 +419,9 @@ impl BluetoothMonitor {
     // ==================== Hardware Control APIs ====================
 
     /// Initiate pairing with a Bluetooth device by address.
-    pub fn pair_device(&mut self, address: &str) -> Result<(), crate::error::SimonError> {
+    pub fn pair_device(&mut self, address: &str) -> Result<(), crate::error::IronError> {
         if !Self::is_valid_mac_address(address) {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Invalid Bluetooth address format: {}",
                 address
             )));
@@ -430,9 +430,9 @@ impl BluetoothMonitor {
     }
 
     /// Remove pairing with a Bluetooth device.
-    pub fn unpair_device(&mut self, address: &str) -> Result<(), crate::error::SimonError> {
+    pub fn unpair_device(&mut self, address: &str) -> Result<(), crate::error::IronError> {
         if !Self::is_valid_mac_address(address) {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Invalid Bluetooth address format: {}",
                 address
             )));
@@ -441,9 +441,9 @@ impl BluetoothMonitor {
     }
 
     /// Connect to a paired Bluetooth device.
-    pub fn connect_device(&mut self, address: &str) -> Result<(), crate::error::SimonError> {
+    pub fn connect_device(&mut self, address: &str) -> Result<(), crate::error::IronError> {
         if !Self::is_valid_mac_address(address) {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Invalid Bluetooth address format: {}",
                 address
             )));
@@ -455,9 +455,9 @@ impl BluetoothMonitor {
     }
 
     /// Disconnect from a connected Bluetooth device.
-    pub fn disconnect_device(&mut self, address: &str) -> Result<(), crate::error::SimonError> {
+    pub fn disconnect_device(&mut self, address: &str) -> Result<(), crate::error::IronError> {
         if !Self::is_valid_mac_address(address) {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Invalid Bluetooth address format: {}",
                 address
             )));
@@ -473,12 +473,12 @@ impl BluetoothMonitor {
         &mut self,
         adapter_id: &str,
         enabled: bool,
-    ) -> Result<(), crate::error::SimonError> {
+    ) -> Result<(), crate::error::IronError> {
         if let Some(adapter) = self.adapters.iter_mut().find(|a| a.id == adapter_id) {
             adapter.powered = enabled;
             Ok(())
         } else {
-            Err(crate::error::SimonError::NotFound(format!(
+            Err(crate::error::IronError::NotFound(format!(
                 "Bluetooth adapter '{}' not found",
                 adapter_id
             )))
@@ -539,7 +539,7 @@ pub enum BluetoothEvent {
 impl BluetoothMonitor {
     /// Check for device changes since last refresh
     /// Returns a list of connect/disconnect events
-    pub fn poll_events(&mut self) -> Result<Vec<BluetoothEvent>, crate::error::SimonError> {
+    pub fn poll_events(&mut self) -> Result<Vec<BluetoothEvent>, crate::error::IronError> {
         let old_devices = self.devices.clone();
         self.refresh()?;
 
@@ -656,7 +656,7 @@ mod pnp_classification_tests {
     /// `Get-PnpDevice -Class Bluetooth`, with what each one actually is.
     ///
     /// The machine has one radio and two paired peripherals: a Bose QC35
-    /// headset and an Xbox controller. `simon cli bluetooth` reported
+    /// headset and an Xbox controller. `ironmon cli bluetooth` reported
     /// "Adapters: 2, Devices: 9" — the controller counted as a radio because
     /// its name contains "Controller", and six GATT services and a protocol
     /// driver counted as devices.

@@ -10,7 +10,7 @@
 //! - **Windows**: Thread scheduling info via performance counters
 //! - **macOS**: Mach scheduling statistics
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Scheduler policy / class.
@@ -133,13 +133,13 @@ pub struct SchedulerMonitor {
 
 impl SchedulerMonitor {
     /// Create a new scheduler monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let analysis = Self::collect()?;
         Ok(Self { analysis })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.analysis = Self::collect()?;
         Ok(())
     }
@@ -154,7 +154,7 @@ impl SchedulerMonitor {
         &self.analysis.pressure
     }
 
-    fn collect() -> Result<SchedulerAnalysis, SimonError> {
+    fn collect() -> Result<SchedulerAnalysis, IronError> {
         let cpu_stats = Self::read_schedstat();
         let pressure = Self::read_psi();
         let tuning = Self::read_tuning();

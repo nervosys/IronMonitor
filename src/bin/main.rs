@@ -1,4 +1,4 @@
-//! CLI tool for Silicon Monitor (simon)
+//! CLI tool for IronMonitor (ironmon)
 
 #[cfg(feature = "cli")]
 use clap::{CommandFactory, Parser, Subcommand};
@@ -9,16 +9,16 @@ use std::time::Duration;
 
 #[cfg(feature = "cli")]
 #[derive(Parser)]
-#[command(name = "simon")]
-#[command(about = "Silicon Monitor: Comprehensive hardware monitoring for CPUs, GPUs, NPUs, memory, I/O, and network silicon", long_about = None)]
+#[command(name = "ironmon")]
+#[command(about = "IronMonitor: Comprehensive hardware monitoring for CPUs, GPUs, NPUs, memory, I/O, and network silicon", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Deny every data-collection category for this session. simon collects and
+    /// Deny every data-collection category for this session. IronMonitor collects and
     /// transmits nothing today, so this records a denial rather than stopping
-    /// anything; see `simon privacy status`
+    /// anything; see `ironmon privacy status`
     #[arg(long, global = true)]
     no_telemetry: bool,
 
@@ -148,13 +148,13 @@ enum Commands {
         #[arg(long)]
         apply: bool,
 
-        /// Explicit confirmation for writes, as `simon profile set` requires.
+        /// Explicit confirmation for writes, as `ironmon profile set` requires.
         #[arg(long)]
         confirm: bool,
 
         /// Highest risk tier to apply unattended: safe or moderate. `dangerous`
         /// is not accepted — those settings can destabilize hardware and no
-        /// unattended loop in simon writes one.
+        /// unattended loop in ironmon writes one.
         #[arg(long, value_name = "TIER", default_value = "safe")]
         max_risk: String,
 
@@ -168,7 +168,7 @@ enum Commands {
         format: String,
     },
 
-    /// Print the entity ontology: every value simon can report, with its unit and
+    /// Print the entity ontology: every value IronMonitor can report, with its unit and
     /// provenance
     ///
     /// The schema an agent reads before querying anything. Pure — touches no
@@ -181,7 +181,7 @@ enum Commands {
         #[arg(long)]
         commands: bool,
 
-        /// List only settings that can be written, with the `simon profile set`
+        /// List only settings that can be written, with the `ironmon profile set`
         /// id that writes each
         #[arg(long)]
         writable: bool,
@@ -205,7 +205,7 @@ enum Commands {
     },
     /// Read one ontology entity by id
     ///
-    /// `simon get gpu.0.thermal.temperature`. Exits 1 when the id is unknown and 2
+    /// `ironmon get gpu.0.thermal.temperature`. Exits 1 when the id is unknown and 2
     /// when it is known but unavailable here, so a caller can tell "no such thing"
     /// from "nothing to report".
     Get {
@@ -260,7 +260,7 @@ enum Commands {
     },
     /// Read every resolvable entity at once, with provenance
     ///
-    /// The bulk form of `get`. Entities simon cannot read here are still listed,
+    /// The bulk form of `get`. Entities IronMonitor cannot read here are still listed,
     /// each with the reason, so an absent device stays distinguishable from an
     /// unimplemented reader.
     Snapshot {
@@ -280,8 +280,8 @@ enum Commands {
         /// Output format: text, json, or json-ld
         ///
         /// `json-ld` emits a linked-data document whose `@context` resolves
-        /// simon's terms to IRIs and its units to QUDT, so an agent that has
-        /// never seen simon can interpret the graph without documentation.
+        /// ironmon's terms to IRIs and its units to QUDT, so an agent that has
+        /// never seen IronMonitor can interpret the graph without documentation.
         #[arg(short, long, default_value = "text")]
         format: String,
     },
@@ -428,7 +428,7 @@ enum ProfileSubcommand {
     },
     /// Compare a saved JSON snapshot against the current state
     Diff {
-        /// Path to baseline snapshot JSON (created via `simon profile dump --json -o file.json`)
+        /// Path to baseline snapshot JSON (created via `ironmon profile dump --json -o file.json`)
         baseline: PathBuf,
         /// Compare against another saved snapshot instead of current state
         #[arg(short, long)]
@@ -614,7 +614,7 @@ enum RecordSubcommand {
     /// Start recording system metrics to the database
     Start {
         /// Database file path
-        #[arg(short, long, default_value = "simon_metrics.db")]
+        #[arg(short, long, default_value = "ironmon_metrics.db")]
         database: PathBuf,
 
         /// Maximum database size (e.g., 100MB, 1GB)
@@ -636,13 +636,13 @@ enum RecordSubcommand {
     /// Show database statistics and information
     Info {
         /// Database file path
-        #[arg(short, long, default_value = "simon_metrics.db")]
+        #[arg(short, long, default_value = "ironmon_metrics.db")]
         database: PathBuf,
     },
     /// Query recorded metrics
     Query {
         /// Database file path
-        #[arg(short, long, default_value = "simon_metrics.db")]
+        #[arg(short, long, default_value = "ironmon_metrics.db")]
         database: PathBuf,
 
         /// Start time (minutes ago, or Unix timestamp)
@@ -664,7 +664,7 @@ enum RecordSubcommand {
     /// Export recorded data to JSON or CSV
     Export {
         /// Database file path
-        #[arg(short, long, default_value = "simon_metrics.db")]
+        #[arg(short, long, default_value = "ironmon_metrics.db")]
         database: PathBuf,
 
         /// Output file path
@@ -678,7 +678,7 @@ enum RecordSubcommand {
     /// Delete the database file
     Clear {
         /// Database file path
-        #[arg(short, long, default_value = "simon_metrics.db")]
+        #[arg(short, long, default_value = "ironmon_metrics.db")]
         database: PathBuf,
 
         /// Skip confirmation prompt
@@ -712,11 +712,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Handle global privacy flags early
     if cli.no_telemetry || cli.offline {
         // Set environment variable to signal all components to disable telemetry
-        std::env::set_var("SIMON_NO_TELEMETRY", "1");
+        std::env::set_var("IRONMON_NO_TELEMETRY", "1");
         if cli.offline {
-            std::env::set_var("SIMON_OFFLINE", "1");
+            std::env::set_var("IRONMON_OFFLINE", "1");
         }
-        if std::env::var("SIMON_VERBOSE").is_ok() {
+        if std::env::var("IRONMON_VERBOSE").is_ok() {
             eprintln!(
                 "{} {}",
                 "[INFO]".cyan(),
@@ -738,12 +738,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if *frame {
                 handle_gui_frame_command(tab)?;
             } else {
-                simonlib::gui::run().map_err(|e| format!("GUI error: {}", e))?;
+                ironmonlib::gui::run().map_err(|e| format!("GUI error: {}", e))?;
             }
         }
         #[cfg(feature = "gui")]
         None => {
-            simonlib::gui::run().map_err(|e| format!("GUI error: {}", e))?;
+            ironmonlib::gui::run().map_err(|e| format!("GUI error: {}", e))?;
         }
 
         // TUI command - Terminal User Interface
@@ -759,7 +759,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if *frame {
                 handle_tui_frame_command(tab.as_deref(), *width, *height)?;
             } else {
-                simonlib::tui::run()?;
+                ironmonlib::tui::run()?;
             }
         }
 
@@ -874,7 +874,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Default: launch GUI if available, otherwise TUI
         #[cfg(not(feature = "gui"))]
         None => {
-            simonlib::tui::run()?;
+            ironmonlib::tui::run()?;
         }
     }
 
@@ -891,12 +891,12 @@ fn handle_ai_command(query: Option<&str>) -> Result<(), Box<dyn std::error::Erro
 /// Handle MCP server command
 #[cfg(feature = "cli")]
 fn handle_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ai_api::McpServer;
+    use ironmonlib::ai_api::McpServer;
 
     eprintln!("[*] Starting MCP server on stdio...");
     eprintln!(
         "[*] Protocol version: {}",
-        simonlib::ai_api::MCP_PROTOCOL_VERSION
+        ironmonlib::ai_api::MCP_PROTOCOL_VERSION
     );
 
     let mut server = McpServer::new()?;
@@ -910,7 +910,7 @@ fn handle_ai_manifest(
     format: &str,
     output: Option<&PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ai_api::{AgentManifest, ExportFormat};
+    use ironmonlib::ai_api::{AgentManifest, ExportFormat};
 
     let manifest = AgentManifest::new();
 
@@ -952,8 +952,8 @@ fn handle_cli_command(
     format: &str,
     watch: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::backend::{BackendConfig, MonitoringBackend};
-    use simonlib::Simon;
+    use ironmonlib::backend::{BackendConfig, MonitoringBackend};
+    use ironmonlib::IronMonitor;
 
     // Create backend config with the specified interval
     let config = BackendConfig {
@@ -998,7 +998,7 @@ fn handle_cli_command(
     };
     match action {
         CliSubcommand::Board => {
-            let stats = Simon::with_interval(interval)?;
+            let stats = IronMonitor::with_interval(interval)?;
             let board = stats.board_info();
             if format == "json" {
                 println!("{}", serde_json::to_string_pretty(board)?);
@@ -1058,10 +1058,10 @@ fn handle_cli_command(
             // GPU power draws, both power limits, the battery percentage and
             // the active power profile. The rails block is kept for the
             // platforms that have them.
-            let mut stats = Simon::with_interval(interval)?;
+            let mut stats = IronMonitor::with_interval(interval)?;
             let snapshot = stats.snapshot()?;
-            let readings = simonlib::ontology::resolve::snapshot();
-            let power = simonlib::fetch::power(&readings);
+            let readings = ironmonlib::ontology::resolve::snapshot();
+            let power = ironmonlib::fetch::power(&readings);
 
             if format == "json" {
                 println!(
@@ -1076,20 +1076,20 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Temperature => {
-            // `Simon::snapshot().temperature` covers CPU and motherboard
+            // `IronMonitor::snapshot().temperature` covers CPU and motherboard
             // sensors only — its Windows reader skips GPUs with the comment
             // "GPU temps come from NVML", which is true of the crate and not
             // of this command. On a desktop with no OpenHardwareMonitor
-            // installed that map is empty, so `simon cli temperature` printed
-            // "No temperature sensors detected" while `simon snapshot` read
+            // installed that map is empty, so `ironmon cli temperature` printed
+            // "No temperature sensors detected" while `ironmon snapshot` read
             // two GPUs and three NVMe drives, seconds apart, in the same
             // binary.
             //
             // The ontology already resolves every temperature in the machine
             // with a provenance and, where one is missing, a reason. Read it
             // rather than a subset of it.
-            let readings = simonlib::ontology::resolve::snapshot();
-            let temps = simonlib::fetch::temperatures(&readings);
+            let readings = ironmonlib::ontology::resolve::snapshot();
+            let temps = ironmonlib::fetch::temperatures(&readings);
 
             if format == "json" {
                 println!("{}", serde_json::to_string_pretty(&temps)?);
@@ -1107,7 +1107,7 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Engines => {
-            let mut stats = Simon::with_interval(interval)?;
+            let mut stats = IronMonitor::with_interval(interval)?;
             let snapshot = stats.snapshot()?;
             if format == "json" {
                 println!("{}", serde_json::to_string_pretty(&snapshot.engines)?);
@@ -1125,14 +1125,14 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Monitor => {
-            let stats = Simon::with_interval(interval)?;
+            let stats = IronMonitor::with_interval(interval)?;
             run_interactive_mode(stats)?;
         }
         CliSubcommand::Ai { query } => {
             handle_ai_query(query.as_deref())?;
         }
         CliSubcommand::Audio => {
-            use simonlib::audio::AudioMonitor;
+            use ironmonlib::audio::AudioMonitor;
 
             let display_audio = || -> Result<(), Box<dyn std::error::Error>> {
                 let monitor = AudioMonitor::new()?;
@@ -1147,7 +1147,7 @@ fn handle_cli_command(
                     match monitor.master_volume() {
                         Some(v) => println!("  Master Volume: {v}%"),
                         None => println!(
-                            "  Master Volume: not read — simon has no mixer binding on this platform"
+                            "  Master Volume: not read — IronMonitor has no mixer binding on this platform"
                         ),
                     }
                     match monitor.is_muted() {
@@ -1175,7 +1175,7 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Bluetooth => {
-            use simonlib::bluetooth::BluetoothMonitor;
+            use ironmonlib::bluetooth::BluetoothMonitor;
 
             let display_bluetooth = || -> Result<(), Box<dyn std::error::Error>> {
                 let monitor = BluetoothMonitor::new()?;
@@ -1217,7 +1217,7 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Display => {
-            use simonlib::display::DisplayMonitor;
+            use ironmonlib::display::DisplayMonitor;
 
             let display_displays = || -> Result<(), Box<dyn std::error::Error>> {
                 let monitor = DisplayMonitor::new()?;
@@ -1240,7 +1240,7 @@ fn handle_cli_command(
                             None => String::new(),
                         };
                         let conn = match display.connection {
-                            simonlib::display::DisplayConnection::Unknown => {
+                            ironmonlib::display::DisplayConnection::Unknown => {
                                 "connection unknown".to_string()
                             }
                             other => format!("{other:?}"),
@@ -1264,7 +1264,7 @@ fn handle_cli_command(
             }
         }
         CliSubcommand::Usb => {
-            use simonlib::usb::UsbMonitor;
+            use ironmonlib::usb::UsbMonitor;
 
             let display_usb = || -> Result<(), Box<dyn std::error::Error>> {
                 let monitor = UsbMonitor::new()?;
@@ -1292,13 +1292,13 @@ fn handle_cli_command(
                         // honest answer is that nobody asked. See the absence
                         // reason on `usb.{addr}.speed`.
                         let class = match device.class {
-                            simonlib::usb::UsbDeviceClass::Unknown => {
+                            ironmonlib::usb::UsbDeviceClass::Unknown => {
                                 "class undeclared".to_string()
                             }
                             ref c => format!("{c:?}"),
                         };
                         let speed = match device.speed {
-                            simonlib::usb::UsbSpeed::Unknown => "speed not read".to_string(),
+                            ironmonlib::usb::UsbSpeed::Unknown => "speed not read".to_string(),
                             ref s => format!("{s:?}"),
                         };
                         println!("  {ids} {name} ({class}, {speed})");
@@ -1322,7 +1322,7 @@ fn handle_cli_command(
 }
 
 #[cfg(feature = "cli")]
-fn print_board_info(board: &simonlib::core::platform_info::BoardInfo) {
+fn print_board_info(board: &ironmonlib::core::platform_info::BoardInfo) {
     println!("{}", "═══ Board Information ═══".cyan().bold());
     println!(
         "  {} {}",
@@ -1357,7 +1357,7 @@ fn print_board_info(board: &simonlib::core::platform_info::BoardInfo) {
 }
 
 #[cfg(feature = "cli")]
-fn print_gpu_info(gpus: &std::collections::HashMap<String, simonlib::core::gpu::GpuInfo>) {
+fn print_gpu_info(gpus: &std::collections::HashMap<String, ironmonlib::core::gpu::GpuInfo>) {
     println!("{}", "═══ GPU Information ═══".cyan().bold());
     if gpus.is_empty() {
         println!("  {}", "No GPUs detected".yellow());
@@ -1452,7 +1452,7 @@ fn print_gpu_info(gpus: &std::collections::HashMap<String, simonlib::core::gpu::
 /// because on any build since 11 24H2 the tool is gone and there was nothing real to
 /// print. Both are read from the registry and `CallNtPowerInformation` now.
 #[cfg(feature = "cli")]
-fn print_cpu_identity(cpu: &simonlib::core::cpu::CpuStats) {
+fn print_cpu_identity(cpu: &ironmonlib::core::cpu::CpuStats) {
     let Some(core) = cpu.cores.first() else {
         return;
     };
@@ -1475,7 +1475,7 @@ fn print_cpu_identity(cpu: &simonlib::core::cpu::CpuStats) {
 }
 
 #[cfg(feature = "cli")]
-fn print_cpu_info(cpu: &simonlib::core::cpu::CpuStats) {
+fn print_cpu_info(cpu: &ironmonlib::core::cpu::CpuStats) {
     println!("{}", "═══ CPU Information ═══".cyan().bold());
 
     print_cpu_identity(cpu);
@@ -1483,7 +1483,7 @@ fn print_cpu_info(cpu: &simonlib::core::cpu::CpuStats) {
         "  {} {} (Online: {})",
         // `core_count()` is `cores.len()` — the logical processor list. This
         // said "Cores: 24" one line under "AMD Ryzen 9 9900X 12-Core
-        // Processor", the same contradiction `simon status` carried.
+        // Processor", the same contradiction `ironmon status` carried.
         "Threads:".white().bold(),
         cpu.core_count().to_string().green(),
         cpu.online_count().to_string().green()
@@ -1574,7 +1574,7 @@ fn create_usage_bar(usage: f32, width: usize) -> String {
 }
 
 #[cfg(feature = "cli")]
-fn print_memory_info(memory: &simonlib::core::memory::MemoryStats) {
+fn print_memory_info(memory: &ironmonlib::core::memory::MemoryStats) {
     println!("{}", "═══ Memory Information ═══".cyan().bold());
 
     let ram_usage = memory.ram_usage_percent();
@@ -1635,8 +1635,8 @@ fn print_memory_info(memory: &simonlib::core::memory::MemoryStats) {
 
 #[cfg(feature = "cli")]
 fn print_power_info(
-    power: &simonlib::core::power::PowerStats,
-    readings: &[&simonlib::ontology::resolve::Reading],
+    power: &ironmonlib::core::power::PowerStats,
+    readings: &[&ironmonlib::ontology::resolve::Reading],
 ) {
     println!("{}", "═══ Power Information ═══".cyan().bold());
 
@@ -1695,7 +1695,7 @@ fn print_power_info(
 /// Print a set of ontology readings, then the reason for each one that has no
 /// value.
 ///
-/// Both `simon cli temperature` and `simon cli power` read a narrow platform
+/// Both `ironmon cli temperature` and `ironmon cli power` read a narrow platform
 /// struct and printed "No temperature sensors detected" / "No power rails
 /// exposed by this platform" on a desktop where the ontology resolved five
 /// temperatures and four power figures. The distinction this renderer keeps —
@@ -1703,10 +1703,10 @@ fn print_power_info(
 /// collapsed.
 #[cfg(feature = "cli")]
 fn print_readings_with_reasons(
-    readings: &[&simonlib::ontology::resolve::Reading],
+    readings: &[&ironmonlib::ontology::resolve::Reading],
     nothing_known: &str,
 ) {
-    use simonlib::ontology::Provenance;
+    use ironmonlib::ontology::Provenance;
 
     if readings.is_empty() {
         println!("  {}", nothing_known.yellow());
@@ -1765,16 +1765,18 @@ fn print_readings_with_reasons(
 /// Print every temperature the ontology resolved, and the reason for each one
 /// it could not.
 #[cfg(feature = "cli")]
-fn print_temperature_readings(temps: &[&simonlib::ontology::resolve::Reading]) {
+fn print_temperature_readings(temps: &[&ironmonlib::ontology::resolve::Reading]) {
     println!("{}", "═══ Temperature Information ═══".cyan().bold());
     print_readings_with_reasons(
         temps,
-        "simon knows of no temperature entity on this platform",
+        "IronMonitor knows of no temperature entity on this platform",
     );
 }
 
 #[cfg(feature = "cli")]
-fn run_interactive_mode(mut stats: simonlib::Simon) -> Result<(), Box<dyn std::error::Error>> {
+fn run_interactive_mode(
+    mut stats: ironmonlib::IronMonitor,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crossterm::{
         event::{self, Event, KeyCode},
         terminal::{disable_raw_mode, enable_raw_mode},
@@ -1805,7 +1807,7 @@ fn run_interactive_mode(mut stats: simonlib::Simon) -> Result<(), Box<dyn std::e
         // Print summary
         // Not NVIDIA-specific: this path reports CPU, memory, thermals and any
         // detected GPU regardless of vendor.
-        println!("=== Simon - System Monitoring ===");
+        println!("=== IronMonitor - System Monitoring ===");
         println!("Uptime: {:?}\n", snapshot.uptime);
 
         // GPU
@@ -1849,7 +1851,7 @@ fn run_interactive_mode(mut stats: simonlib::Simon) -> Result<(), Box<dyn std::e
 
 /// Print GPU info using MonitoringBackend
 #[cfg(feature = "cli")]
-fn print_gpu_info_backend(backend: &simonlib::backend::MonitoringBackend) {
+fn print_gpu_info_backend(backend: &ironmonlib::backend::MonitoringBackend) {
     println!("{}", "═══ GPU Information ═══".cyan().bold());
 
     let static_info = backend.gpu_static_info();
@@ -1958,7 +1960,7 @@ fn print_gpu_info_backend(backend: &simonlib::backend::MonitoringBackend) {
 
 /// Print CPU info using MonitoringBackend
 #[cfg(feature = "cli")]
-fn print_cpu_info_backend(backend: &simonlib::backend::MonitoringBackend) {
+fn print_cpu_info_backend(backend: &ironmonlib::backend::MonitoringBackend) {
     println!("{}", "═══ CPU Information ═══".cyan().bold());
 
     if let Some(cpu) = backend.cpu_stats() {
@@ -2036,7 +2038,7 @@ fn print_cpu_info_backend(backend: &simonlib::backend::MonitoringBackend) {
 
 /// Print memory info using MonitoringBackend
 #[cfg(feature = "cli")]
-fn print_memory_info_backend(backend: &simonlib::backend::MonitoringBackend) {
+fn print_memory_info_backend(backend: &ironmonlib::backend::MonitoringBackend) {
     println!("{}", "═══ Memory Information ═══".cyan().bold());
 
     if let Some(memory) = backend.memory_stats() {
@@ -2099,9 +2101,9 @@ fn print_memory_info_backend(backend: &simonlib::backend::MonitoringBackend) {
 /// Print process info using MonitoringBackend
 #[cfg(feature = "cli")]
 fn print_process_info_backend(
-    backend: &simonlib::backend::MonitoringBackend,
+    backend: &ironmonlib::backend::MonitoringBackend,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ProcessCategory;
+    use ironmonlib::ProcessCategory;
     use std::collections::HashMap;
 
     println!("{}", "═══ Process Information ═══".cyan().bold());
@@ -2114,7 +2116,7 @@ fn print_process_info_backend(
     }
 
     // Group by category
-    let mut by_category: HashMap<ProcessCategory, Vec<&simonlib::ProcessMonitorInfo>> =
+    let mut by_category: HashMap<ProcessCategory, Vec<&ironmonlib::ProcessMonitorInfo>> =
         HashMap::new();
     for proc in processes.iter() {
         by_category.entry(proc.category).or_default().push(proc);
@@ -2255,7 +2257,7 @@ fn print_process_info_backend(
 /// Print all system info using MonitoringBackend
 #[cfg(feature = "cli")]
 fn print_all_info(
-    backend: &simonlib::backend::MonitoringBackend,
+    backend: &ironmonlib::backend::MonitoringBackend,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // System info
     println!("{}", "═══ System Overview ═══".cyan().bold());
@@ -2309,7 +2311,7 @@ fn handle_jetson_command(cmd: &JetsonSubcommand) -> Result<(), Box<dyn std::erro
     // The handlers below are additionally gated on `jetson-utils`, which `full`
     // deliberately omits. Without this second arm, a Linux build with `cli` and
     // without `jetson-utils` reached three functions that did not exist —
-    // `cargo install silicon-monitor` on Linux failed with E0425 for every version
+    // `cargo install iron-monitor` on Linux failed with E0425 for every version
     // published up to 3.0.1, because the default feature set is exactly that
     // combination. `--all-features` enables `jetson-utils` and so never saw it.
     #[cfg(all(target_os = "linux", feature = "jetson-utils"))]
@@ -2332,7 +2334,7 @@ fn handle_jetson_command(cmd: &JetsonSubcommand) -> Result<(), Box<dyn std::erro
 
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::utils::clocks;
+    use ironmonlib::utils::clocks;
 
     if !clocks::is_available() {
         eprintln!("jetson_clocks is not available on this system");
@@ -2371,7 +2373,7 @@ fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::
 
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_nvpmodel(action: &NvpmodelAction) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::utils::power_mode;
+    use ironmonlib::utils::power_mode;
 
     if !power_mode::is_available() {
         eprintln!("nvpmodel is not available on this system");
@@ -2438,7 +2440,7 @@ fn handle_nvpmodel(action: &NvpmodelAction) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_swap(action: &SwapAction) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::utils::swap;
+    use ironmonlib::utils::swap;
 
     match action {
         SwapAction::Status => {
@@ -2503,7 +2505,7 @@ fn format_size(kb: u64) -> String {
 
 #[cfg(feature = "cli")]
 #[allow(dead_code)]
-fn print_process_info(processes: &simonlib::core::process::ProcessStats) {
+fn print_process_info(processes: &ironmonlib::core::process::ProcessStats) {
     println!("=== Process Information ===");
     println!("Total Processes: {}", processes.process_count());
     println!(
@@ -2537,9 +2539,9 @@ fn print_process_info(processes: &simonlib::core::process::ProcessStats) {
 #[cfg(feature = "cli")]
 #[allow(dead_code)] // Alternative process display format for future use
 fn print_process_info_v2(
-    monitor: &mut simonlib::ProcessMonitor,
+    monitor: &mut ironmonlib::ProcessMonitor,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ProcessCategory;
+    use ironmonlib::ProcessCategory;
 
     println!("{}", "═══ Process Information ═══".cyan().bold());
 
@@ -2674,7 +2676,7 @@ fn print_process_info_v2(
 }
 
 #[cfg(feature = "cli")]
-fn print_engine_info(engines: &simonlib::core::engine::EngineStats) {
+fn print_engine_info(engines: &ironmonlib::core::engine::EngineStats) {
     println!("{}", "═══ Engine Information ═══".cyan().bold());
     println!(
         "  {} {} (Total: {})",
@@ -2732,7 +2734,7 @@ fn print_engine_info(engines: &simonlib::core::engine::EngineStats) {
                 "Not readable on this platform. Engine clocks come from ",
                 "/sys/kernel/debug/clk, which is Linux-only and present on ",
                 "Tegra and Jetson parts. For desktop GPU encoder and decoder ",
-                "utilisation, use `simon cli gpu`."
+                "utilisation, use `ironmon cli gpu`."
             )
             .yellow()
         );
@@ -2741,12 +2743,12 @@ fn print_engine_info(engines: &simonlib::core::engine::EngineStats) {
 
 #[cfg(feature = "cli")]
 fn handle_ai_query(query: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::agent::{Agent, AgentConfig};
-    use simonlib::SiliconMonitor;
+    use ironmonlib::agent::{Agent, AgentConfig};
+    use ironmonlib::UnifiedMonitor;
     use std::io::{self, Write};
 
     // Create monitor for system state
-    let monitor = SiliconMonitor::new()?;
+    let monitor = UnifiedMonitor::new()?;
 
     // Auto-detect and configure best available backend
     let config = match AgentConfig::auto_detect() {
@@ -2833,7 +2835,7 @@ fn handle_daemon_command(
     config_path: Option<&str>,
     sample_config: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::daemon::{DaemonConfig, MonitoringDaemon};
+    use ironmonlib::daemon::{DaemonConfig, MonitoringDaemon};
 
     if sample_config {
         print!("{}", DaemonConfig::sample_toml());
@@ -2850,7 +2852,7 @@ fn handle_daemon_command(
 
     let config = daemon.config();
 
-    println!("{}", "═══ Simon Monitoring Daemon ═══".cyan().bold());
+    println!("{}", "═══ IronMonitor Monitoring Daemon ═══".cyan().bold());
     println!(
         "  {} {}",
         "Listening:".white().bold(),
@@ -2887,7 +2889,7 @@ fn handle_daemon_command(
 /// `src/http_server.rs`, `src/observability/server.rs` and `src/prometheus.rs` —
 /// about 1300 lines — shipped with no entry point in any binary or example, so the
 /// REST API and Prometheus exporter could not be started at all. `grafana/README.md`
-/// documented `simon --serve --port 9100` and `simon daemon --config simon.toml`;
+/// documented `ironmon --serve --port 9100` and `ironmon daemon --config ironmon.toml`;
 /// neither command existed, so anyone following it got "unrecognized subcommand".
 #[cfg(feature = "cli")]
 fn handle_serve_command(
@@ -2895,7 +2897,7 @@ fn handle_serve_command(
     bind: &str,
     log_requests: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::http_server::{HttpServer, HttpServerConfig};
+    use ironmonlib::http_server::{HttpServer, HttpServerConfig};
 
     let config = HttpServerConfig {
         bind_address: bind.to_string(),
@@ -2906,7 +2908,7 @@ fn handle_serve_command(
 
     let server = HttpServer::new(config)?;
 
-    println!("{}", "═══ Simon HTTP Server ═══".cyan().bold());
+    println!("{}", "═══ IronMonitor HTTP Server ═══".cyan().bold());
     println!("  {} http://{}:{}", "Listening:".white().bold(), bind, port);
     println!(
         "  {} http://{}:{}/api/v1/metrics/prometheus",
@@ -2949,7 +2951,7 @@ fn handle_serve_command(
 /// Handle record subcommands for time-series database operations
 #[cfg(feature = "cli")]
 fn handle_record_command(action: &RecordSubcommand) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::tsdb::{
+    use ironmonlib::tsdb::{
         format_size, parse_size, MetricsRecorder, ProcessSnapshot, SystemSnapshot, TimeSeriesDb,
     };
     use std::io::{self, Write};
@@ -3005,7 +3007,7 @@ fn handle_record_command(action: &RecordSubcommand) -> Result<(), Box<dyn std::e
             // The collector now runs at its own cadence and the loop only reads the
             // newest published snapshot, which is an atomic load.
             let collector =
-                simonlib::pipeline::Collector::spawn(simonlib::pipeline::CollectorConfig {
+                ironmonlib::pipeline::Collector::spawn(ironmonlib::pipeline::CollectorConfig {
                     interval: interval_duration,
                     collect_processes: *max_processes > 0,
                     ..Default::default()
@@ -3042,7 +3044,7 @@ fn handle_record_command(action: &RecordSubcommand) -> Result<(), Box<dyn std::e
                 let state = snapshots.latest();
 
                 // Create system snapshot
-                let timestamp = simonlib::tsdb::TimeSeriesDb::now_millis();
+                let timestamp = ironmonlib::tsdb::TimeSeriesDb::now_millis();
 
                 // A core whose idle time was not read is `None`, not 0% busy.
                 // `unwrap_or(100.0)` here meant "assume fully idle", which
@@ -3491,7 +3493,7 @@ fn handle_record_command(action: &RecordSubcommand) -> Result<(), Box<dyn std::e
 
 /// Handle privacy subcommands for managing data collection consent
 #[cfg(feature = "cli")]
-/// Print the one fact every `simon privacy` screen needs to lead with.
+/// Print the one fact every `ironmon privacy` screen needs to lead with.
 ///
 /// The five consent categories, their descriptions and their itemised data
 /// points were written for a collector that was never built. `ConsentScope::
@@ -3506,7 +3508,7 @@ fn print_collects_nothing_notice() {
     println!(
         "{} {}",
         "Note:".yellow().bold(),
-        "simon collects and transmits nothing.".white().bold()
+        "IronMonitor collects and transmits nothing.".white().bold()
     );
     println!(
         "  {}",
@@ -3521,7 +3523,7 @@ fn print_collects_nothing_notice() {
     println!(
         "  {}",
         concat!(
-            "The only network requests simon makes are to AI backends you ",
+            "The only network requests IronMonitor makes are to AI backends you ",
             "configure and point at yourself."
         )
         .dimmed()
@@ -3530,7 +3532,7 @@ fn print_collects_nothing_notice() {
 }
 
 fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::consent::{ConsentManager, ConsentScope};
+    use ironmonlib::consent::{ConsentManager, ConsentScope};
 
     match action {
         PrivacySubcommand::Status => {
@@ -3542,7 +3544,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             );
             println!(
                 "{}",
-                "║           Silicon Monitor - Privacy Status                    ║".cyan()
+                "║           IronMonitor - Privacy Status                    ║".cyan()
             );
             println!(
                 "{}",
@@ -3551,8 +3553,8 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             println!();
 
             // Check runtime flags
-            let no_telemetry = std::env::var("SIMON_NO_TELEMETRY").is_ok();
-            let offline = std::env::var("SIMON_OFFLINE").is_ok();
+            let no_telemetry = std::env::var("IRONMON_NO_TELEMETRY").is_ok();
+            let offline = std::env::var("IRONMON_OFFLINE").is_ok();
 
             if no_telemetry || offline {
                 println!("{}", "Session Flags:".white().bold());
@@ -3575,7 +3577,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             // Report what the user chose, not what `has_consent` returns.
             // `has_consent` folds three unrelated causes into one bool — the
             // session flags, sandbox detection, and the stored answer — so
-            // `simon privacy opt-in` could say "consented to" and `status`
+            // `ironmon privacy opt-in` could say "consented to" and `status`
             // reply "not granted" on the next line, with no way to tell that
             // a sandbox detection had overridden the choice.
             let records = manager.get_all_consents();
@@ -3606,7 +3608,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
 
             // Say plainly when something is overriding the recorded answers,
             // and what it is.
-            let sandbox = simonlib::sandbox::SandboxDetector::new().detect();
+            let sandbox = ironmonlib::sandbox::SandboxDetector::new().detect();
             if sandbox.is_sandboxed() {
                 println!(
                     concat!(
@@ -3633,14 +3635,14 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
                 println!();
             }
             println!("{}", "Commands:".white().bold());
-            println!("  simon privacy opt-out    # Record a denial for every category");
-            println!("  simon privacy opt-in     # Record consent for every category");
-            println!("  simon privacy review     # Review settings interactively");
-            println!("  simon privacy info       # Show what each category would cover");
+            println!("  ironmon privacy opt-out    # Record a denial for every category");
+            println!("  ironmon privacy opt-in     # Record consent for every category");
+            println!("  ironmon privacy review     # Review settings interactively");
+            println!("  ironmon privacy info       # Show what each category would cover");
             println!();
             println!("{}", "Session Flags:".white().bold());
-            println!("  simon --no-telemetry     # Deny every category for one session");
-            println!("  simon --offline          # Also keep agent backends off the network");
+            println!("  ironmon --no-telemetry     # Deny every category for one session");
+            println!("  ironmon --offline          # Also keep agent backends off the network");
         }
 
         PrivacySubcommand::OptOut => {
@@ -3664,8 +3666,8 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             println!();
             print_collects_nothing_notice();
             println!("You can change these preferences at any time with:");
-            println!("  simon privacy opt-in");
-            println!("  simon privacy review");
+            println!("  ironmon privacy opt-in");
+            println!("  ironmon privacy review");
         }
 
         PrivacySubcommand::OptIn => {
@@ -3705,8 +3707,8 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             // something on and are now sending data. They are not.
             print_collects_nothing_notice();
             println!("You can review or change these preferences at any time with:");
-            println!("  simon privacy status");
-            println!("  simon privacy review");
+            println!("  ironmon privacy status");
+            println!("  ironmon privacy review");
         }
 
         PrivacySubcommand::Review => {
@@ -3797,7 +3799,7 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-/// Handle `simon profile ...` — hardware profile inspector
+/// Handle `ironmon profile ...` — hardware profile inspector
 #[cfg(feature = "cli")]
 /// Print the entity ontology.
 ///
@@ -3806,16 +3808,16 @@ fn format_duration(secs: u64) -> String {
 /// values are measurements and which are constants wearing a measurement's clothes.
 /// Read one entity by id.
 ///
-/// The exit codes carry information a caller needs: 1 means simon has never heard
+/// The exit codes carry information a caller needs: 1 means IronMonitor has never heard
 /// of this id, 2 means it knows the id and could not read it here. Collapsing those
 /// into a single failure would lose the distinction the ontology exists to preserve.
 fn handle_get_command(id: &str, format: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ontology::resolve;
+    use ironmonlib::ontology::resolve;
 
     let Some(reading) = resolve::get(id) else {
         eprintln!("Unknown entity id: {id}");
         eprintln!(
-            "Try `simon describe --search {}`.",
+            "Try `ironmon describe --search {}`.",
             id.split('.').next().unwrap_or(id)
         );
         std::process::exit(1);
@@ -3858,7 +3860,7 @@ fn handle_snapshot_command(
     validate: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ontology::{resolve, Domain};
+    use ironmonlib::ontology::{resolve, Domain};
 
     let mut readings = resolve::snapshot();
 
@@ -3885,16 +3887,16 @@ fn handle_snapshot_command(
 
     if format.eq_ignore_ascii_case("json-ld") || format.eq_ignore_ascii_case("jsonld") {
         // Linked data: every term resolves through the `@context`, so a consumer
-        // that has never seen simon can find out what it is looking at. Absence
+        // that has never seen IronMonitor can find out what it is looking at. Absence
         // survives the encoding — an unavailable reading is a node with no value
         // and a stated reason, never a zero.
         let stamp = chrono::Utc::now().to_rfc3339();
-        let doc = simonlib::ontology::jsonld::document(&readings, &stamp);
+        let doc = ironmonlib::ontology::jsonld::document(&readings, &stamp);
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else if format.eq_ignore_ascii_case("json") {
         let resolved = readings.iter().filter(|r| r.value.is_some()).count();
         let doc = serde_json::json!({
-            "ontology_version": simonlib::ontology::ONTOLOGY_VERSION,
+            "ontology_version": ironmonlib::ontology::ONTOLOGY_VERSION,
             "resolved": resolved,
             "unavailable": readings.len() - resolved,
             "impossible": problems,
@@ -3951,8 +3953,8 @@ fn handle_snapshot_command(
 /// it describes what the binary actually accepts. A hand-written catalogue would be
 /// wrong the first time a flag was added and nobody remembered this function.
 ///
-/// This is the operation half of the ontology: `simon describe` names what can be
-/// read, this names what can be run. An agent needs both to drive simon without
+/// This is the operation half of the ontology: `ironmon describe` names what can be
+/// read, this names what can be run. An agent needs both to drive ironmon without
 /// guessing at argv.
 fn emit_command_catalog(format: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = Cli::command();
@@ -4042,7 +4044,7 @@ fn emit_command_catalog(format: &str) -> Result<(), Box<dyn std::error::Error>> 
 /// parse, which keeps "the GUI is wrong" separable from "my script is wrong".
 #[cfg(feature = "gui")]
 fn handle_gui_script_command(source: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::gui::headless;
+    use ironmonlib::gui::headless;
 
     let text = if source == "-" {
         use std::io::Read;
@@ -4067,7 +4069,7 @@ fn handle_gui_script_command(source: &str) -> Result<(), Box<dyn std::error::Err
     }
 
     let ctx = headless::themed_context();
-    let mut app = simonlib::gui::app::SiliconMonitorApp::with_context(&ctx);
+    let mut app = ironmonlib::gui::app::IronMonitorApp::with_context(&ctx);
     let result = headless::run_script(&mut app, &ctx, &steps);
 
     for capture in &result.captures {
@@ -4094,14 +4096,14 @@ fn handle_gui_script_command(source: &str) -> Result<(), Box<dyn std::error::Err
 /// that was emitted in the panel colour, which is the bug that made the Profiles
 /// tab appear dead while it rendered all nineteen of its groups.
 #[cfg(feature = "gui")]
-/// `simon ai models` — what the local IronVault vault holds.
+/// `ironmon ai models` — what the local IronVault vault holds.
 ///
-/// Read-only by construction: simon never unlocks a vault and never asks for a
+/// Read-only by construction: IronMonitor never unlocks a vault and never asks for a
 /// passphrase. IronVault exposes model metadata without a key, so a locked vault
-/// reports fully — see `simonlib::model_vault`.
+/// reports fully — see `ironmonlib::model_vault`.
 #[cfg(feature = "vault")]
 fn handle_vault_models(format: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::model_vault::{read_vault, VaultStatus};
+    use ironmonlib::model_vault::{read_vault, VaultStatus};
 
     let status = read_vault();
 
@@ -4115,14 +4117,14 @@ fn handle_vault_models(format: &str) -> Result<(), Box<dyn std::error::Error>> {
         // and saying so beats printing headers over nothing.
         VaultStatus::NotInstalled => {
             println!("IronVault is not installed on this machine.");
-            println!("  simon reports vaults; it does not create them.");
+            println!("  IronMonitor reports vaults; it does not create them.");
         }
         VaultStatus::Absent { path } => {
             println!(
                 "IronVault is installed, but holds no vault at {}",
                 path.display()
             );
-            println!("  (`iv init` would create one; simon will not)");
+            println!("  (`iv init` would create one; IronMonitor will not)");
         }
         VaultStatus::Failed { path, reason } => {
             eprintln!("Vault at {} could not be read: {reason}", path.display());
@@ -4196,7 +4198,7 @@ fn format_bytes_short(bytes: u64) -> String {
     }
 }
 
-/// `simon tune` — classify the workload, recommend a profile, optionally apply.
+/// `ironmon tune` — classify the workload, recommend a profile, optionally apply.
 fn handle_tune_command(
     watch: Option<u64>,
     apply: bool,
@@ -4205,9 +4207,9 @@ fn handle_tune_command(
     force_case: Option<&str>,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::profile::SettingRisk;
-    use simonlib::tuning::serve::{self, Mode};
-    use simonlib::tuning::{Classification, Method, UseCase};
+    use ironmonlib::profile::SettingRisk;
+    use ironmonlib::tuning::serve::{self, Mode};
+    use ironmonlib::tuning::{Classification, Method, UseCase};
 
     // `dangerous` is rejected rather than silently clamped: a caller who asked
     // for it has a different model of what this command does, and clamping would
@@ -4218,8 +4220,8 @@ fn handle_tune_command(
         "dangerous" => {
             eprintln!(
                 "--max-risk dangerous is not accepted. Those settings touch power, thermal, \
-                 voltage or MSRs and can destabilize hardware; simon does not write them from \
-                 an unattended loop. Use `simon profile set` with --confirm for a single \
+                 voltage or MSRs and can destabilize hardware; IronMonitor does not write them from \
+                 an unattended loop. Use `ironmon profile set` with --confirm for a single \
                  deliberate change."
             );
             std::process::exit(2);
@@ -4264,7 +4266,7 @@ fn handle_tune_command(
             // `classify`, not `classify_from_signals`: this asks a local model
             // where one is running and falls back to the signal path otherwise,
             // recording which happened in the evidence either way.
-            None => simonlib::tuning::classify(&serve::collect_signals()),
+            None => ironmonlib::tuning::classify(&serve::collect_signals()),
         }
     };
 
@@ -4316,8 +4318,8 @@ fn handle_tune_command(
     Ok(())
 }
 
-fn print_tune_cycle(cycle: &simonlib::tuning::serve::Cycle) {
-    use simonlib::tuning::Method;
+fn print_tune_cycle(cycle: &ironmonlib::tuning::serve::Cycle) {
+    use ironmonlib::tuning::Method;
 
     let c = &cycle.plan.classification;
     let method = match &c.method {
@@ -4367,17 +4369,17 @@ fn print_tune_cycle(cycle: &simonlib::tuning::serve::Cycle) {
 }
 
 /// Gated for the same reason its sibling `handle_gui_script_command` is: it
-/// names `simonlib::gui`, which does not exist without the `gui` feature. Its
+/// names `ironmonlib::gui`, which does not exist without the `gui` feature. Its
 /// only caller is already behind `#[cfg(feature = "gui")]`, so the omission
 /// broke nothing at runtime and broke `--no-default-features --features cli`
 /// completely — the exact failure the CI feature-isolation job was written for
 /// after 3.0.0, recurring after the 5.0.0 GUI restore.
 #[cfg(feature = "gui")]
 fn handle_gui_frame_command(tab: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::gui::headless;
+    use ironmonlib::gui::headless;
 
     let ctx = headless::themed_context();
-    let mut app = simonlib::gui::app::SiliconMonitorApp::with_context(&ctx);
+    let mut app = ironmonlib::gui::app::IronMonitorApp::with_context(&ctx);
 
     if let Err(available) = app.select_tab_by_name(tab) {
         eprintln!("Unknown tab {tab:?}. Available tabs:");
@@ -4446,7 +4448,7 @@ fn handle_tui_script_command(
     width: u16,
     height: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::tui::headless;
+    use ironmonlib::tui::headless;
 
     let text = if source == "-" {
         use std::io::Read;
@@ -4470,7 +4472,7 @@ fn handle_tui_script_command(
         std::process::exit(2);
     }
 
-    let mut app = simonlib::tui::App::new()?;
+    let mut app = ironmonlib::tui::App::new()?;
     app.update()?;
     // Same wait as `--frame`: assertions against a frame rendered before the
     // collector published would be testing the zeroed defaults.
@@ -4510,7 +4512,7 @@ fn handle_tui_frame_command(
     // from it shows "CPU 0% | 0 cores", zeros that look like readings and are not.
     // `new` waits for initialisation, so the single frame an agent gets carries real
     // data or nothing.
-    let mut app = simonlib::tui::App::new()?;
+    let mut app = ironmonlib::tui::App::new()?;
     app.update()?;
 
     // The collector publishes asynchronously. An interactive session repaints until
@@ -4559,7 +4561,7 @@ fn handle_tui_frame_command(
         }
     }
 
-    for line in simonlib::tui::headless::render_rows(&app, width, height) {
+    for line in ironmonlib::tui::headless::render_rows(&app, width, height) {
         println!("{line}");
     }
     Ok(())
@@ -4573,7 +4575,7 @@ fn handle_describe_command(
     id: Option<&str>,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ontology::{Domain, Ontology};
+    use ironmonlib::ontology::{Domain, Ontology};
 
     if commands {
         return emit_command_catalog(format);
@@ -4586,7 +4588,7 @@ fn handle_describe_command(
     let ontology = Ontology::build();
 
     // Narrow by the most specific filter given.
-    let selected: Vec<&simonlib::ontology::Entity> = if writable {
+    let selected: Vec<&ironmonlib::ontology::Entity> = if writable {
         ontology
             .entities
             .values()
@@ -4598,7 +4600,7 @@ fn handle_describe_command(
             None => {
                 eprintln!("No entity with id {id:?}.");
                 eprintln!(
-                    "Try `simon describe --search {}`.",
+                    "Try `ironmon describe --search {}`.",
                     id.split('.').next().unwrap_or(id)
                 );
                 std::process::exit(1);
@@ -4622,7 +4624,7 @@ fn handle_describe_command(
     if format.eq_ignore_ascii_case("json") {
         // Re-wrap so the JSON always carries the version, even when filtered — a
         // consumer holding a fragment still needs to know which schema it speaks.
-        let filtered: std::collections::BTreeMap<&str, &simonlib::ontology::Entity> =
+        let filtered: std::collections::BTreeMap<&str, &ironmonlib::ontology::Entity> =
             selected.iter().map(|e| (e.id.as_str(), *e)).collect();
         let doc = serde_json::json!({
             "version": ontology.version,
@@ -4633,7 +4635,7 @@ fn handle_describe_command(
         return Ok(());
     }
 
-    println!("simon ontology v{}", ontology.version);
+    println!("ironmon ontology v{}", ontology.version);
     println!(
         "{} entit{}\n",
         selected.len(),
@@ -4670,7 +4672,7 @@ fn handle_describe_command(
 }
 
 fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::profile::{ProfileInspector, Subsystem};
+    use ironmonlib::profile::{ProfileInspector, Subsystem};
     let mut inspector = ProfileInspector::new();
 
     match action {
@@ -4708,7 +4710,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 println!();
                 println!(
                     "Use {} for details.",
-                    "simon profile show <subsystem>".italic()
+                    "ironmon profile show <subsystem>".italic()
                 );
             }
         }
@@ -4775,16 +4777,16 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             json,
         } => {
             let parsed = parse_setting_value(value);
-            let outcome = simonlib::profile::apply::apply_setting(setting_id, parsed, *confirm);
+            let outcome = ironmonlib::profile::apply::apply_setting(setting_id, parsed, *confirm);
             if *json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
                 let status_color = match outcome.status {
-                    simonlib::profile::apply::ApplyStatus::Applied => "applied".green(),
-                    simonlib::profile::apply::ApplyStatus::Refused => "refused".red(),
-                    simonlib::profile::apply::ApplyStatus::Failed => "failed".red(),
-                    simonlib::profile::apply::ApplyStatus::NotWritable => "not writable".yellow(),
-                    simonlib::profile::apply::ApplyStatus::NeedsConfirm => {
+                    ironmonlib::profile::apply::ApplyStatus::Applied => "applied".green(),
+                    ironmonlib::profile::apply::ApplyStatus::Refused => "refused".red(),
+                    ironmonlib::profile::apply::ApplyStatus::Failed => "failed".red(),
+                    ironmonlib::profile::apply::ApplyStatus::NotWritable => "not writable".yellow(),
+                    ironmonlib::profile::apply::ApplyStatus::NeedsConfirm => {
                         "needs --confirm".yellow()
                     }
                 };
@@ -4794,13 +4796,13 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 println!("message:   {}", outcome.message);
                 println!(
                     "audit log: {}",
-                    simonlib::profile::apply::audit_log_path().display()
+                    ironmonlib::profile::apply::audit_log_path().display()
                 );
             }
             // Non-zero exit on non-success so scripts can detect failure.
             if !matches!(
                 outcome.status,
-                simonlib::profile::apply::ApplyStatus::Applied
+                ironmonlib::profile::apply::ApplyStatus::Applied
             ) {
                 std::process::exit(1);
             }
@@ -4808,7 +4810,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         ProfileSubcommand::Schemes { json } => {
             #[cfg(windows)]
             {
-                let schemes = simonlib::profile::cpu::enumerate_power_schemes();
+                let schemes = ironmonlib::profile::cpu::enumerate_power_schemes();
                 if *json {
                     let arr: Vec<_> = schemes
                         .iter()
@@ -4827,7 +4829,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                     }
                     println!(
                         "\nApply with: {} {} <guid> --confirm",
-                        "simon profile set".italic(),
+                        "ironmon profile set".italic(),
                         "active_scheme_guid".italic()
                     );
                 }
@@ -4840,7 +4842,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             }
         }
         ProfileSubcommand::Writable { json } => {
-            let ids = simonlib::profile::apply::writable_setting_ids();
+            let ids = ironmonlib::profile::apply::writable_setting_ids();
             if *json {
                 println!("{}", serde_json::to_string_pretty(&ids)?);
             } else if ids.is_empty() {
@@ -4852,13 +4854,13 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 }
                 println!(
                     "\nUse: {} {} <value> --confirm",
-                    "simon profile set".italic(),
+                    "ironmon profile set".italic(),
                     "<id>".italic()
                 );
             }
         }
         ProfileSubcommand::Bench { json } => {
-            let report = simonlib::profile::bench::run_bench();
+            let report = ironmonlib::profile::bench::run_bench();
             if *json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -4897,8 +4899,8 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             ticks,
             subsystem,
         } => {
-            use simonlib::profile::diff::diff_snapshots;
-            use simonlib::profile::{ProfileSnapshot, Subsystem};
+            use ironmonlib::profile::diff::diff_snapshots;
+            use ironmonlib::profile::{ProfileSnapshot, Subsystem};
             use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::Arc;
 
@@ -4932,7 +4934,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             );
 
             let snapshot =
-                |inspector: &mut simonlib::profile::ProfileInspector| -> ProfileSnapshot {
+                |inspector: &mut ironmonlib::profile::ProfileInspector| -> ProfileSnapshot {
                     match filter_sub {
                         Some(sub) => {
                             let groups = inspector.snapshot(sub);
@@ -5002,7 +5004,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             println!("\nStopped after {} tick(s).", tick);
         }
         ProfileSubcommand::Audit { lines, json } => {
-            let path = simonlib::profile::apply::audit_log_path();
+            let path = ironmonlib::profile::apply::audit_log_path();
             let content = std::fs::read_to_string(&path).unwrap_or_default();
             let all: Vec<&str> = content.lines().collect();
             let tail = if all.len() > *lines {
@@ -5023,16 +5025,16 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 }
                 for line in tail {
                     if let Ok(v) =
-                        serde_json::from_str::<simonlib::profile::apply::ApplyOutcome>(line)
+                        serde_json::from_str::<ironmonlib::profile::apply::ApplyOutcome>(line)
                     {
                         let st = match v.status {
-                            simonlib::profile::apply::ApplyStatus::Applied => "applied".green(),
-                            simonlib::profile::apply::ApplyStatus::Refused => "refused".red(),
-                            simonlib::profile::apply::ApplyStatus::Failed => "failed".red(),
-                            simonlib::profile::apply::ApplyStatus::NotWritable => {
+                            ironmonlib::profile::apply::ApplyStatus::Applied => "applied".green(),
+                            ironmonlib::profile::apply::ApplyStatus::Refused => "refused".red(),
+                            ironmonlib::profile::apply::ApplyStatus::Failed => "failed".red(),
+                            ironmonlib::profile::apply::ApplyStatus::NotWritable => {
                                 "not writable".yellow()
                             }
-                            simonlib::profile::apply::ApplyStatus::NeedsConfirm => {
+                            ironmonlib::profile::apply::ApplyStatus::NeedsConfirm => {
                                 "needs confirm".yellow()
                             }
                         };
@@ -5051,7 +5053,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         }
         ProfileSubcommand::Deviations { json } => {
             let snapshot = inspector.snapshot_all();
-            let report = simonlib::profile::deviation::deviation_report(&snapshot);
+            let report = ironmonlib::profile::deviation::deviation_report(&snapshot);
             let (devs, coverage) = (report.deviations, report.coverage);
             if *json {
                 println!(
@@ -5088,10 +5090,10 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 );
                 for d in devs {
                     let risk = match d.risk {
-                        simonlib::profile::SettingRisk::Dangerous => "[dangerous]".red(),
-                        simonlib::profile::SettingRisk::Moderate => "[moderate]".yellow(),
-                        simonlib::profile::SettingRisk::Safe => "[safe]".green(),
-                        simonlib::profile::SettingRisk::Informational => "[info]".dimmed(),
+                        ironmonlib::profile::SettingRisk::Dangerous => "[dangerous]".red(),
+                        ironmonlib::profile::SettingRisk::Moderate => "[moderate]".yellow(),
+                        ironmonlib::profile::SettingRisk::Safe => "[safe]".green(),
+                        ironmonlib::profile::SettingRisk::Informational => "[info]".dimmed(),
                     };
                     println!(
                         "  {} [{}] {} :: {}",
@@ -5122,7 +5124,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         }
         ProfileSubcommand::Explain { setting_id, json } => {
             let snapshot = inspector.snapshot_all();
-            match simonlib::profile::explain::explain(&snapshot, setting_id) {
+            match ironmonlib::profile::explain::explain(&snapshot, setting_id) {
                 Some(exp) => {
                     if *json {
                         println!("{}", serde_json::to_string_pretty(&exp)?);
@@ -5156,10 +5158,10 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                             println!("  choices:   {}", names.join(", "));
                         }
                         let risk = match exp.setting.risk {
-                            simonlib::profile::SettingRisk::Dangerous => "dangerous".red(),
-                            simonlib::profile::SettingRisk::Moderate => "moderate".yellow(),
-                            simonlib::profile::SettingRisk::Safe => "safe".green(),
-                            simonlib::profile::SettingRisk::Informational => "info".dimmed(),
+                            ironmonlib::profile::SettingRisk::Dangerous => "dangerous".red(),
+                            ironmonlib::profile::SettingRisk::Moderate => "moderate".yellow(),
+                            ironmonlib::profile::SettingRisk::Safe => "safe".green(),
+                            ironmonlib::profile::SettingRisk::Informational => "info".dimmed(),
                         };
                         println!("  risk:      {}", risk);
                         println!("  source:    {}", exp.setting.source.italic());
@@ -5175,7 +5177,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                     }
                 }
                 None => {
-                    let cands = simonlib::profile::explain::candidates(&snapshot, setting_id);
+                    let cands = ironmonlib::profile::explain::candidates(&snapshot, setting_id);
                     if cands.is_empty() {
                         eprintln!("No setting matches id {:?}", setting_id);
                         std::process::exit(1);
@@ -5191,9 +5193,9 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         }
         ProfileSubcommand::Active { matched, json } => {
             let entries = if *matched {
-                simonlib::profile::active::matched_active_profiles()
+                ironmonlib::profile::active::matched_active_profiles()
             } else {
-                simonlib::profile::active::active_profiles_for_processes()
+                ironmonlib::profile::active::active_profiles_for_processes()
             };
             if *json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -5229,8 +5231,8 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
             against,
             json,
         } => {
-            use simonlib::profile::diff::diff_snapshots;
-            use simonlib::profile::ProfileSnapshot;
+            use ironmonlib::profile::diff::diff_snapshots;
+            use ironmonlib::profile::ProfileSnapshot;
             let baseline_str = std::fs::read_to_string(baseline)?;
             let baseline_snap: ProfileSnapshot = serde_json::from_str(&baseline_str)?;
             let current_snap = if let Some(path) = against {
@@ -5379,8 +5381,8 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
 /// Pretty-print profile groups for a subsystem.
 #[cfg(feature = "cli")]
 fn print_profile_groups(
-    sub: simonlib::profile::Subsystem,
-    groups: &[simonlib::profile::ProfileGroup],
+    sub: ironmonlib::profile::Subsystem,
+    groups: &[ironmonlib::profile::ProfileGroup],
 ) {
     if groups.is_empty() {
         println!("(no profile data for {})", sub);
@@ -5404,10 +5406,10 @@ fn print_profile_groups(
                 .map(|u| format!(" {}", u))
                 .unwrap_or_default();
             let risk = match s.risk {
-                simonlib::profile::SettingRisk::Informational => String::new(),
-                simonlib::profile::SettingRisk::Safe => " [safe]".green().to_string(),
-                simonlib::profile::SettingRisk::Moderate => " [moderate]".yellow().to_string(),
-                simonlib::profile::SettingRisk::Dangerous => " [dangerous]".red().to_string(),
+                ironmonlib::profile::SettingRisk::Informational => String::new(),
+                ironmonlib::profile::SettingRisk::Safe => " [safe]".green().to_string(),
+                ironmonlib::profile::SettingRisk::Moderate => " [moderate]".yellow().to_string(),
+                ironmonlib::profile::SettingRisk::Dangerous => " [dangerous]".red().to_string(),
             };
             println!(
                 "    {:<28} = {}{}{}",
@@ -5426,8 +5428,8 @@ fn print_profile_groups(
 /// Parse a CLI string into a [`SettingValue`]. Recognizes bool literals,
 /// integers, and floats; otherwise falls back to [`SettingValue::Text`].
 #[cfg(feature = "cli")]
-fn parse_setting_value(raw: &str) -> simonlib::profile::SettingValue {
-    use simonlib::profile::SettingValue;
+fn parse_setting_value(raw: &str) -> ironmonlib::profile::SettingValue {
+    use ironmonlib::profile::SettingValue;
     let lower = raw.trim().to_ascii_lowercase();
     match lower.as_str() {
         "true" | "yes" | "on" | "enabled" | "enable" => return SettingValue::Bool(true),
@@ -5467,7 +5469,7 @@ fn handle_ids_command(
     watch: &[std::path::PathBuf],
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::ids::{file, network, triage, ScanStatus};
+    use ironmonlib::ids::{file, network, triage, ScanStatus};
 
     #[derive(serde::Serialize, serde::Deserialize, Default)]
     struct Baselines {
@@ -5568,8 +5570,8 @@ fn handle_ids_command(
     Ok(())
 }
 
-fn print_ids_status(label: &str, status: &simonlib::ids::ScanStatus) {
-    use simonlib::ids::ScanStatus;
+fn print_ids_status(label: &str, status: &ironmonlib::ids::ScanStatus) {
+    use ironmonlib::ids::ScanStatus;
     match status {
         ScanStatus::NoBaseline { recorded, reason } => {
             println!("{label}: no baseline — {recorded} recorded now. {reason}");
@@ -5595,12 +5597,12 @@ fn handle_status_command(
     no_color: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let readings = simonlib::ontology::resolve::snapshot();
+    let readings = ironmonlib::ontology::resolve::snapshot();
 
     if format.eq_ignore_ascii_case("json") {
         // The same lines, structured. `value` absent and `reason` present is the
         // same distinction the text form draws, kept for a caller that scripts it.
-        let lines: Vec<serde_json::Value> = simonlib::fetch::summary(&readings)
+        let lines: Vec<serde_json::Value> = ironmonlib::fetch::summary(&readings)
             .into_iter()
             .map(|l| {
                 serde_json::json!({
@@ -5619,11 +5621,11 @@ fn handle_status_command(
         // output carries no escape codes, because this gets pasted as often as
         // it gets read.
         let colour = !no_color && std::io::IsTerminal::is_terminal(&std::io::stdout());
-        print!("{}", simonlib::fetch::render(&readings, colour));
+        print!("{}", ironmonlib::fetch::render(&readings, colour));
     } else {
         // Terse by default: the summary without the artwork.
         let colour = !no_color && std::io::IsTerminal::is_terminal(&std::io::stdout());
-        print!("{}", simonlib::fetch::render_plain(&readings, colour));
+        print!("{}", ironmonlib::fetch::render_plain(&readings, colour));
     }
     Ok(())
 }

@@ -61,7 +61,7 @@ Since the tag, on `master` and green on all three platforms:
 | `9ef5ba0` | The PnP classifier gated with the only target that calls it |
 | `cc7aac6` | Root hubs given the identifier 0000:0000, and an invented Intel hub |
 | `b16d4fb` | A terminal and a browser classified as GPU compute |
-| `19a6a06` | Per-process GPU memory: NVML says N/A, simon said 0.0 MB |
+| `19a6a06` | Per-process GPU memory: NVML says N/A, ironmon said 0.0 MB |
 | `1a6718c` | Master volume 100% on every machine, and setters that changed nothing |
 | `308c770` | The invented-device rule generalised past displays |
 | `0121d86` | A clean bill of health drawn from 2 of 23,541 settings |
@@ -184,6 +184,62 @@ Since the tag, on `master` and green on all three platforms:
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
 
+### The rename to IronMonitor
+
+`simon` became **IronMonitor**, in `dev/nervosys/ai/IronMonitor` against
+`github.com/nervosys/IronMonitor`. The names now are:
+
+| Was | Is | Note |
+| --- | --- | --- |
+| package `silicon-monitor` | `iron-monitor` | |
+| lib `simonlib` | `ironmonlib` | |
+| bin `simon` | `ironmon` | and `imon`, the same source under a second name |
+| bin `amon` | `amon` | unchanged; still sugar for `ironmon ai` |
+| `SimonError` | `IronError` | 900 sites |
+| `stats::Simon` | `IronMonitor` | the headline interface the binaries use |
+| `SiliconMonitor` (lib.rs) | `UnifiedMonitor` | the wrapper the agent and backend hold |
+| `silicon::SiliconMonitor` | unchanged | the platform trait, sibling to `AppleSiliconMonitor` |
+| `SiliconMonitorApp` | `IronMonitorApp` | |
+
+**Four published interfaces changed, and each breaks something downstream.**
+Metric names carry an `ironmon_` prefix now, so existing Grafana panels and
+alert rules query names that no longer exist — the bundled dashboards were
+rewritten with them. The JSON-LD vocabulary IRI moved. The 15 `SIMON_*`
+environment variables are `IRONMON_*`. And the config directory is
+`<config>/ironmon/`, which **strands an existing `consent.toml` and the profile
+audit log**: consent is absent rather than denied, so the failure is in the safe
+direction, but a user who had granted a category will be asked again. No
+migration shim was written; the old directory is still there to copy from.
+
+**Three different types were called `SiliconMonitor`, and a blanket rename
+collapsed them into one.** The compiler caught it — `the name IronMonitor is
+defined multiple times` — but only after the first pass had also rewritten prose
+in eight files, because the rule that turns "simon <verb>" into the project name
+had reached reason strings like "simon holds no throughput estimate" and turned
+them into `UnifiedMonitor`. The recovery was to restore those files from HEAD and
+re-run with the collision resolved up front, rather than patch forward.
+
+**The word-boundary lesson is the reusable one.** `\bsimon\b` cannot see
+`CARGO_BIN_EXE_simon`, `simonError`, `simon_` with nothing after it, or
+`schema.siliconmonitor.dev` — an underscore and a dot are not boundaries the way
+a space is. Four survived the sweep and were found by the test suite and by
+running the binary, not by grep. **After a rename, grep case-insensitively for
+the bare stem with no boundaries at all** and read every hit.
+
+**Two guards earned their keep.** `every_dashboard_metric_is_published_somewhere`
+refuses to pass when it finds nothing to check, and said so — "no metric names
+found in grafana/, so this test checks nothing" — when the rename moved the
+dashboards out from under an extractor still looking for `simon_`. And unifying
+the JSON-LD namespace surfaced a disagreement that predates the rename: the
+manifest declared `ironmon:` as `schema.siliconmonitor.dev` while the ontology
+declared it as `nervosys.github.io/.../ns#`, so **one prefix meant two
+vocabularies depending on which command wrote the document.** Both now use
+`IRONMON_NS`.
+
+The archived `release/v0.1.0/` was deliberately left alone: it is a record of
+what shipped under the old name, and rewriting it would make it a record of
+nothing.
+
 ### The rest of the fifty, triaged
 
 The `unwrap_or(<non-zero>)` list, read to the end. Recorded so nobody reads them
@@ -236,7 +292,7 @@ twice.
 
 `100.0 - c.idle.unwrap_or(100.0)`. "Assume fully idle", which comes back out as
 a **measured, idle core**. This file records it being fixed twice — in the tsdb
-writer and in `simon serve`'s snapshot path — and eight copies were still live,
+writer and in `ironmon serve`'s snapshot path — and eight copies were still live,
 on every surface the crate has:
 
 | Surface | What a consumer saw |
@@ -410,7 +466,7 @@ ending in `_bytes`.
 It did:
 
 ```
-simon_memory_total_bytes = 98191140      memory.total = 100547727360
+ironmon_memory_total_bytes = 98191140      memory.total = 100547727360
 ```
 
 Exactly 1024x. `RamInfo` is in KB — its own doc comment says so on every field —
@@ -436,7 +492,7 @@ totals would otherwise make it pass by having nothing left to check.
 
 **Where to point this next.** The same technique applies to every pair of
 surfaces this crate has over one machine, and it had found two defects in two
-attempts when this was written: the active power scheme (`simon profile explain`
+attempts when this was written: the active power scheme (`ironmon profile explain`
 versus a "no resolver bound" absence) and the exporter above.
 
 **The third attempt came back clean**, and that is worth as much in a file like
@@ -457,7 +513,7 @@ agreement test can fail at all: pointing `core_count` at `cpu.cores.physical`
 turns it red with `24 (x1 = 24) but cpu.cores.physical = 12`.
 
 **The fourth attempt found the largest omission yet, and not by comparing
-numbers.** `simon ai manifest --format jsonld` returns 295 bytes; every other
+numbers.** `ironmon ai manifest --format jsonld` returns 295 bytes; every other
 format returns 21-25 KB. `to_json_ld` ignored `self.tools` and emitted six fixed
 keys naming the application — a manifest of nothing, offered in the CLI's help
 beside the nine formats that answer. **The CLI exits zero and the JSON parses**,
@@ -476,22 +532,22 @@ thing they have in common is that each surface looked correct when read on its
 own — which is the argument for checking surfaces *against each other* rather
 than more carefully one at a time.
 
-**The fifth and last pair is `simon cli`, and its human output is right.**
-`simon cli memory` prints `62.68 / 93.64 GB`, which is the ontology's
+**The fifth and last pair is `ironmon cli`, and its human output is right.**
+`ironmon cli memory` prints `62.68 / 93.64 GB`, which is the ontology's
 100,547,727,360 bytes to the digit. The renderer converts correctly; nothing to
 fix.
 
 **Its JSON mode is a different matter, and it is queued rather than changed.**
-`simon cli memory --format json` serialises the library struct as it stands, so
+`ironmon cli memory --format json` serialises the library struct as it stands, so
 it emits `"total": 98191140` — kilobytes, under a key that does not say so, on a
 machine whose other three surfaces all report bytes:
 
 | Surface | `memory.total` |
 | --- | --- |
-| `simon snapshot` | 100547727360 (entity declares bytes) |
+| `ironmon snapshot` | 100547727360 (entity declares bytes) |
 | `/api/v1/metrics/prometheus` | 100547727360 (name says bytes) |
-| `simon cli memory` (human) | 93.64 GB |
-| `simon cli memory --format json` | 98191140 (kilobytes, unmarked) |
+| `ironmon cli memory` (human) | 93.64 GB |
+| `ironmon cli memory --format json` | 98191140 (kilobytes, unmarked) |
 
 Nothing here is *wrong* — `RamInfo` documents KB on every field — but the number
 cannot be interpreted from the output alone, and this is the third convention
@@ -790,11 +846,11 @@ Three more reasons checked, all three false, five absences closed. One of them
 is not a question about Windows at all.
 
 **`cpu.setting.active_scheme_guid` was published as "no resolver bound on this
-build — the entity is defined but simon does not yet read it here".** In the
+build — the entity is defined but IronMonitor does not yet read it here".** In the
 same binary:
 
 ```
-$ simon profile explain active_scheme_guid
+$ ironmon profile explain active_scheme_guid
   value:     381b4222-f694-41f0-9685-ff5bb260df2e
 ```
 
@@ -810,7 +866,7 @@ read while another surface over the same machine was reading it, using a
 transient failure from being mistaken for an unreadable setting. A handler with
 no `read_current` is one-way by construction, and the absence says so instead of
 blaming the build. **The lesson is narrower than "check the reasons": an absence
-reason is a claim about *simon*, too, and this crate has more than one surface
+reason is a claim about *ironmon*, too, and this crate has more than one surface
 over the same hardware.**
 
 **Three PCI addresses that were in the registry all along.**
@@ -857,8 +913,8 @@ coincidence.
 Fourteen more absence reasons checked, ten false. First, though, the thing that
 found itself: **`every_documented_command_exists` failed on the previous commit's
 own handoff prose.** The guard flags any documentation line *beginning* with
-`simon `, and a paragraph wrapped so that a quoted comment -- "there is no EDAC
-equivalent simon reads, so this is the common path" -- started one. The
+`ironmon `, and a paragraph wrapped so that a quoted comment -- "there is no EDAC
+equivalent IronMonitor reads, so this is the common path" -- started one. The
 verification run for that commit had been made *before* the docs were written, so
 the code was green and the prose was never put to the suite. **Run the suite after
 the last edit, not after the last edit you think matters.** Rewrapping the line
@@ -981,7 +1037,7 @@ platform interface exists but enumerated nothing". No interface exists here and
 none was asked: `EdacMonitor::scan()` returned an empty overview on every
 platform but Linux. The resolver's *other* branch — the one that would have told
 the truth — carries the comment "on Windows and macOS there is no EDAC
-equivalent simon reads, so this is the common path", and was unreachable. The
+equivalent IronMonitor reads, so this is the common path", and was unreachable. The
 module header said Windows read `wmic memorychip`; no code in it has ever run
 anything on Windows.
 
@@ -1014,7 +1070,7 @@ five false** out of the ten examined.
 
 The audio ones were a third kind. Twelve readings said:
 
-> simon has no mixer binding on this platform, so no level is read
+> IronMonitor has no mixer binding on this platform, so no level is read
 >
 > which endpoint the system routes to by default is a COM call this crate does
 > not make
@@ -1034,7 +1090,7 @@ ones, so that is what the name can honestly mean. It had been `Some(100)` from
 the constructor, published as "Master Volume: 100%" on every machine.
 
 Cross-checked through an independent COM path — `Add-Type` in PowerShell with its
-own vtable declarations — reporting render 56% and capture 24%, matching simon
+own vtable declarations — reporting render 56% and capture 24%, matching ironmon
 exactly. After the L2 cache count, a reading that merely *looks* right is not
 evidence.
 
@@ -1080,7 +1136,7 @@ and the entity documents it — *"Rated maximum core clock, as the firmware repo
 it. A boosting core can and does exceed it."* 4400 is this part's base clock, not
 its 5.6 GHz boost ceiling, and Windows exposes no boost figure.
 
-**The defect was the label.** `measured 4400 MHz` says simon observed the core at
+**The defect was the label.** `measured 4400 MHz` says ironmon observed the core at
 4400. It read a number the firmware states. The entity beside it declares
 `Specification`; the resolver called `push_opt` where `push_spec_opt` was already
 sitting.
@@ -1202,17 +1258,17 @@ the split is the useful part — **two were true, two were not.**
 
 | Reason | Count | Verdict |
 | --- | --- | --- |
-| "Windows reports link training nowhere simon can reach unelevated" | 164 | **False** |
+| "Windows reports link training nowhere IronMonitor can reach unelevated" | 164 | **False** |
 | "the platform reports no NUMA affinity for this device" | 64 | True — 0 of 64 PCI devices expose the property |
 | "driver reports no negotiated link rate for this interface" | 11 | True — every one is a WAN miniport or disconnected adapter, `0 bps` |
 | "reader returned an empty string" | 19 | **False for 1 of 6 checked** |
 
 **The link-training claim was refuted by the same document that made it.** 23
 devices in that snapshot report `link.speed` as `measured`, at 16.0 and 32.0
-GT/s, read unelevated through the cfgmgr32 property store. simon reaches link
+GT/s, read unelevated through the cfgmgr32 property store. ironmon reaches link
 training on Windows; it does so 23 times in the file that says it cannot.
 
-Counting what Windows exposes gives 23 of 64 — matching simon exactly, so nothing
+Counting what Windows exposes gives 23 of 64 — matching ironmon exactly, so nothing
 was being missed — but the 41 without include several `PCI Express Downstream
 Switch Port` and `PCI standard host CPU bridge`. Those *are* PCIe, so the
 alternative clause ("the device is not PCIe") was wrong too. Windows populates
@@ -1501,7 +1557,7 @@ the code that *is* called. 46 hits, most of them legitimate (clocks, `is_*`
 predicates, the deliberately-named `*_or_zero`). Six were not, and they were the
 six that end up in a file on disk.
 
-`simon record` writes a row per tick whether or not the readers succeeded, and
+`ironmon record` writes a row per tick whether or not the readers succeeded, and
 that row is read back later by someone who was not there:
 
 | Column | What it stored for a failed read |
@@ -1632,7 +1688,7 @@ list rather than fields on `DiskSnapshot`, because the two are keyed differently
 drive can carry several letters and one letter can span drives, so attributing a
 device counter to a mount needs a partition map nobody has written. Labelling by
 device sidesteps it and is what the metric means anyway:
-`simon_disk_read_bytes_total{device="PhysicalDrive0"}` is a property of the
+`ironmon_disk_read_bytes_total{device="PhysicalDrive0"}` is a property of the
 hardware, not of a mount point.
 
 Then `cpu_temperature_celsius`, the last gap, by the same shape: the reading goes
@@ -1661,10 +1717,10 @@ against 8000 ms, explained all three at once and pointed at the one-line cause.
 Splitting the dashboard check paid for itself in the next hour. Three defects,
 all in the code the combined test had been declaring complete.
 
-**`simon_network_rx/tx_bytes_total` carried a rate on the served endpoint.**
+**`ironmon_network_rx/tx_bytes_total` carried a rate on the served endpoint.**
 `record_snapshot` recorded `total_rx_rate()` — bytes/sec, summed over interfaces,
 unlabelled — under a `_total` counter name. The bundled fleet dashboard plots
-`rate(simon_network_rx_bytes_total[5m])`, so it was taking the rate of change *of
+`rate(ironmon_network_rx_bytes_total[5m])`, so it was taking the rate of change *of
 a rate*: near zero under steady traffic, and a spike shaped like the derivative
 of the load rather than the load itself.
 
@@ -1713,8 +1769,8 @@ Windows now; the Linux arm's `parse().unwrap_or(0.0)` went too, since a
 
 Then the cheap half of the open-work item itself: `PrometheusExporter` learned
 the four metrics it had never been taught, all of which it could always have
-read. Driven rather than grepped for — `simon_cpu_frequency_mhz 5148`,
-`simon_process_count 542`, and the two load averages correctly absent. Its pinned
+read. Driven rather than grepped for — `ironmon_cpu_frequency_mhz 5148`,
+`ironmon_process_count 542`, and the two load averages correctly absent. Its pinned
 gap list is empty and the test fails if it regains an entry.
 
 **A test that has just been made stricter is the best moment to go looking.**
@@ -1751,7 +1807,7 @@ contained the name. Comments have been stripped ever since. But `http_server.rs`
 contains this, in a test:
 
 ```rust
-assert!(!text.contains("simon_disk_read_bytes_total"));
+assert!(!text.contains("ironmon_disk_read_bytes_total"));
 ```
 
 — an assertion pinning that the name is *not* published. A source search read the
@@ -1872,7 +1928,7 @@ unconditionally present exactly the readings the last hundred commits have
 established are routinely unavailable on a real machine. `BandwidthInfo` still
 carried the bare `f64` rate fields that `e425908` removed from every network rate
 in the crate that something constructs. This is a published description of a
-machine simon cannot actually see, and the first person to wire one up would have
+machine IronMonitor cannot actually see, and the first person to wire one up would have
 imported the fabrication wholesale rather than met it as a fix.
 
 Deleted. `tests/unreachable_types.rs` keeps the count at zero, with **no
@@ -1902,12 +1958,12 @@ checking, so I swept the crate for rate-shaped fields. Two were still declared
 constructs them, so nothing had made me look.
 
 `NetworkState` turned out to be the interesting one. It is a public type, and
-`FullSystemState::network` is a public field serialised by `simon cli all
+`FullSystemState::network` is a public field serialised by `ironmon cli all
 --format json`. `get_full_system_state` builds every other section and never
 assigns that one. Asked the binary:
 
 ```
-simon cli all --format json:
+ironmon cli all --format json:
   cpu             present
   memory          present
   accelerators    3
@@ -1959,7 +2015,7 @@ to difference and `DiskIoStats` is built from one, which the entry about
 
 So `DiskSnapshot::read_rate` has been `0.0` on every platform for the life of
 the pipeline, and it is drawn by the TUI, the GUI, and — since two commits ago —
-`simon_disk_read_bytes_per_sec`. **I renamed and labelled that metric earlier
+`ironmon_disk_read_bytes_per_sec`. **I renamed and labelled that metric earlier
 today, which made a constant zero more accurately addressed.** Correcting a
 name without checking the value behind it is its own small lesson.
 
@@ -1981,23 +2037,23 @@ checking against the possibility that nobody ever computed it.
 The open-work entry opened by `d4da86c` says the Prometheus endpoint serves
 **10 of the 24** metrics the dashboards query. That was true when written. Then
 `5796371` moved the recorder to labels, which was done for a different reason —
-`simon_gpu_0_utilization_percent` could never match
-`simon_gpu_utilization_percent{gpu="0"}` — and in doing so it made most of those
+`ironmon_gpu_0_utilization_percent` could never match
+`ironmon_gpu_utilization_percent{gpu="0"}` — and in doing so it made most of those
 names matchable.
 
 Measured rather than assumed: **20 of 24**. The item had been wrong for two
 commits, and I wrote both of them.
 
-`simon_uptime_seconds` turned out to be one line: `SystemStats::uptime_seconds`
+`ironmon_uptime_seconds` turned out to be one line: `SystemStats::uptime_seconds`
 sits in the same struct the recorder was already reading for the load average.
 **21 of 24.**
 
 The last three are genuinely blocked by what a `Snapshot` carries:
 
-* `simon_cpu_temperature_celsius` — no CPU temperature on `CpuStats`; the
+* `ironmon_cpu_temperature_celsius` — no CPU temperature on `CpuStats`; the
   exporter reads `hwmon::read_cpu_temperatures` directly, which the recorder
   cannot do without becoming impure and untestable again.
-* `simon_disk_read_bytes_total` / `write_bytes_total` — `DiskSnapshot` carries
+* `ironmon_disk_read_bytes_total` / `write_bytes_total` — `DiskSnapshot` carries
   `read_rate` and `write_rate` and no cumulative counter. Publishing a rate
   under a `_total` name is what `5796371` removed; adding the counters means
   adding them to the pipeline snapshot.
@@ -2014,7 +2070,7 @@ stale one sends the next person to fix something already fixed.**
 ### A contract that was right for a loop and wrong for everything else
 
 Having just fixed the CLI's USB output, the same question about the line above
-it. `simon cli cpu` said:
+it. `ironmon cli cpu` said:
 
 ```
 Clock: not read — Windows reports the nominal clock, not the current one
@@ -2052,19 +2108,19 @@ confident-looking error message was really this volume being full.
 
 ### The last unaudited surface, and a fix that never reached the screen
 
-Running every `simon cli` subcommand and reading the output — the one surface
+Running every `ironmon cli` subcommand and reading the output — the one surface
 this session had not driven. **It is in good shape**, and the entries in this
 file are visible in it:
 
 ```
 Clock: not read — Windows reports the nominal clock, not the current one (max 4400 MHz)
 disk.0.temperature   this device exposes no thermal sensor
-Master Volume: not read — simon has no mixer binding on this platform
+Master Volume: not read — IronMonitor has no mixer binding on this platform
 ```
 
 Two defects, both in presentation rather than reading.
 
-**`simon cli usb` printed `(Unknown)` for every device** — and that was the
+**`ironmon cli usb` printed `(Unknown)` for every device** — and that was the
 *speed*, rendered as an enum variant name. `UsbSpeed::Unknown` means the
 negotiated speed is not read on Windows, which the entry four below documents at
 length; printed as `Unknown` it looks like a property of the device. It now says
@@ -2081,7 +2137,7 @@ after:  [046d:c548] Logitech USB Input Device (Hid, speed not read)
         [17ef:4839] Lenovo 510 IR Camera        (Video, speed not read)
 ```
 
-`simon cli audio` printed `- Some(Active)`: `{:?}` on an `Option`, showing the
+`ironmon cli audio` printed `- Some(Active)`: `{:?}` on an `Option`, showing the
 consumer the wrapper. Now `Active`, or `state not read`.
 
 **Worth keeping: a reader fix is not finished when the reader is fixed.** The
@@ -2131,11 +2187,11 @@ person to add a flag beside it will assume the neighbours work.
 distinguishable from an empty one. Then:
 
 ```rust
-collector.record("simon_swap_used_bytes", mem.swap.used_or_zero() as f64 * 1024.0);
+collector.record("ironmon_swap_used_bytes", mem.swap.used_or_zero() as f64 * 1024.0);
 ```
 
 **The absence is reconstructed as a zero at the point where a machine reads
-it.** `simon_swap_used_bytes 0` is the sentence "nothing is paged out", and the
+it.** `ironmon_swap_used_bytes 0` is the sentence "nothing is paged out", and the
 JSON tools said the same in four more places. Fixing a type does not fix the
 call sites; it only makes them say what they are doing.
 
@@ -2185,12 +2241,12 @@ metric names and labels no longer does.
 Two tests came straight out of that:
 
 * a snapshot with one disk must render
-  `simon_disk_read_bytes_per_sec{device="PhysicalDrive0"}` — labelled, and named
-  as the rate it is — and must contain neither `simon_disk_0_` nor anything
+  `ironmon_disk_read_bytes_per_sec{device="PhysicalDrive0"}` — labelled, and named
+  as the rate it is — and must contain neither `ironmon_disk_0_` nor anything
   claiming to be a `_total`, since `DiskSnapshot` carries no cumulative counter.
 * an empty snapshot records nothing rather than zeros.
 
-Both were confirmed by restoring the old `simon_disk_0_read_bytes_total` form
+Both were confirmed by restoring the old `ironmon_disk_0_read_bytes_total` form
 and watching the first fail.
 
 **What this really bought.** The two defects in the entry below — the instance
@@ -2209,23 +2265,23 @@ metrics because `MetricCollector` mangled labels. Having fixed the mangling, the
 loop turned out to record GPU and disk metrics after all — just unusably.
 
 ```rust
-let g = |name: &str| format!("simon_gpu_{i}_{name}");
+let g = |name: &str| format!("ironmon_gpu_{i}_{name}");
 collector.record(&g("utilization_percent"), ...);
-collector.record(&format!("simon_disk_{i}_read_bytes_total"), disk.read_rate);
+collector.record(&format!("ironmon_disk_{i}_read_bytes_total"), disk.read_rate);
 ```
 
 **The instance was baked into the metric name.** Every bundled dashboard queries
-`simon_gpu_utilization_percent{gpu="0"}`, so the panels could never match
+`ironmon_gpu_utilization_percent{gpu="0"}`, so the panels could never match
 whatever the values were. It also defeats aggregation outright: `sum by (gpu)`
 has nothing to group on when each card is a different metric name.
 
-And `simon_disk_{i}_read_bytes_total` was fed `disk.read_rate`. **A rate under a
+And `ironmon_disk_{i}_read_bytes_total` was fed `disk.read_rate`. **A rate under a
 `_total` name** — `DiskSnapshot` carries `read_rate` and `write_rate` and no
 cumulative counter at all, so `rate()` over that series in a dashboard computes
 the rate of a rate. That is the third appearance of this exact confusion in this
 session, after `DiskReadBytesPerSec` stored in a field documented as a total and
 the commit-charge-as-swap reading. It is now
-`simon_disk_read_bytes_per_sec{device="..."}`, which is what the number is.
+`ironmon_disk_read_bytes_per_sec{device="..."}`, which is what the number is.
 
 Both are labelled now. The cumulative disk totals the dashboards want exist only
 on the `PrometheusExporter` path, which reads `io_stats` directly — one more
@@ -2258,7 +2314,7 @@ its own series — a map key, not exposition syntax — and `export_prometheus`
 printed it verbatim:
 
 ```
-simon_gpu_temperature_celsius:{gpu=1,vendor=NVIDIA} 37
+ironmon_gpu_temperature_celsius:{gpu=1,vendor=NVIDIA} 37
 ```
 
 Prometheus wants `name{gpu="1",vendor="NVIDIA"}`: quoted values, no colon. That
@@ -2288,14 +2344,14 @@ Comparing the 24 metric names they query against what the two publishers emit:
 **six were published by neither**, so those panels render empty against a live
 server — which looks like broken hardware rather than a broken dashboard.
 `http_server.rs` already documents this exact class happening once before, when
-the names lacked the `simon_` prefix and all three dashboards were blank.
+the names lacked the `ironmon_` prefix and all three dashboards were blank.
 
-* `simon_gpu_clock_graphics_mhz` — the exporter published the same number as
-  `simon_gpu_clock_core_mhz`. NVML calls it the graphics clock and the ontology
+* `ironmon_gpu_clock_graphics_mhz` — the exporter published the same number as
+  `ironmon_gpu_clock_core_mhz`. NVML calls it the graphics clock and the ontology
   publishes `gpu.{n}.clocks.graphics`, so `core` was the one name in the crate
   that matched nothing. Renamed.
-* `simon_swap_used_bytes`, `simon_uptime_seconds`, `simon_cpu_temperature_celsius`,
-  `simon_disk_read_bytes_total`, `simon_disk_write_bytes_total` — all quantities
+* `ironmon_swap_used_bytes`, `ironmon_uptime_seconds`, `ironmon_cpu_temperature_celsius`,
+  `ironmon_disk_read_bytes_total`, `ironmon_disk_write_bytes_total` — all quantities
   the crate already collects and none of them published. Added.
 
 **The guard took three attempts and each failure is the useful part.**
@@ -2304,7 +2360,7 @@ the names lacked the `simon_` prefix and all three dashboards were blank.
    restored, because the comment explaining the defect contained the name it
    was looking for. **A test a comment can satisfy is not a test.**
 2. **Searched the rendered output.** Now flagged
-   `simon_cpu_temperature_celsius` on a machine whose CPU exposes no readable
+   `ironmon_cpu_temperature_celsius` on a machine whose CPU exposes no readable
    sensor. Output cannot distinguish "the exporter does not know this name"
    from "it knows it and had nothing to report", and only the first is a defect.
 3. **Searched the source with comments stripped.** That is the question actually
@@ -2314,7 +2370,7 @@ the names lacked the `simon_` prefix and all three dashboards were blank.
 
 **A test was also deleted.** The per-instance-label check from the entry below
 demanded an exemption for every legitimately whole-machine metric:
-`simon_gpu_count`, then `simon_swap_used_bytes`, then `simon_uptime_seconds` —
+`ironmon_gpu_count`, then `ironmon_swap_used_bytes`, then `ironmon_uptime_seconds` —
 three in one sitting, none a defect. **A test that needs a growing allowlist to
 stay green has stopped testing an invariant and started describing the current
 output.** The failure it existed to catch produces duplicate samples, and
@@ -2328,14 +2384,14 @@ surface with no conformance tests. The Prometheus exporter is the other one:
 been exporting a hard zero from it for the life of the exporter. So the same
 treatment — render the output and read it.
 
-**`simon_network_rx_bytes_total` was emitted twenty times, unlabelled, with
+**`ironmon_network_rx_bytes_total` was emitted twenty times, unlabelled, with
 twenty different values.**
 
 ```
-simon_network_rx_bytes_total 43054075
-# HELP simon_network_rx_bytes_total Total bytes received
-# TYPE simon_network_rx_bytes_total counter
-simon_network_rx_bytes_total 10988371
+ironmon_network_rx_bytes_total 43054075
+# HELP ironmon_network_rx_bytes_total Total bytes received
+# TYPE ironmon_network_rx_bytes_total counter
+ironmon_network_rx_bytes_total 10988371
 ...
 ```
 
@@ -2362,7 +2418,7 @@ label. All three were confirmed by restoring the defects and watching them fail,
 then confirming the restore.
 
 **One of them found a false positive in itself, which is worth recording.** The
-label guard flagged `simon_gpu_count 3`. That metric is correct: a count of GPUs
+label guard flagged `ironmon_gpu_count 3`. That metric is correct: a count of GPUs
 is a fact about the machine, not about any GPU, so it rightly carries no `gpu`
 label. The rule now exempts `_count` **on that reasoning** rather than by
 widening a prefix match until the failure disappears — the two look identical in
@@ -3159,12 +3215,12 @@ two hand-rolled COM connection strategies to get along with.
 **A workflow note that cost three rebuilds.** Writing a throwaway
 `examples/_probe.rs`, running it, then deleting it leaves cargo's fingerprints
 inconsistent, and the next `--all-targets` build fails with
-`can't find crate for simonlib` and `crate egui required to be available in rlib
+`can't find crate for ironmonlib` and `crate egui required to be available in rlib
 format`. Combined with a disk at 99% it looks exactly like the half-written
 cache from the earlier disk-full event. **Three gates in a row returned
 `TESTS=101 result-lines=0` with clippy printing nothing**, which is
 indistinguishable from success if only the exit code is read. Run
-`cargo clean -p silicon-monitor` after probing with a scratch example, before
+`cargo clean -p iron-monitor` after probing with a scratch example, before
 gating, and always count the `test result:` lines.
 
 ### Boot mode asserted because it is usually right
@@ -3252,10 +3308,10 @@ TESTS=101 result-lines=0
 ```
 
 Exit 101, and **not one `test result:` line** — the truncated-run signature this
-file already warns about. The log said `can't find crate for simonlib` and
+file already warns about. The log said `can't find crate for ironmonlib` and
 `crate h2 required to be available in rlib format`: a build cache half-written
 when the disk filled up earlier. The clippy run just above it had also printed
-nothing, which looks exactly like success. `cargo clean -p silicon-monitor` and
+nothing, which looks exactly like success. `cargo clean -p iron-monitor` and
 a real 20-minute rebuild produced the honest 15/15. **A gate that prints nothing
 is not a gate that passed**, which is the same sentence as everything else in
 this file, aimed at the tooling instead of the readers.
@@ -4908,7 +4964,7 @@ report carried an impossible triple rather than an absent one.
 
 **The ontology was already right, and that is the point.** `resolve.rs` tested
 `report.family > 0` before publishing, under a comment reading *"All three go
-together or none of them do"*, so `simon snapshot` correctly showed
+together or none of them do"*, so `ironmon snapshot` correctly showed
 `cpu.microarch.family unavailable`. A library consumer reading
 `CpuMicroarchReport` directly got the zeros. **Fifth instance this session of a
 consumer guarding a sentinel its source should not have made**, and the guard is
@@ -5066,7 +5122,7 @@ Windows contributes an empty map, so each core reads `None`.
 tempted by the same idea.** Wiring the system-wide figure to the *cluster*
 average looked right — a cluster spanning every core is exactly what a
 whole-machine number describes. It reported **100% on an idle desktop** where
-`simon cli cpu`, reading `core::cpu`, said 7.3% at the same moment. Probing
+`ironmon cli cpu`, reading `core::cpu`, said 7.3% at the same moment. Probing
 `GetSystemTimes` directly over the same window gives deltas that check out —
 kernel+user = 120,156,250 ticks, which is exactly 12.0s across 24 cores in
 500ms — and an idle delta implying ~35%.
@@ -5265,7 +5321,7 @@ defect and no rename-level search will connect them.
 
 ### A fix in this session introduced the defect it was fixing
 
-`simon cli cpu` printed **"Clock: 0 MHz (max 4400 MHz)"**. The zero came from
+`ironmon cli cpu` printed **"Clock: 0 MHz (max 4400 MHz)"**. The zero came from
 `6617020`, earlier in this same session — the fix that stopped Windows reporting
 the nominal clock as the current one. Its code said:
 
@@ -5276,10 +5332,10 @@ current: if entry.current_mhz == entry.max_mhz { 0 } else { entry.current_mhz },
 ```
 
 The comment is true and the reasoning was wrong. **The ontology resolver did
-read that zero correctly. Nothing else did**: `simon cli cpu` printed it, the
+read that zero correctly. Nothing else did**: `ironmon cli cpu` printed it, the
 agent surface published `"frequency_mhz": 0` from four call sites, the GUI
 exported a `cpu_frequency,0,MHz` CSV row, and `http_server` recorded a
-`simon_cpu_frequency_mhz 0` Prometheus sample.
+`ironmon_cpu_frequency_mhz 0` Prometheus sample.
 
 **Checking one consumer is not checking the consumers.** That is the same
 mistake as every "reader wired into one consumer" finding in this file, made
@@ -5298,9 +5354,9 @@ The rule was right, the message named the exact failure, and the `||` let a zero
 `current` through whenever `max` was known — which is every Windows machine. It
 now checks each field separately, and `Some(0)` fails for any of the three.
 
-Alongside it, `simon cli cpu` said **"Cores: 24"** one line under "AMD Ryzen 9
+Alongside it, `ironmon cli cpu` said **"Cores: 24"** one line under "AMD Ryzen 9
 9900X 12-Core Processor". That is `cores.len()`, the logical count — the same
-contradiction fixed in `simon status` at `425ff4a`, still present in two other
+contradiction fixed in `ironmon status` at `425ff4a`, still present in two other
 printers because that fix touched `fetch::summary` and nothing else. Both say
 "Threads" now.
 
@@ -5309,7 +5365,7 @@ defect was seen, rather than where the defect is.
 
 ### One more "none" that meant "cannot look"
 
-`simon cli engines` printed **"No engines detected"** on Windows. Its own
+`ironmon cli engines` printed **"No engines detected"** on Windows. Its own
 `--help` says the command reads `/sys/kernel/debug/clk` and is Linux-only, and
 `read_engine_stats` on Windows is:
 
@@ -5323,7 +5379,7 @@ An empty success, under a comment that knows exactly why. The help text was
 honest and the output was not, which is the worse way round: a user who runs the
 command without reading `--help` first is told their machine has no engines.
 
-The reader cannot return an error, because `Simon::snapshot` requires every
+The reader cannot return an error, because `IronMonitor::snapshot` requires every
 reader to succeed and that would take the whole Windows snapshot down — so the
 message is cfg-gated at the display instead, the same shape as `FREQUENCY_ABSENT`
 in the resolver. **Tenth instance of this family**, after the nine in `ebab956`.
@@ -5333,30 +5389,30 @@ in the resolver. **Tenth instance of this family**, after the nine in `ebab956`.
 Recording these so the next reader does not re-derive them. Each was checked by
 running it and confirming against a second source, not by reading the code:
 
-- **`simon daemon`** enforces what it claims. `host = "0.0.0.0"` without an
+- **`ironmon daemon`** enforces what it claims. `host = "0.0.0.0"` without an
   `api_key` refuses to start, naming the reason; loopback starts and prints
   "Authentication: anonymous (loopback only)". Its sample config marks the fleet
   section *"NOTE: not implemented. These keys parse, but nothing pushes"*.
-- **`simon profile active`** reports "311 of 503 processes have a known NVIDIA
+- **`ironmon profile active`** reports "311 of 503 processes have a known NVIDIA
   driver profile", including `svchost.exe` and AMD's own `amdow.exe`, which
   looks wrong and is not: scanning `nvdrsdb*.bin` independently yields 11,521
   names and all three are genuinely in NVIDIA's database. NVIDIA ships profiles
   for system executables.
-- **`simon ai manifest`** names a model per vendor but says in `model_discovery`
+- **`ironmon ai manifest`** names a model per vendor but says in `model_discovery`
   that the field is "only a starting suggestion" and points at the live endpoint
   — the right handling for a value that goes stale.
-- **`simon get`** returns `unavailable` with the reason for an absent entity and
+- **`ironmon get`** returns `unavailable` with the reason for an absent entity and
   names unknown ids as unknown, with a search suggestion.
-- **`simon profile show cpu`** states that XTU-style MSR access needs a signed
+- **`ironmon profile show cpu`** states that XTU-style MSR access needs a signed
   kernel driver and is not implemented, rather than showing an empty table.
 
 ### A denominator of two, reported as a clean bill of health
 
-`simon profile deviations` printed:
+`ironmon profile deviations` printed:
 
 > No settings deviate from their declared defaults.
 
-It had compared **two settings**. `simon profile list` reports 23,541 across the
+It had compared **two settings**. `ironmon profile list` reports 23,541 across the
 five providers — the GPU one contributes 23,445 — and `deviations_from_default`
 skips anything with no declared `default`:
 
@@ -5389,10 +5445,10 @@ everything, and only one of the two is what the words claim.
 
 ### A control that reports success without acting
 
-`simon cli audio` printed **"Master Volume: 100%"** and **"Muted: No"**. Both
+`ironmon cli audio` printed **"Master Volume: 100%"** and **"Muted: No"**. Both
 are constructor defaults. No `refresh_*` path on any platform assigns either
 field — the only writes were the setters — so those two lines said the same
-thing on every machine simon has ever run on, and the agent tool surface
+thing on every machine IronMonitor has ever run on, and the agent tool surface
 published `"master_volume": 100, "is_muted": false` alongside them.
 
 `src/audio/mod.rs` was checked in an earlier sweep and recorded here as clean,
@@ -5403,7 +5459,7 @@ constructor, where nothing marks it.
 Then the setters, which are worse:
 
 ```rust
-pub fn set_master_volume(&mut self, volume: u8) -> Result<(), SimonError> {
+pub fn set_master_volume(&mut self, volume: u8) -> Result<(), IronError> {
     ...
     self.master_volume = Some(volume);
     Ok(())
@@ -5430,7 +5486,7 @@ device**, "Default Audio Output", active and unmuted at 100%, pushed when the
 enumeration found nothing. That is the Intel root hub from `cc7aac6` again, one
 module over. Both gone.
 
-**Generalised, in the commit after this one.** `simon cli usb` and `simon cli
+**Generalised, in the commit after this one.** `ironmon cli usb` and `ironmon cli
 audio` both invented a device when enumeration failed, and both were outside
 what `tests/plausibility.rs` covered: that suite guarded synthetic *displays*
 because displays are where the pattern was first caught, and the rule was never
@@ -5461,7 +5517,7 @@ name the pattern in it.
 
 ### A GPU context is not a GPU workload
 
-`simon cli processes` reported **24 processes under "GPU Compute"**. The top
+`ironmon cli processes` reported **24 processes under "GPU Compute"**. The top
 five were `WindowsTerminal.exe`, `brave.exe`, `Code.exe` and a Logitech settings
 agent. `nvidia-smi` labels every one of them `C+G` with `[N/A]` memory: they are
 drawing windows.
@@ -5523,7 +5579,7 @@ time because the fix stopped at the columns it was looking at.
 
 ### An identifier is a bad place for a sentinel
 
-`simon cli usb` printed **`[0000:0000]`** for four of forty-one entries — every
+`ironmon cli usb` printed **`[0000:0000]`** for four of forty-one entries — every
 root hub and a "USB4 Virtual power coordination device". `Get-PnpDevice -Class
 USB` shows why: a root hub's id is `USB\ROOT_HUB30\9&EBA7CE&0&0`, with no
 `VID_` or `PID_` in it at all. `parse_vid_pid` returned `(0, 0)` for that, and
@@ -5566,7 +5622,7 @@ family has another member, in a module that suite does not cover.
 
 ### A gamepad counted as a radio, because its name contains "Controller"
 
-`simon cli bluetooth` reported **"Adapters: 2, Devices: 9"** on a machine with
+`ironmon cli bluetooth` reported **"Adapters: 2, Devices: 9"** on a machine with
 one radio and two paired peripherals. `Get-PnpDevice -Class Bluetooth` settles it
 in one command, which is how it was checked.
 
@@ -5600,7 +5656,7 @@ service classifies as a peripheral if the peripheral check runs first.
 
 ### A display's mode had nowhere to be absent
 
-`simon cli display` printed **`RX-A740 0x0 @ 0Hz Dvi`** — a Yamaha AV receiver
+`ironmon cli display` printed **`RX-A740 0x0 @ 0Hz Dvi`** — a Yamaha AV receiver
 on HDMI, attached and named, whose current mode Windows will not report. The
 ontology got this right and said so in a reason that reads, in as many words,
 *"zero is not a resolution"*. Five other consumers printed the zero anyway.
@@ -5632,8 +5688,8 @@ rather than at each of the five consumers.
 
 ### The command named for the reading was the one not doing it
 
-`simon cli temperature` printed **"No temperature sensors detected"**. Seconds
-later, in the same binary, `simon snapshot` read two GPU temperatures and three
+`ironmon cli temperature` printed **"No temperature sensors detected"**. Seconds
+later, in the same binary, `ironmon snapshot` read two GPU temperatures and three
 NVMe drive temperatures, all `measured`. `--format json` returned
 `{"sensors": {}}`.
 
@@ -5652,9 +5708,9 @@ It also contains, in as many words, the reason the command was incomplete:
 ```
 
 That comment is true of the *crate* and false of the *command*. GPU temperatures
-do come from NVML — and nothing in `simon cli temperature` ever asked NVML.
+do come from NVML — and nothing in `ironmon cli temperature` ever asked NVML.
 
-`simon cli power` was the same defect exactly: `PowerStats.rails` is hwmon,
+`ironmon cli power` was the same defect exactly: `PowerStats.rails` is hwmon,
 which Windows does not expose, so it printed "No power rails exposed by this
 platform" while the ontology held both GPUs' draw and limit, the battery
 percentage and the three power profiles. Someone had already fixed the
@@ -5717,7 +5773,7 @@ not.
 
 ### The contradiction was on screen, two lines apart
 
-`simon status` printed:
+`ironmon status` printed:
 
 ```
 CPU        AMD Ryzen 9 9900X 12-Core Processor
@@ -5748,13 +5804,13 @@ implied:** the same 1024-with-decimal-labels convention runs through five other
 byte formatters (`bin/main.rs::format_bytes_short`, `gui/app.rs::format_bytes`,
 `memory_management::{format_bytes,format_size}`, `tsdb::format_size`) and a long
 tail of internal constants and test fixtures. Only `fetch::as_bytes` reaches
-`simon status`, which is the surface that was read; the rest is a crate-wide
+`ironmon status`, which is the surface that was read; the rest is a crate-wide
 cosmetic sweep touching the GUI, which this handoff has repeatedly deprioritised.
 It is a real inconsistency and it is still there.
 
 ### A constant read without its prefix, documented as a route
 
-`simon serve --help` said: *"Prometheus metrics are at /metrics/prometheus (not
+`ironmon serve --help` said: *"Prometheus metrics are at /metrics/prometheus (not
 /metrics — that route returns JSON)."* Both halves are false. `curl` returns 404
 for `/metrics/prometheus` and 404 for `/metrics`; the served path is
 `/api/v1/metrics/prometheus`, which the server's own startup banner and
@@ -5774,38 +5830,38 @@ against the old text first.
 Two things looked wrong here and are not, which is worth recording so the next
 reader does not spend the time twice:
 
-- `simon_gpu_{0,1}_fan_speed_percent 0` at 49 °C and 37 °C is a **true zero** —
+- `ironmon_gpu_{0,1}_fan_speed_percent 0` at 49 °C and 37 °C is a **true zero** —
   `nvidia-smi --query-gpu=fan.speed` reports `0 %` for both. Zero-RPM idle on a
   3090 Ti. Checked in a second tool rather than assumed, per the rule below.
-- The Prometheus exporter omits `simon_gpu_2_temperature_celsius` entirely
+- The Prometheus exporter omits `ironmon_gpu_2_temperature_celsius` entirely
   rather than publishing a zero, which is correct for Prometheus and is the
   behaviour the recorder lacked.
 
 **Open, not fixed:** the OpenAPI document at `/api/v1/openapi.json` advertises
 three paths (`/health`, `/api/v1/context`, `/api/v1/gpus`) out of roughly twenty
 that the dispatcher serves. Everything it advertises works, so it states nothing
-false — but an agent handed that spec would conclude simon serves three
+false — but an agent handed that spec would conclude ironmon serves three
 endpoints. Four route constants (`METRICS`, `STREAM`, `EVENTS_SUBSCRIBE`,
 `PROCESS_BY_ID`) are declared and never dispatched; they are unreferenced dead
 constants rather than advertised lies, which is why they were left alone.
 
 ### A privacy screen is a reading too, and this one was wrong three ways
 
-`simon privacy` was the last unread surface. It has no hardware in it, which is
+`ironmon privacy` was the last unread surface. It has no hardware in it, which is
 why it went unexamined for so long, and it turned out to hold the most confident
 false statements in the crate.
 
-**There is no telemetry in simon.** No endpoint, no collector, no serialiser.
+**There is no telemetry in ironmon.** No endpoint, no collector, no serialiser.
 `ConsentScope` is referenced only by the `privacy` subcommand that displays it;
 `should_collect_data` has no callers at all outside its own module; every
 outbound `.post` in the crate goes to an LLM backend the user configured. In
 front of that emptiness sat five categories, twenty itemised data points
 ("Crash stack traces (anonymized)", "Frame time distributions"), an opt-in flow,
-and a persisted config with timestamps — and `simon privacy opt-in` answered
+and a persisted config with timestamps — and `ironmon privacy opt-in` answered
 "All data collection categories have been enabled."
 
 **The direction of a false claim does not decide how serious it is.** Every
-defect before this one overstated what simon knew; this one understated what it
+defect before this one overstated what ironmon knew; this one understated what it
 did, which reads as reassuring and is therefore harder to doubt. It is still a
 confident wrong answer about the program's own behaviour, in the one area a
 user cannot check for themselves, and it degrades: the disclosure is already
@@ -5827,7 +5883,7 @@ Three defects, not one:
    is the specific thing the first of those forbids. Removed rather than
    softened.
 
-The global `--no-telemetry` and `--offline` help lines said simon did "telemetry,
+The global `--no-telemetry` and `--offline` help lines said ironmon did "telemetry,
 analytics, or crash reports" on **every subcommand's `--help`**, which is the
 widest-reach false statement the crate had. `--offline`'s one real effect is
 worth stating accurately: `agent::refuse_if_offline_and_offhost` declines a
@@ -5846,7 +5902,7 @@ let debugger_vars = ["_", "LLDB_DEBUGSERVER_PATH", "GDB", "PYTHONBREAKPOINT"];
 `$_` is set by **every POSIX shell** to the last argument of the previous
 command. So every run started from bash, zsh or sh set `is_debugged`, therefore
 `is_sandboxed()`, therefore `has_consent() == false` for every scope — silently,
-because the display folded three unrelated causes into one word. `simon
+because the display folded three unrelated causes into one word. `ironmon
 privacy status` was reporting a shell variable as the user's privacy choice.
 `cargo run --example sandbox_demo` printed **"Sandboxed: Debugger Attached"**,
 "Protection Status: ACTIVE" and "Network Transmission: BLOCKED" on a bare-metal
@@ -5898,10 +5954,10 @@ has to be.
 ### The reader was honest; the consumer threw it away
 
 `gpu.2.thermal.temperature` resolves **"unavailable — no temperature sensor
-exposed for this adapter"** in `simon snapshot`, and the Prometheus exporter
+exposed for this adapter"** in `ironmon snapshot`, and the Prometheus exporter
 omits the series entirely, which is correct for Prometheus. The same
 `Option<u32>`, on the same tick, was written into the time-series database as
-`0.0` and printed by `simon record query` as `Temp: 0°C` — an integrated AMD
+`0.0` and printed by `ironmon record query` as `Temp: 0°C` — an integrated AMD
 adapter reading as the coolest device in a box holding two 3090 Tis at 44 and
 38 degrees.
 
@@ -5930,7 +5986,7 @@ The fix makes the columns `Vec<Option<_>>` and bumps `DB_VERSION` to 2.
 **Version 1 files are now rejected rather than migrated**, and the reason says
 why: a stored zero does not record whether it was measured, so any conversion
 would have to guess, reintroducing exactly what was removed. The rejection names
-`simon record clear` as the recovery, and that command was checked against a
+`ironmon record clear` as the recovery, and that command was checked against a
 real version-1 file — it deletes without opening.
 
 ### Three scans, in the order they pay
@@ -6029,7 +6085,7 @@ target, **849 in the lib**, `ontology_conformance` 22, `plausibility` 12,
 
 Also run and green: `cargo test --all-features --doc` (**73 passed**),
 `cargo run --example probe_readers --all-features`, and
-`simon snapshot --format text`.
+`ironmon snapshot --format text`.
 
 **The full gate, in the order it should be run** — the three per-run holes found
 this session are the last three lines, and each was found by CI after a local
@@ -6198,7 +6254,7 @@ That is the *Feature combinations* lesson one level down, in the dependency grap
 ### A reader wired into one consumer leaves the others fabricating
 
 `platform::macos::read_cpu_stats` and `read_memory_stats` were added in 5.2.0 and
-wired into the ontology resolver. **`MonitoringBackend` — what the `simon` CLI
+wired into the ontology resolver. **`MonitoringBackend` — what the `ironmon` CLI
 runs — kept its own hand-rolled macOS arm for two releases**, and almost every
 field it produced was invented: the system-wide figure repeated across every
 core, a fixed 60/40 user/system split, `governor: "performance"` on a platform
@@ -6206,7 +6262,7 @@ with no governors, `min = max/2`, and `"Apple CPU"` when the brand string was
 missing. A failed load-average parse fell to 0.0 and published 100% idle.
 
 So one Mac had two CPU paths that disagreed — one measured, one invented — and
-`update_memory` had no macOS arm at all, so `simon` reported no memory there.
+`update_memory` had no macOS arm at all, so `ironmon` reported no memory there.
 Fixed in `24a7314`.
 
 **Three things worth carrying:**
@@ -6265,7 +6321,7 @@ two latent ones. The distinction matters and is easy to overstate:
   **This is a different failure mode from the rest.** Every other defect this
   round invented a *number*; this invented an *identity*, and a second module
   then attested to it. A wrong number invites a sanity check; a plausible
-  framework name does not — and `simon tune` is where acting on it has
+  framework name does not — and `ironmon tune` is where acting on it has
   consequences.
 
 - **Latent, fixed:** `dma_engine` claimed memcpy support whenever the `cap` file
@@ -6300,7 +6356,7 @@ message rather than the exit code.
 Windows Defender was quarantining Rust binaries and build artifacts live.
 Symptoms, so the next person recognises it in one minute rather than an hour:
 `rustc.exe` vanishing from a toolchain *while running*; builds dying at
-`Compiling silicon-monitor` with exit 127; `EPERM` on deleting anything under
+`Compiling iron-monitor` with exit 127; `EPERM` on deleting anything under
 `~/.rustup`; every toolchain's `.rlib` files gone (21 left of 81,034 files) and
 then partially reappearing with identical hashes. `rustup` cannot self-repair
 through it, because it cannot delete what it cannot delete.
@@ -6332,7 +6388,7 @@ Publishing to crates.io was explicitly declined by the maintainer for 6.0.0 and
 | 3.5.0 | Ontology-driven conformance tests, Windows PCI reader fixed, PCI domain (123 entities). Published, tagged `v3.5.0`. |
 | 3.6.0 | PCIe link state on Windows via cfgmgr32; the PCI domain fully resolves. Published, tagged `v3.6.0`. |
 | 3.7.0 | Virtualization, NUMA and ECC in the ontology (134 entities); two misleading virtualization readings withdrawn. Published, tagged `v3.7.0`. |
-| 3.8.0 | `simon tune`: use-case detection and profile recommendations, with an automatic server. Recommend-only by default. Published, tagged `v3.8.0`. |
+| 3.8.0 | `ironmon tune`: use-case detection and profile recommendations, with an automatic server. Recommend-only by default. Published, tagged `v3.8.0`. |
 | 3.9.0 | Headless GUI reads four previously unreadable tabs; racy coverage test fixed. Published, tagged `v3.9.0`. |
 | 3.10.0 | Hyper-V root partition distinguished from a guest via CPUID leaf 0x40000003; bare metal no longer reported as a VM. Published, tagged `v3.10.0`. |
 | 4.0.0 | GUI rebuilt on Dewey; the ~10k-line egui implementation and eframe deleted. MSRV 1.85. Published, tagged `v4.0.0`. **Withdrawn in 5.0.0.** |
@@ -6342,8 +6398,8 @@ Publishing to crates.io was explicitly declined by the maintainer for 6.0.0 and
 | 4.0.4 | Dewey Overview rebuilt from the egui widget vocabulary. Published, tagged `v4.0.4`. Withdrawn. |
 | 5.0.0 | **The Dewey port is withdrawn and the egui GUI restored.** Claimed MSRV back to 1.70 — which was not true, see 5.2.0. Published, tagged `v5.0.0`. See open work 9. |
 | 5.1.0 | Applied settings are reversible: `read_current`, `ApplyOutcome.previous`, `revert_setting`, `revert_cycle`. Published, tagged `v5.1.0`. See open work 13. |
-| 5.2.0 | `simon ai models` reads an IronVault vault, behind an optional `vault` feature. **MSRV corrected to 1.88**, having been wrong since 5.0.0. The tuning loop is closed (open work 13). **CI made green after twelve consecutive failures**; macOS CPU/memory wired into the resolver. Tagged `v5.2.0`, **not published**. |
-| 6.0.0 | **Zero-constructors renamed to `empty()`** and the `Option` refactor on `SwapInfo`/`RamInfo` done — all three "queued for the next major version" items closed. Ontology grew a capability and vocabulary layer with tests derived from the declarations; JSON-LD output with QUDT units; `simon status` (coloured, per-OS ASCII art); network and file intrusion detection; the tuning ledger. **Not tagged, not published.** |
+| 5.2.0 | `ironmon ai models` reads an IronVault vault, behind an optional `vault` feature. **MSRV corrected to 1.88**, having been wrong since 5.0.0. The tuning loop is closed (open work 13). **CI made green after twelve consecutive failures**; macOS CPU/memory wired into the resolver. Tagged `v5.2.0`, **not published**. |
+| 6.0.0 | **Zero-constructors renamed to `empty()`** and the `Option` refactor on `SwapInfo`/`RamInfo` done — all three "queued for the next major version" items closed. Ontology grew a capability and vocabulary layer with tests derived from the declarations; JSON-LD output with QUDT units; `ironmon status` (coloured, per-OS ASCII art); network and file intrusion detection; the tuning ledger. **Not tagged, not published.** |
 | 2.1.5 | Committed, never published. Documentation only; superseded by 3.0.0. |
 
 ## Verification that is worth repeating
@@ -6452,7 +6508,7 @@ feature stayed broken through eight published versions.
 
    **One thing here is still unverified, and it is not the plumbing.** This
    machine reads zero CPU temperature sensors through all four Windows paths
-   `hwmon` tries, so `simon_cpu_temperature_celsius` has been checked only in
+   `hwmon` tries, so `ironmon_cpu_temperature_celsius` has been checked only in
    its absent form — a host with no sensor publishes no series rather than a
    `0`. The populated path is covered by a unit test against a synthetic sensor
    and has never met hardware that reports one. **If you are on a machine with a
@@ -6477,7 +6533,7 @@ feature stayed broken through eight published versions.
 
 3. **The absence-reason audit is complete.** Every `unavailable` reading carries
    a prose reason, and those reasons are *claims about the platform — and
-   sometimes about simon* — that can be checked. On this machine there are now
+   sometimes about ironmon* — that can be checked. On this machine there are now
    **438 absences across 47 distinct reason strings**, out of 1804 readings, down
    from 465 out of 1797; four passes closed twenty-eight readings and opened six
    more that a contradiction had been hiding.
@@ -6510,11 +6566,11 @@ feature stayed broken through eight published versions.
 
    | Reason | Rows | What was actually true |
    | --- | --- | --- |
-   | "Windows reports link training nowhere simon can reach unelevated" | 164 | It reaches it for 23 devices *in the same snapshot*. Windows populates the properties for endpoints only |
+   | "Windows reports link training nowhere IronMonitor can reach unelevated" | 164 | It reaches it for 23 devices *in the same snapshot*. Windows populates the properties for endpoints only |
    | "SMBIOS reported no operating voltage" | 2 | `Win32_PhysicalMemory.ConfiguredVoltage` = 1100 mV. The query did not select the column |
    | "the CPUID family/model/stepping triple was not read on this platform" | 3 | `Win32_Processor.Description` is "AMD64 Family 26 Model 68 Stepping 0" |
    | "the platform reported no line size for this cache" (+ sharing) | 6 | `GetLogicalProcessorInformationEx`, which this module's own docs claimed to use |
-   | "simon has no mixer binding on this platform" (+ default endpoint) | 12 | `IAudioEndpointVolume`. True about the reader, not about Windows |
+   | "IronMonitor has no mixer binding on this platform" (+ default endpoint) | 12 | `IAudioEndpointVolume`. True about the reader, not about Windows |
    | "this device declares no class of its own … no interface class or hub identifier was recorded" | 6 | `USB\ROOT_HUB30` is in every root hub's `HardwareID`. The query selected `CompatibleID`, which Windows leaves empty on a root hub |
    | "reader returned an empty string" — `board.input.{n}.vendor` and `.product` | 11 | The vendor and product ids are in the instance path, the entity asks for "name **or numeric id**", and the Linux reader has always published them |
    | "reader returned an empty string" — `board.camera.{n}.driver` | 2 | `Win32_PnPEntity.Service` is `usbvideo`, the direct analogue of the `device/driver` symlink the Linux reader follows. Not selected |
@@ -6548,7 +6604,7 @@ feature stayed broken through eight published versions.
    module's header said "**Windows**: `wmic memorychip` for ECC support
    detection" above a function that has never run anything on Windows, and the
    resolver's comment for the branch that would have told the truth began "on
-   Windows and macOS there is no EDAC equivalent simon reads, so this is the
+   Windows and macOS there is no EDAC equivalent IronMonitor reads, so this is the
    common path" — of a branch that was unreachable.
 
    **Two shapes account for the four found this pass.** Two were *a column the
@@ -6589,7 +6645,7 @@ feature stayed broken through eight published versions.
    - *The first row of a list the platform never promised was ordered* — the
      display's two WMI nodes, `Get-NetTCPSetting`'s `Automatic` template.
    - *A reader that exists on another of this crate's own surfaces* — the active
-     power scheme, read by `simon profile explain` and reported unbound by the
+     power scheme, read by `ironmon profile explain` and reported unbound by the
      ontology; the RNG instructions, detected two lines above the probe that
      reported none.
    - *A type that cannot say which path produced the absence*, so one sentence
@@ -6669,8 +6725,8 @@ feature stayed broken through eight published versions.
    planning around it.
 
 6. **macOS GPU, power and temperature are still unimplemented.** CPU (per-core,
-   with nice time), memory, swap, uptime and board info work — `Simon::cpu()`,
-   `memory()`, `uptime()`. `Simon::snapshot()` still fails, because it requires
+   with nice time), memory, swap, uptime and board info work — `IronMonitor::cpu()`,
+   `memory()`, `uptime()`. `IronMonitor::snapshot()` still fails, because it requires
    every reader. Power and temperature need `powermetrics`, which requires root,
    so they may not be reachable unelevated at all; that is worth establishing
    before writing anything.
@@ -6678,7 +6734,7 @@ feature stayed broken through eight published versions.
    **If you have a Mac, that is the thing to use it for.** These readers were
    written by cross-compilation and are verified only by `tests/macos_readers.rs`
    on `macos-latest`, which checks that readings are *plausible* — not that they
-   are *correct*. Comparing `Simon::cpu()` and `memory()` against Activity Monitor
+   are *correct*. Comparing `IronMonitor::cpu()` and `memory()` against Activity Monitor
    once would settle whether the `vm_stat` accounting matches what a user sees.
 
    5.2.0 closed part of this. `platform::macos::read_cpu_stats` and
@@ -6707,9 +6763,9 @@ feature stayed broken through eight published versions.
    sweep spawns `smartctl` once per drive and the old shape was quadratic.
 
 9. **The ontology names 255 entities; the library has 93 subsystem modules.**
-   Both re-counted on 2026-09-08 and both still exact — `simon describe --format
+   Both re-counted on 2026-09-08 and both still exact — `ironmon describe --format
    json` for the first, the module file list for the second.
-   (Counted, not estimated: `simon describe --format json | .entity_count`, and
+   (Counted, not estimated: `ironmon describe --format json | .entity_count`, and
    the module files under `src/`. The previous figures here, ~232 and ~88, had
    drifted.)
    The running list of which clusters exist, which readers answer on which
@@ -6743,7 +6799,7 @@ feature stayed broken through eight published versions.
 
    **The guest side is still unverified against a real Hyper-V VM.** The root
    side is measured on this desktop (`ebx=0x002bb9ff`). If you have a Hyper-V
-   guest, one run of `simon get system.virtualization.platform` settles it —
+   guest, one run of `ironmon get system.virtualization.platform` settles it —
    expect `virtual_machine`. CI's Windows runners are Azure Hyper-V guests and
    exercise the arm, but no assertion pins the value there because the same test
    must pass on this bare-metal desktop.
@@ -6766,7 +6822,7 @@ feature stayed broken through eight published versions.
    sizes, AER capability, ARI and ATS support, SR-IOV — are readable by the same
    two calls with a different pid, if anyone wants them.
 
-12. **`simon tune`'s policy table covers five settings, and its game detection is
+12. **`ironmon tune`'s policy table covers five settings, and its game detection is
    a name table.** Both are deliberate first cuts, and both are where the feature
    grows.
 
@@ -6790,7 +6846,7 @@ feature stayed broken through eight published versions.
 13. **The Dewey port was tried across 4.0.0–4.0.4 and withdrawn in 5.0.0.**
    `src/gui/` is the egui application again — `app.rs`, `widgets.rs`, `theme.rs`,
    `profile_tab.rs`, `headless.rs`, `mod.rs`, restored from `927ffaa^`. The
-   `deweygui` dependency, the `dewey-gui` feature and `simonlib::gui_dewey` are
+   `deweygui` dependency, the `dewey-gui` feature and `ironmonlib::gui_dewey` are
    gone rather than left as dead aliases.
 
    **Read this before proposing the port again.** The argument for it was sound:
@@ -6821,7 +6877,7 @@ feature stayed broken through eight published versions.
    this crate fabricates a reading.
 
    **Five defects came out of this one pattern, across three separate
-   discoveries** — two GUI call sites, `SiliconMonitor::snapshot_cpu` and
+   discoveries** — two GUI call sites, `IronMonitor::snapshot_cpu` and
    `snapshot_memory` returning zeros from the *public* API, `SystemHealth::check`
    computing CPU usage from 100% idle so no threshold could ever be crossed, and
    the Prometheus exporter publishing 0% CPU on every scrape. Three of those were
@@ -6842,19 +6898,19 @@ feature stayed broken through eight published versions.
    **`cargo`'s output does not go to `./target` on this machine.**
    `~/.cargo/config.toml` sets a `target-dir` outside the repo, at
    `~/.cargo-target`. `./target` used to hold a stale tree from
-   before that line was added, so running `./target/debug/simon.exe` ran
+   before that line was added, so running `./target/debug/ironmon.exe` ran
    *whatever was built before the redirect*, silently — it cost a wrong
    conclusion during the USB speed work, where every device read `unavailable`
    from a binary that predated the reader and the finished feature looked broken.
    **That stale tree is deleted** (7.4 GB, in the disk-full recovery below), so
-   the trap is gone until something recreates it. Invoke `cargo run --bin simon`,
+   the trap is gone until something recreates it. Invoke `cargo run --bin ironmon`,
    or the path `cargo build` prints.
 
    **Three failure modes here are the machine, not the code, and all three lie
-   about it.** `error[E0463]: can't find crate for simonlib`, `error[E0786]:
+   about it.** `error[E0463]: can't find crate for ironmonlib`, `error[E0786]:
    found invalid metadata files`, and `crate X required to be available in rlib
    format` are all truncated build artifacts, and the recovery is
-   `cargo clean -p silicon-monitor`. What truncates them is resource exhaustion:
+   `cargo clean -p iron-monitor`. What truncates them is resource exhaustion:
    the disk reached 100% of 3.7 TB twice in one session, and `rustc` was killed
    by `memory allocation of 69206032 bytes failed` while another process held
    45 GB of the machine's 94 GB. `cargo test -j 2` finishes where the default
@@ -6905,7 +6961,7 @@ feature stayed broken through eight published versions.
 
 
 16. **Two Dewey bugs found during the port, recorded because they are real
-   and unfixed — but no longer reachable from this crate.** Neither affects simon
+   and unfixed — but no longer reachable from this crate.** Neither affects ironmon
    now that `deweygui` is gone. Both are for whoever works on Dewey itself, or
    for anyone who reconsiders open work 9.
 
@@ -6933,7 +6989,7 @@ feature stayed broken through eight published versions.
    hardware it is for. Listed because "it compiles and the absent case is right"
    is exactly how a wrong reading ships.
 
-   - **`simon_cpu_temperature_celsius`.** This machine reads zero CPU sensors
+   - **`ironmon_cpu_temperature_celsius`.** This machine reads zero CPU sensors
      through all four Windows paths `hwmon` tries, so only the *absent* branch is
      exercised. The populated path has a unit test against a synthetic sensor and
      has never met a real one. On a machine with a readable sensor: scrape
@@ -6958,7 +7014,7 @@ feature stayed broken through eight published versions.
    `tuning::serve::revert_cycle()` undoes everything one cycle applied, in
    reverse.
 
-   Before this, `simon tune --apply` could change a machine and had no way to
+   Before this, `ironmon tune --apply` could change a machine and had no way to
    change it back: the trait could only write, and the outcome recorded only what
    was requested. That is worth remembering as a shape of bug — the write path
    was complete and correct on its own terms, and useless for anything that
@@ -6973,7 +7029,7 @@ feature stayed broken through eight published versions.
    source can be read back.
 
    Verified on Windows: `read_current` returns the same GUID that
-   `simon profile explain active_scheme_guid` reports through unrelated code in
+   `ironmon profile explain active_scheme_guid` reports through unrelated code in
    `profile::cpu`. **The Linux sysfs readers are written by inspection and have
    never run** — there was no Linux machine in the session that added them, and
    CI compiles the path without exercising a sysfs write.
@@ -7082,7 +7138,7 @@ places cannot preserve it without an API change.
 
    **The rename was not cosmetic, which is worth remembering before deferring
    the next one.** Going to do it turned up three live defects the misleading
-   name had been hiding: `SiliconMonitor::snapshot_cpu` and `snapshot_memory`
+   name had been hiding: `IronMonitor::snapshot_cpu` and `snapshot_memory`
    returned zeros from the public API, `SystemHealth::check` computed CPU usage
    from 100% idle so no threshold could ever be crossed, and the Prometheus
    exporter published 0% CPU on every scrape. Five defects total from this one
@@ -7138,10 +7194,10 @@ it uncovers are, and there are always more than expected. Item 1 turned up five.
    back as far as the question — which is an absence with a reason, not an
    interpolation.
 
-7. **`simon cli --format json` emits kilobytes under keys that do not say so.**
+7. **`ironmon cli --format json` emits kilobytes under keys that do not say so.**
    `RamInfo` and `SwapInfo` are in KB — documented on every field — and the CLI
    serialises them verbatim, so `"total": 98191140` is the same machine whose
-   `simon snapshot` reports `memory.total = 100547727360` and whose Prometheus
+   `ironmon snapshot` reports `memory.total = 100547727360` and whose Prometheus
    endpoint reports bytes. The human renderer beside it converts correctly and
    prints `93.64 GB`.
 
@@ -7239,7 +7295,7 @@ do, the honest outcome is a documented `NotSupported`, not an implementation tha
 only works under `sudo`.
 
 **C. Validate the macOS readers that already exist.** *Needs: a Mac. Twenty
-minutes.* Compare `Simon::cpu()` and `Simon::memory()` against Activity Monitor.
+minutes.* Compare `IronMonitor::cpu()` and `IronMonitor::memory()` against Activity Monitor.
 `tests/macos_readers.rs` checks readings are *plausible*, not *correct*; the
 specific thing in doubt is whether the `vm_stat` accounting matches what a user
 sees under "Memory Used", which is a different figure from free-plus-inactive.
@@ -7344,12 +7400,12 @@ publishing *more* would have been publishing worse:
 ### Five defects the batch turned up, all found by reading the output
 
 None of these were found by a test. Every one came from running
-`simon snapshot --format text` and looking at the rows.
+`ironmon snapshot --format text` and looking at the rows.
 
 1. **The existing `memory.dimm.*` cluster declared SMBIOS data as `Measured`.**
    A part number was not measured off the module — the firmware said so. Now
    `Specification` throughout, which is what that provenance is for. A board
-   that lies about its own DIMMs makes simon repeat the lie, and a consumer
+   that lies about its own DIMMs makes ironmon repeat the lie, and a consumer
    deciding whether to trust the figure needs to know that before it decides.
 2. **`cpu.microarch.name` emitted `{:?}` of an entire struct** — braces, nested
    quotes, `None` — into a reading declared as an identifier. It parsed as a
@@ -7429,7 +7485,7 @@ are readings. Both were checked before declaring anything, and neither is ready:
 - **`kernel_params` is half fact and half opinion.** `name` and `value` are real
   sysctl reads. `is_recommended`, `recommended`, `security_score`,
   `network_score` and `recommendations` are this crate's judgement about what
-  the value ought to be — which is precisely what `simon tune`'s standing rule
+  the value ought to be — which is precisely what `ironmon tune`'s standing rule
   forbids publishing as fact ("a proposed value comes from what the driver
   declared, never from this crate"). Declare the first two; the rest belong to
   the tuning surface if anywhere.
@@ -7460,7 +7516,7 @@ layer a change belongs in saves rediscovering the split:
 
 - **`Entity`** (`src/ontology/mod.rs`) — *what a value means.* Id, domain, kind,
   unit, declared provenance, nullability, prose. Templated ids use `{n}`.
-- **`Capability`** (`src/ontology/capability.rs`) — *whether simon can produce it
+- **`Capability`** (`src/ontology/capability.rs`) — *whether IronMonitor can produce it
   on this platform, on this build.* `Support` is `Implemented`, `Partial`,
   `Unimplemented` or `Unverified`, and the last three carry a reason. This is the
   layer that stops the docs from claiming a feature the build does not have.
@@ -7488,7 +7544,7 @@ fails when a gap is *closed* is a test that punishes progress.
 | `tests/manifest_portability.rs` | A feature depending on a target-gated crate — the bug that meant the crate never built on Linux or macOS |
 | CI job *Feature combinations* | A feature that does not build in isolation — found `cargo install` broken on Linux on its first run |
 | `tests/macos_readers.rs` | macOS readings that are not plausible readings; runs on `macos-latest`, which is the only Mac this project has |
-| `tests/documentation_links.rs` | Broken relative links; machine identifiers in docs; documented `simon …` commands that do not exist |
+| `tests/documentation_links.rs` | Broken relative links; machine identifiers in docs; documented `ironmon …` commands that do not exist |
 | `smart::tests::a_drive_with_no_readable_counters_is_not_graded_healthy` | Health graded from an empty scorecard |
 | `smart::tests::a_self_reported_failure_survives_inference` | A drive predicting its own failure being scored back to `Good` from clean-looking counters |
 | `disk::ata_smart::tests` | ATA structure misparses: bad checksum accepted, zero-filled buffer read as a clean drive, temperature taken from the full 48-bit raw, table truncated at the first gap |
@@ -7565,7 +7621,7 @@ three releases. Push string readings through the helpers, never
 
 **A manual grep is not a substitute for asking the binary.** A hand sweep for
 documented-but-nonexistent commands missed 29 of 38 cases; a test comparing docs
-against `simon describe --commands` found them all, including a `CLI.md` at the
+against `ironmon describe --commands` found them all, including a `CLI.md` at the
 repo root nobody had thought to include. The same lesson produced the feature
 sweep above: the `cli` breakage was found by running every combination, not by
 reading the manifest.

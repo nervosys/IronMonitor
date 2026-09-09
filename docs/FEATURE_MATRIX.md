@@ -1,10 +1,10 @@
-# Silicon Monitor (simon) - Comprehensive Feature Matrix
+# IronMonitor (ironmon) - Comprehensive Feature Matrix
 
 ## Goal: 10x Better Experience - All Silicon Metrics in One Place with Modern Graphs
 
 ### Comparison with Existing Tools
 
-| Feature Category           | nvidia-smi | rocm-smi | nvitop     | gpustat   | gpu-exporter | **simon** (Target) |
+| Feature Category           | nvidia-smi | rocm-smi | nvitop     | gpustat   | gpu-exporter | **ironmon** (Target) |
 | -------------------------- | ---------- | -------- | ---------- | --------- | ------------ | ------------------ |
 | **Platform Support**       |
 | NVIDIA GPUs                | ✅ Full     | ❌        | ✅ Full     | ✅ Full    | ✅ Full       | ✅ **Full**         |
@@ -135,9 +135,9 @@
 - ✅ = Fully supported
 - 🚧 = Partial support
 - ❌ = Not supported
-- **Bold** = Enhanced/New feature in simon
+- **Bold** = Enhanced/New feature in ironmon
 
-### Simon's 10x Better Experience
+### IronMonitor's 10x Better Experience
 
 1. **Unified Multi-Vendor Support**
    - NVIDIA (NVML), AMD (ROCm SMI), Intel (Level Zero), Apple (Metal/IOKit)

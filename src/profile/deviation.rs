@@ -26,7 +26,7 @@ pub struct Deviation {
 /// skipped. On this desktop **2 of 23,541 settings declare a default** — the
 /// GPU provider alone contributes 23,445 of them, almost none with a documented
 /// stock value — so a report that found nothing was reporting on 0.0085% of the
-/// machine while `simon profile deviations` printed "No settings deviate from
+/// machine while `ironmon profile deviations` printed "No settings deviate from
 /// their declared defaults", which reads as a statement about all of it.
 ///
 /// Carrying the denominator makes the difference between *nothing differs* and
@@ -147,7 +147,7 @@ mod tests {
 
     /// An empty deviation list must not be mistaken for a machine at defaults.
     ///
-    /// `simon profile deviations` printed "No settings deviate from their
+    /// `ironmon profile deviations` printed "No settings deviate from their
     /// declared defaults" — a claim about the machine — while comparing **2 of
     /// 23,541 settings** on this desktop, because almost nothing the GPU
     /// provider enumerates declares a stock value. The other 23,539 were not

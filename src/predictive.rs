@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::predictive::{MaintenanceEngine, PredictionConfig};
+//! use ironmonlib::predictive::{MaintenanceEngine, PredictionConfig};
 //!
 //! let mut engine = MaintenanceEngine::new(PredictionConfig::default());
 //!

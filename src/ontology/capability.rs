@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2024 NervoSys
 
-//! What simon can and cannot do, as data an agent can read.
+//! What IronMonitor can and cannot do, as data an agent can read.
 //!
 //! # Why this is not the README
 //!
-//! The README has a "What simon cannot do" section, and prose is the wrong
+//! The README has a "What IronMonitor cannot do" section, and prose is the wrong
 //! medium for an agent. An agent deciding whether to trust a reading needs to
 //! know *before asking* that macOS has no GPU reader and that the Windows CPU
 //! frequency is a rated figure rather than a measured one. Parsing that out of
@@ -17,7 +17,7 @@
 //! # The distinction this adds to the reading ontology
 //!
 //! [`super::Entity`] describes *what a reading means*. This describes *whether
-//! simon can produce it at all, and how much that is worth*. They answer
+//! IronMonitor can produce it at all, and how much that is worth*. They answer
 //! different questions and both are needed: an agent that knows
 //! `gpu.0.temperature` is degrees Celsius still cannot tell whether asking is
 //! futile on this host.
@@ -44,7 +44,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Which part of simon a capability belongs to.
+/// Which part of ironmon a capability belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
@@ -149,7 +149,7 @@ impl Support {
     }
 }
 
-/// One thing simon does, and how well, per platform.
+/// One thing IronMonitor does, and how well, per platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
     /// Stable dotted id: `reading.gpu`, `setting.active_scheme_guid`,
@@ -171,7 +171,7 @@ pub struct Capability {
     /// was added, and nothing had noticed because capabilities and commands
     /// lived in separate catalogues that never met.
     ///
-    /// Checked against `simon describe --commands` by
+    /// Checked against `ironmon describe --commands` by
     /// `tests/capability_conformance.rs`, so a command named here always exists.
     pub command: Option<String>,
 }
@@ -248,7 +248,7 @@ fn command_for(id: &str) -> Option<&'static str> {
     })
 }
 
-/// Every capability simon declares.
+/// Every capability ironmon declares.
 ///
 /// Hand-written where the claim is a judgement, and cross-checked against the
 /// code by `tests/capability_conformance.rs` wherever the code can be asked.
@@ -581,7 +581,7 @@ pub fn catalogue() -> Vec<Capability> {
     out.push(cap(
         "interface.mcp",
         Surface::Interface,
-        "an MCP server, so an agent host can call simon as a tool",
+        "an MCP server, so an agent host can call ironmon as a tool",
         all(Support::Implemented),
         Some("src/ai_api/mcp_server.rs; the protocol version is exported alongside it"),
     ));
@@ -666,7 +666,7 @@ fn setting_support(id: &str) -> (BTreeMap<Platform, Support>, Option<&'static st
 
 /// The optional features this binary was built with.
 ///
-/// A capability is per-platform and also per-build: `simon ai models` exists
+/// A capability is per-platform and also per-build: `ironmon ai models` exists
 /// only where the `vault` feature was enabled, and an agent asking what a
 /// binary can do needs to know which binary it is talking to. Reported from
 /// `cfg!`, so it describes the running artefact rather than the manifest.

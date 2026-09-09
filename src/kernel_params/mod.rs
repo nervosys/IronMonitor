@@ -11,7 +11,7 @@
 //! - **Windows**: Registry-based kernel tuning
 //! - **macOS**: sysctl parameters
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Parameter category.
@@ -114,13 +114,13 @@ fn agreed_tcp_level(cmdlet_output: &str) -> Option<String> {
 
 impl KernelParamsMonitor {
     /// Create a new kernel parameters monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let report = Self::analyze()?;
         Ok(Self { report })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.report = Self::analyze()?;
         Ok(())
     }
@@ -135,7 +135,7 @@ impl KernelParamsMonitor {
         self.report.params.iter().find(|p| p.name == name)
     }
 
-    fn analyze() -> Result<KernelParamsReport, SimonError> {
+    fn analyze() -> Result<KernelParamsReport, IronError> {
         let params = Self::read_params();
 
         let security_params: Vec<KernelParam> = params

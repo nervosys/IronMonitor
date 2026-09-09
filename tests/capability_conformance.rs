@@ -20,7 +20,7 @@
 //! agent can read the catalogue and rely on it, because nothing can quietly
 //! stop being true.
 
-use simonlib::ontology::capability::{self, Platform, Support, Surface};
+use ironmonlib::ontology::capability::{self, Platform, Support, Surface};
 use std::collections::BTreeSet;
 
 fn ids_with_prefix(prefix: &str) -> BTreeSet<String> {
@@ -38,7 +38,7 @@ fn ids_with_prefix(prefix: &str) -> BTreeSet<String> {
 /// agent: a promise that does not match the machine.
 #[test]
 fn declared_settings_and_registered_handlers_are_the_same_set() {
-    let registered: BTreeSet<String> = simonlib::profile::apply::builtin_handlers()
+    let registered: BTreeSet<String> = ironmonlib::profile::apply::builtin_handlers()
         .iter()
         .map(|h| h.setting_id().to_string())
         .collect();
@@ -48,7 +48,7 @@ fn declared_settings_and_registered_handlers_are_the_same_set() {
     assert!(
         undeclared.is_empty(),
         "these settings have write handlers and no capability entry: {undeclared:?}. \
-         An agent reading the catalogue would not know simon can write them."
+         An agent reading the catalogue would not know IronMonitor can write them."
     );
 
     let phantom: Vec<&String> = declared.difference(&registered).collect();
@@ -67,7 +67,7 @@ fn declared_settings_and_registered_handlers_are_the_same_set() {
 /// intrusion is not a test.
 #[test]
 fn every_detection_rule_the_source_emits_is_declared() {
-    let declared: BTreeSet<&str> = simonlib::ids::RULES.iter().map(|(r, _)| *r).collect();
+    let declared: BTreeSet<&str> = ironmonlib::ids::RULES.iter().map(|(r, _)| *r).collect();
 
     let mut emitted = BTreeSet::new();
     for file in ["src/ids/file.rs", "src/ids/network.rs"] {
@@ -116,24 +116,24 @@ fn every_detection_rule_the_source_emits_is_declared() {
 
 /// Every ontology domain has a reading capability.
 ///
-/// The reading ontology says what a value means; this says whether simon can
+/// The reading ontology says what a value means; this says whether IronMonitor can
 /// produce it here. A domain present in one and absent from the other leaves an
 /// agent able to interpret a reading it cannot obtain, or able to request one it
 /// cannot interpret.
 #[test]
 fn every_ontology_domain_declares_its_reading_support() {
     let declared = ids_with_prefix("reading.");
-    for domain in simonlib::ontology::Domain::ALL {
+    for domain in ironmonlib::ontology::Domain::ALL {
         assert!(
             declared.contains(domain.as_str()),
             "the ontology declares the {} domain and the capability catalogue \
-             says nothing about whether simon can read it",
+             says nothing about whether IronMonitor can read it",
             domain.as_str()
         );
     }
     for d in &declared {
         assert!(
-            simonlib::ontology::Domain::ALL
+            ironmonlib::ontology::Domain::ALL
                 .iter()
                 .any(|dom| dom.as_str() == d),
             "reading.{d} is declared and is not an ontology domain"
@@ -148,7 +148,7 @@ fn every_ontology_domain_declares_its_reading_support() {
 /// documentation implied one.
 #[test]
 fn readings_claimed_usable_here_actually_resolve() {
-    let snapshot = simonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonlib::ontology::resolve::snapshot();
     let here = Platform::current().expect("a named platform");
 
     for c in capability::catalogue() {
@@ -201,7 +201,7 @@ fn readings_claimed_usable_here_actually_resolve() {
 /// claim — a capability marked unimplemented long after somebody implemented it.
 #[test]
 fn readings_claimed_unimplemented_here_really_produce_nothing() {
-    let snapshot = simonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonlib::ontology::resolve::snapshot();
     let here = Platform::current().expect("a named platform");
 
     for c in capability::catalogue() {
@@ -250,7 +250,7 @@ fn the_tuning_verify_capability_matches_the_metric_registry() {
         "gt_max_freq_mhz",
     ]
     .iter()
-    .any(|id| simonlib::tuning::verify::metric_for(id).is_some());
+    .any(|id| ironmonlib::tuning::verify::metric_for(id).is_some());
 
     let claims_partial = cap
         .support
@@ -299,9 +299,9 @@ fn the_readme_and_the_catalogue_agree_about_macos_gpu() {
     );
 }
 
-/// Every interface module simon ships is declared.
+/// Every interface module ironmon ships is declared.
 ///
-/// The first version of the catalogue declared three interfaces and simon had
+/// The first version of the catalogue declared three interfaces and IronMonitor had
 /// eight: the gui, tui, MCP server, HTTP server and daemon were all missing, and
 /// nothing noticed because the catalogue was only ever checked against itself.
 /// An agent asking "how can I talk to this" would have been told about a third
@@ -333,7 +333,7 @@ fn every_interface_module_is_declared() {
         );
         assert!(
             declared.contains(*id),
-            "{path} ships and {id} is not in the capability catalogue. An agent reading the catalogue would not know this way of talking to simon exists."
+            "{path} ships and {id} is not in the capability catalogue. An agent reading the catalogue would not know this way of talking to IronMonitor exists."
         );
     }
 }
@@ -341,7 +341,7 @@ fn every_interface_module_is_declared() {
 /// Every command a capability names actually exists in the binary.
 ///
 /// Capabilities and commands were separate catalogues that never met: an agent
-/// read one to learn what simon can do and the other to learn how to ask, with
+/// read one to learn what IronMonitor can do and the other to learn how to ask, with
 /// nothing checking the two described the same program. This is the join.
 ///
 /// It also makes the absence visible. A capability with no command is reachable
@@ -349,11 +349,11 @@ fn every_interface_module_is_declared() {
 /// detectors shipped — real, tested, and unreachable from the command line.
 #[test]
 fn every_command_a_capability_names_exists() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_simon"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ironmon"))
         .args(["describe", "--commands", "--format", "json"])
         .output()
-        .expect("simon describe runs");
-    assert!(out.status.success(), "simon describe --commands failed");
+        .expect("ironmon describe runs");
+    assert!(out.status.success(), "ironmon describe --commands failed");
     let catalog: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
 
     let mut paths = BTreeSet::new();
@@ -427,7 +427,7 @@ fn capabilities_with_no_command_are_named() {
 
 /// The feature list describes the binary that reports it.
 ///
-/// A capability is per-platform and also per-build. `simon ai models` exists
+/// A capability is per-platform and also per-build. `ironmon ai models` exists
 /// only where `vault` was enabled, so an agent that knows the platform and not
 /// the feature set still cannot tell what this binary does. This checks the
 /// two agree: a feature reported as on must have brought its command with it.
@@ -439,10 +439,10 @@ fn reported_features_match_the_commands_the_binary_accepts() {
         "the test binary links the library, and these tests run the CLI binary;          if `cli` is not reported the feature list is not describing this build"
     );
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_simon"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ironmon"))
         .args(["describe", "--commands", "--format", "json"])
         .output()
-        .expect("simon describe runs");
+        .expect("ironmon describe runs");
     let catalog: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
     let names: BTreeSet<String> = catalog
         .get("subcommands")
@@ -470,7 +470,7 @@ fn reported_features_match_the_commands_the_binary_accepts() {
 #[test]
 fn every_surface_has_at_least_one_capability() {
     let cat = capability::catalogue();
-    let handlers = simonlib::profile::apply::builtin_handlers().len();
+    let handlers = ironmonlib::profile::apply::builtin_handlers().len();
 
     for surface in Surface::ALL {
         let declared = cat.iter().filter(|c| c.surface == *surface).count();

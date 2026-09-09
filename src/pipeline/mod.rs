@@ -109,7 +109,7 @@ pub struct DiskSnapshot {
     /// `DiskIoStats` is built from one.
     ///
     /// So every consumer -- the TUI, the GUI, and
-    /// `simon_disk_read_bytes_per_sec` -- has been drawing a flat line at zero
+    /// `ironmon_disk_read_bytes_per_sec` -- has been drawing a flat line at zero
     /// and calling it disk throughput.
     pub read_rate: Option<f64>,
     /// Write throughput in bytes/sec. See [`Self::read_rate`].
@@ -126,7 +126,7 @@ pub struct DiskSnapshot {
 /// counter to a mount point needs a partition map nobody has written.
 ///
 /// Publishing them under their own device label sidesteps that entirely, and is
-/// what the metric means anyway: `simon_disk_read_bytes_total{device="..."}` is
+/// what the metric means anyway: `ironmon_disk_read_bytes_total{device="..."}` is
 /// a property of the hardware, not of a mount.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiskIoSnapshot {
@@ -480,7 +480,7 @@ impl Collector {
         };
 
         let join = thread::Builder::new()
-            .name("simon-collector".into())
+            .name("ironmon-collector".into())
             .spawn(move || collector_loop(config, slot, stop, interval_ms))
             .ok();
 
@@ -976,7 +976,7 @@ fn collect_network(monitor: Option<&mut NetworkMonitor>) -> Vec<NetSnapshot> {
 /// against 9.9 ms for the batch -- see `crate::disk::all_io_counters`. That cost
 /// is why the Windows `collect_disks` takes the capacity-only `logical_drives`
 /// path and why these counters were missing from the snapshot at all, which left
-/// `simon_disk_read_bytes_total` unpublishable on the served endpoint.
+/// `ironmon_disk_read_bytes_total` unpublishable on the served endpoint.
 ///
 /// Runs on the disk cadence (every 10 ticks by default), in the same stage.
 fn collect_disk_io() -> Vec<DiskIoSnapshot> {

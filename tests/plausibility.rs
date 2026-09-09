@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant};
 
-use simonlib::pipeline::{Collector, CollectorConfig};
+use ironmonlib::pipeline::{Collector, CollectorConfig};
 
 /// Longest a collector may take to publish a fully-populated snapshot.
 ///
@@ -43,7 +43,7 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Whether this platform has readers that produce live hardware values.
 ///
 /// This gates assertions that a *snapshot* carries readings. macOS gained CPU,
-/// memory and uptime readers in 3.1.0, but `Simon::snapshot` requires every reader
+/// memory and uptime readers in 3.1.0, but `IronMonitor::snapshot` requires every reader
 /// to succeed and GPU, power and temperature are still unimplemented there, so a
 /// snapshot never populates. The macOS readers that do exist are asserted directly
 /// in `tests/macos_readers.rs` instead.
@@ -57,7 +57,7 @@ fn platform_has_hardware_readers() -> bool {
 ///
 /// Returns `None` when nothing populated in time, so callers can skip rather than
 /// fail on a machine where collection is unavailable.
-fn populated_snapshot() -> Option<std::sync::Arc<simonlib::pipeline::Snapshot>> {
+fn populated_snapshot() -> Option<std::sync::Arc<ironmonlib::pipeline::Snapshot>> {
     let collector = Collector::spawn(CollectorConfig {
         interval: Duration::from_millis(250),
         ..Default::default()
@@ -420,8 +420,8 @@ fn network_rates_are_non_negative() {
 /// one of these.
 #[test]
 fn readers_that_find_nothing_invent_nothing() {
-    use simonlib::audio::AudioMonitor;
-    use simonlib::usb::UsbMonitor;
+    use ironmonlib::audio::AudioMonitor;
+    use ironmonlib::usb::UsbMonitor;
 
     if let Ok(monitor) = UsbMonitor::new() {
         for device in monitor.devices() {
@@ -508,7 +508,7 @@ fn readers_that_find_nothing_invent_nothing() {
 /// screen these are indistinguishable from measurements.
 #[test]
 fn absent_hardware_is_reported_as_absent_not_invented() {
-    use simonlib::display::DisplayMonitor;
+    use ironmonlib::display::DisplayMonitor;
 
     let Ok(monitor) = DisplayMonitor::new() else {
         eprintln!("skipping: display monitor unavailable");
@@ -599,7 +599,7 @@ fn no_reader_depends_on_the_wmic_tool_windows_removed() {
 #[test]
 #[cfg(windows)]
 fn windows_cpu_reader_reports_measured_identity_and_clock() {
-    let Ok(stats) = simonlib::platform::windows::read_cpu_stats() else {
+    let Ok(stats) = ironmonlib::platform::windows::read_cpu_stats() else {
         return; // No CPU data at all is a separate failure, covered elsewhere.
     };
     let Some(core) = stats.cores.first() else {
@@ -616,7 +616,7 @@ fn windows_cpu_reader_reports_measured_identity_and_clock() {
         // This said `current > 0 || max > 0` and warned, correctly, that
         // "absence must be `None`, not zero". The `||` let a zero `current`
         // through whenever `max` was known — which is exactly the sentinel the
-        // Windows nominal-clock fix introduced, and why `simon cli cpu` printed
+        // Windows nominal-clock fix introduced, and why `ironmon cli cpu` printed
         // "Clock: 0 MHz" for a session before anyone read that line. The fields
         // are `Option` now, so the rule can be stated per field.
         assert!(
@@ -655,7 +655,7 @@ fn windows_cpu_reader_reports_measured_identity_and_clock() {
 #[test]
 #[cfg(windows)]
 fn secure_boot_claim_matches_the_firmware_flag() {
-    use simonlib::boot_config::{BootMonitor, BootType};
+    use ironmonlib::boot_config::{BootMonitor, BootType};
 
     let Ok(monitor) = BootMonitor::new() else {
         return;
@@ -696,7 +696,7 @@ fn secure_boot_claim_matches_the_firmware_flag() {
 #[test]
 #[cfg(windows)]
 fn windows_os_info_reports_a_real_build() {
-    let Ok(monitor) = simonlib::os_info::OsInfoMonitor::new() else {
+    let Ok(monitor) = ironmonlib::os_info::OsInfoMonitor::new() else {
         return;
     };
     let info = monitor.info();

@@ -16,10 +16,10 @@
 //! - Custom configuration paths
 //! - Configuration validation
 
-use simonlib::Config;
+use ironmonlib::Config;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚙️  Silicon Monitor - Configuration Management Demo\n");
+    println!("⚙️  IronMonitor - Configuration Management Demo\n");
     println!("═══════════════════════════════════════════════════════════════\n");
 
     // Load existing config or create default
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  You can now:");
             println!("    - Edit the config file manually");
             println!("    - Run the TUI and press F12 to save settings");
-            println!("    - Use these settings across all simon applications");
+            println!("    - Use these settings across all ironmon applications");
         }
         Err(e) => {
             eprintln!("  ✗ Failed to save configuration: {}", e);
@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("═══════════════════════════════════════════════════════════════\n");
     println!("📝 Custom Path Operations...\n");
 
-    let custom_path = std::env::current_dir()?.join("simon_custom.toml");
+    let custom_path = std::env::current_dir()?.join("ironmon_custom.toml");
     println!("  Saving to custom path: {}", custom_path.display());
 
     config.save_to(&custom_path)?;

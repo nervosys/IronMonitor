@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example network_tools
 
-use simonlib::{
+use ironmonlib::{
     check_connectivity, check_port, common_ports, dns_lookup, get_service_name, latency_test, ping,
     reverse_dns, scan_ports, traceroute, PingResult, PortStatus, TracerouteResult,
 };
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 fn main() {
     println!("╔════════════════════════════════════════════════════════════════════╗");
-    println!("║           Silicon Monitor - Network Diagnostic Tools              ║");
+    println!("║           IronMonitor - Network Diagnostic Tools              ║");
     println!("║     (nmap • traceroute • ping • netcat style utilities)           ║");
     println!("╚════════════════════════════════════════════════════════════════════╝");
     println!();
@@ -304,7 +304,7 @@ fn demo_service_names() {
     println!("│  6. WELL-KNOWN SERVICE PORTS                                        │");
     println!("└─────────────────────────────────────────────────────────────────────┘");
 
-    println!("  Common ports recognized by simon:\n");
+    println!("  Common ports recognized by ironmon:\n");
     println!("  {:>6}  SERVICE", "PORT");
     println!("  {:─>6}  {:─>20}", "", "");
 

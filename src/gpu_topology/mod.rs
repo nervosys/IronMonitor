@@ -10,7 +10,7 @@
 //!   NVLink via `/sys/bus/pci/devices/<bdf>/nvidia/gpu/nvlink*`
 //! - **Windows / macOS**: PCI topology only
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// GPU interconnect type.
@@ -134,13 +134,13 @@ pub struct GpuTopologyMonitor {
 
 impl GpuTopologyMonitor {
     /// Create a new GPU topology monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -179,14 +179,14 @@ impl GpuTopologyMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<GpuTopologyOverview, SimonError> {
+    fn scan() -> Result<GpuTopologyOverview, IronError> {
         let pci_path = std::path::Path::new("/sys/bus/pci/devices");
 
         if !pci_path.exists() {
             return Ok(Self::empty_overview());
         }
 
-        let entries = std::fs::read_dir(pci_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(pci_path).map_err(IronError::Io)?;
         let mut gpus = Vec::new();
         let mut gpu_index = 0u32;
 
@@ -411,12 +411,12 @@ impl GpuTopologyMonitor {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<GpuTopologyOverview, SimonError> {
+    fn scan() -> Result<GpuTopologyOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "GPU interconnect topology is read from `/sys/class/drm` and `nvidia-smi topo`, which this platform does not expose"
                 .into(),
         ))

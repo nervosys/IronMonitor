@@ -10,7 +10,7 @@ pub struct CpuFrequency {
     /// These three were `u32` and a zero meant "not measured" — a sentinel
     /// introduced by the fix that stopped Windows reporting the nominal clock
     /// as the current one, on the reasoning that the ontology resolver already
-    /// read zero that way. It does. Nothing else did: `simon cli cpu` printed
+    /// read zero that way. It does. Nothing else did: `ironmon cli cpu` printed
     /// "Clock: 0 MHz", and the agent surface published
     /// `"frequency_mhz": 0` from four call sites.
     ///

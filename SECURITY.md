@@ -1,4 +1,4 @@
-# Security Quick Reference - simon
+# Security Quick Reference - ironmon
 
 ## 🚨 Critical Vulnerabilities (Fix Immediately)
 
@@ -40,7 +40,7 @@
 
 ## 🛡️ Safe to Use (Production Ready)
 
-- ✅ `simon::new()` and `snapshot()` - Core monitoring
+- ✅ `ironmon::new()` and `snapshot()` - Core monitoring
 - ✅ CPU monitoring - Read-only sysfs
 - ✅ GPU monitoring - Read-only sysfs/NVML
 - ✅ Memory stats - Read-only /proc

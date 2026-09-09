@@ -14,14 +14,14 @@
 //! caught by eye during review. [`unknown_is_never_dressed_as_a_measurement`]
 //! below catches that class by construction.
 //!
-//! These run in-process against `simonlib` rather than through the binary.
+//! These run in-process against `ironmonlib` rather than through the binary.
 //! `tests/agentic_contract.rs` covers the CLI surface — exit codes, JSON shape,
 //! the `describe`/`get`/`snapshot` commands — and is the right place for anything
 //! about how the ontology is *presented*. This file is about whether the readings
 //! themselves obey the schema.
 
-use simonlib::ontology::resolve::{self, Reading};
-use simonlib::ontology::{Domain, Entity, EntityKind, Ontology, Provenance, Unit};
+use ironmonlib::ontology::resolve::{self, Reading};
+use ironmonlib::ontology::{Domain, Entity, EntityKind, Ontology, Provenance, Unit};
 
 /// One resolve pass, shared by every test that needs live readings.
 ///
@@ -581,7 +581,7 @@ fn entities_serialize_with_the_fields_agents_rely_on() {
 /// Prose that ships to a reader has to read as prose.
 ///
 /// Thirty-one descriptions and absence reasons were found carrying runs of a
-/// dozen or more spaces mid-sentence — `simon describe` printed "a freshly
+/// dozen or more spaces mid-sentence — `ironmon describe` printed "a freshly
 /// imaged              host". They were written as `\`-continued literals whose
 /// continuation stopped taking effect at some point, leaving the source
 /// indentation inside the string. Nothing caught it because every other test

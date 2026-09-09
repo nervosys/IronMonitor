@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// What each platform's `read_cpu_info` returns:
 /// `(model_name, family, model, stepping, flags, cores, threads)`.
@@ -203,7 +203,7 @@ fn parse_cpuid_triple(desc: &str) -> Option<(u32, u32, u32)> {
 
 impl CpuMicroarchMonitor {
     /// Create a new monitor and detect microarchitecture.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let (model_name, family, model, stepping, flags, cores, threads) = Self::read_cpu_info()?;
         let microarch = Self::identify_microarch(&model_name, family, model, stepping);
         let extensions = Self::detect_extensions(&flags, &microarch);
@@ -997,8 +997,8 @@ impl CpuMicroarchMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_cpu_info() -> Result<CpuInfoFields, SimonError> {
-        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").map_err(SimonError::Io)?;
+    fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
 
         let mut model_name = String::new();
         // `None` until /proc/cpuinfo supplies them. Zero was both the
@@ -1047,7 +1047,7 @@ impl CpuMicroarchMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn read_cpu_info() -> Result<CpuInfoFields, SimonError> {
+    fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -1055,7 +1055,7 @@ impl CpuMicroarchMonitor {
                 "Get-CimInstance Win32_Processor | Select-Object Name,Description,Family,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json",
             ])
             .output()
-            .map_err(SimonError::Io)?;
+            .map_err(IronError::Io)?;
 
         let text = String::from_utf8_lossy(&output.stdout);
         let val: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or_default();
@@ -1137,7 +1137,7 @@ impl CpuMicroarchMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn read_cpu_info() -> Result<CpuInfoFields, SimonError> {
+    fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
         let brand = std::process::Command::new("sysctl")
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
@@ -1202,7 +1202,7 @@ impl CpuMicroarchMonitor {
     /// `> 0`. Every other field in the tuple was already empty or zero for
     /// exactly that reason; the two counts were the exception.
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn read_cpu_info() -> Result<CpuInfoFields, SimonError> {
+    fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
         Ok((String::new(), 0, 0, 0, Vec::new(), 0, 0))
     }
 }
@@ -1319,7 +1319,7 @@ mod tests {
     /// `read_cpu_info` on Windows returned `(0, 0, 0)` under a comment saying
     /// WMI does not expose the triple. Family 0 is not a value any modern x86
     /// CPU reports — a Ryzen 9 9900X is family 0x1A — so the report carried an
-    /// impossible triple rather than an absent one, and `simon`'s own ontology
+    /// impossible triple rather than an absent one, and `ironmon`'s own ontology
     /// had to test `family > 0` to work out whether to publish it.
     #[test]
     fn an_unread_cpuid_triple_is_absent_not_zero() {

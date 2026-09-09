@@ -10,7 +10,7 @@ use crate::core::{
     power::PowerStats,
     temperature::TemperatureStats,
 };
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::collections::HashMap;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -249,7 +249,7 @@ fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
     let result = unsafe { GetSystemTimes(&mut idle_time, &mut kernel_time, &mut user_time) };
 
     if result == 0 {
-        return Err(SimonError::System("GetSystemTimes failed".to_string()));
+        return Err(IronError::System("GetSystemTimes failed".to_string()));
     }
 
     // Convert FILETIME to u64
@@ -282,7 +282,7 @@ fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
     //
     // This previously returned a hardcoded (0.0, 0.0, 100.0), asserting the system
     // was completely idle. Every one-shot invocation is a first call, so
-    // `simon cli cpu` always reported 0% usage regardless of actual load, printed
+    // `ironmon cli cpu` always reported 0% usage regardless of actual load, printed
     // directly above per-core figures that contradicted it.
     let (idle_basis, system_basis, user_basis, total_basis) = if prev_idle == 0 || total == 0 {
         let system_since_boot = kernel.saturating_sub(idle);
@@ -601,7 +601,7 @@ pub fn read_memory_stats() -> Result<MemoryStats> {
 
     unsafe {
         GlobalMemoryStatusEx(&mut mem_status)
-            .map_err(|e| SimonError::System(format!("GlobalMemoryStatusEx failed: {}", e)))?;
+            .map_err(|e| IronError::System(format!("GlobalMemoryStatusEx failed: {}", e)))?;
     }
 
     // Pagefile usage.
@@ -715,8 +715,8 @@ static GPU_COLLECTION: std::sync::OnceLock<std::sync::Mutex<crate::gpu::GpuColle
 /// Read GPU stats via the `gpu` module's vendor adapters.
 ///
 /// This used to return `GpuStats::new()` unconditionally, so every consumer of
-/// `Simon::snapshot()` on Windows — including `simon cli monitor` — reported
-/// "No GPUs detected" on machines where `simon cli gpu`, in the same binary,
+/// `IronMonitor::snapshot()` on Windows — including `ironmon cli monitor` — reported
+/// "No GPUs detected" on machines where `ironmon cli gpu`, in the same binary,
 /// listed every device.
 ///
 /// A device whose per-tick query fails is omitted rather than emitted with zeroed
@@ -731,7 +731,7 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
     });
     let collection = collection
         .lock()
-        .map_err(|_| SimonError::HardwareError("GPU collection mutex poisoned".to_string()))?;
+        .map_err(|_| IronError::HardwareError("GPU collection mutex poisoned".to_string()))?;
 
     let snapshots = collection.snapshot_all_partial();
     let gpus = stats.gpus_mut();
@@ -804,7 +804,7 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
 /// spread over an assumed three-hour discharge. That is not a measurement of
 /// anything: it is a constant for a given battery, unchanged by what the machine is
 /// doing, and it was reported as a live power rail. When those fields were absent (a
-/// USB-attached UPS reports neither) it collapsed to 0, so `simon cli monitor`
+/// USB-attached UPS reports neither) it collapsed to 0, so `ironmon cli monitor`
 /// displayed "Total Power: 0.00W" on a desktop drawing hundreds of watts.
 ///
 /// A rail is now emitted only when a rate was actually read. A machine with no
@@ -924,7 +924,7 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
 
     // Initialize COM library
     let com_con = COMLibrary::new()
-        .map_err(|e| SimonError::System(format!("Failed to initialize COM: {}", e)))?;
+        .map_err(|e| IronError::System(format!("Failed to initialize COM: {}", e)))?;
 
     // Try to get CPU temperature from Open Hardware Monitor if available
     // OHM exposes sensors via WMI in root\OpenHardwareMonitor namespace
@@ -1054,7 +1054,7 @@ pub fn detect_platform() -> Result<BoardInfo> {
 
     // `release` is the OS release — the analogue of `uname -r`. It was the constant
     // "NT", which names the kernel lineage and is the same string on every Windows
-    // since 1993, so `simon cli board` printed "Kernel: NT" as though it had read
+    // since 1993, so `ironmon cli board` printed "Kernel: NT" as though it had read
     // something. `distribution` was left empty despite the edition being published
     // right next to the build number.
     let build = read_registry_string(CURRENT_VERSION, "CurrentBuildNumber");
@@ -1122,7 +1122,7 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
     unsafe {
         // Create snapshot of all processes
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-            .map_err(|e| SimonError::System(format!("Failed to create process snapshot: {}", e)))?;
+            .map_err(|e| IronError::System(format!("Failed to create process snapshot: {}", e)))?;
 
         let mut entry: PROCESSENTRY32W = mem::zeroed();
         entry.dwSize = mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -1275,7 +1275,7 @@ pub fn logical_drives() -> Result<Vec<LogicalDrive>> {
 
     let mask = unsafe { GetLogicalDrives() };
     if mask == 0 {
-        return Err(SimonError::Other(
+        return Err(IronError::Other(
             "GetLogicalDrives returned no drives".to_string(),
         ));
     }

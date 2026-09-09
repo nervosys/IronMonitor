@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::{VllmClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonlib::agent::local::{VllmClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = VllmClient::new("http://localhost:8000")?;
@@ -36,7 +36,7 @@
 //! ```
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -57,7 +57,7 @@ impl VllmClient {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             Ok(Self {
                 endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -67,7 +67,7 @@ impl VllmClient {
 
         #[cfg(not(feature = "remote-backends"))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "vLLM client requires 'remote-backends' feature".to_string(),
             ))
         }
@@ -110,10 +110,10 @@ impl LocalInferenceClient for VllmClient {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(
+                return Err(IronError::Agent(
                     "Failed to list models from vLLM".to_string(),
                 ));
             }
@@ -121,7 +121,7 @@ impl LocalInferenceClient for VllmClient {
             let models: VllmModelsResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse models: {}", e)))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse models: {}", e)))?;
 
             Ok(models
                 .data
@@ -137,7 +137,7 @@ impl LocalInferenceClient for VllmClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "vLLM client requires 'remote-backends' feature".to_string(),
         ))
     }
@@ -164,10 +164,10 @@ impl LocalInferenceClient for VllmClient {
                 .json(&request_body)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(format!(
+                return Err(IronError::Agent(format!(
                     "vLLM API error: {}",
                     response.status()
                 )));
@@ -176,12 +176,12 @@ impl LocalInferenceClient for VllmClient {
             let vllm_response: VllmCompletionResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse response: {}", e)))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse response: {}", e)))?;
 
             let choice = vllm_response
                 .choices
                 .first()
-                .ok_or_else(|| SimonError::Agent("No response from vLLM".to_string()))?;
+                .ok_or_else(|| IronError::Agent("No response from vLLM".to_string()))?;
 
             Ok(InferenceResponse {
                 text: choice.text.clone(),
@@ -193,7 +193,7 @@ impl LocalInferenceClient for VllmClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "vLLM client requires 'remote-backends' feature".to_string(),
         ))
     }

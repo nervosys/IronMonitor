@@ -22,7 +22,7 @@
 //! That cost is deliberate. The first shape returned `None` from the first call
 //! so the *second* would work, which is right for a monitoring loop and wrong
 //! for everything else — **a one-shot process only ever makes a first call**.
-//! `simon cli cpu` printed "Clock: not read" on a machine whose cores were at
+//! `ironmon cli cpu` printed "Clock: not read" on a machine whose cores were at
 //! 5 GHz, and would have done so forever; so would one ontology snapshot or one
 //! agent tool call. 120 ms once per process, on the first read of a CPU
 //! frequency and never again, buys a correct answer for every caller.
@@ -80,7 +80,7 @@ fn query() -> Option<&'static Mutex<PerformanceQuery>> {
             // `None` from the first call so that the *second* had something to
             // difference against. That is correct for a monitoring loop and
             // wrong for everything else: a one-shot process only ever makes a
-            // first call. `simon cli cpu` printed "Clock: not read" on a machine
+            // first call. `ironmon cli cpu` printed "Clock: not read" on a machine
             // whose cores were sitting at 5 GHz, and would have done so forever
             // -- as would a single ontology snapshot, or one agent tool call.
             //

@@ -1,6 +1,6 @@
 //! Security utilities for privilege escalation and validation
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::process::Command;
 use std::time::Duration;
 
@@ -29,12 +29,12 @@ pub fn verify_sudo_available() -> Result<()> {
             // sudo exists, continue to permission check
         }
         Ok(_) => {
-            return Err(SimonError::PermissionDenied(
+            return Err(IronError::PermissionDenied(
                 "sudo command not found on system".into(),
             ));
         }
         Err(e) => {
-            return Err(SimonError::Io(e));
+            return Err(IronError::Io(e));
         }
     }
 
@@ -51,17 +51,17 @@ pub fn verify_sudo_available() -> Result<()> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("password is required") || stderr.contains("a password is required")
             {
-                Err(SimonError::PermissionDenied(
+                Err(IronError::PermissionDenied(
                     "sudo password required. Please run 'sudo -v' first or configure passwordless sudo".into()
                 ))
             } else {
-                Err(SimonError::PermissionDenied(format!(
+                Err(IronError::PermissionDenied(format!(
                     "User does not have sudo privileges: {}",
                     stderr
                 )))
             }
         }
-        Err(e) => Err(SimonError::Io(e)),
+        Err(e) => Err(IronError::Io(e)),
     }
 }
 

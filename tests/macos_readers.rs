@@ -18,15 +18,15 @@
 
 #![cfg(target_os = "macos")]
 
-use simonlib::Simon;
+use ironmonlib::IronMonitor;
 
-/// `Simon::new` calls `detect_platform_info` in its constructor, so this failing
+/// `IronMonitor::new` calls `detect_platform_info` in its constructor, so this failing
 /// is what previously made every other reader unreachable on macOS regardless of
 /// whether it worked.
 #[test]
-fn simon_can_be_constructed_on_macos() {
-    let simon = Simon::new().expect("Simon::new must succeed on macOS");
-    let board = simon.board_info();
+fn ironmon_can_be_constructed_on_macos() {
+    let ironmon = IronMonitor::new().expect("IronMonitor::new must succeed on macOS");
+    let board = ironmon.board_info();
 
     assert_eq!(board.platform.system, "Darwin");
     assert!(
@@ -41,8 +41,8 @@ fn simon_can_be_constructed_on_macos() {
 
 #[test]
 fn the_cpu_split_accounts_for_the_whole_processor() {
-    let simon = Simon::new().expect("construct");
-    let cpu = simon
+    let ironmon = IronMonitor::new().expect("construct");
+    let cpu = ironmon
         .cpu()
         .expect("CPU statistics must be readable on macOS");
 
@@ -71,8 +71,8 @@ fn the_cpu_split_accounts_for_the_whole_processor() {
 
 #[test]
 fn every_logical_core_is_enumerated() {
-    let simon = Simon::new().expect("construct");
-    let cpu = simon.cpu().expect("CPU statistics");
+    let ironmon = IronMonitor::new().expect("construct");
+    let cpu = ironmon.cpu().expect("CPU statistics");
 
     assert!(
         cpu.core_count() > 0,
@@ -90,8 +90,8 @@ fn every_logical_core_is_enumerated() {
 /// of itself is the mistake this catches.
 #[test]
 fn every_core_reports_its_own_complete_split() {
-    let simon = Simon::new().expect("construct");
-    let cpu = simon.cpu().expect("CPU statistics");
+    let ironmon = IronMonitor::new().expect("construct");
+    let cpu = ironmon.cpu().expect("CPU statistics");
 
     for core in &cpu.cores {
         let (user, nice, system, idle) = (
@@ -120,8 +120,8 @@ fn every_core_reports_its_own_complete_split() {
 /// been up for more than a moment.
 #[test]
 fn cores_are_not_all_reporting_the_same_number() {
-    let simon = Simon::new().expect("construct");
-    let cpu = simon.cpu().expect("CPU statistics");
+    let ironmon = IronMonitor::new().expect("construct");
+    let cpu = ironmon.cpu().expect("CPU statistics");
 
     if cpu.cores.len() < 2 {
         return; // Nothing to compare on a single-core runner.
@@ -142,8 +142,8 @@ fn cores_are_not_all_reporting_the_same_number() {
 /// Nice time is a real reading now rather than the 0.0 the `top` path had to use.
 #[test]
 fn nice_time_is_a_reading_rather_than_a_placeholder() {
-    let simon = Simon::new().expect("construct");
-    let cpu = simon.cpu().expect("CPU statistics");
+    let ironmon = IronMonitor::new().expect("construct");
+    let cpu = ironmon.cpu().expect("CPU statistics");
 
     assert!(
         (0.0..=100.0).contains(&cpu.total.nice),
@@ -154,8 +154,10 @@ fn nice_time_is_a_reading_rather_than_a_placeholder() {
 
 #[test]
 fn memory_totals_are_internally_consistent() {
-    let simon = Simon::new().expect("construct");
-    let memory = simon.memory().expect("memory statistics must be readable");
+    let ironmon = IronMonitor::new().expect("construct");
+    let memory = ironmon
+        .memory()
+        .expect("memory statistics must be readable");
 
     assert!(
         memory.ram.total > 0,
@@ -201,8 +203,8 @@ fn memory_totals_are_internally_consistent() {
 
 #[test]
 fn swap_is_reported_without_exceeding_its_own_total() {
-    let simon = Simon::new().expect("construct");
-    let memory = simon.memory().expect("memory statistics");
+    let ironmon = IronMonitor::new().expect("construct");
+    let memory = ironmon.memory().expect("memory statistics");
 
     // Three states since 6.0.0, and only one of them is comparable. A CI runner
     // may have swap disabled, which is a real zero; the platform may not report
@@ -222,8 +224,8 @@ fn swap_is_reported_without_exceeding_its_own_total() {
 
 #[test]
 fn uptime_is_positive_and_not_a_wrapped_duration() {
-    let simon = Simon::new().expect("construct");
-    let uptime = simon.uptime().expect("uptime must be readable");
+    let ironmon = IronMonitor::new().expect("construct");
+    let uptime = ironmon.uptime().expect("uptime must be readable");
 
     assert!(
         uptime.as_secs() > 0,

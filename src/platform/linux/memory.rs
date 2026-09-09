@@ -138,7 +138,7 @@ fn read_emc_info() -> Result<EmcInfo> {
         // Try alternative paths
         let alt_path = "/sys/class/devfreq/13d00000.mc";
         if !path_exists(alt_path) {
-            return Err(crate::error::SimonError::FeatureNotAvailable(
+            return Err(crate::error::IronError::FeatureNotAvailable(
                 "EMC not available".to_string(),
             ));
         }
@@ -167,7 +167,7 @@ fn read_emc_info() -> Result<EmcInfo> {
 fn read_iram_info() -> Result<IramInfo> {
     // IRAM info for Jetson (if available)
     // This needs to be parsed from tegrastats output
-    Err(crate::error::SimonError::FeatureNotAvailable(
+    Err(crate::error::IronError::FeatureNotAvailable(
         "IRAM reading not yet implemented".to_string(),
     ))
 }

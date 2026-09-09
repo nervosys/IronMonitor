@@ -4,7 +4,7 @@
 //! It supports various power budgets with different CPU/GPU configurations.
 
 use super::verify_sudo_available;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::process::Command;
 
 /// Power mode information
@@ -43,10 +43,10 @@ pub fn query() -> Result<PowerMode> {
     let output = Command::new("nvpmodel")
         .arg("-q")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        return Err(SimonError::CommandFailed(
+        return Err(IronError::CommandFailed(
             "nvpmodel query failed".to_string(),
         ));
     }
@@ -80,12 +80,10 @@ pub fn list_modes() -> Result<NVPModelStatus> {
         .arg("-p")
         .arg("--verbose")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        return Err(SimonError::CommandFailed(
-            "nvpmodel list failed".to_string(),
-        ));
+        return Err(IronError::CommandFailed("nvpmodel list failed".to_string()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -156,11 +154,11 @@ pub fn set_mode(mode_id: u32, force: bool) -> Result<()> {
     } else {
         cmd.output()
     }
-    .map_err(SimonError::Io)?;
+    .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to set power mode: {}",
             stderr
         )));
@@ -169,7 +167,7 @@ pub fn set_mode(mode_id: u32, force: bool) -> Result<()> {
     // Check for errors in output
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.contains("NVPM ERROR") {
-        return Err(SimonError::CommandFailed(
+        return Err(IronError::CommandFailed(
             "nvpmodel reported an error".to_string(),
         ));
     }
@@ -185,7 +183,7 @@ pub fn set_mode_by_name(mode_name: &str, force: bool) -> Result<()> {
         .modes
         .iter()
         .find(|m| m.name.eq_ignore_ascii_case(mode_name))
-        .ok_or_else(|| SimonError::InvalidValue(format!("Power mode '{}' not found", mode_name)))?;
+        .ok_or_else(|| IronError::InvalidValue(format!("Power mode '{}' not found", mode_name)))?;
 
     set_mode(mode.id, force)
 }

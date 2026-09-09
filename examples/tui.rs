@@ -1,6 +1,6 @@
-//! Silicon Monitor TUI - Interactive Terminal Dashboard
+//! IronMonitor TUI - Interactive Terminal Dashboard
 //!
-//! This example demonstrates the full Terminal User Interface for Silicon Monitor.
+//! This example demonstrates the full Terminal User Interface for IronMonitor.
 //! It provides real-time monitoring of CPU, GPU, memory, disk, and system information.
 //!
 //! # Usage
@@ -18,7 +18,7 @@
 
 #[cfg(feature = "cli")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    simonlib::tui::run()
+    ironmonlib::tui::run()
 }
 
 #[cfg(not(feature = "cli"))]

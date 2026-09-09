@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::sensors::SensorMonitor;
+//! use ironmonlib::sensors::SensorMonitor;
 //!
 //! let monitor = SensorMonitor::new().unwrap();
 //! for sensor in monitor.sensors() {
@@ -17,7 +17,7 @@
 //! }
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Type of environmental sensor
@@ -109,7 +109,7 @@ pub struct SensorMonitor {
 }
 
 impl SensorMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             items: Vec::new(),
             last_note: None,
@@ -124,7 +124,7 @@ impl SensorMonitor {
     /// only when it succeeded and found nothing -- which the resolver publishes
     /// as `board.sensor.<none>`, a claim that this board has no sensors.
     /// See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.items.clear();
         self.last_note = None;
 
@@ -196,7 +196,7 @@ impl SensorMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         let iio_base = std::path::Path::new("/sys/bus/iio/devices");
         if !iio_base.exists() {
             // A real answer: this kernel exposes no IIO subsystem.
@@ -204,7 +204,7 @@ impl SensorMonitor {
         }
 
         let entries = std::fs::read_dir(iio_base)
-            .map_err(|e| SimonError::System(format!("cannot read {iio_base:?}: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read {iio_base:?}: {e}")))?;
         for entry in entries.flatten() {
             let base = entry.path();
             let dev_name = entry.file_name().to_string_lossy().to_string();
@@ -466,7 +466,7 @@ impl SensorMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // This function already knew that "no sensors" and "could not ask" are
         // different: it spawned `powershell -Command "exit 0"` first, purely so
         // it could record a note when that spawn failed. The distinction was
@@ -577,7 +577,7 @@ impl SensorMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // macOS has limited IIO-style sensors, mainly on laptops with motion sensors
         // Check for sudden motion sensor
         let text = crate::core::command::capture("system_profiler", &["SPSensorsDataType"])?;

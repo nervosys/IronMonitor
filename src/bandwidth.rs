@@ -9,7 +9,7 @@
 //! ## TCP Bandwidth Test
 //!
 //! ```no_run
-//! use simonlib::bandwidth::{bandwidth_test, BandwidthConfig, BandwidthResult};
+//! use ironmonlib::bandwidth::{bandwidth_test, BandwidthConfig, BandwidthResult};
 //! use std::time::Duration;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +23,7 @@
 //! # }
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -163,14 +163,14 @@ pub fn bandwidth_test(host: &str, port: u16, config: &BandwidthConfig) -> Result
     let addr = format!("{}:{}", host, port);
     let socket_addr = addr
         .to_socket_addrs()
-        .map_err(|e| SimonError::Other(format!("Failed to resolve {}: {}", addr, e)))?
+        .map_err(|e| IronError::Other(format!("Failed to resolve {}: {}", addr, e)))?
         .next()
-        .ok_or_else(|| SimonError::Other(format!("No addresses found for {}", addr)))?;
+        .ok_or_else(|| IronError::Other(format!("No addresses found for {}", addr)))?;
 
     // Measure connection time
     let connect_start = Instant::now();
     let mut stream = TcpStream::connect_timeout(&socket_addr, config.connect_timeout)
-        .map_err(|e| SimonError::Other(format!("Failed to connect to {}: {}", addr, e)))?;
+        .map_err(|e| IronError::Other(format!("Failed to connect to {}: {}", addr, e)))?;
     let connect_time = connect_start.elapsed();
 
     // Set socket options
@@ -267,11 +267,10 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
     use std::thread;
 
     // Bind to a random port
-    let listener =
-        TcpListener::bind("127.0.0.1:0").map_err(|e| SimonError::Other(e.to_string()))?;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| IronError::Other(e.to_string()))?;
     let port = listener
         .local_addr()
-        .map_err(|e| SimonError::Other(format!("failed to get local address: {}", e)))?
+        .map_err(|e| IronError::Other(format!("failed to get local address: {}", e)))?
         .port();
 
     let buffer_size = DEFAULT_BUFFER_SIZE;
@@ -308,7 +307,7 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
 
     // Connect and send data
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .map_err(|e| SimonError::Other(e.to_string()))?;
+        .map_err(|e| IronError::Other(e.to_string()))?;
     stream.set_nodelay(true).ok();
 
     let buffer = vec![0xABu8; buffer_size];

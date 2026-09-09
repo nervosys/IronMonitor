@@ -35,7 +35,7 @@ pub struct DisplayInfo {
     /// Horizontal pixels of the current mode, or `None` when the display is
     /// attached and its mode was not readable. Zero is not a resolution — the
     /// ontology already refused to publish one and said so in as many words,
-    /// while `simon cli display` printed "RX-A740 0x0 @ 0Hz" and the agent tool
+    /// while `ironmon cli display` printed "RX-A740 0x0 @ 0Hz" and the agent tool
     /// surface published `"resolution": "0x0"`.
     pub width: Option<u32>,
     /// Vertical pixels of the current mode. See [`Self::width`].
@@ -97,14 +97,14 @@ pub struct DisplayMonitor {
 }
 
 impl DisplayMonitor {
-    pub fn new() -> Result<Self, crate::error::SimonError> {
+    pub fn new() -> Result<Self, crate::error::IronError> {
         let mut monitor = Self {
             displays: Vec::new(),
         };
         monitor.refresh()?;
         Ok(monitor)
     }
-    pub fn refresh(&mut self) -> Result<(), crate::error::SimonError> {
+    pub fn refresh(&mut self) -> Result<(), crate::error::IronError> {
         self.displays.clear();
         #[cfg(target_os = "windows")]
         self.refresh_windows()?;
@@ -158,7 +158,7 @@ impl DisplayMonitor {
     /// taken from it. Per-instance state would need the UID, which is why
     /// brightness is not taken from it.
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), crate::error::IronError> {
         use windows::core::PCWSTR;
         use windows::Win32::Graphics::Gdi::{
             EnumDisplayDevicesW, EnumDisplaySettingsW, DEVMODEW, DISPLAY_DEVICEW,
@@ -382,7 +382,7 @@ impl DisplayMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), crate::error::IronError> {
         use std::fs;
         use std::process::Command;
 
@@ -393,7 +393,7 @@ impl DisplayMonitor {
         if drm_path.exists() {
             {
                 let entries = fs::read_dir(drm_path).map_err(|e| {
-                    crate::error::SimonError::System(format!("cannot read /sys/class/drm: {e}"))
+                    crate::error::IronError::System(format!("cannot read /sys/class/drm: {e}"))
                 })?;
                 let mut idx = 0u32;
                 for entry in entries.flatten() {
@@ -567,7 +567,7 @@ impl DisplayMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), crate::error::IronError> {
         // `system_profiler` ships with macOS, so a failure to run it is a
         // failure rather than an absent optional tool.
         let stdout =

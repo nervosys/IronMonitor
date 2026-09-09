@@ -2333,6 +2333,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "iron-monitor"
+version = "6.0.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bincode",
+ "chrono",
+ "clap",
+ "colored",
+ "criterion",
+ "crossterm",
+ "ctrlc",
+ "directories",
+ "drm",
+ "drm-ffi 0.8.0",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "egui_plot",
+ "env_logger",
+ "hex",
+ "hostname",
+ "ironvault",
+ "libc",
+ "log",
+ "lru",
+ "nix 0.29.0",
+ "num_cpus",
+ "nvml-wrapper",
+ "open",
+ "plist",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.17",
+ "tokio",
+ "toml",
+ "windows 0.58.0",
+ "winreg",
+ "wmi",
+]
+
+[[package]]
 name = "ironvault"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4359,51 +4404,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2a4719bff48cee6b39d12c020eeb490953ad2443b7055bd0b21fca26bd8c28b"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "silicon-monitor"
-version = "6.0.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "bincode",
- "chrono",
- "clap",
- "colored",
- "criterion",
- "crossterm",
- "ctrlc",
- "directories",
- "drm",
- "drm-ffi 0.8.0",
- "eframe",
- "egui",
- "egui_extras",
- "egui_plot",
- "env_logger",
- "hex",
- "hostname",
- "ironvault",
- "libc",
- "log",
- "lru",
- "nix 0.29.0",
- "num_cpus",
- "nvml-wrapper",
- "open",
- "plist",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.17",
- "tokio",
- "toml",
- "windows 0.58.0",
- "winreg",
- "wmi",
 ]
 
 [[package]]

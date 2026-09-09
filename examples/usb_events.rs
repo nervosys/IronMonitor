@@ -4,13 +4,13 @@
 //!
 //! Run with: cargo run --example usb_events --features cli
 
-use simonlib::usb::{UsbEvent, UsbMonitor};
+use ironmonlib::usb::{UsbEvent, UsbMonitor};
 use std::thread;
 use std::time::Duration;
 
 /// `vvvv:pppp`, or `no usb ids` for an entry that carries none — a root hub's
 /// PnP id has no `VID_` at all.
-fn ids(device: &simonlib::usb::UsbDevice) -> String {
+fn ids(device: &ironmonlib::usb::UsbDevice) -> String {
     match (device.vendor_id, device.product_id) {
         (None, None) => "no usb ids".to_string(),
         (v, p) => format!(

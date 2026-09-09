@@ -3,13 +3,13 @@
 
 use egui::RichText;
 
-use super::app::SiliconMonitorApp;
+use super::app::IronMonitorApp;
 use super::theme::CyberColors;
 
 const AUDIT_TAIL_REFRESH_MS: u64 = 1000;
 const AUDIT_TAIL_LINES: usize = 12;
 
-impl SiliconMonitorApp {
+impl IronMonitorApp {
     pub(super) fn draw_profiles_tab(&mut self, ui: &mut egui::Ui) {
         use crate::profile::{SettingRisk, Subsystem};
 

@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Cgroup version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,13 +149,13 @@ pub struct CgroupMonitor {
 
 impl CgroupMonitor {
     /// Create a new cgroup monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh data.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -203,7 +203,7 @@ impl CgroupMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<CgroupOverview, SimonError> {
+    fn scan() -> Result<CgroupOverview, IronError> {
         let version = Self::detect_version();
         let available_controllers = Self::list_controllers(&version);
         let cgroups = match version {
@@ -275,7 +275,7 @@ impl CgroupMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan_v2() -> Result<Vec<CgroupInfo>, SimonError> {
+    fn scan_v2() -> Result<Vec<CgroupInfo>, IronError> {
         let mut cgroups = Vec::new();
         let base = std::path::Path::new("/sys/fs/cgroup");
 
@@ -291,7 +291,7 @@ impl CgroupMonitor {
         rel_path: &str,
         cgroups: &mut Vec<CgroupInfo>,
         depth: u32,
-    ) -> Result<(), SimonError> {
+    ) -> Result<(), IronError> {
         if depth > 4 {
             return Ok(()); // Limit recursion
         }
@@ -525,13 +525,13 @@ impl CgroupMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan_v1() -> Result<Vec<CgroupInfo>, SimonError> {
+    fn scan_v1() -> Result<Vec<CgroupInfo>, IronError> {
         // Simplified v1 scanning - just check memory cgroup
         Ok(Vec::new())
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<CgroupOverview, SimonError> {
+    fn scan() -> Result<CgroupOverview, IronError> {
         Ok(CgroupOverview {
             version: CgroupVersion::Unknown,
             available_controllers: Vec::new(),

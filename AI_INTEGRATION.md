@@ -1,6 +1,6 @@
 # AI Agent Integration Guide
 
-Silicon Monitor provides comprehensive hardware monitoring capabilities that AI agents can use to understand and query system state.
+IronMonitor provides comprehensive hardware monitoring capabilities that AI agents can use to understand and query system state.
 
 ## Supported Models
 
@@ -25,7 +25,7 @@ Silicon Monitor provides comprehensive hardware monitoring capabilities that AI 
 
 Export the function calling schema:
 ```bash
-simon ai manifest --format openai -o openai_tools.json
+ironmon ai manifest --format openai -o openai_tools.json
 ```
 
 Use in your API calls:
@@ -45,7 +45,7 @@ response = client.chat.completions.create(
 
 Export the tool use schema:
 ```bash
-simon ai manifest --format anthropic -o claude_tools.json
+ironmon ai manifest --format anthropic -o claude_tools.json
 ```
 
 Use with the Anthropic API:
@@ -67,21 +67,21 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "silicon-monitor": {
-      "command": "simon",
+    "iron-monitor": {
+      "command": "ironmon",
       "args": ["ai", "server"]
     }
   }
 }
 ```
 
-Then restart Claude Desktop. Silicon Monitor tools will be available automatically.
+Then restart Claude Desktop. IronMonitor tools will be available automatically.
 
 ### For Google Gemini
 
 Export the function declarations:
 ```bash
-simon ai manifest --format gemini -o gemini_tools.json
+ironmon ai manifest --format gemini -o gemini_tools.json
 ```
 
 ```python
@@ -99,7 +99,7 @@ model = genai.GenerativeModel(
 ### For xAI Grok
 
 ```bash
-simon ai manifest --format grok -o grok_tools.json
+ironmon ai manifest --format grok -o grok_tools.json
 ```
 
 ```python
@@ -126,7 +126,7 @@ response = client.chat.completions.create(
 Use with OpenAI-compatible providers (Together, Fireworks, Groq):
 
 ```bash
-simon ai manifest --format llama -o llama_tools.json
+ironmon ai manifest --format llama -o llama_tools.json
 ```
 
 ```python
@@ -152,7 +152,7 @@ response = client.chat.completions.create(
 ### For Mistral
 
 ```bash
-simon ai manifest --format mistral -o mistral_tools.json
+ironmon ai manifest --format mistral -o mistral_tools.json
 ```
 
 ```python
@@ -174,7 +174,7 @@ response = client.chat.complete(
 ### For DeepSeek
 
 ```bash
-simon ai manifest --format deepseek -o deepseek_tools.json
+ironmon ai manifest --format deepseek -o deepseek_tools.json
 ```
 
 ```python
@@ -196,16 +196,16 @@ response = client.chat.completions.create(
 )
 ```
 
-## Driving simon directly
+## Driving ironmon directly
 
-The tool surface below is for handing simon's data to a model. If instead you are
-writing an agent that drives simon itself, use the ontology: a stable id space with
+The tool surface below is for handing ironmon's data to a model. If instead you are
+writing an agent that drives ironmon itself, use the ontology: a stable id space with
 units and provenance, readable from the command line without a model in the loop.
 
 ```bash
-simon describe --format json      # the schema: what exists, in what unit
-simon get gpu.0.thermal.temperature
-simon snapshot --validate
+ironmon describe --format json      # the schema: what exists, in what unit
+ironmon get gpu.0.thermal.temperature
+ironmon snapshot --validate
 ```
 
 The distinction that matters when feeding hardware data to a model is `provenance`.
@@ -269,7 +269,7 @@ The MCP server allows Claude and other MCP-compatible agents to directly invoke 
 
 Start the server:
 ```bash
-simon ai server   # or: amon server
+ironmon ai server   # or: amon server
 ```
 
 The server communicates via newline-delimited JSON-RPC over stdio. Status output
@@ -296,10 +296,10 @@ goes to stderr, so stdout carries only protocol traffic. It supports:
 
 ## Hardware Ontology
 
-Silicon Monitor provides a structured ontology that describes hardware concepts:
+IronMonitor provides a structured ontology that describes hardware concepts:
 
 ```bash
-simon ai manifest --format json | jq .ontology
+ironmon ai manifest --format json | jq .ontology
 ```
 
 The ontology includes:

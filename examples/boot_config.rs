@@ -1,8 +1,8 @@
-// Boot Configuration Example for Simon
+// Boot Configuration Example for IronMonitor
 //
 // Demonstrates boot configuration and startup item monitoring.
 
-use simonlib::{
+use ironmonlib::{
     boot_summary, format_uptime, BootMonitor, BootType, StartupItemStatus, StartupItemType,
 };
 

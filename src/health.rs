@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::health::{SystemHealth, HealthCheck, HealthStatus};
+//! use ironmonlib::health::{SystemHealth, HealthCheck, HealthStatus};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let health = SystemHealth::check()?;

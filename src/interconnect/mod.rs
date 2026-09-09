@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Interconnect technology type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +160,7 @@ pub struct InterconnectMonitor {
 
 impl InterconnectMonitor {
     /// Create a new interconnect monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let cpu_model = Self::get_cpu_model()?;
         let sockets = Self::detect_sockets()?;
         let physical_cores = Self::detect_physical_cores();
@@ -514,8 +514,8 @@ impl InterconnectMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn get_cpu_model() -> Result<String, SimonError> {
-        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").map_err(SimonError::Io)?;
+    fn get_cpu_model() -> Result<String, IronError> {
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
         for line in cpuinfo.lines() {
             if let Some(val) = line.strip_prefix("model name") {
                 if let Some(name) = val.trim().strip_prefix(':') {
@@ -527,7 +527,7 @@ impl InterconnectMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_sockets() -> Result<u32, SimonError> {
+    fn detect_sockets() -> Result<u32, IronError> {
         // Count unique physical package IDs
         let mut sockets = std::collections::HashSet::new();
         let cpu_dir = std::path::Path::new("/sys/devices/system/cpu");
@@ -548,7 +548,7 @@ impl InterconnectMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn get_cpu_model() -> Result<String, SimonError> {
+    fn get_cpu_model() -> Result<String, IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -556,12 +556,12 @@ impl InterconnectMonitor {
                 "(Get-CimInstance Win32_Processor).Name",
             ])
             .output()
-            .map_err(SimonError::Io)?;
+            .map_err(IronError::Io)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_sockets() -> Result<u32, SimonError> {
+    fn detect_sockets() -> Result<u32, IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -569,7 +569,7 @@ impl InterconnectMonitor {
                 "(Get-CimInstance Win32_Processor | Measure-Object).Count",
             ])
             .output()
-            .map_err(SimonError::Io)?;
+            .map_err(IronError::Io)?;
         let count = String::from_utf8_lossy(&output.stdout)
             .trim()
             .parse::<u32>()
@@ -578,26 +578,26 @@ impl InterconnectMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn get_cpu_model() -> Result<String, SimonError> {
+    fn get_cpu_model() -> Result<String, IronError> {
         let output = std::process::Command::new("sysctl")
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
-            .map_err(SimonError::Io)?;
+            .map_err(IronError::Io)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_sockets() -> Result<u32, SimonError> {
+    fn detect_sockets() -> Result<u32, IronError> {
         Ok(1) // macOS is always single-socket
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn get_cpu_model() -> Result<String, SimonError> {
+    fn get_cpu_model() -> Result<String, IronError> {
         Ok(String::new())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_sockets() -> Result<u32, SimonError> {
+    fn detect_sockets() -> Result<u32, IronError> {
         Ok(1)
     }
 

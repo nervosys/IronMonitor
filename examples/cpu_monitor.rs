@@ -1,23 +1,23 @@
 //! CPU Monitoring Example
 //!
-//! This example demonstrates comprehensive CPU monitoring using Silicon Monitor.
+//! This example demonstrates comprehensive CPU monitoring using IronMonitor.
 //! It shows per-core tracking, frequency monitoring, utilization, and temperature
 //! across all supported platforms (Linux, Windows, macOS).
 
-use simonlib::silicon::{CpuClusterType, SiliconMonitor};
+use ironmonlib::silicon::{CpuClusterType, SiliconMonitor};
 
 #[cfg(target_os = "linux")]
-use simonlib::silicon::linux::LinuxSiliconMonitor;
+use ironmonlib::silicon::linux::LinuxSiliconMonitor;
 
 #[cfg(target_os = "windows")]
-use simonlib::silicon::windows::WindowsSiliconMonitor;
+use ironmonlib::silicon::windows::WindowsSiliconMonitor;
 
 #[cfg(all(feature = "apple", target_os = "macos"))]
-use simonlib::silicon::apple::AppleSiliconMonitor;
+use ironmonlib::silicon::apple::AppleSiliconMonitor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
-        "=== Silicon Monitor - CPU Monitoring Example ===
+        "=== IronMonitor - CPU Monitoring Example ===
 "
     );
 
@@ -118,8 +118,8 @@ fn report<M: SiliconMonitor>(monitor: &M) -> Result<(), Box<dyn std::error::Erro
     println!("\n=== Summary Statistics ===");
 
     let total_cores = cores.len();
-    let avg_freq = simonlib::silicon::average_reported_mhz(&cores);
-    let avg_util = simonlib::silicon::average_reported_util(&cores);
+    let avg_freq = ironmonlib::silicon::average_reported_mhz(&cores);
+    let avg_util = ironmonlib::silicon::average_reported_util(&cores);
 
     println!("Total Cores: {}", total_cores);
     match avg_freq {

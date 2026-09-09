@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::cpu_cache::CpuCacheMonitor;
+//! use ironmonlib::cpu_cache::CpuCacheMonitor;
 //!
 //! let monitor = CpuCacheMonitor::new().unwrap();
 //! for cache in monitor.caches() {
@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Cache level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -133,7 +133,7 @@ fn affinity_mask_to_list(mask: usize) -> String {
 
 impl CpuCacheMonitor {
     /// Create a new CpuCacheMonitor and detect cache topology.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             topology: CpuCacheTopology {
                 caches: Vec::new(),
@@ -148,7 +148,7 @@ impl CpuCacheMonitor {
     }
 
     /// Refresh cache detection.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.topology.caches.clear();
 
         #[cfg(target_os = "linux")]
@@ -227,7 +227,7 @@ impl CpuCacheMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         // Read from cpu0's cache hierarchy (representative)
         let cpu_base = std::path::Path::new("/sys/devices/system/cpu/cpu0/cache");
         if !cpu_base.exists() {
@@ -237,7 +237,7 @@ impl CpuCacheMonitor {
 
         {
             let entries = std::fs::read_dir(cpu_base)
-                .map_err(|e| SimonError::System(format!("cannot read {cpu_base:?}: {e}")))?;
+                .map_err(|e| IronError::System(format!("cannot read {cpu_base:?}: {e}")))?;
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if !name.starts_with("index") {
@@ -350,7 +350,7 @@ impl CpuCacheMonitor {
     /// physical cache with the line size, the true associativity, the type, and
     /// the affinity mask of the processors sharing it.
     #[cfg(target_os = "windows")]
-    fn refresh_windows_logical_processor_info(&mut self) -> Result<bool, SimonError> {
+    fn refresh_windows_logical_processor_info(&mut self) -> Result<bool, IronError> {
         use windows::Win32::System::SystemInformation::{
             CacheData, CacheInstruction, GetLogicalProcessorInformationEx, RelationCache,
             LOGICAL_PROCESSOR_RELATIONSHIP, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
@@ -462,7 +462,7 @@ impl CpuCacheMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // The Win32 API is the better source; WMI stays as the fallback for a
         // machine where it returns nothing.
         if self.refresh_windows_logical_processor_info()? {
@@ -537,7 +537,7 @@ impl CpuCacheMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // `sysctl` ships with macOS, so failing to run it is a failure. A key
         // it does not know is a different matter -- `hw.l3cachesize` is absent
         // on parts with no L3 -- so one key exiting non-zero stays `None`

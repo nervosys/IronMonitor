@@ -9,7 +9,7 @@
 //! - **Windows**: WMI `Win32_TemperatureProbe`
 //! - **macOS**: IOKit thermal sensors
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Thermal zone type.
@@ -208,13 +208,13 @@ pub struct ThermalZoneMonitor {
 
 impl ThermalZoneMonitor {
     /// Create a new thermal zone monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -257,7 +257,7 @@ impl ThermalZoneMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<ThermalZoneOverview, SimonError> {
+    fn scan() -> Result<ThermalZoneOverview, IronError> {
         let thermal_path = std::path::Path::new("/sys/class/thermal");
 
         if !thermal_path.exists() {
@@ -267,7 +267,7 @@ impl ThermalZoneMonitor {
         let mut zones = Vec::new();
         let mut cooling = Vec::new();
 
-        let entries = std::fs::read_dir(thermal_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(thermal_path).map_err(IronError::Io)?;
 
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -447,12 +447,12 @@ impl ThermalZoneMonitor {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<ThermalZoneOverview, SimonError> {
+    fn scan() -> Result<ThermalZoneOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "thermal zones are read from `/sys/class/thermal`, which this platform does not expose"
                 .into(),
         ))

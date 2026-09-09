@@ -1,6 +1,6 @@
 //! Resolving ontology ids to live values.
 //!
-//! [`super::Ontology`] names what simon *can* report; this module answers what it
+//! [`super::Ontology`] names what ironmon *can* report; this module answers what it
 //! *does* report, right now, on this machine. Without it the ontology is a glossary:
 //! an agent can learn that `gpu.0.thermal.temperature` exists but has no way to read
 //! it.
@@ -65,7 +65,7 @@ impl Reading {
     }
 
     /// A value the hardware or firmware declares about itself rather than one
-    /// simon sampled. A DIMM part number and a CPU base clock are both this: a
+    /// ironmon sampled. A DIMM part number and a CPU base clock are both this: a
     /// consumer may rely on them to be stable, and may not treat them as
     /// evidence of the machine's state right now.
     fn spec(id: impl Into<String>, value: serde_json::Value, unit: Option<Unit>) -> Self {
@@ -96,12 +96,12 @@ impl Reading {
     }
 }
 
-/// Everything simon can currently resolve, in id order.
+/// Everything IronMonitor can currently resolve, in id order.
 ///
 /// Entities with no resolver bound are reported as [`Provenance::Unavailable`] with
 /// a note saying so, rather than omitted. An agent comparing this against
 /// [`Ontology::build`] can therefore tell "this machine has no such device" apart
-/// from "simon cannot read this yet" — two very different facts that an omission
+/// from "IronMonitor cannot read this yet" — two very different facts that an omission
 /// would collapse into one.
 pub fn snapshot() -> Vec<Reading> {
     let ontology = Ontology::build();
@@ -161,7 +161,7 @@ pub fn snapshot() -> Vec<Reading> {
             Reading::unavailable(
                 e.id.clone(),
                 e.unit,
-                "no resolver bound on this build — the entity is defined but simon \
+                "no resolver bound on this build — the entity is defined but ironmon \
                  does not yet read it here",
             )
         })
@@ -172,7 +172,7 @@ pub fn snapshot() -> Vec<Reading> {
     // the grounds that an unexpanded `disk.{n}.model` is not a fact about a machine.
     // That reasoning was wrong in a way this module exists to prevent: a domain whose
     // entities are *all* templates simply vanished from the snapshot, so an agent
-    // could not tell "this machine has no disks" from "simon does not read disks".
+    // could not tell "this machine has no disks" from "IronMonitor does not read disks".
     // Silence is the one answer a resolver must never give. A domain that produced
     // nothing gets one row saying so, keyed on the template so the id stays traceable
     // back to the schema.
@@ -265,7 +265,7 @@ pub fn get(id: &str) -> Option<Reading> {
 
 /// Entities the ontology declares that this build can actually resolve.
 ///
-/// Coverage is a fact about simon, not about the machine, so it is worth being able
+/// Coverage is a fact about ironmon, not about the machine, so it is worth being able
 /// to ask for directly rather than inferring from a snapshot full of nulls.
 pub fn coverage() -> Coverage {
     coverage_of(&snapshot())
@@ -282,7 +282,7 @@ const FREQUENCY_ABSENT: &str = concat!(
     "Windows reports the nominal clock through CallNtPowerInformation, not the ",
     "current one — it returned the maximum unchanged for every core, so there is ",
     "no per-core reading here to report. The real figure needs the ",
-    "'% Processor Performance' counter, which simon does not read yet",
+    "'% Processor Performance' counter, which IronMonitor does not read yet",
 );
 
 #[cfg(not(target_os = "windows"))]
@@ -454,7 +454,7 @@ fn resolve_cpu(out: &mut Vec<Reading>) {
         // discarded, and `cpu.core.{n}.frequency` names it as its input.
         //
         // `push_spec_opt`, not `push_opt`: this is a rated figure the firmware
-        // states, not one simon measured. It was published as `measured` on
+        // states, not one ironmon measured. It was published as `measured` on
         // every row while the entity beside it declared `Specification` -- the
         // only entity in the ontology whose rows over-claimed their own
         // declaration.
@@ -814,7 +814,7 @@ fn resolve_virtualization(out: &mut Vec<Reading>) {
 
     let hypervisor = monitor.hypervisor();
 
-    // Hyper-V used to be the one case simon could not call: with
+    // Hyper-V used to be the one case IronMonitor could not call: with
     // virtualization-based security on — the Windows 11 default — the host OS
     // runs as the Hyper-V *root partition*, so CPUID reports "Microsoft Hv" on a
     // bare-metal workstation exactly as it does inside a guest. 3.7.0 reported
@@ -943,7 +943,7 @@ fn resolve_ecc(out: &mut Vec<Reading>) {
     let monitor = match crate::edac::EdacMonitor::new() {
         Ok(m) => m,
         Err(e) => {
-            // On Windows and macOS there is no EDAC equivalent simon reads, so
+            // On Windows and macOS there is no EDAC equivalent IronMonitor reads, so
             // this is the common path. The note says so rather than implying the
             // machine has no ECC — which would be a claim about the hardware
             // rather than about the reader.
@@ -1057,7 +1057,7 @@ fn resolve_pci(out: &mut Vec<Reading>) {
                          node for endpoints only. Bridges, switch ports and host \
                          bridges carry none, and neither do devices that are not \
                          PCIe at all; this is one of those. Measured on a 64-device \
-                         host: 23 carry the properties, and simon reports all 23",
+                         host: 23 carry the properties, and IronMonitor reports all 23",
                     ));
                 }
             }
@@ -1221,7 +1221,7 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         let base = format!("memory.dimm.{i}");
         push_spec_text(out, format!("{base}.locator"), &dimm.locator);
         // Firmware-declared like the rest of the cluster: the board says the
-        // slot is filled, and simon did not look inside the case.
+        // slot is filled, and ironmon did not look inside the case.
         out.push(Reading::spec(
             format!("{base}.populated"),
             serde_json::json!(dimm.populated),
@@ -1408,7 +1408,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
     // one is by definition a reader bug. On a headless CI runner that is exactly
     // what it was, and `non_nullable_entities_are_never_null` said so — on Linux,
     // where there is no GPU. Every machine that had one passed.
-    let Ok(monitor) = crate::SiliconMonitor::new() else {
+    let Ok(monitor) = crate::UnifiedMonitor::new() else {
         out.push(Reading::unavailable(
             "gpu.<none>",
             None,
@@ -1442,17 +1442,17 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
     // and the Intel one says so in a comment ("nothing is read on this
     // platform, so nothing is reported"). AMD's ADL libraries are installed
     // here -- `atiadlxx.dll` and `amdadlx64.dll` are both in System32 -- so the
-    // driver does publish this and simon has no binding to ask it.
+    // driver does publish this and IronMonitor has no binding to ask it.
     //
     // The reasons now say what was read rather than what a vendor supposedly
     // withholds. They stay true for an NVIDIA card, where NVML *was* asked and
     // declined.
     const NO_ADAPTER_TEMPERATURE: &str = concat!(
         "no temperature was read for this adapter. NVML answers for NVIDIA ",
-        "cards; on Windows an AMD or Intel adapter has no source in simon but ",
+        "cards; on Windows an AMD or Intel adapter has no source in ironmon but ",
         "an OpenHardwareMonitor or LibreHardwareMonitor WMI namespace, which ",
         "exists only where one of those tools is installed. An adapter with no ",
-        "sensor and a simon with no binding to the vendor SDK are ",
+        "sensor and a ironmon with no binding to the vendor SDK are ",
         "indistinguishable from here"
     );
     const NO_ADAPTER_THERMAL_LIMIT: &str = concat!(
@@ -1469,7 +1469,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         "no power draw was read for this adapter. NVML reports it for NVIDIA ",
         "cards; the Windows AMD and Intel backends set this field to nothing ",
         "without consulting the driver, and both vendors expose it through a ",
-        "library simon does not bind"
+        "library IronMonitor does not bind"
     );
     const NO_ADAPTER_POWER_CAP: &str = concat!(
         "no enforced power cap was read for this adapter. See the power draw ",
@@ -1592,10 +1592,10 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
 
 /// Make a device name safe to use as one segment of a dotted id.
 ///
-/// Device names are chosen by vendors and drivers, not by simon: Windows hands back
+/// Device names are chosen by vendors and drivers, not by ironmon: Windows hands back
 /// "Bluetooth Network Connection", and VLAN interfaces carry dots. Both break the id
 /// contract — a dot creates a spurious path segment, and whitespace makes the id
-/// impossible to pass to `simon get` without quoting. Substitution is lossy but
+/// impossible to pass to `ironmon get` without quoting. Substitution is lossy but
 /// total, which matters more here than being reversible: an id an agent cannot type
 /// is not an id.
 fn id_segment(raw: &str) -> String {
@@ -2323,7 +2323,7 @@ fn resolve_process(out: &mut Vec<Reading>) {
             format!(
                 "{total} processes exist; this snapshot reports the {PROCESS_LIMIT} \
                  largest by memory. Absence from this list is not absence from the \
-                 machine — use `simon cli processes` for the full table"
+                 machine — use `ironmon cli processes` for the full table"
             ),
         ));
     }
@@ -2610,8 +2610,8 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
 ///
 /// `EntityKind::Setting` entities are generated from the apply-handler registry,
 /// and nothing read them: `cpu.setting.active_scheme_guid` was published as "no
-/// resolver bound on this build — the entity is defined but simon does not yet
-/// read it here" **while `simon profile explain active_scheme_guid` printed the
+/// resolver bound on this build — the entity is defined but IronMonitor does not yet
+/// read it here" **while `ironmon profile explain active_scheme_guid` printed the
 /// GUID from `profile::cpu` in the same binary**. Two surfaces over one machine,
 /// disagreeing about whether the machine could be read at all.
 ///
@@ -2657,7 +2657,7 @@ fn resolve_settings(out: &mut Vec<Reading>) {
                 Some(Unit::Identifier),
                 concat!(
                     "this setting has a write handler and no reader: the handler ",
-                    "implements no `read_current`, so simon can change it and ",
+                    "implements no `read_current`, so IronMonitor can change it and ",
                     "cannot say what it currently holds. That also makes the ",
                     "write one-way -- `revert_setting` refuses rather than ",
                     "writing a default it never read"
@@ -2958,7 +2958,7 @@ fn resolve_audio(out: &mut Vec<Reading>) {
         // and the conformance suite caught it the moment the field could
         // express an absence.
         const NO_MIXER: &str =
-            "simon has no mixer binding on this platform, so no level is read from this endpoint";
+            "IronMonitor has no mixer binding on this platform, so no level is read from this endpoint";
         push_opt(
             out,
             format!("{base}.volume"),
@@ -3019,7 +3019,7 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
             "no reader asks this camera for its mode list on any platform: the ",
             "Linux path would need the VIDIOC_ENUM_FRAMESIZES ioctl and the ",
             "Windows path the Media Foundation frame-size attribute, and ",
-            "neither is implemented. This is simon not looking, not a camera ",
+            "neither is implemented. This is ironmon not looking, not a camera ",
             "that answered with nothing"
         );
         push_opt(
@@ -3055,7 +3055,7 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
 /// Bound late: the entity was declared and nothing resolved it, so it read "no
 /// resolver bound on this build" — which was the wrong absence. The entity is
 /// supported on Windows; what stops it here is privilege, and saying so is a
-/// different fact than saying simon has not implemented it.
+/// different fact than saying IronMonitor has not implemented it.
 ///
 /// `BootMonitor` leaves `total` at `Duration::ZERO` when nothing was measured,
 /// so zero is the sentinel and must not be published as a boot that took no
@@ -3099,7 +3099,7 @@ fn resolve_boot_duration(out: &mut Vec<Reading>) {
         "systemd or with an incomplete boot transaction looks like",
     );
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let reason = "this platform publishes no boot duration simon knows how to read";
+    let reason = "this platform publishes no boot duration IronMonitor knows how to read";
 
     out.push(Reading::unavailable(
         "system.boot.duration",
@@ -3210,7 +3210,7 @@ fn resolve_secure_boot_from_firmware(out: &mut Vec<Reading>) {
 ///
 /// The reader also computes `is_recommended`, `recommended`, `security_score`,
 /// `network_score` and a list of free-text recommendations. Those are opinions
-/// about what a value ought to be, and `simon tune`'s standing rule is that a
+/// about what a value ought to be, and `ironmon tune`'s standing rule is that a
 /// proposed value comes from what the system declared and never from this crate.
 /// A score published beside a measured value borrows its authority, so the split
 /// is here rather than a subset of the fields being passed through.
@@ -3446,14 +3446,14 @@ fn resolve_microarch(out: &mut Vec<Reading>) {
         "cpu.microarch.process",
         (uarch.process_nm > 0).then(|| serde_json::json!(uarch.process_nm)),
         Some(Unit::Count),
-        "simon holds no process node for this microarchitecture",
+        "IronMonitor holds no process node for this microarchitecture",
     );
     push_spec_opt(
         out,
         "cpu.microarch.year",
         (uarch.year > 0).then(|| serde_json::json!(uarch.year)),
         Some(Unit::Count),
-        "simon holds no introduction date for this microarchitecture",
+        "IronMonitor holds no introduction date for this microarchitecture",
     );
     out.push(Reading::spec(
         "cpu.microarch.hybrid",
@@ -3582,7 +3582,7 @@ fn resolve_crypto(out: &mut Vec<Reading>) {
             None => out.push(Reading::unavailable(
                 format!("{base}.throughput"),
                 Some(Unit::BytesPerSecond),
-                "simon holds no throughput estimate for this primitive",
+                "IronMonitor holds no throughput estimate for this primitive",
             )),
         }
     }
@@ -3594,7 +3594,7 @@ fn resolve_crypto(out: &mut Vec<Reading>) {
         // feature list above routinely carries RDRAND and RDSEED while
         // `rng_sources` comes back empty, because the two are filled by
         // different probes and only one of them is implemented there. Asserting
-        // the machine has no random source while simon has just reported the
+        // the machine has no random source while IronMonitor has just reported the
         // instruction that provides one is a contradiction an agent would be
         // right to act on and wrong to believe.
         let instruction_present = accelerated.iter().any(|f| {
@@ -3964,9 +3964,9 @@ mod tests {
 
     /// An id an agent cannot type is not an id.
     ///
-    /// Device names come from vendors, not from simon: the first version of the
+    /// Device names come from vendors, not from ironmon: the first version of the
     /// network resolver emitted `network.Bluetooth Network Connection.rx_bytes`,
-    /// which cannot be passed to `simon get` without quoting and whose spaces make
+    /// which cannot be passed to `ironmon get` without quoting and whose spaces make
     /// the dotted structure ambiguous. Segments are sanitised at construction; this
     /// asserts the whole snapshot honours it.
     #[test]
@@ -4046,7 +4046,7 @@ mod tests {
 
     /// Every domain the ontology declares must appear in a snapshot, even when the
     /// machine has no such device. Silence would leave an agent unable to tell "no
-    /// disks here" from "simon does not read disks".
+    /// disks here" from "IronMonitor does not read disks".
     #[test]
     fn no_declared_domain_is_silently_absent() {
         let readings = snapshot();

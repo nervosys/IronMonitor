@@ -1,5 +1,5 @@
-use simonlib::gpu::GpuCollection;
-use simonlib::Result;
+use ironmonlib::gpu::GpuCollection;
+use ironmonlib::Result;
 use std::thread;
 use std::time::Duration;
 

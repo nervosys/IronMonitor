@@ -1,6 +1,6 @@
 //! User Consent Management
 //!
-//! # simon collects nothing and transmits nothing
+//! # IronMonitor collects nothing and transmits nothing
 //!
 //! Read this before anything else in the module, because the rest of it
 //! describes machinery that does not currently drive anything.
@@ -24,7 +24,7 @@
 //!   This module previously defaulted to granted while describing itself as
 //!   opt-in; the two cannot both be true, and the safe reading is the one that
 //!   does not assume permission nobody gave.
-//! - **Easy opt-out**: `simon privacy opt-out` records a denial for every scope
+//! - **Easy opt-out**: `ironmon privacy opt-out` records a denial for every scope
 //! - **Transparency**: the disclosure says what *would* be collected, and says
 //!   plainly that none of it is
 //! - **Auditability**: every consent decision is stored with the time it was made
@@ -36,7 +36,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::consent::{ConsentManager, ConsentScope};
+//! use ironmonlib::consent::{ConsentManager, ConsentScope};
 //!
 //! let mut manager = ConsentManager::load()?;
 //!
@@ -53,7 +53,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -68,7 +68,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// # Example
 ///
 /// ```no_run
-/// use simonlib::consent::is_telemetry_disabled;
+/// use ironmonlib::consent::is_telemetry_disabled;
 ///
 /// if is_telemetry_disabled() {
 ///     // Skip any telemetry code paths
@@ -76,7 +76,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// }
 /// ```
 pub fn is_telemetry_disabled() -> bool {
-    std::env::var("SIMON_NO_TELEMETRY").is_ok() || std::env::var("SIMON_OFFLINE").is_ok()
+    std::env::var("IRONMON_NO_TELEMETRY").is_ok() || std::env::var("IRONMON_OFFLINE").is_ok()
 }
 
 /// Check if running in offline mode (all network features disabled).
@@ -86,7 +86,7 @@ pub fn is_telemetry_disabled() -> bool {
 /// # Example
 ///
 /// ```no_run
-/// use simonlib::consent::is_offline_mode;
+/// use ironmonlib::consent::is_offline_mode;
 ///
 /// if is_offline_mode() {
 ///     // Skip any network-dependent features
@@ -94,7 +94,7 @@ pub fn is_telemetry_disabled() -> bool {
 /// }
 /// ```
 pub fn is_offline_mode() -> bool {
-    std::env::var("SIMON_OFFLINE").is_ok()
+    std::env::var("IRONMON_OFFLINE").is_ok()
 }
 
 /// Consent scopes - each represents a specific type of data collection
@@ -155,7 +155,7 @@ impl ConsentScope {
     ///
     /// Every arm is `false`, and that is the point. The five scopes, their
     /// descriptions and their itemised data points were written for a
-    /// collector that was never built, and `simon privacy` displayed them as
+    /// collector that was never built, and `ironmon privacy` displayed them as
     /// though the collection were happening and merely switched off.
     ///
     /// **If you add a collector, flip its scope here in the same change.**
@@ -280,14 +280,14 @@ impl ConsentManager {
         let config_dir = if cfg!(windows) {
             std::env::var("APPDATA")
                 .map(PathBuf::from)
-                .map_err(|_| SimonError::Configuration("APPDATA not set".into()))?
+                .map_err(|_| IronError::Configuration("APPDATA not set".into()))?
         } else {
             std::env::var("HOME")
                 .map(|h| PathBuf::from(h).join(".config"))
-                .map_err(|_| SimonError::Configuration("HOME not set".into()))?
+                .map_err(|_| IronError::Configuration("HOME not set".into()))?
         };
 
-        Ok(config_dir.join("simon").join("consent.toml"))
+        Ok(config_dir.join("ironmon").join("consent.toml"))
     }
 
     /// Load consent configuration from default path
@@ -300,11 +300,11 @@ impl ConsentManager {
     pub fn load_from(path: &PathBuf) -> Result<Self> {
         let config = if path.exists() {
             let contents = fs::read_to_string(path).map_err(|e| {
-                SimonError::Configuration(format!("Failed to read consent config: {}", e))
+                IronError::Configuration(format!("Failed to read consent config: {}", e))
             })?;
 
             toml::from_str(&contents).map_err(|e| {
-                SimonError::Configuration(format!("Failed to parse consent config: {}", e))
+                IronError::Configuration(format!("Failed to parse consent config: {}", e))
             })?
         } else {
             ConsentConfig::default()
@@ -321,16 +321,16 @@ impl ConsentManager {
         // Create parent directory if it doesn't exist
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                SimonError::Configuration(format!("Failed to create config directory: {}", e))
+                IronError::Configuration(format!("Failed to create config directory: {}", e))
             })?;
         }
 
         let contents = toml::to_string_pretty(&self.config).map_err(|e| {
-            SimonError::Configuration(format!("Failed to serialize consent config: {}", e))
+            IronError::Configuration(format!("Failed to serialize consent config: {}", e))
         })?;
 
         fs::write(&self.config_path, contents).map_err(|e| {
-            SimonError::Configuration(format!("Failed to write consent config: {}", e))
+            IronError::Configuration(format!("Failed to write consent config: {}", e))
         })?;
 
         Ok(())
@@ -345,11 +345,12 @@ impl ConsentManager {
     ///
     /// # Runtime Opt-Out
     ///
-    /// Also returns `false` if the SIMON_NO_TELEMETRY or SIMON_OFFLINE environment
+    /// Also returns `false` if the IRONMON_NO_TELEMETRY or IRONMON_OFFLINE environment
     /// variables are set (via --no-telemetry or --offline CLI flags).
     pub fn has_consent(&self, scope: ConsentScope) -> bool {
         // CRITICAL: Check runtime opt-out flags first (set by CLI --no-telemetry or --offline)
-        if std::env::var("SIMON_NO_TELEMETRY").is_ok() || std::env::var("SIMON_OFFLINE").is_ok() {
+        if std::env::var("IRONMON_NO_TELEMETRY").is_ok() || std::env::var("IRONMON_OFFLINE").is_ok()
+        {
             return false;
         }
 
@@ -386,7 +387,8 @@ impl ConsentManager {
         }
 
         // Check runtime opt-out flags first (fastest check, set by CLI)
-        if std::env::var("SIMON_NO_TELEMETRY").is_ok() || std::env::var("SIMON_OFFLINE").is_ok() {
+        if std::env::var("IRONMON_NO_TELEMETRY").is_ok() || std::env::var("IRONMON_OFFLINE").is_ok()
+        {
             return false;
         }
 
@@ -483,7 +485,7 @@ impl ConsentManager {
 
     /// Export consent status as human-readable string
     pub fn export_consent_status(&self) -> String {
-        let mut output = String::from("=== Silicon Monitor - Consent Status ===\n\n");
+        let mut output = String::from("=== IronMonitor - Consent Status ===\n\n");
 
         if let Some(first_prompt) = self.config.first_prompt_timestamp {
             output.push_str(&format!(
@@ -536,7 +538,7 @@ impl ConsentManager {
     /// Request consent interactively (CLI mode)
     pub fn request_consent(&mut self, scope: ConsentScope) -> Result<bool> {
         println!("\n╔════════════════════════════════════════════════════════════════╗");
-        println!("║           Silicon Monitor - Data Collection Consent           ║");
+        println!("║           IronMonitor - Data Collection Consent           ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
 
         println!("Scope: {}\n", scope.name());
@@ -547,8 +549,8 @@ impl ConsentManager {
         }
         println!();
         println!("You can review and change your consent at any time by:");
-        println!("  - Running: simon --consent-status");
-        println!("  - Running: simon --revoke-consent");
+        println!("  - Running: ironmon --consent-status");
+        println!("  - Running: ironmon --revoke-consent");
         println!();
 
         loop {
@@ -556,7 +558,7 @@ impl ConsentManager {
             let mut input = String::new();
             std::io::stdin()
                 .read_line(&mut input)
-                .map_err(|e| SimonError::Configuration(format!("Failed to read input: {}", e)))?;
+                .map_err(|e| IronError::Configuration(format!("Failed to read input: {}", e)))?;
 
             let input = input.trim().to_lowercase();
             match input.as_str() {
@@ -580,9 +582,9 @@ impl ConsentManager {
     /// Request multiple consents interactively
     pub fn request_all_consents(&mut self) -> Result<()> {
         println!("\n╔════════════════════════════════════════════════════════════════╗");
-        println!("║           Welcome to Silicon Monitor!                         ║");
+        println!("║           Welcome to IronMonitor!                         ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
-        println!("This is your first time running Silicon Monitor.");
+        println!("This is your first time running IronMonitor.");
         println!("We respect your privacy and will only collect data you explicitly consent to.\n");
         println!("You'll be asked about several types of optional data collection.");
         println!("You can say 'no' to all of them - the tool works perfectly without any data collection.\n");
@@ -604,9 +606,9 @@ impl ConsentManager {
         println!("║           Consent Setup Complete                              ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
         println!("You can review or change these settings at any time:");
-        println!("  simon --consent-status      # View current consent status");
-        println!("  simon --revoke-consent      # Revoke all consents");
-        println!("  simon --consent-review      # Review and change specific consents\n");
+        println!("  ironmon --consent-status      # View current consent status");
+        println!("  ironmon --revoke-consent      # Revoke all consents");
+        println!("  ironmon --consent-review      # Review and change specific consents\n");
 
         Ok(())
     }
@@ -679,13 +681,13 @@ mod tests {
         ConsentScope::Analytics,
     ];
 
-    /// The disclosure in this module, and everything `simon privacy` prints,
+    /// The disclosure in this module, and everything `ironmon privacy` prints,
     /// says that nothing is collected. This is what makes that a checked claim
     /// rather than a comment.
     ///
     /// It fails the moment a scope is marked implemented, which is exactly when
-    /// the module docs, `simon privacy status`, `simon privacy info` and
-    /// `simon privacy opt-in` all stop being true and need rewriting. Deleting
+    /// the module docs, `ironmon privacy status`, `ironmon privacy info` and
+    /// `ironmon privacy opt-in` all stop being true and need rewriting. Deleting
     /// this test to make a new collector pass would remove the only thing
     /// keeping those four in step.
     #[test]
@@ -713,8 +715,8 @@ mod tests {
                 !scope.is_collected(),
                 concat!(
                     "{} claims to be collected. If that is now true, update the ",
-                    "module docs and the three `simon privacy` screens, which ",
-                    "all state that simon collects and transmits nothing."
+                    "module docs and the three `ironmon privacy` screens, which ",
+                    "all state that IronMonitor collects and transmits nothing."
                 ),
                 scope.name()
             );

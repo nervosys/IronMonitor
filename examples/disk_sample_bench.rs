@@ -5,7 +5,7 @@
 
 fn main() {
     let t = std::time::Instant::now();
-    let disks = simonlib::disk::enumerate_disks().unwrap_or_default();
+    let disks = ironmonlib::disk::enumerate_disks().unwrap_or_default();
     println!(
         "enumerate_disks: {:?} ({} disks)\n",
         t.elapsed(),

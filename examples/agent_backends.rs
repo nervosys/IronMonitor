@@ -6,11 +6,11 @@
 //! - Switching between local and remote backends
 //! - Using different AI models (OpenAI, Anthropic, Ollama, IronWorks)
 
-use simonlib::agent::{Agent, AgentConfig, BackendConfig, BackendDiscovery, BackendType};
-use simonlib::SiliconMonitor;
+use ironmonlib::agent::{Agent, AgentConfig, BackendConfig, BackendDiscovery, BackendType};
+use ironmonlib::UnifiedMonitor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Silicon Monitor - AI Agent Backend Discovery\n");
+    println!("IronMonitor - AI Agent Backend Discovery\n");
     println!("{}", "=".repeat(60));
 
     // 1. Discover available backends
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{}", "=".repeat(60));
     println!("\n2. Using the Recommended Backend\n");
 
-    let monitor = SiliconMonitor::new()?;
+    let monitor = UnifiedMonitor::new()?;
 
     match AgentConfig::auto_detect().and_then(Agent::new) {
         // Don't `?` the query itself: this reaches a real backend, which can time
@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             // List available models
             let ollama_config = BackendConfig::ollama("llama3");
-            let client = simonlib::agent::RemoteClient::new(ollama_config)?;
+            let client = ironmonlib::agent::RemoteClient::new(ollama_config)?;
 
             match client.list_models() {
                 Ok(models) => {
@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n7. Recommendations\n");
 
     println!("For quick testing:");
-    println!("  → IronWorks, simon's built-in engine: local, no account needed\n");
+    println!("  → IronWorks, ironmon's built-in engine: local, no account needed\n");
 
     println!("For better reasoning (local):");
     println!("  → Ollama with llama3 or mistral");

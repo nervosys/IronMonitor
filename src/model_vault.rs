@@ -8,7 +8,7 @@
 //!
 //! # Read-only, and that is a design constraint rather than a phase
 //!
-//! simon reports; it does not manage models. Nothing here unlocks a vault, asks
+//! IronMonitor reports; it does not manage models. Nothing here unlocks a vault, asks
 //! for a passphrase, or writes to one. Three consequences follow from reading
 //! IronVault's source rather than assuming:
 //!
@@ -20,7 +20,7 @@
 //! 2. **`VaultConfig::new` also has side effects**, which the first version of
 //!    this module missed and a real run caught: it creates IronVault's config,
 //!    data and cache directories and writes a default `config.yaml` when none
-//!    exists. On a machine that has never run IronVault, asking simon what
+//!    exists. On a machine that has never run IronVault, asking ironmon what
 //!    models it has would therefore install IronVault's furniture. So
 //!    [`installed`] probes for an existing installation *before* any IronVault
 //!    constructor runs, and [`read_vault`] returns [`VaultStatus::Absent`] on a
@@ -32,17 +32,17 @@
 //!    fix is upstream, and this guard should be deleted the moment
 //!    `VaultConfig` gains a read-only path resolver.
 //! 3. **Opening writes to the vault's own audit log** unless
-//!    `security.audit_log` is off. simon turns it off: it never mutates a vault,
-//!    so an entry claiming otherwise on every `simon vault` would be noise in
+//!    `security.audit_log` is off. ironmon turns it off: it never mutates a vault,
+//!    so an entry claiming otherwise on every `ironmon vault` would be noise in
 //!    someone else's compliance record.
 //!
 //! # Metadata is readable while the vault is locked
 //!
 //! `list_models` and `list_versions` go through the version backend and take
 //! `&self` with no unlock check, so names, formats, sizes and checksums are
-//! available without a key. The model *bytes* are not, and simon never asks for
+//! available without a key. The model *bytes* are not, and IronMonitor never asks for
 //! them. A locked vault is therefore fully reportable, which is the property
-//! that makes this integration honest: no credential ever reaches simon.
+//! that makes this integration honest: no credential ever reaches ironmon.
 //!
 //! # What is reported is what IronVault records
 //!
@@ -74,16 +74,16 @@ pub struct VaultModel {
     /// RFC 3339, as IronVault stored it.
     pub created: String,
     /// Whatever the person who stored the model attached. Passed through
-    /// untouched — simon does not know what these keys mean and does not
+    /// untouched — IronMonitor does not know what these keys mean and does not
     /// pretend to.
     pub metadata: BTreeMap<String, String>,
 }
 
-/// Everything simon can say about a vault it can see.
+/// Everything IronMonitor can say about a vault it can see.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultReport {
     pub path: PathBuf,
-    /// `false` means metadata only, which is all simon ever reads. Reported so
+    /// `false` means metadata only, which is all ironmon ever reads. Reported so
     /// nobody wonders whether a locked vault is being under-reported: it is not.
     pub unlocked: bool,
     pub models: Vec<VaultModel>,
@@ -182,7 +182,7 @@ pub fn read_vault() -> VaultStatus {
             // The directory the probe found, not an empty path. An earlier
             // version put `PathBuf::new()` here, which is the same defect
             // `NotInstalled` was added to remove — it just survived in a
-            // different arm, so a caller asking where simon looked got "".
+            // different arm, so a caller asking where ironmon looked got "".
             return VaultStatus::Failed {
                 path: config_dir,
                 reason: format!("could not resolve the vault configuration: {e}"),
@@ -198,7 +198,7 @@ pub fn read_vault() -> VaultStatus {
         return VaultStatus::Absent { path };
     }
 
-    // simon only ever reads, so it does not write "vault opened" into someone
+    // IronMonitor only ever reads, so it does not write "vault opened" into someone
     // else's audit trail on every invocation.
     config.security.audit_log = false;
 
@@ -324,7 +324,7 @@ mod tests {
     /// `IRONVAULT_HOME` so the assertion is about a directory this test owns.
     #[test]
     fn reading_creates_nothing_when_ironvault_is_not_installed() {
-        let root = std::env::temp_dir().join(format!("simon-vault-probe-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ironmon-vault-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         // SAFETY-ish: single-threaded within this test's scope, and the value is
@@ -344,14 +344,14 @@ mod tests {
         );
     }
 
-    /// simon never holds a key, so a locked vault must still report its
+    /// IronMonitor never holds a key, so a locked vault must still report its
     /// contents rather than looking empty.
     #[test]
     fn a_locked_vault_is_still_reportable() {
         if let VaultStatus::Present(report) = read_vault() {
             assert!(
                 !report.unlocked,
-                "simon must never unlock a vault; it has no passphrase to do it with"
+                "IronMonitor must never unlock a vault; it has no passphrase to do it with"
             );
         }
     }

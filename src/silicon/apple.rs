@@ -159,7 +159,7 @@ impl AppleSiliconMonitor {
     /// Start powermetrics process
     #[allow(dead_code)]
     fn start_powermetrics(&mut self, interval_ms: u32) -> Result<()> {
-        let temp_file = format!("/tmp/simon_powermetrics_{}", std::process::id());
+        let temp_file = format!("/tmp/ironmon_powermetrics_{}", std::process::id());
 
         let child = Command::new("sudo")
             .args([
@@ -190,7 +190,7 @@ impl AppleSiliconMonitor {
     pub fn parse_powermetrics(&self) -> Result<PowermetricsData> {
         #[cfg(all(feature = "apple", target_os = "macos"))]
         {
-            let temp_file = format!("/tmp/simon_powermetrics_{}", std::process::id());
+            let temp_file = format!("/tmp/ironmon_powermetrics_{}", std::process::id());
 
             // Read the plist file
             let data = std::fs::read(&temp_file).map_err(Error::Io)?;

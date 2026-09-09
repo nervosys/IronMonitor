@@ -3,7 +3,7 @@
 
 //! Monitoring daemon for headless/remote operation
 //!
-//! Runs simon as a background service with HTTP API, Prometheus metrics,
+//! Runs ironmon as a background service with HTTP API, Prometheus metrics,
 //! and optional fleet push reporting.
 
 use serde::{Deserialize, Serialize};
@@ -92,11 +92,11 @@ impl DaemonConfig {
 
     /// Generate sample config
     pub fn sample_toml() -> String {
-        r#"# Simon Monitoring Daemon Configuration
+        r#"# IronMonitor Monitoring Daemon Configuration
 host = "0.0.0.0"
 port = 9100
 poll_interval_secs = 5
-# pid_file = "/var/run/simon.pid"
+# pid_file = "/var/run/ironmon.pid"
 log_level = "Info"
 enable_prometheus = true
 enable_rest_api = true
@@ -201,7 +201,7 @@ impl MonitoringDaemon {
     /// Until this existed, `MonitoringDaemon` was configuration plumbing with no way
     /// to run anything: it parsed TOML, wrote a PID file and exposed getters, but
     /// never started a server or collected a sample. `grafana/README.md` nonetheless
-    /// documented `simon daemon --config simon.toml` as a way to serve metrics.
+    /// documented `ironmon daemon --config ironmon.toml` as a way to serve metrics.
     ///
     /// Refuses to start when bound to a routable address without an API key. The
     /// default host is `0.0.0.0`, so without that check the common path would serve
@@ -241,7 +241,7 @@ impl MonitoringDaemon {
         if self.fleet_push_enabled() {
             // Say so rather than silently ignoring a configured feature.
             eprintln!(
-                "[simon] warning: fleet push is configured but not implemented; \
+                "[ironmon] warning: fleet push is configured but not implemented; \
                  no metrics will be pushed to the fleet endpoint"
             );
         }

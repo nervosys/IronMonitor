@@ -8,7 +8,7 @@
 //! command exposes it, so an agent cannot reach it without linking the library.
 //!
 //! [`crate::ontology`] covers the same ground with all three, and is what
-//! `simon describe`, `simon get` and `simon snapshot` speak. Two things called
+//! `ironmon describe`, `ironmon get` and `ironmon snapshot` speak. Two things called
 //! "ontology" in one crate is the naming drift the new module exists to end, so
 //! this one is deprecated rather than left as a second answer to the same
 //! question. A test asserts every domain named here is present there, so nothing
@@ -46,7 +46,7 @@ impl HardwareOntology {
     pub fn complete() -> Self {
         Self {
             version: "1.0.0",
-            name: "Silicon Monitor Hardware Ontology",
+            name: "IronMonitor Hardware Ontology",
             description: "Comprehensive ontology for hardware monitoring enabling AI agents to understand computer hardware state.",
             domains: vec![
                 HardwareDomain {

@@ -1,4 +1,4 @@
-//! Cyber theme for Silicon Monitor GUI
+//! Cyber theme for IronMonitor GUI
 //!
 //! A dark cyberpunk-inspired theme with neon accents
 //! Now with Glances-style threshold colors

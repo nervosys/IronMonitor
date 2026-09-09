@@ -1,4 +1,4 @@
-# Contributing to Silicon Monitor
+# Contributing to IronMonitor
 
 Thank you for your interest in contributing! We welcome contributions from the community.
 
@@ -8,7 +8,7 @@ Before your contribution can be accepted, you must agree to our
 [Contributor License Agreement](CLA.md). By submitting a pull request, you
 indicate your agreement to the CLA terms.
 
-**Why a CLA?** Silicon Monitor is dual-licensed under the AGPL v3 (open source)
+**Why a CLA?** IronMonitor is dual-licensed under the AGPL v3 (open source)
 and a commercial license. The CLA ensures that contributions can be distributed
 under both licenses, enabling the project to remain sustainable while staying
 open source.
@@ -42,5 +42,5 @@ Be respectful, constructive, and inclusive. We follow the
 
 ## Questions?
 
-Open a [Discussion](https://github.com/nervosys/SiliconMonitor/discussions) or
+Open a [Discussion](https://github.com/nervosys/IronMonitor/discussions) or
 reach out at licensing@nervosys.com for licensing questions.

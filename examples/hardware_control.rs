@@ -7,7 +7,7 @@
 //!
 //! Run with: `cargo run --example hardware_control --features cli`
 
-use simonlib::{AudioMonitor, BluetoothMonitor};
+use ironmonlib::{AudioMonitor, BluetoothMonitor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hardware Control APIs Demo ===\n");
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Audio Control ---");
     let mut audio = AudioMonitor::new()?;
 
-    // Show current state. Both read `None`: nothing in simon reads the system
+    // Show current state. Both read `None`: nothing in IronMonitor reads the system
     // mixer on any platform yet.
     println!("Initial master volume: {:?}", audio.master_volume());
     println!("Initial mute state: {:?}", audio.is_muted());

@@ -1,4 +1,4 @@
-// memory_management.rs - Memory and swap management module for simon
+// memory_management.rs - Memory and swap management module for ironmon
 //
 // Provides comprehensive memory, swap, and virtual memory monitoring and control.
 // Inspired by jetson_stats memory management features.
@@ -1043,10 +1043,10 @@ impl MemoryMonitor {
         let output = Command::new("sysctl")
             .args(["-w", &format!("vm.swappiness={}", value)])
             .output()
-            .map_err(|e| crate::error::SimonError::System(e.to_string()))?;
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         if !output.status.success() {
-            return Err(crate::error::SimonError::System(
+            return Err(crate::error::IronError::System(
                 "Failed to set swappiness (requires root)".to_string(),
             ));
         }
@@ -1076,10 +1076,10 @@ impl MemoryMonitor {
         let output = Command::new("sh")
             .args(["-c", &format!("echo {} > {}", level, path)])
             .output()
-            .map_err(|e| crate::error::SimonError::System(e.to_string()))?;
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         if !output.status.success() {
-            return Err(crate::error::SimonError::System(
+            return Err(crate::error::IronError::System(
                 "Failed to drop caches (requires root)".to_string(),
             ));
         }
@@ -1099,10 +1099,10 @@ impl MemoryMonitor {
                 "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()",
             ])
             .output()
-            .map_err(|e| crate::error::SimonError::System(e.to_string()))?;
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         if !output.status.success() {
-            return Err(crate::error::SimonError::System(
+            return Err(crate::error::IronError::System(
                 "Failed to clear standby memory".to_string(),
             ));
         }
@@ -1117,10 +1117,10 @@ impl MemoryMonitor {
 
         let output = Command::new("purge")
             .output()
-            .map_err(|e| crate::error::SimonError::System(e.to_string()))?;
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         if !output.status.success() {
-            return Err(crate::error::SimonError::System(
+            return Err(crate::error::IronError::System(
                 "Failed to purge memory (requires Developer Tools)".to_string(),
             ));
         }

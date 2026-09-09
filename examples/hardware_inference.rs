@@ -11,7 +11,7 @@
 //!
 //! Run with: `cargo run --example hardware_inference --features cli`
 
-use simonlib::HardwareInferenceEngine;
+use ironmonlib::HardwareInferenceEngine;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hardware inference report ===\n");

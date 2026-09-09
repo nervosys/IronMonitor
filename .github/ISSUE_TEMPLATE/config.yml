@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: 📚 Documentation
-    url: https://github.com/nervosys/SiliconMonitor
+    url: https://github.com/nervosys/IronMonitor
     about: Check the README and docs for usage information
   - name: 💬 Discussions
-    url: https://github.com/nervosys/SiliconMonitor/discussions
+    url: https://github.com/nervosys/IronMonitor/discussions
     about: Ask questions and share ideas

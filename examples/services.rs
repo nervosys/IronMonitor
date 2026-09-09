@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo run --release --example services
 
-use simonlib::services::{
+use ironmonlib::services::{
     common_services, get_services_status, is_service_running, service_summary, ServiceMonitor,
     ServiceStatus, StartupType,
 };

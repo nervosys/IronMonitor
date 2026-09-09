@@ -43,7 +43,7 @@ const KNOWN_FABRICATORS: &[&str] = &[
     // crate fabricates a reading.
     //
     // The rename was not cosmetic. Going to do it turned up three live defects
-    // that the misleading name had been hiding: `SiliconMonitor::snapshot_cpu`
+    // that the misleading name had been hiding: `UnifiedMonitor::snapshot_cpu`
     // and `snapshot_memory` returned zeros from the public API, the health
     // checks computed CPU usage from 100% idle so they could never fire, and the
     // Prometheus exporter published 0% CPU on every scrape.

@@ -9,7 +9,7 @@
 //! cargo run --release --example backend_discovery --features "cli,remote-backends"
 //! ```
 
-use simonlib::agent::{BackendCapabilities, BackendDiscovery, BackendType};
+use ironmonlib::agent::{BackendCapabilities, BackendDiscovery, BackendType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AI Backend Discovery System ===\n");
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if caps.supports_streaming { "Yes" } else { "No" }
         );
 
-        // `None` means "simon does not know the rate", which is only the same as
+        // `None` means "IronMonitor does not know the rate", which is only the same as
         // "free" when inference happens on this machine. Printing "Free" for a
         // hosted provider would understate the cost of every query by its whole
         // price.

@@ -1,4 +1,4 @@
-# simon CLI - Complete Command Reference
+# ironmon CLI - Complete Command Reference
 
 A comprehensive command-line tool for NVIDIA GPU monitoring and Jetson device management.
 
@@ -6,13 +6,13 @@ A comprehensive command-line tool for NVIDIA GPU monitoring and Jetson device ma
 
 ```bash
 cargo build --release --features full
-sudo cp target/release/simon /usr/local/bin/
+sudo cp target/release/ironmon /usr/local/bin/
 ```
 
 ## Command Structure
 
 ```
-simon [OPTIONS] [COMMAND]
+ironmon [OPTIONS] [COMMAND]
 ```
 
 ## Agent-facing commands
@@ -23,24 +23,24 @@ specification, derived, or is unavailable here — see [AGENTS.md](AGENTS.md) fo
 full contract.
 
 ```bash
-simon describe                    # every reportable value: id, unit, provenance
-simon describe --commands         # the command surface, generated from the parser
-simon describe --writable         # only what can be written back
-simon describe --search thermal   # find ids without knowing the namespace
-simon get memory.total            # read one value by id
-simon snapshot --validate         # read everything, range-checked
+ironmon describe                    # every reportable value: id, unit, provenance
+ironmon describe --commands         # the command surface, generated from the parser
+ironmon describe --writable         # only what can be written back
+ironmon describe --search thermal   # find ids without knowing the namespace
+ironmon get memory.total            # read one value by id
+ironmon snapshot --validate         # read everything, range-checked
 ```
 
-`simon get` exits 1 for an unknown id and 2 for a known id with no value here, so a
+`ironmon get` exits 1 for an unknown id and 2 for a known id with no value here, so a
 caller can tell "no such thing" from "nothing to report".
 
 The interactive surfaces render headlessly for callers with no terminal or display:
 
 ```bash
-simon tui --frame --tab CPU       # one TUI frame as text
-simon tui --script script.txt     # drive the TUI and assert on what it shows
-simon gui --script script.txt     # navigate GUI tabs and assert on painted text
-simon gui --frame --tab profiles  # the text a GUI tab paints
+ironmon tui --frame --tab CPU       # one TUI frame as text
+ironmon tui --script script.txt     # drive the TUI and assert on what it shows
+ironmon gui --script script.txt     # navigate GUI tabs and assert on painted text
+ironmon gui --frame --tab profiles  # the text a GUI tab paints
 ```
 
 ## Global Options
@@ -55,7 +55,7 @@ simon gui --frame --tab profiles  # the text a GUI tab paints
 ### Interactive Mode (Default)
 
 ```bash
-simon
+ironmon
 ```
 
 Launches an interactive terminal UI showing real-time stats. Press 'q' to quit.
@@ -63,8 +63,8 @@ Launches an interactive terminal UI showing real-time stats. Press 'q' to quit.
 ### Board Information
 
 ```bash
-simon cli board
-simon cli board --format json
+ironmon cli board
+ironmon cli board --format json
 ```
 
 Shows hardware information:
@@ -78,8 +78,8 @@ Shows hardware information:
 ### GPU Monitoring
 
 ```bash
-simon cli gpu
-simon cli gpu --format json
+ironmon cli gpu
+ironmon cli gpu --format json
 ```
 
 Displays GPU statistics:
@@ -93,8 +93,8 @@ Displays GPU statistics:
 ### CPU Monitoring
 
 ```bash
-simon cli cpu
-simon cli cpu --format json
+ironmon cli cpu
+ironmon cli cpu --format json
 ```
 
 Shows CPU information:
@@ -107,8 +107,8 @@ Shows CPU information:
 ### Memory Monitoring
 
 ```bash
-simon cli memory
-simon cli memory --format json
+ironmon cli memory
+ironmon cli memory --format json
 ```
 
 Memory statistics:
@@ -120,8 +120,8 @@ Memory statistics:
 ### Power Monitoring
 
 ```bash
-simon cli power
-simon cli power --format json
+ironmon cli power
+ironmon cli power --format json
 ```
 
 Power consumption:
@@ -133,8 +133,8 @@ Power consumption:
 ### Temperature Monitoring
 
 ```bash
-simon cli temperature
-simon cli temperature --format json
+ironmon cli temperature
+ironmon cli temperature --format json
 ```
 
 Temperature readings:
@@ -145,8 +145,8 @@ Temperature readings:
 ### Process Monitoring
 
 ```bash
-simon cli processes
-simon cli processes --format json
+ironmon cli processes
+ironmon cli processes --format json
 ```
 
 GPU process information:
@@ -162,8 +162,8 @@ GPU process information:
 ### Engine Monitoring
 
 ```bash
-simon cli engines
-simon cli engines --format json
+ironmon cli engines
+ironmon cli engines --format json
 ```
 
 Hardware accelerator status:
@@ -182,8 +182,8 @@ Hardware accelerator status:
 ### All Statistics
 
 ```bash
-simon cli all
-simon cli all --format json
+ironmon cli all
+ironmon cli all --format json
 ```
 
 ## Advanced Utilities
@@ -195,7 +195,7 @@ Performance maximization tool.
 #### Enable (Maximize Performance)
 
 ```bash
-sudo simon cli jetson clocks enable
+sudo ironmon cli jetson clocks enable
 ```
 
 Sets all frequencies to maximum:
@@ -207,7 +207,7 @@ Sets all frequencies to maximum:
 #### Disable (Restore Settings)
 
 ```bash
-sudo simon cli jetson clocks disable
+sudo ironmon cli jetson clocks disable
 ```
 
 Restores saved configuration or default settings.
@@ -215,7 +215,7 @@ Restores saved configuration or default settings.
 #### Status
 
 ```bash
-simon cli jetson clocks status
+ironmon cli jetson clocks status
 ```
 
 Shows:
@@ -226,7 +226,7 @@ Shows:
 #### Store Configuration
 
 ```bash
-sudo simon cli jetson clocks store
+sudo ironmon cli jetson clocks store
 ```
 
 Saves current configuration for later restoration.
@@ -238,7 +238,7 @@ Power mode management.
 #### Show Current Mode
 
 ```bash
-simon cli jetson powermode show
+ironmon cli jetson powermode show
 ```
 
 Displays:
@@ -248,7 +248,7 @@ Displays:
 #### List All Modes
 
 ```bash
-simon cli jetson powermode list
+ironmon cli jetson powermode list
 ```
 
 Shows:
@@ -260,8 +260,8 @@ Shows:
 #### Set Mode by ID
 
 ```bash
-sudo simon cli jetson powermode set <MODE_ID>
-sudo simon cli jetson powermode set <MODE_ID> --force
+sudo ironmon cli jetson powermode set <MODE_ID>
+sudo ironmon cli jetson powermode set <MODE_ID> --force
 ```
 
 Changes power mode by ID (0, 1, 2, etc.).
@@ -272,8 +272,8 @@ Options:
 #### Set Mode by Name
 
 ```bash
-sudo simon cli jetson powermode set-name <MODE_NAME>
-sudo simon cli jetson powermode set-name <MODE_NAME> --force
+sudo ironmon cli jetson powermode set-name <MODE_NAME>
+sudo ironmon cli jetson powermode set-name <MODE_NAME> --force
 ```
 
 Changes power mode by name (MAXN, MODE_15W, MODE_10W, etc.).
@@ -288,7 +288,7 @@ Swap file creation and management.
 #### Status
 
 ```bash
-simon cli jetson swap status
+ironmon cli jetson swap status
 ```
 
 Shows active swap files:
@@ -301,8 +301,8 @@ Shows active swap files:
 #### Create Swap
 
 ```bash
-sudo simon cli jetson swap create
-sudo simon cli jetson swap create --path <PATH> --size <GB> --auto
+sudo ironmon cli jetson swap create
+sudo ironmon cli jetson swap create --path <PATH> --size <GB> --auto
 ```
 
 Creates a new swap file.
@@ -315,19 +315,19 @@ Options:
 Examples:
 ```bash
 # Create 8GB swap at /swapfile
-sudo simon cli jetson swap create
+sudo ironmon cli jetson swap create
 
 # Create 16GB swap with custom path
-sudo simon cli jetson swap create --path /mnt/swap16g --size 16
+sudo ironmon cli jetson swap create --path /mnt/swap16g --size 16
 
 # Create and enable on boot
-sudo simon cli jetson swap create --size 12 --auto
+sudo ironmon cli jetson swap create --size 12 --auto
 ```
 
 #### Enable Swap
 
 ```bash
-sudo simon cli jetson swap enable <PATH>
+sudo ironmon cli jetson swap enable <PATH>
 ```
 
 Activates an existing swap file.
@@ -335,7 +335,7 @@ Activates an existing swap file.
 #### Disable Swap
 
 ```bash
-sudo simon cli jetson swap disable <PATH>
+sudo ironmon cli jetson swap disable <PATH>
 ```
 
 Temporarily deactivates swap file.
@@ -343,7 +343,7 @@ Temporarily deactivates swap file.
 #### Remove Swap
 
 ```bash
-sudo simon cli jetson swap remove <PATH>
+sudo ironmon cli jetson swap remove <PATH>
 ```
 
 Disables and deletes swap file.
@@ -354,78 +354,78 @@ Disables and deletes swap file.
 
 ```bash
 # Interactive monitoring
-simon
+ironmon
 
 # One-time snapshot
-simon cli all
+ironmon cli all
 
 # JSON output for integration
-simon cli all --format json | jq '.gpus'
+ironmon cli all --format json | jq '.gpus'
 ```
 
 ### Performance Profiling
 
 ```bash
 # Check current status
-simon cli gpu
-simon cli cpu
-simon cli memory
+ironmon cli gpu
+ironmon cli cpu
+ironmon cli memory
 
 # Enable maximum performance
-sudo simon cli jetson powermode set-name MAXN --force
-sudo simon cli jetson clocks enable
+sudo ironmon cli jetson powermode set-name MAXN --force
+sudo ironmon cli jetson clocks enable
 
 # Verify
-simon cli jetson clocks status
-simon cli jetson powermode show
+ironmon cli jetson clocks status
+ironmon cli jetson powermode show
 ```
 
 ### Power Management
 
 ```bash
 # List available modes
-simon cli jetson powermode list
+ironmon cli jetson powermode list
 
 # Switch to 15W mode
-sudo simon cli jetson powermode set 1
+sudo ironmon cli jetson powermode set 1
 
 # Disable jetson_clocks
-sudo simon cli jetson clocks disable
+sudo ironmon cli jetson clocks disable
 ```
 
 ### Memory Management
 
 ```bash
 # Check swap status
-simon cli jetson swap status
+ironmon cli jetson swap status
 
 # Create swap if needed
-sudo simon cli jetson swap create --size 8 --auto
+sudo ironmon cli jetson swap create --size 8 --auto
 
 # Check memory after
-simon cli memory
+ironmon cli memory
 ```
 
 ### Process Tracking
 
 ```bash
 # Monitor GPU processes
-simon cli processes
+ironmon cli processes
 
 # Watch process changes
-watch -n 1 'simon processes'
+watch -n 1 'ironmon processes'
 ```
 
 ### System Setup
 
 ```bash
 # First-time setup
-sudo simon cli jetson swap create --size 8 --auto
-sudo simon cli jetson powermode set-name MAXN
-simon cli board
+sudo ironmon cli jetson swap create --size 8 --auto
+sudo ironmon cli jetson powermode set-name MAXN
+ironmon cli board
 
 # Start monitoring
-simon
+ironmon
 ```
 
 ## Output Formats
@@ -435,7 +435,7 @@ simon
 Human-readable output with labels and formatting.
 
 ```bash
-simon cli gpu
+ironmon cli gpu
 ```
 
 ```
@@ -451,7 +451,7 @@ GPU 0 (Integrated):
 Machine-readable JSON for scripting and integration.
 
 ```bash
-simon cli gpu --format json
+ironmon cli gpu --format json
 ```
 
 ```json
@@ -475,12 +475,12 @@ simon cli gpu --format json
 ## Permissions
 
 - **Read Operations**: No special permissions required
-  - `simon board`, `simon gpu`, `simon cpu`, etc.
+  - `ironmon board`, `ironmon gpu`, `ironmon cpu`, etc.
   
 - **Write Operations**: Require `sudo`
-  - `sudo simon cli jetson clocks enable`
-  - `sudo simon cli jetson powermode set <ID>`
-  - `sudo simon cli jetson swap create`
+  - `sudo ironmon cli jetson clocks enable`
+  - `sudo ironmon cli jetson powermode set <ID>`
+  - `sudo ironmon cli jetson swap create`
 
 ## Platform Availability
 
@@ -510,13 +510,13 @@ simon cli gpu --format json
 
 Example:
 ```bash
-RUST_LOG=debug simon all
+RUST_LOG=debug ironmon all
 ```
 
 ## See Also
 
 - [README.md](README.md) - Main documentation
 - [docs/UTILITIES.md](docs/UTILITIES.md) - Detailed utility documentation
-- [AGENTS.md](AGENTS.md) - Driving simon from an AI agent
+- [AGENTS.md](AGENTS.md) - Driving ironmon from an AI agent
 - [BUILD.md](BUILD.md) - Build instructions
 

@@ -9,7 +9,7 @@
 //! cargo run --release --features full --example active_profiles -- matched
 //! ```
 
-use simonlib::profile::active::{active_profiles_for_processes, matched_active_profiles};
+use ironmonlib::profile::active::{active_profiles_for_processes, matched_active_profiles};
 
 fn main() {
     let only_matched = std::env::args().nth(1).as_deref() == Some("matched");

@@ -66,7 +66,7 @@ fn link_targets(markdown: &str) -> Vec<String> {
     targets
 }
 
-/// A target simon is responsible for: not a URL, not a bare anchor.
+/// A target IronMonitor is responsible for: not a URL, not a bare anchor.
 fn is_local(target: &str) -> bool {
     !target.starts_with("http://")
         && !target.starts_with("https://")
@@ -173,13 +173,13 @@ fn documentation_carries_no_machine_identifiers() {
     );
 }
 
-/// Every `simon …` invocation shown in the documentation must be a real command.
+/// Every `ironmon …` invocation shown in the documentation must be a real command.
 ///
 /// The README's main usage block documented eight commands that do not exist —
-/// `simon cpu`, `simon gpu`, `simon audio`, `simon displays` and others, all of
-/// which live under `simon cli`. It contradicted itself ten lines later, where the
-/// watch-mode examples used the correct `simon cli audio --watch`. `docs/UTILITIES.md`
-/// had `simon all` the same way.
+/// `ironmon cpu`, `ironmon gpu`, `ironmon audio`, `ironmon displays` and others, all of
+/// which live under `ironmon cli`. It contradicted itself ten lines later, where the
+/// watch-mode examples used the correct `ironmon cli audio --watch`. `docs/UTILITIES.md`
+/// had `ironmon all` the same way.
 ///
 /// Anyone following the quick-start hit `error: unrecognized subcommand` on their
 /// first command. Nothing caught it because documentation is not compiled — but
@@ -191,13 +191,13 @@ fn every_documented_command_exists() {
         return;
     };
 
-    let catalog = Command::new(env!("CARGO_BIN_EXE_simon"))
+    let catalog = Command::new(env!("CARGO_BIN_EXE_ironmon"))
         .args(["describe", "--commands", "--format", "json"])
         .output()
-        .expect("simon describe should run");
+        .expect("ironmon describe should run");
     assert!(
         catalog.status.success(),
-        "`simon describe --commands` failed; the catalog is the source of truth here"
+        "`ironmon describe --commands` failed; the catalog is the source of truth here"
     );
     let catalog: serde_json::Value =
         serde_json::from_slice(&catalog.stdout).expect("the catalog should be JSON");
@@ -233,12 +233,12 @@ fn every_documented_command_exists() {
             continue;
         };
         for line in text.lines() {
-            // Only lines that *are* an invocation. Prose mentioning simon in the
+            // Only lines that *are* an invocation. Prose mentioning ironmon in the
             // middle of a sentence is not a command and must not be flagged.
-            let Some(rest) = line.trim_start().strip_prefix("simon ") else {
+            let Some(rest) = line.trim_start().strip_prefix("ironmon ") else {
                 continue;
             };
-            // `simon [OPTIONS] [COMMAND]` is a synopsis, not an invocation — the
+            // `ironmon [OPTIONS] [COMMAND]` is a synopsis, not an invocation — the
             // brackets are the giveaway, and clap prints exactly that shape.
             let tokens: Vec<&str> = rest
                 .split_whitespace()
@@ -247,15 +247,15 @@ fn every_documented_command_exists() {
             if tokens.is_empty() {
                 continue;
             }
-            // Accept the longest prefix that resolves; `simon cli cpu --watch`
-            // is fine, and so is `simon get some.entity.id` where `get` resolves
+            // Accept the longest prefix that resolves; `ironmon cli cpu --watch`
+            // is fine, and so is `ironmon get some.entity.id` where `get` resolves
             // and the rest is an argument.
             let resolves = (1..=tokens.len())
                 .rev()
                 .any(|n| valid.contains(&tokens[..n].join(" ")));
             if !resolves {
                 broken.push(format!(
-                    "{}: simon {}",
+                    "{}: ironmon {}",
                     file.strip_prefix(repo_root()).unwrap_or(file).display(),
                     tokens.join(" ")
                 ));
@@ -265,14 +265,14 @@ fn every_documented_command_exists() {
 
     assert!(
         broken.is_empty(),
-        "documentation shows commands simon does not accept:\n  {}",
+        "documentation shows commands IronMonitor does not accept:\n  {}",
         broken.join("\n  ")
     );
 }
 
 /// An HTTP path named in documentation must be a path the server routes.
 ///
-/// `simon serve --help` said "Prometheus metrics are at /metrics/prometheus
+/// `ironmon serve --help` said "Prometheus metrics are at /metrics/prometheus
 /// (not /metrics — that route returns JSON)". Both halves were wrong:
 /// `/metrics/prometheus` is a 404, and so is `/metrics`. The real path is
 /// `/api/v1/metrics/prometheus`, which the server's own startup banner and
@@ -288,7 +288,7 @@ fn every_documented_command_exists() {
 /// acting on it — they run the command it names and get nothing.
 #[test]
 fn documented_http_paths_match_the_route_table() {
-    use simonlib::observability::server::routes;
+    use ironmonlib::observability::server::routes;
 
     let prometheus = format!("{}{}", routes::API_V1, routes::METRICS_PROMETHEUS);
 

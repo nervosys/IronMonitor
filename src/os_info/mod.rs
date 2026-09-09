@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::os_info::OsInfoMonitor;
+//! use ironmonlib::os_info::OsInfoMonitor;
 //!
 //! let monitor = OsInfoMonitor::new().unwrap();
 //! let info = monitor.info();
@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Operating system family
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +107,7 @@ pub struct OsInfoMonitor {
 
 impl OsInfoMonitor {
     /// Create a new OsInfoMonitor and gather system information.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             info: OsInfo {
                 os_family: OsFamily::Unknown,
@@ -136,7 +136,7 @@ impl OsInfoMonitor {
     }
 
     /// Refresh information.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.info.loaded_modules.clear();
 
         #[cfg(target_os = "linux")]
@@ -184,7 +184,7 @@ impl OsInfoMonitor {
     // ── Linux ──
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         self.info.os_family = OsFamily::Linux;
 
         // /etc/os-release. A distribution without one is unusual but legal, so
@@ -194,7 +194,7 @@ impl OsInfoMonitor {
             Ok(c) => Some(c),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                return Err(SimonError::System(format!(
+                return Err(IronError::System(format!(
                     "cannot read /etc/os-release: {e}"
                 )))
             }
@@ -342,7 +342,7 @@ impl OsInfoMonitor {
     // ── Windows ──
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         use crate::platform::windows as plat;
 
         self.info.os_family = OsFamily::Windows;
@@ -444,7 +444,7 @@ impl OsInfoMonitor {
     // ── macOS ──
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         self.info.os_family = OsFamily::MacOS;
 
         // `sw_vers` ships with macOS and is how the OS names itself, so a

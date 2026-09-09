@@ -40,7 +40,7 @@
 //! check on a zero-access handle, and that the not-an-ATA-device case is handled,
 //! but says nothing about the parse. The 512-byte structure is covered by
 //! [`super::ata_smart`]'s tests against synthetic buffers. Anyone with a SATA SSD
-//! or HDD should compare `simon disk smart` against `smartctl -A` once; that is
+//! or HDD should compare `ironmon disk smart` against `smartctl -A` once; that is
 //! the check this has not had.
 
 use super::ata_smart::{AtaSmartData, STRUCTURE_LEN};

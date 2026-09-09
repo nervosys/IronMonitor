@@ -5,7 +5,7 @@
 //! performance counters. This attributes the cost per device.
 
 fn main() {
-    let collection = simonlib::gpu::GpuCollection::auto_detect().expect("enumerate GPUs");
+    let collection = ironmonlib::gpu::GpuCollection::auto_detect().expect("enumerate GPUs");
     println!("{} GPU(s)\n", collection.gpus().len());
 
     for round in 0..3 {

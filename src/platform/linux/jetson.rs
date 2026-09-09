@@ -1,6 +1,6 @@
 //! Jetson-specific implementations
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use crate::platform::common::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,11 +65,11 @@ pub fn set_gpu_3d_scaling(name: &str, enabled: bool) -> Result<()> {
     let gpu = gpus
         .iter()
         .find(|(n, _)| n == name)
-        .ok_or_else(|| SimonError::DeviceNotFound(format!("GPU '{}' not found", name)))?;
+        .ok_or_else(|| IronError::DeviceNotFound(format!("GPU '{}' not found", name)))?;
 
     let scaling_path = gpu.1.join("enable_3d_scaling");
     if !scaling_path.exists() {
-        return Err(SimonError::FeatureNotAvailable(
+        return Err(IronError::FeatureNotAvailable(
             "3D scaling not available for this GPU".to_string(),
         ));
     }
@@ -95,11 +95,11 @@ pub fn set_gpu_railgate(name: &str, enabled: bool) -> Result<()> {
     let gpu = gpus
         .iter()
         .find(|(n, _)| n == name)
-        .ok_or_else(|| SimonError::DeviceNotFound(format!("GPU '{}' not found", name)))?;
+        .ok_or_else(|| IronError::DeviceNotFound(format!("GPU '{}' not found", name)))?;
 
     let railgate_path = gpu.1.join("railgate_enable");
     if !railgate_path.exists() {
-        return Err(SimonError::FeatureNotAvailable(
+        return Err(IronError::FeatureNotAvailable(
             "Railgate not available for this GPU".to_string(),
         ));
     }
@@ -179,7 +179,7 @@ pub fn read_fan_target_speed() -> Result<Option<u32>> {
 /// Set fan speed (0-255 PWM value or percentage 0-100)
 pub fn set_fan_speed(_name: &str, speed: u32, _index: usize) -> Result<()> {
     let hwmon = find_jetson_fan_hwmon().ok_or_else(|| {
-        SimonError::FeatureNotAvailable("Fan control not available on this device".to_string())
+        IronError::FeatureNotAvailable("Fan control not available on this device".to_string())
     })?;
 
     // Convert percentage to PWM if needed (0-100 -> 0-255)
@@ -209,7 +209,7 @@ pub fn set_fan_speed(_name: &str, speed: u32, _index: usize) -> Result<()> {
         return Ok(());
     }
 
-    Err(SimonError::FeatureNotAvailable(
+    Err(IronError::FeatureNotAvailable(
         "No writable fan control interface found".to_string(),
     ))
 }
@@ -249,14 +249,14 @@ impl FanProfile {
 /// Set fan profile
 pub fn set_fan_profile(_name: &str, profile: &str) -> Result<()> {
     let profile = FanProfile::from_str(profile).ok_or_else(|| {
-        SimonError::Parse(format!(
+        IronError::Parse(format!(
             "Unknown fan profile '{}'. Valid options: quiet, cool, auto, manual",
             profile
         ))
     })?;
 
     let hwmon = find_jetson_fan_hwmon().ok_or_else(|| {
-        SimonError::FeatureNotAvailable("Fan control not available on this device".to_string())
+        IronError::FeatureNotAvailable("Fan control not available on this device".to_string())
     })?;
 
     // Set pwm_enable for mode

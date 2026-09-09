@@ -9,7 +9,7 @@
 //! capture, not what each device is capable of, so macOS device types are inferred
 //! rather than read directly.
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,14 +81,14 @@ struct WindowsEndpoint {
 /// **Why COM and not WMI or the registry.** Neither carries a live master
 /// volume: `Win32_SoundDevice` has no volume property at all, and the
 /// `MMDevices` tree stores endpoint *configuration*, not the current scalar the
-/// mixer shows. The absence reason these readings replace said as much -- "simon
+/// mixer shows. The absence reason these readings replace said as much -- "ironmon
 /// has no mixer binding on this platform" and "which endpoint the system routes
 /// to by default is a COM call this crate does not make" -- and both were
 /// accurate descriptions of an unimplemented reader rather than of the platform.
 ///
 /// Volume is reported as the scalar percentage the mixer displays, which is
 /// what `board.audio.{n}.volume` asks for, and not the dB level: the two differ
-/// by the taper Windows applies, and a consumer comparing simon's figure against
+/// by the taper Windows applies, and a consumer comparing ironmon's figure against
 /// the slider would find the dB one wrong.
 #[cfg(target_os = "windows")]
 fn windows_endpoint_mixer() -> std::collections::HashMap<String, EndpointMixer> {
@@ -226,7 +226,7 @@ pub struct AudioMonitor {
     ///
     /// It never has been. This was initialised to `Some(100)` in the
     /// constructor and no `refresh_*` path on any platform assigns it, so
-    /// `simon cli audio` reported "Master Volume: 100%" on every machine, the
+    /// `ironmon cli audio` reported "Master Volume: 100%" on every machine, the
     /// TUI printed the same, and the agent tool surface published
     /// `"master_volume": 100`. None of those was a reading.
     master_volume: Option<u8>,
@@ -236,7 +236,7 @@ pub struct AudioMonitor {
 }
 
 impl AudioMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             devices: Vec::new(),
             // Nothing reads these yet. Reading the system mixer needs
@@ -250,7 +250,7 @@ impl AudioMonitor {
         Ok(monitor)
     }
 
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.devices.clear();
         #[cfg(target_os = "windows")]
         self.refresh_windows()?;
@@ -295,15 +295,15 @@ impl AudioMonitor {
     ///
     /// It returns an error until a real mixer call is behind it. A control that
     /// reports success without acting is worse than one that is absent.
-    pub fn set_master_volume(&mut self, volume: u8) -> Result<(), crate::error::SimonError> {
+    pub fn set_master_volume(&mut self, volume: u8) -> Result<(), crate::error::IronError> {
         if volume > 100 {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Volume must be 0-100, got {volume}"
             )));
         }
-        Err(crate::error::SimonError::NotImplemented(
+        Err(crate::error::IronError::NotImplemented(
             concat!(
-                "setting the master volume: simon has no mixer binding on this ",
+                "setting the master volume: IronMonitor has no mixer binding on this ",
                 "platform, and this call previously changed only its own copy of ",
                 "the value"
             )
@@ -316,9 +316,9 @@ impl AudioMonitor {
     /// # Not implemented
     ///
     /// See [`Self::set_master_volume`]. This changed only the field.
-    pub fn set_mute(&mut self, _muted: bool) -> Result<(), crate::error::SimonError> {
-        Err(crate::error::SimonError::NotImplemented(
-            "setting the mute state: simon has no mixer binding on this platform".to_string(),
+    pub fn set_mute(&mut self, _muted: bool) -> Result<(), crate::error::IronError> {
+        Err(crate::error::IronError::NotImplemented(
+            "setting the mute state: IronMonitor has no mixer binding on this platform".to_string(),
         ))
     }
 
@@ -327,9 +327,9 @@ impl AudioMonitor {
         &mut self,
         device_id: &str,
         volume: u8,
-    ) -> Result<(), crate::error::SimonError> {
+    ) -> Result<(), crate::error::IronError> {
         if volume > 100 {
-            return Err(crate::error::SimonError::InvalidInput(format!(
+            return Err(crate::error::IronError::InvalidInput(format!(
                 "Volume must be 0-100, got {}",
                 volume
             )));
@@ -338,7 +338,7 @@ impl AudioMonitor {
             device.volume = Some(volume);
             Ok(())
         } else {
-            Err(crate::error::SimonError::NotFound(format!(
+            Err(crate::error::IronError::NotFound(format!(
                 "Audio device '{}' not found",
                 device_id
             )))
@@ -354,17 +354,17 @@ impl AudioMonitor {
         &mut self,
         device_id: &str,
         _muted: bool,
-    ) -> Result<(), crate::error::SimonError> {
+    ) -> Result<(), crate::error::IronError> {
         if self.devices.iter().any(|d| d.id == device_id) {
-            Err(crate::error::SimonError::NotImplemented(
+            Err(crate::error::IronError::NotImplemented(
                 concat!(
-                    "setting a device's mute state: simon has no mixer binding ",
+                    "setting a device's mute state: IronMonitor has no mixer binding ",
                     "on this platform"
                 )
                 .to_string(),
             ))
         } else {
-            Err(crate::error::SimonError::NotFound(format!(
+            Err(crate::error::IronError::NotFound(format!(
                 "Audio device '{}' not found",
                 device_id
             )))
@@ -412,7 +412,7 @@ impl AudioMonitor {
     /// reliably, because Windows disambiguates a second instance of an adapter
     /// by prefixing `2- `.
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         const QUERY: &str = concat!(
             "Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'AudioEndpoint' } ",
             "| Select-Object Name, PNPDeviceID | ConvertTo-Json -Compress"
@@ -538,7 +538,7 @@ impl AudioMonitor {
         out
     }
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         use std::fs;
 
         // Read from /proc/asound for ALSA card enumeration. A kernel with no
@@ -549,7 +549,7 @@ impl AudioMonitor {
             Ok(c) => Some(c),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                return Err(SimonError::System(format!(
+                return Err(IronError::System(format!(
                     "cannot read /proc/asound/cards: {e}"
                 )))
             }
@@ -633,7 +633,7 @@ impl AudioMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // Use system_profiler for audio device info. It ships with macOS, so a
         // failure to run it is a failure rather than an absent optional tool.
         let stdout =
@@ -715,10 +715,10 @@ impl Default for AudioMonitor {
 mod tests {
     use super::*;
 
-    /// Nothing in simon reads the system mixer, so nothing may report one.
+    /// Nothing in IronMonitor reads the system mixer, so nothing may report one.
     ///
     /// `master_volume` was initialised to `Some(100)` in the constructor and
-    /// assigned by no `refresh_*` path on any platform, so `simon cli audio`
+    /// assigned by no `refresh_*` path on any platform, so `ironmon cli audio`
     /// printed "Master Volume: 100%" on every machine, the TUI printed the
     /// same, and the agent tool surface published `"master_volume": 100`. This
     /// fails the moment a real reader lands, which is when the wording on

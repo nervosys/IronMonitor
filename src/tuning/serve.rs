@@ -15,7 +15,7 @@
 //! That is deliberately more friction than an optimiser usually has. AGENTS.md
 //! states that writing requires `--confirm` and that the library never elevates
 //! itself; a server that quietly rewrote power settings would make that sentence
-//! false, and the sentence is load-bearing for anyone who deployed simon on the
+//! false, and the sentence is load-bearing for anyone who deployed ironmon on the
 //! strength of it.
 //!
 //! The ceiling defaults to [`SettingRisk::Safe`] and is capped at
@@ -158,7 +158,7 @@ pub fn collect_signals() -> Signals {
         }
     }
 
-    if let Ok(monitor) = crate::SiliconMonitor::new() {
+    if let Ok(monitor) = crate::UnifiedMonitor::new() {
         if let Ok(gpus) = monitor.snapshot_gpus() {
             // `None` when no GPU was enumerated at all, which the classifier
             // reports as an absent reading rather than as 0%.

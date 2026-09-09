@@ -4,11 +4,11 @@
 //!
 //! Run with: cargo run --example usb_monitor
 
-use simonlib::usb::{UsbDeviceClass, UsbMonitor, UsbSpeed};
+use ironmonlib::usb::{UsbDeviceClass, UsbMonitor, UsbSpeed};
 
 /// `vvvv:pppp`, or `no usb ids` for an entry that carries none — a root hub's
 /// PnP id has no `VID_` at all.
-fn ids(device: &simonlib::usb::UsbDevice) -> String {
+fn ids(device: &ironmonlib::usb::UsbDevice) -> String {
     match (device.vendor_id, device.product_id) {
         (None, None) => "no usb ids".to_string(),
         (v, p) => format!(

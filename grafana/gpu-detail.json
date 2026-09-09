@@ -1,10 +1,10 @@
 {
   "dashboard": {
     "id": null,
-    "uid": "simon-gpu-detail",
-    "title": "Simon GPU Detail",
-    "description": "Detailed GPU monitoring with Silicon Monitor",
-    "tags": ["simon", "gpu"],
+    "uid": "ironmon-gpu-detail",
+    "title": "IronMonitor GPU Detail",
+    "description": "Detailed GPU monitoring with IronMonitor",
+    "tags": ["ironmon", "gpu"],
     "timezone": "browser",
     "refresh": "5s",
     "time": { "from": "now-1h", "to": "now" },
@@ -13,12 +13,12 @@
         {
           "name": "instance",
           "type": "query",
-          "query": "label_values(simon_gpu_temperature_celsius, instance)"
+          "query": "label_values(ironmon_gpu_temperature_celsius, instance)"
         },
         {
           "name": "gpu",
           "type": "query",
-          "query": "label_values(simon_gpu_temperature_celsius{instance=~\"$instance\"}, gpu)",
+          "query": "label_values(ironmon_gpu_temperature_celsius{instance=~\"$instance\"}, gpu)",
           "multi": true,
           "includeAll": true
         }
@@ -29,42 +29,42 @@
         "title": "GPU Temperature",
         "type": "gauge",
         "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
-        "targets": [{ "expr": "simon_gpu_temperature_celsius{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
+        "targets": [{ "expr": "ironmon_gpu_temperature_celsius{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
         "fieldConfig": { "defaults": { "min": 0, "max": 110, "unit": "celsius", "thresholds": { "steps": [{"value": 0, "color": "green"}, {"value": 75, "color": "yellow"}, {"value": 90, "color": "red"}] } } }
       },
       {
         "title": "GPU Utilization",
         "type": "gauge",
         "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
-        "targets": [{ "expr": "simon_gpu_utilization_percent{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
+        "targets": [{ "expr": "ironmon_gpu_utilization_percent{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
         "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" } }
       },
       {
         "title": "GPU Memory Used",
         "type": "gauge",
         "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
-        "targets": [{ "expr": "simon_gpu_memory_used_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
+        "targets": [{ "expr": "ironmon_gpu_memory_used_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
         "fieldConfig": { "defaults": { "unit": "bytes" } }
       },
       {
         "title": "GPU Power",
         "type": "gauge",
         "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
-        "targets": [{ "expr": "simon_gpu_power_watts{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
+        "targets": [{ "expr": "ironmon_gpu_power_watts{instance=~\"$instance\",gpu=~\"$gpu\"}" }],
         "fieldConfig": { "defaults": { "unit": "watt" } }
       },
       {
         "title": "Temperature History",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
-        "targets": [{ "expr": "simon_gpu_temperature_celsius{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_temperature_celsius{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "celsius" } }
       },
       {
         "title": "Utilization History",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
-        "targets": [{ "expr": "simon_gpu_utilization_percent{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_utilization_percent{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "percent" } }
       },
       {
@@ -72,8 +72,8 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
         "targets": [
-          { "expr": "simon_gpu_clock_graphics_mhz{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Graphics GPU{{gpu}}" },
-          { "expr": "simon_gpu_clock_memory_mhz{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Memory GPU{{gpu}}" }
+          { "expr": "ironmon_gpu_clock_graphics_mhz{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Graphics GPU{{gpu}}" },
+          { "expr": "ironmon_gpu_clock_memory_mhz{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Memory GPU{{gpu}}" }
         ],
         "fieldConfig": { "defaults": { "unit": "rotmhz" } }
       },
@@ -81,14 +81,14 @@
         "title": "Power Draw",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
-        "targets": [{ "expr": "simon_gpu_power_watts{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_power_watts{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "watt" } }
       },
       {
         "title": "Fan Speed",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
-        "targets": [{ "expr": "simon_gpu_fan_speed_percent{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_fan_speed_percent{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "percent" } }
       },
       {
@@ -96,8 +96,8 @@
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
         "targets": [
-          { "expr": "simon_gpu_memory_used_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Used GPU{{gpu}}" },
-          { "expr": "simon_gpu_memory_total_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Total GPU{{gpu}}" }
+          { "expr": "ironmon_gpu_memory_used_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Used GPU{{gpu}}" },
+          { "expr": "ironmon_gpu_memory_total_bytes{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "Total GPU{{gpu}}" }
         ],
         "fieldConfig": { "defaults": { "unit": "bytes" } }
       }

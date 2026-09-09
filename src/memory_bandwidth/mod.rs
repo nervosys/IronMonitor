@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Memory technology generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,13 +167,13 @@ pub struct MemoryBandwidthMonitor {
 
 impl MemoryBandwidthMonitor {
     /// Create a new memory bandwidth monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let analysis = Self::analyze()?;
         Ok(Self { analysis })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.analysis = Self::analyze()?;
         Ok(())
     }
@@ -188,7 +188,7 @@ impl MemoryBandwidthMonitor {
         &self.analysis.estimate
     }
 
-    fn analyze() -> Result<BandwidthAnalysis, SimonError> {
+    fn analyze() -> Result<BandwidthAnalysis, IronError> {
         let (generation, speed_mts, channels) = Self::detect_memory_config()?;
 
         let peak = Self::compute_peak_bandwidth(speed_mts, channels.active_channels, &generation);
@@ -284,7 +284,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         // Try dmidecode first
         let output = std::process::Command::new("dmidecode")
             .args(["-t", "memory"])
@@ -300,7 +300,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn parse_dmidecode(text: &str) -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn parse_dmidecode(text: &str) -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         let mut generation = MemoryGeneration::Unknown;
         let mut max_speed = 0u32;
         let mut populated_count = 0u32;
@@ -375,7 +375,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -434,7 +434,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         // Apple Silicon uses unified LPDDR
         let output = std::process::Command::new("sysctl")
             .arg("-n")
@@ -487,11 +487,11 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         Self::infer_from_cpu()
     }
 
-    fn infer_from_cpu() -> Result<(MemoryGeneration, u32, ChannelConfig), SimonError> {
+    fn infer_from_cpu() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
         // Baseline fallback
         Ok((
             MemoryGeneration::DDR4,

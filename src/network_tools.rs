@@ -13,7 +13,7 @@
 //! ## Ping a Host
 //!
 //! ```no_run
-//! use simonlib::network_tools::{ping, PingResult};
+//! use ironmonlib::network_tools::{ping, PingResult};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let result = ping("8.8.8.8", 4)?;
@@ -30,7 +30,7 @@
 //! ## Traceroute to Host
 //!
 //! ```no_run
-//! use simonlib::network_tools::traceroute;
+//! use ironmonlib::network_tools::traceroute;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let result = traceroute("google.com", 30)?;
@@ -48,7 +48,7 @@
 //! ## Scan Ports
 //!
 //! ```no_run
-//! use simonlib::network_tools::scan_ports;
+//! use ironmonlib::network_tools::scan_ports;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let results = scan_ports("192.168.1.1", &[22, 80, 443, 8080])?;
@@ -62,7 +62,7 @@
 //! ## Packet Capture (tcpdump-style)
 //!
 //! ```no_run
-//! use simonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
+//! use ironmonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = CaptureConfig {
@@ -81,7 +81,7 @@
 //! # }
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
@@ -249,13 +249,13 @@ pub fn ping(host: &str, count: u32) -> Result<PingResult> {
     let output = Command::new("ping")
         .args(["-n", &count.to_string(), host])
         .output()
-        .map_err(|e| SimonError::Other(format!("Failed to execute ping: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("Failed to execute ping: {}", e)))?;
 
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("ping")
         .args(["-c", &count.to_string(), host])
         .output()
-        .map_err(|e| SimonError::Other(format!("Failed to execute ping: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("Failed to execute ping: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -408,13 +408,13 @@ pub fn traceroute(host: &str, max_hops: u8) -> Result<TracerouteResult> {
     let output = Command::new("tracert")
         .args(["-h", &max_hops.to_string(), "-d", host])
         .output()
-        .map_err(|e| SimonError::Other(format!("Failed to execute tracert: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("Failed to execute tracert: {}", e)))?;
 
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("traceroute")
         .args(["-m", &max_hops.to_string(), "-n", host])
         .output()
-        .map_err(|e| SimonError::Other(format!("Failed to execute traceroute: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("Failed to execute traceroute: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -558,12 +558,12 @@ pub fn scan_ports_with_timeout(
     // Resolve hostname
     let addrs: Vec<SocketAddr> = format!("{}:0", host)
         .to_socket_addrs()
-        .map_err(|e| SimonError::Other(format!("Failed to resolve host: {}", e)))?
+        .map_err(|e| IronError::Other(format!("Failed to resolve host: {}", e)))?
         .collect();
 
     let addr = addrs
         .first()
-        .ok_or_else(|| SimonError::Other("Could not resolve host".to_string()))?;
+        .ok_or_else(|| IronError::Other("Could not resolve host".to_string()))?;
 
     for &port in ports {
         let socket_addr = SocketAddr::new(addr.ip(), port);
@@ -645,12 +645,12 @@ pub fn common_ports() -> Vec<u16> {
 ///
 /// # Example
 /// ```no_run
-/// use simonlib::network_tools::parallel_scan;
+/// use ironmonlib::network_tools::parallel_scan;
 /// use std::time::Duration;
 ///
 /// let results = parallel_scan("192.168.1.1", &[22, 80, 443, 8080], Duration::from_secs(1), 50).unwrap();
 /// for result in results {
-///     if result.status == simonlib::network_tools::PortStatus::Open {
+///     if result.status == ironmonlib::network_tools::PortStatus::Open {
 ///         println!("Port {} is open ({})", result.port, result.service.unwrap_or_default());
 ///     }
 /// }
@@ -664,12 +664,12 @@ pub fn parallel_scan(
     // Resolve hostname once
     let addrs: Vec<SocketAddr> = format!("{}:0", host)
         .to_socket_addrs()
-        .map_err(|e| SimonError::Other(format!("Failed to resolve host: {}", e)))?
+        .map_err(|e| IronError::Other(format!("Failed to resolve host: {}", e)))?
         .collect();
 
     let addr = addrs
         .first()
-        .ok_or_else(|| SimonError::Other("Could not resolve host".to_string()))?;
+        .ok_or_else(|| IronError::Other("Could not resolve host".to_string()))?;
     let ip = addr.ip();
 
     // Shared results vector
@@ -732,9 +732,9 @@ pub fn parallel_scan(
 
     // Extract and sort results by port number
     let mut final_results = Arc::try_unwrap(results)
-        .map_err(|_| SimonError::Other("Failed to unwrap results".to_string()))?
+        .map_err(|_| IronError::Other("Failed to unwrap results".to_string()))?
         .into_inner()
-        .map_err(|e| SimonError::Other(format!("Mutex error: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("Mutex error: {}", e)))?;
 
     final_results.sort_by_key(|r| r.port);
     Ok(final_results)
@@ -822,7 +822,7 @@ pub fn check_port(host: &str, port: u16, timeout: Duration) -> Result<bool> {
     let addr_str = format!("{}:{}", host, port);
     let addrs: Vec<SocketAddr> = addr_str
         .to_socket_addrs()
-        .map_err(|e| SimonError::Other(format!("Failed to resolve: {}", e)))?
+        .map_err(|e| IronError::Other(format!("Failed to resolve: {}", e)))?
         .collect();
 
     if let Some(addr) = addrs.first() {
@@ -839,7 +839,7 @@ pub fn check_port(host: &str, port: u16, timeout: Duration) -> Result<bool> {
 pub fn dns_lookup(hostname: &str) -> Result<Vec<IpAddr>> {
     let addrs: Vec<SocketAddr> = format!("{}:0", hostname)
         .to_socket_addrs()
-        .map_err(|e| SimonError::Other(format!("DNS lookup failed: {}", e)))?
+        .map_err(|e| IronError::Other(format!("DNS lookup failed: {}", e)))?
         .collect();
 
     Ok(addrs.into_iter().map(|a| a.ip()).collect())
@@ -1451,7 +1451,7 @@ pub fn list_capture_interfaces() -> Result<Vec<String>> {
         let output = Command::new("netsh")
             .args(["interface", "show", "interface"])
             .output()
-            .map_err(|e| SimonError::Other(format!("Failed to list interfaces: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to list interfaces: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut interfaces = Vec::new();
@@ -1496,7 +1496,7 @@ pub fn list_capture_interfaces() -> Result<Vec<String>> {
             .args(["link", "show"])
             .output()
             .or_else(|_| Command::new("ifconfig").arg("-a").output())
-            .map_err(|e| SimonError::Other(format!("Failed to list interfaces: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to list interfaces: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut interfaces = Vec::new();
@@ -1571,7 +1571,7 @@ fn build_capture_filter(config: &CaptureConfig) -> String {
 ///
 /// # Example
 /// ```no_run
-/// use simonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
+/// use ironmonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
 ///
 /// let config = CaptureConfig {
 ///     protocol: CaptureProtocol::Tcp,
@@ -1646,7 +1646,7 @@ fn capture_packets_unix(
         return finalize_capture_result(tshark_result?, start, filter);
     }
 
-    Err(SimonError::Other(
+    Err(IronError::Other(
         "No packet capture tool available. Install tcpdump or Wireshark.".to_string(),
     ))
 }
@@ -1697,10 +1697,10 @@ fn capture_with_tshark(config: &CaptureConfig, filter: &str) -> Result<Vec<Captu
     let output = Command::new("tshark")
         .args(&args)
         .output()
-        .map_err(|e| SimonError::Other(format!("tshark not found or failed: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("tshark not found or failed: {}", e)))?;
 
     if !output.status.success() {
-        return Err(SimonError::Other(format!(
+        return Err(IronError::Other(format!(
             "tshark failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -1764,16 +1764,16 @@ fn capture_with_tcpdump(config: &CaptureConfig, filter: &str) -> Result<Vec<Capt
     let output = Command::new("tcpdump")
         .args(&args)
         .output()
-        .map_err(|e| SimonError::Other(format!("tcpdump not found or failed: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("tcpdump not found or failed: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("permission denied") || stderr.contains("Operation not permitted") {
-            return Err(SimonError::Other(
+            return Err(IronError::Other(
                 "Permission denied. Run with administrator/root privileges.".to_string(),
             ));
         }
-        return Err(SimonError::Other(format!("tcpdump failed: {}", stderr)));
+        return Err(IronError::Other(format!("tcpdump failed: {}", stderr)));
     }
 
     parse_tcpdump_output(&String::from_utf8_lossy(&output.stdout))
@@ -1885,10 +1885,10 @@ fn capture_with_windump(config: &CaptureConfig, filter: &str) -> Result<Vec<Capt
     let output = Command::new("windump")
         .args(&args)
         .output()
-        .map_err(|e| SimonError::Other(format!("windump not found: {}", e)))?;
+        .map_err(|e| IronError::Other(format!("windump not found: {}", e)))?;
 
     if !output.status.success() {
-        return Err(SimonError::Other(format!(
+        return Err(IronError::Other(format!(
             "windump failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -1944,7 +1944,7 @@ fn capture_with_netsh(
     _start: Instant,
 ) -> Result<CaptureResult> {
     // netsh trace is very limited but available without extra tools
-    Err(SimonError::Other(
+    Err(IronError::Other(
         "No packet capture tool found. Install Wireshark (tshark) or WinDump for packet capture."
             .to_string(),
     ))

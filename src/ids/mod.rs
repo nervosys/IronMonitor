@@ -9,7 +9,7 @@
 //! quarantine a file. Every other write path in this crate requires explicit
 //! confirmation and an audit record ([`crate::profile::apply`]), and a detector
 //! that could sever a network connection on a heuristic would be the largest
-//! unconfirmed write simon has ever made.
+//! unconfirmed write IronMonitor has ever made.
 //!
 //! # A detector that cannot say "I do not know" is a liar
 //!

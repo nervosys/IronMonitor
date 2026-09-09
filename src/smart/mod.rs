@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::smart::SmartMonitor;
+//! use ironmonlib::smart::SmartMonitor;
 //!
 //! let monitor = SmartMonitor::new().unwrap();
 //! for disk in monitor.disks() {
@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -129,7 +129,7 @@ pub struct SmartDiskInfo {
     //
     // On Windows these come from `Get-StorageReliabilityCounter`, which requires
     // elevation: unelevated it fails with `PermissionDenied`. That failure was
-    // being swallowed and replaced with zeros, so simon reported every drive as
+    // being swallowed and replaced with zeros, so IronMonitor reported every drive as
     // healthy with a temperature of 0 °C and zero power-on hours — an access
     // error presented as a measurement.
     /// Current temperature in Celsius, if the platform reported one
@@ -168,7 +168,7 @@ pub struct SmartMonitor {
 }
 
 impl SmartMonitor {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self { disks: Vec::new() };
         monitor.refresh()?;
         Ok(monitor)
@@ -179,7 +179,7 @@ impl SmartMonitor {
     /// Returns `Err` when the enumeration failed, and `Ok` with an empty list
     /// only when it succeeded and found nothing. The two are not the same
     /// finding for a health reader, and until 6.0.0 they were the same value.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.disks.clear();
 
         #[cfg(target_os = "linux")]
@@ -421,7 +421,7 @@ impl SmartMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         // NVMe drives from /sys/class/nvme
         let nvme_base = std::path::Path::new("/sys/class/nvme");
         if nvme_base.exists() {
@@ -622,7 +622,7 @@ impl SmartMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // Use Get-PhysicalDisk + Get-StorageReliabilityCounter.
         //
         // This is the enumeration, not an enrichment: a failure here
@@ -835,7 +835,7 @@ Get-PhysicalDisk | ForEach-Object {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // Try smartmontools.
         //
         // `smartctl` is optional software, so its *absence* is not a failure --
@@ -849,14 +849,14 @@ Get-PhysicalDisk | ForEach-Object {
         {
             Ok(o) if o.status.success() => Some(o.stdout),
             Ok(o) => {
-                return Err(SimonError::CommandFailed(format!(
+                return Err(IronError::CommandFailed(format!(
                     "smartctl --scan exited {}: {}",
                     o.status,
                     String::from_utf8_lossy(&o.stderr).trim()
                 )))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(SimonError::CommandFailed(format!("smartctl: {e}"))),
+            Err(e) => return Err(IronError::CommandFailed(format!("smartctl: {e}"))),
         };
 
         if let Some(stdout) = scan {

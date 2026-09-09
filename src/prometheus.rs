@@ -1,15 +1,15 @@
 //! Prometheus Metrics Exporter
 //!
-//! Exports Silicon Monitor metrics in Prometheus exposition format with proper
+//! Exports IronMonitor metrics in Prometheus exposition format with proper
 //! `# HELP`, `# TYPE` annotations and label support. Compatible with
 //! Prometheus, Grafana, and other metric collection systems.
 //!
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::prometheus::{PrometheusExporter, MetricFamily};
+//! use ironmonlib::prometheus::{PrometheusExporter, MetricFamily};
 //!
-//! let mut exporter = PrometheusExporter::new("simon");
+//! let mut exporter = PrometheusExporter::new("ironmon");
 //!
 //! // Collect system metrics
 //! exporter.collect_system_metrics();
@@ -18,9 +18,9 @@
 //! let output = exporter.export();
 //! println!("{}", output);
 //! // Output:
-//! // # HELP simon_cpu_usage_percent CPU utilization percentage
-//! // # TYPE simon_cpu_usage_percent gauge
-//! // simon_cpu_usage_percent 42.5
+//! // # HELP ironmon_cpu_usage_percent CPU utilization percentage
+//! // # TYPE ironmon_cpu_usage_percent gauge
+//! // ironmon_cpu_usage_percent 42.5
 //! // ...
 //! ```
 
@@ -117,7 +117,7 @@ impl MetricFamily {
     ///
     /// Without this, `collect_network_metrics` built an `interface` label and
     /// then called [`Self::counter`], which drops it -- so every interface
-    /// emitted `simon_network_rx_bytes_total` with **no labels and a different
+    /// emitted `ironmon_network_rx_bytes_total` with **no labels and a different
     /// value**. Twenty identical series in one scrape is not a wrong number, it
     /// is a malformed exposition: Prometheus rejects a scrape containing
     /// duplicate samples, so the network section could take the whole endpoint
@@ -191,7 +191,7 @@ impl MetricFamily {
     }
 }
 
-/// Prometheus metrics exporter for Silicon Monitor
+/// Prometheus metrics exporter for IronMonitor
 pub struct PrometheusExporter {
     /// Namespace prefix for all metrics
     prefix: String,
@@ -217,9 +217,9 @@ impl PrometheusExporter {
     /// interface. On the machine this was written on:
     ///
     /// ```text
-    ///  6x  # HELP simon_disk_used_bytes
-    ///  3x  # HELP simon_gpu_utilization_percent
-    /// 20x  # HELP simon_network_rx_bytes_total
+    ///  6x  # HELP ironmon_disk_used_bytes
+    ///  3x  # HELP ironmon_gpu_utilization_percent
+    /// 20x  # HELP ironmon_network_rx_bytes_total
     /// ```
     ///
     /// `MetricFamily` already held a `Vec<MetricSample>`, so the structure was
@@ -370,7 +370,7 @@ impl PrometheusExporter {
             // `samples.is_empty()` guard below drops the family entirely when
             // no core answered.
             //
-            // The tsdb writer and `simon serve`'s snapshot path both had this
+            // The tsdb writer and `ironmon serve`'s snapshot path both had this
             // and both were fixed; this is the third of eight copies.
             for core in &cpu.cores {
                 let Some(idle) = core.idle else {
@@ -631,7 +631,7 @@ impl PrometheusExporter {
                             // graphics clock, the ontology publishes it as
                             // `gpu.{n}.clocks.graphics`, and every bundled
                             // Grafana dashboard queries
-                            // `simon_gpu_clock_graphics_mhz` -- so the one name
+                            // `ironmon_gpu_clock_graphics_mhz` -- so the one name
                             // that matched nothing was this one, and the panel
                             // was empty against a live server.
                             &self.prefixed("gpu_clock_graphics_mhz"),
@@ -789,7 +789,7 @@ impl PrometheusExporter {
 
         // Add metadata comment
         output.push_str(&format!(
-            "# Silicon Monitor v{} Prometheus Metrics\n\n",
+            "# IronMonitor v{} Prometheus Metrics\n\n",
             crate::VERSION
         ));
 

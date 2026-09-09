@@ -4,7 +4,7 @@
 //! (OpenAI, Anthropic, Ollama, etc.)
 
 use crate::agent::backend::BackendConfig;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::time::Instant;
@@ -115,7 +115,7 @@ impl RemoteClient {
 
             let http_client = builder
                 .build()
-                .map_err(|e| SimonError::Network(format!("Failed to create HTTP client: {}", e)))?;
+                .map_err(|e| IronError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
             Ok(Self {
                 config,
@@ -125,7 +125,7 @@ impl RemoteClient {
 
         #[cfg(not(feature = "remote-backends"))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "Remote backends require 'remote-backends' feature".into(),
             ))
         }
@@ -141,7 +141,7 @@ impl RemoteClient {
             // are dispatched before any endpoint or message array is built.
             if let crate::agent::backend::BackendType::Cli(provider) = self.config.backend_type {
                 let client = crate::agent::local::CliClient::detect(provider).ok_or_else(|| {
-                    SimonError::Configuration(format!(
+                    IronError::Configuration(format!(
                         "{} is configured but its executable is no longer on PATH",
                         provider.display_name()
                     ))
@@ -168,7 +168,7 @@ impl RemoteClient {
                 .config
                 .endpoint
                 .as_ref()
-                .ok_or_else(|| SimonError::Configuration("No endpoint configured".into()))?;
+                .ok_or_else(|| IronError::Configuration("No endpoint configured".into()))?;
 
             // Handle Ollama differently from OpenAI-compatible APIs
             if matches!(
@@ -191,14 +191,14 @@ impl RemoteClient {
                     .post(&url)
                     .json(&request)
                     .send()
-                    .map_err(|e| SimonError::Network(format!("Request failed: {}", e)))?;
+                    .map_err(|e| IronError::Network(format!("Request failed: {}", e)))?;
 
                 if !response.status().is_success() {
                     let status = response.status();
                     let error_text = response
                         .text()
                         .unwrap_or_else(|_| "Unknown error".to_string());
-                    return Err(SimonError::Network(format!(
+                    return Err(IronError::Network(format!(
                         "API error {}: {}",
                         status, error_text
                     )));
@@ -206,7 +206,7 @@ impl RemoteClient {
 
                 let ollama_response: OllamaChatResponse = response
                     .json()
-                    .map_err(|e| SimonError::Parse(format!("Failed to parse response: {}", e)))?;
+                    .map_err(|e| IronError::Parse(format!("Failed to parse response: {}", e)))?;
 
                 let elapsed = start.elapsed().as_millis() as u64;
                 return Ok((ollama_response.message.content, elapsed));
@@ -236,14 +236,14 @@ impl RemoteClient {
 
             let response = req
                 .send()
-                .map_err(|e| SimonError::Network(format!("Request failed: {}", e)))?;
+                .map_err(|e| IronError::Network(format!("Request failed: {}", e)))?;
 
             if !response.status().is_success() {
                 let status = response.status();
                 let error_text = response
                     .text()
                     .unwrap_or_else(|_| "Unknown error".to_string());
-                return Err(SimonError::Network(format!(
+                return Err(IronError::Network(format!(
                     "API error {}: {}",
                     status, error_text
                 )));
@@ -251,12 +251,12 @@ impl RemoteClient {
 
             let completion: ChatCompletionResponse = response
                 .json()
-                .map_err(|e| SimonError::Parse(format!("Failed to parse response: {}", e)))?;
+                .map_err(|e| IronError::Parse(format!("Failed to parse response: {}", e)))?;
 
             let response_text = completion
                 .choices
                 .first()
-                .ok_or_else(|| SimonError::Parse("No choices in response".into()))?
+                .ok_or_else(|| IronError::Parse("No choices in response".into()))?
                 .message
                 .content
                 .clone();
@@ -269,7 +269,7 @@ impl RemoteClient {
         #[cfg(not(feature = "remote-backends"))]
         {
             let _ = (system_prompt, user_query);
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "Remote backends require 'remote-backends' feature".into(),
             ))
         }
@@ -306,7 +306,7 @@ impl RemoteClient {
                 .config
                 .endpoint
                 .as_ref()
-                .ok_or_else(|| SimonError::Configuration("No endpoint configured".into()))?;
+                .ok_or_else(|| IronError::Configuration("No endpoint configured".into()))?;
 
             let url = format!("{}/models", endpoint);
 
@@ -314,10 +314,10 @@ impl RemoteClient {
                 .http_client
                 .get(&url)
                 .send()
-                .map_err(|e| SimonError::Network(format!("Failed to list models: {}", e)))?;
+                .map_err(|e| IronError::Network(format!("Failed to list models: {}", e)))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Network(format!(
+                return Err(IronError::Network(format!(
                     "Failed to list models: {}",
                     response.status()
                 )));
@@ -326,7 +326,7 @@ impl RemoteClient {
             // Parse response (format varies by backend)
             let json: serde_json::Value = response
                 .json()
-                .map_err(|e| SimonError::Parse(format!("Failed to parse models list: {}", e)))?;
+                .map_err(|e| IronError::Parse(format!("Failed to parse models list: {}", e)))?;
 
             // Extract model names (OpenAI format)
             if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
@@ -353,7 +353,7 @@ impl RemoteClient {
 
         #[cfg(not(feature = "remote-backends"))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "Remote backends require 'remote-backends' feature".into(),
             ))
         }

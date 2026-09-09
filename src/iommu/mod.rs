@@ -10,7 +10,7 @@
 //! - **Windows**: VT-d detection via WMI/registry
 //! - **macOS**: Not applicable (stub)
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// IOMMU technology type.
@@ -94,13 +94,13 @@ pub struct IommuMonitor {
 
 impl IommuMonitor {
     /// Create a new IOMMU monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -133,7 +133,7 @@ impl IommuMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<IommuOverview, SimonError> {
+    fn scan() -> Result<IommuOverview, IronError> {
         let iommu_groups_path = std::path::Path::new("/sys/kernel/iommu_groups");
         let enabled = iommu_groups_path.exists();
 
@@ -223,7 +223,7 @@ impl IommuMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_group(gid: u32) -> Result<IommuGroup, SimonError> {
+    fn read_group(gid: u32) -> Result<IommuGroup, IronError> {
         let devices_path = format!("/sys/kernel/iommu_groups/{}/devices", gid);
         let mut devices = Vec::new();
 
@@ -277,36 +277,36 @@ impl IommuMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn scan() -> Result<IommuOverview, SimonError> {
+    fn scan() -> Result<IommuOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "IOMMU groups are read from `/sys/kernel/iommu_groups`, which Windows does not expose"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn scan() -> Result<IommuOverview, SimonError> {
+    fn scan() -> Result<IommuOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "IOMMU groups are read from `/sys/kernel/iommu_groups`, which macOS does not expose"
                 .into(),
         ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn scan() -> Result<IommuOverview, SimonError> {
+    fn scan() -> Result<IommuOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "IOMMU groups are read from `/sys/kernel/iommu_groups`, which this platform does not expose"
                 .into(),
         ))

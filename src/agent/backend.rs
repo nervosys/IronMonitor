@@ -4,7 +4,7 @@
 //! with automatic discovery and configuration.
 
 use crate::agent::local::CliProvider;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,11 +13,11 @@ use std::time::Duration;
 /// Agent backend type
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendType {
-    /// IronWorks — simon's built-in inference engine, and the only one.
+    /// IronWorks — ironmon's built-in inference engine, and the only one.
     ///
     /// Pure-Rust engine served over an OpenAI-compatible API on the local machine.
     /// Every other entry in this enum is an *external provider*: a third-party server,
-    /// a command-line tool, or a hosted API. IronWorks is the engine simon itself
+    /// a command-line tool, or a hosted API. IronWorks is the engine ironmon itself
     /// ships against, and it is preferred over all of them because it runs locally, so
     /// system telemetry never leaves the host.
     IronWorks,
@@ -130,7 +130,7 @@ impl BackendType {
         }
     }
 
-    /// Whether this is simon's built-in inference engine.
+    /// Whether this is ironmon's built-in inference engine.
     ///
     /// Exactly one backend is built in: [`BackendType::IronWorks`]. Everything else is
     /// an external provider that must be installed, started, or authenticated
@@ -432,7 +432,7 @@ impl BackendConfig {
     pub fn validate(&self) -> Result<()> {
         // Check if API key is required but missing
         if self.backend_type.requires_api_key() && self.api_key.is_none() {
-            return Err(SimonError::Configuration(format!(
+            return Err(IronError::Configuration(format!(
                 "Backend {} requires API key via {}",
                 self.backend_type.display_name(),
                 self.backend_type
@@ -443,7 +443,7 @@ impl BackendConfig {
 
         // Check if local model path exists
         if self.backend_type.is_local() && self.model_path.is_none() {
-            return Err(SimonError::Configuration(format!(
+            return Err(IronError::Configuration(format!(
                 "Backend {} requires model_path",
                 self.backend_type.display_name()
             )));
@@ -568,7 +568,7 @@ impl BackendDiscovery {
         // backends, since they are already authenticated and need no key configured.
         // `LocalGGML` is deliberately absent even though it is discoverable. Finding
         // `llama-cli` on PATH proves the tool exists, but llama.cpp also needs a GGUF
-        // model path that simon cannot guess — `BackendConfig::validate` rejects a
+        // model path that IronMonitor cannot guess — `BackendConfig::validate` rejects a
         // local backend without one. Recommending it would hand back a config that
         // fails at construction, so it must be configured explicitly.
         for backend in &[
@@ -728,7 +728,7 @@ pub struct BackendCapabilities {
 
     /// Estimated cost per 1M tokens (in USD).
     ///
-    /// `None` means simon does not know the rate — **not** that the backend is
+    /// `None` means IronMonitor does not know the rate — **not** that the backend is
     /// free. It is `None` for on-host backends, where there is no per-token rate at
     /// all, and equally for hosted providers, where the rate depends on the chosen
     /// model and splits into separate input and output prices this single field
@@ -763,7 +763,7 @@ impl BackendCapabilities {
                 supports_vision: false,
                 max_context_length: 32_000,
                 // Ollama runs locally and is free. The others bill through the vendor
-                // account the tool is signed in to, at rates simon cannot observe —
+                // account the tool is signed in to, at rates IronMonitor cannot observe —
                 // reporting a number here would be a guess.
                 cost_per_million_tokens: None,
             },
@@ -968,7 +968,7 @@ mod tests {
         );
     }
 
-    /// Exactly one backend is simon's built-in engine.
+    /// Exactly one backend is ironmon's built-in engine.
     #[test]
     fn ironworks_is_the_only_builtin_engine() {
         assert!(BackendType::IronWorks.is_builtin_engine());

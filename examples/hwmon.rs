@@ -6,10 +6,10 @@
 //! Run with:
 //!   cargo run --release --features nvidia --example hwmon
 
-use simonlib::hwmon::{HardwareMonitor, HwSensorType};
+use ironmonlib::hwmon::{HardwareMonitor, HwSensorType};
 
 fn main() {
-    println!("=== Silicon Monitor - Hardware Monitor Example ===\n");
+    println!("=== IronMonitor - Hardware Monitor Example ===\n");
 
     // Create a hardware monitor instance
     println!("Initializing hardware monitor...\n");
@@ -91,7 +91,7 @@ fn main() {
     }
 }
 
-fn print_sensor(sensor: &simonlib::hwmon::HwSensor) {
+fn print_sensor(sensor: &ironmonlib::hwmon::HwSensor) {
     let unit = match sensor.sensor_type {
         HwSensorType::Temperature => "°C",
         HwSensorType::Voltage => "V",

@@ -768,7 +768,7 @@ impl ApiConfig {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("sk-simon-{:x}", timestamp)
+        format!("sk-ironmon-{:x}", timestamp)
     }
 }
 

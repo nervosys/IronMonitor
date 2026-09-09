@@ -26,7 +26,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::hardware_ai::HardwareInferenceEngine;
+//! use ironmonlib::hardware_ai::HardwareInferenceEngine;
 //!
 //! let engine = HardwareInferenceEngine::new().unwrap();
 //! let report = engine.full_analysis();
@@ -40,7 +40,7 @@
 //! }
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 // ────────────────────────────────────────────────────────────────────
@@ -398,7 +398,7 @@ pub struct HardwareInferenceEngine {
 
 impl HardwareInferenceEngine {
     /// Create a new inference engine, extracting hardware features from the system.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut engine = Self {
             features: HardwareFeatures::default(),
         };
@@ -407,9 +407,9 @@ impl HardwareInferenceEngine {
     }
 
     /// Create from pre-populated features (for testing or external data).
-    pub fn from_features(features_json: &str) -> Result<Self, SimonError> {
+    pub fn from_features(features_json: &str) -> Result<Self, IronError> {
         let features: HardwareFeatures = serde_json::from_str(features_json)
-            .map_err(|e| SimonError::Parse(format!("Invalid features JSON: {}", e)))?;
+            .map_err(|e| IronError::Parse(format!("Invalid features JSON: {}", e)))?;
         Ok(Self { features })
     }
 
@@ -774,7 +774,7 @@ impl HardwareInferenceEngine {
         // surface, which is the shape recorded in the handoff as "the reader was
         // in the same binary".
         // Only where there is a discrete GPU to ask about. The lookup builds a
-        // `SiliconMonitor` and snapshots every adapter, which costs seconds --
+        // `UnifiedMonitor` and snapshots every adapter, which costs seconds --
         // worth paying for a real card's real cap, not worth paying to learn
         // that an integrated-only machine has no cap to report.
         let measured = self
@@ -2297,7 +2297,7 @@ impl HardwareInferenceEngine {
     /// Milliwatts in the reading, watts here, because every threshold in
     /// `analyze_thermal_envelope` is written in watts.
     fn measured_gpu_power_caps_watts() -> Option<(f32, u32)> {
-        let monitor = crate::SiliconMonitor::new().ok()?;
+        let monitor = crate::UnifiedMonitor::new().ok()?;
         let gpus = monitor.snapshot_gpus().ok()?;
         let caps: Vec<f32> = gpus
             .iter()

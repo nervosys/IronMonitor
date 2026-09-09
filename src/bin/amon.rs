@@ -1,4 +1,4 @@
-//! AI Monitor (amon) - Syntactic sugar for `simon ai`
+//! AI Monitor (amon) - Syntactic sugar for `ironmon ai`
 //!
 //! This binary provides a simpler interface for AI-related commands.
 //!
@@ -50,7 +50,7 @@ enum AmonCommand {
 
 #[cfg(feature = "cli")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::agent::AgentConfig;
+    use ironmonlib::agent::AgentConfig;
 
     env_logger::init();
 
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         // Manifest export
         Some(AmonCommand::Manifest { format, output }) => {
-            use simonlib::ai_api::{AgentManifest, ExportFormat};
+            use ironmonlib::ai_api::{AgentManifest, ExportFormat};
 
             let manifest = AgentManifest::new();
 
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // MCP Server
         Some(AmonCommand::Server) => {
-            use simonlib::ai_api::McpServer;
+            use ironmonlib::ai_api::McpServer;
 
             eprintln!("[*] Starting MCP (Model Context Protocol) server...");
             eprintln!("[*] Communicating via stdio (JSON-RPC 2.0)");
@@ -146,12 +146,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "cli")]
 fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    use simonlib::agent::{Agent, AgentConfig};
-    use simonlib::SiliconMonitor;
+    use ironmonlib::agent::{Agent, AgentConfig};
+    use ironmonlib::UnifiedMonitor;
     use std::io::{self, Write};
 
     // Create monitor for system state
-    let monitor = SiliconMonitor::new()?;
+    let monitor = UnifiedMonitor::new()?;
 
     // Auto-detect and configure best available backend
     let config = match AgentConfig::auto_detect() {

@@ -1,14 +1,14 @@
-//! Error types for Silicon Monitor
+//! Error types for IronMonitor
 
 use std::io;
 use thiserror::Error;
 
-/// Result type alias for Simon operations (legacy compatibility)
-pub type Result<T> = std::result::Result<T, SimonError>;
+/// Result type alias for IronMonitor operations (legacy compatibility)
+pub type Result<T> = std::result::Result<T, IronError>;
 
 /// Legacy error type for backward compatibility
 #[derive(Error, Debug)]
-pub enum SimonError {
+pub enum IronError {
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
@@ -115,7 +115,7 @@ pub enum SimonError {
     Other(String),
 }
 
-/// Main error type for Silicon Monitor
+/// Main error type for IronMonitor
 #[derive(Error, Debug)]
 pub enum Error {
     /// I/O error
@@ -174,30 +174,30 @@ pub enum Error {
 
     /// Legacy error for backward compatibility
     #[error("Legacy error: {0}")]
-    Legacy(#[from] SimonError),
+    Legacy(#[from] IronError),
 
     /// Other error
     #[error("{0}")]
     Other(String),
 }
 
-impl From<Error> for SimonError {
+impl From<Error> for IronError {
     fn from(err: Error) -> Self {
         match err {
-            Error::Io(e) => SimonError::Io(e),
+            Error::Io(e) => IronError::Io(e),
             #[cfg(feature = "nvidia")]
-            Error::Nvml(e) => SimonError::Nvml(e),
+            Error::Nvml(e) => IronError::Nvml(e),
             Error::GpuError(s)
             | Error::ProcessError(s)
             | Error::SystemError(s)
             | Error::CommandExecutionFailed(s)
-            | Error::Other(s) => SimonError::Other(s),
-            Error::NotSupported(s) | Error::Unsupported(s) => SimonError::FeatureNotAvailable(s),
-            Error::PermissionDenied(s) => SimonError::PermissionDenied(s),
-            Error::DeviceNotFound(s) => SimonError::DeviceNotFound(s),
-            Error::InvalidParameter(s) | Error::ParseError(s) => SimonError::Parse(s),
+            | Error::Other(s) => IronError::Other(s),
+            Error::NotSupported(s) | Error::Unsupported(s) => IronError::FeatureNotAvailable(s),
+            Error::PermissionDenied(s) => IronError::PermissionDenied(s),
+            Error::DeviceNotFound(s) => IronError::DeviceNotFound(s),
+            Error::InvalidParameter(s) | Error::ParseError(s) => IronError::Parse(s),
             #[cfg(unix)]
-            Error::Nix(e) => SimonError::System(e.to_string()),
+            Error::Nix(e) => IronError::System(e.to_string()),
             Error::Legacy(e) => e,
         }
     }
@@ -207,62 +207,62 @@ impl From<Error> for SimonError {
 mod tests {
     use super::*;
 
-    // === SimonError tests ===
+    // === IronError tests ===
 
     #[test]
-    fn test_simon_error_display_parse() {
-        let err = SimonError::Parse("bad value".to_string());
+    fn test_iron_error_display_parse() {
+        let err = IronError::Parse("bad value".to_string());
         assert_eq!(err.to_string(), "Parse error: bad value");
     }
 
     #[test]
-    fn test_simon_error_display_device_not_found() {
-        let err = SimonError::DeviceNotFound("GPU 0".to_string());
+    fn test_iron_error_display_device_not_found() {
+        let err = IronError::DeviceNotFound("GPU 0".to_string());
         assert_eq!(err.to_string(), "Device not found: GPU 0");
     }
 
     #[test]
-    fn test_simon_error_display_permission_denied() {
-        let err = SimonError::PermissionDenied("need root".to_string());
+    fn test_iron_error_display_permission_denied() {
+        let err = IronError::PermissionDenied("need root".to_string());
         assert_eq!(err.to_string(), "Permission denied: need root");
     }
 
     #[test]
-    fn test_simon_error_display_unsupported_platform() {
-        let err = SimonError::UnsupportedPlatform("FreeBSD".to_string());
+    fn test_iron_error_display_unsupported_platform() {
+        let err = IronError::UnsupportedPlatform("FreeBSD".to_string());
         assert_eq!(err.to_string(), "Unsupported platform: FreeBSD");
     }
 
     #[test]
-    fn test_simon_error_display_not_implemented() {
-        let err = SimonError::NotImplemented("macOS fan".to_string());
+    fn test_iron_error_display_not_implemented() {
+        let err = IronError::NotImplemented("macOS fan".to_string());
         assert_eq!(err.to_string(), "Not implemented: macOS fan");
     }
 
     #[test]
-    fn test_simon_error_from_io() {
+    fn test_iron_error_from_io() {
         let io_err = io::Error::new(io::ErrorKind::NotFound, "file missing");
-        let err: SimonError = io_err.into();
+        let err: IronError = io_err.into();
         assert!(err.to_string().contains("file missing"));
     }
 
     #[test]
-    fn test_simon_error_from_json() {
+    fn test_iron_error_from_json() {
         let json_str = "{ invalid json }}}";
         let json_err = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
-        let err: SimonError = json_err.into();
+        let err: IronError = json_err.into();
         assert!(err.to_string().contains("JSON error"));
     }
 
     #[test]
-    fn test_simon_error_gpu_error() {
-        let err = SimonError::GpuError("NVML failure".to_string());
+    fn test_iron_error_gpu_error() {
+        let err = IronError::GpuError("NVML failure".to_string());
         assert_eq!(err.to_string(), "GPU error: NVML failure");
     }
 
     #[test]
-    fn test_simon_error_other() {
-        let err = SimonError::Other("misc error".to_string());
+    fn test_iron_error_other() {
+        let err = IronError::Other("misc error".to_string());
         assert_eq!(err.to_string(), "misc error");
     }
 
@@ -281,18 +281,18 @@ mod tests {
     }
 
     #[test]
-    fn test_error_conversion_to_simon_error() {
+    fn test_error_conversion_to_iron_error() {
         let err = Error::GpuError("test failure".to_string());
-        let simon_err: SimonError = err.into();
-        assert!(simon_err.to_string().contains("test failure"));
+        let ironmon_err: IronError = err.into();
+        assert!(ironmon_err.to_string().contains("test failure"));
     }
 
     #[test]
     fn test_error_not_supported_conv() {
         let err = Error::NotSupported("feature X".to_string());
-        let simon_err: SimonError = err.into();
-        match simon_err {
-            SimonError::FeatureNotAvailable(s) => assert_eq!(s, "feature X"),
+        let ironmon_err: IronError = err.into();
+        match ironmon_err {
+            IronError::FeatureNotAvailable(s) => assert_eq!(s, "feature X"),
             _ => panic!("Expected FeatureNotAvailable"),
         }
     }
@@ -300,9 +300,9 @@ mod tests {
     #[test]
     fn test_error_permission_denied_conv() {
         let err = Error::PermissionDenied("need admin".to_string());
-        let simon_err: SimonError = err.into();
-        match simon_err {
-            SimonError::PermissionDenied(s) => assert_eq!(s, "need admin"),
+        let ironmon_err: IronError = err.into();
+        match ironmon_err {
+            IronError::PermissionDenied(s) => assert_eq!(s, "need admin"),
             _ => panic!("Expected PermissionDenied"),
         }
     }
@@ -310,9 +310,9 @@ mod tests {
     #[test]
     fn test_error_device_not_found_conv() {
         let err = Error::DeviceNotFound("GPU 1".to_string());
-        let simon_err: SimonError = err.into();
-        match simon_err {
-            SimonError::DeviceNotFound(s) => assert_eq!(s, "GPU 1"),
+        let ironmon_err: IronError = err.into();
+        match ironmon_err {
+            IronError::DeviceNotFound(s) => assert_eq!(s, "GPU 1"),
             _ => panic!("Expected DeviceNotFound"),
         }
     }

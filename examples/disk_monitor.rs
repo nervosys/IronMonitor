@@ -3,10 +3,10 @@
 //! Demonstrates the disk monitoring interface for SSDs, HDDs, and NVMe devices.
 //! Run with: cargo run --example disk_monitor
 
-use simonlib::disk;
+use ironmonlib::disk;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Silicon Monitor: Disk Monitoring Example ===\n");
+    println!("=== IronMonitor: Disk Monitoring Example ===\n");
 
     // Enumerate all disks
     let disks = match disk::enumerate_disks() {

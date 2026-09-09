@@ -3,10 +3,10 @@
 //! Demonstrates the unified GPU monitoring interface with NVIDIA GPUs.
 //! Run with: cargo run --example nvidia_monitor --features nvidia
 
-use simonlib::gpu::traits::*;
+use ironmonlib::gpu::traits::*;
 
 #[cfg(feature = "nvidia")]
-use simonlib::gpu::nvidia_new;
+use ironmonlib::gpu::nvidia_new;
 
 #[cfg(not(feature = "nvidia"))]
 fn main() {
@@ -17,7 +17,7 @@ fn main() {
 
 #[cfg(feature = "nvidia")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Silicon Monitor: NVIDIA GPU Example ===\n");
+    println!("=== IronMonitor: NVIDIA GPU Example ===\n");
 
     // Enumerate all NVIDIA GPUs
     let devices = match nvidia_new::enumerate() {

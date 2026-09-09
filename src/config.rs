@@ -1,13 +1,13 @@
-//! Configuration management for Silicon Monitor
+//! Configuration management for IronMonitor
 //!
 //! This module provides configuration persistence for TUI preferences,
 //! display options, and monitoring settings.
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Silicon Monitor configuration
+/// IronMonitor configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// General display options
@@ -66,7 +66,7 @@ pub struct ProcessConfig {
     /// Sort ascending (false = descending)
     #[serde(default)]
     pub sort_ascending: bool,
-    /// Filter out nvtop/simon process
+    /// Filter out nvtop/ironmon process
     #[serde(default = "default_true")]
     pub hide_self: bool,
 }
@@ -173,8 +173,8 @@ impl Default for ChartConfig {
 impl Config {
     /// Get the default configuration file path
     ///
-    /// Returns `~/.config/simon/config.toml` on Unix-like systems,
-    /// or `%APPDATA%\simon\config.toml` on Windows.
+    /// Returns `~/.config/ironmon/config.toml` on Unix-like systems,
+    /// or `%APPDATA%\ironmon\config.toml` on Windows.
     pub fn default_path() -> Result<PathBuf> {
         let config_dir = if cfg!(windows) {
             std::env::var("APPDATA")
@@ -186,7 +186,7 @@ impl Config {
                 .unwrap_or_else(|_| PathBuf::from(".config"))
         };
 
-        Ok(config_dir.join("simon"))
+        Ok(config_dir.join("ironmon"))
     }
 
     /// Load configuration from the default path
@@ -200,7 +200,7 @@ impl Config {
 
         let contents = std::fs::read_to_string(&config_file)?;
         let config: Config = toml::from_str(&contents)
-            .map_err(|e| SimonError::Parse(format!("Failed to parse config: {}", e)))?;
+            .map_err(|e| IronError::Parse(format!("Failed to parse config: {}", e)))?;
 
         Ok(config)
     }
@@ -209,7 +209,7 @@ impl Config {
     pub fn load_from(path: &PathBuf) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&contents)
-            .map_err(|e| SimonError::Parse(format!("Failed to parse config: {}", e)))?;
+            .map_err(|e| IronError::Parse(format!("Failed to parse config: {}", e)))?;
         Ok(config)
     }
 
@@ -220,7 +220,7 @@ impl Config {
 
         let config_file = config_dir.join("config.toml");
         let contents = toml::to_string_pretty(self)
-            .map_err(|e| SimonError::Other(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to serialize config: {}", e)))?;
 
         std::fs::write(&config_file, contents)?;
         Ok(())
@@ -229,7 +229,7 @@ impl Config {
     /// Save configuration to a specific path
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         let contents = toml::to_string_pretty(self)
-            .map_err(|e| SimonError::Other(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to serialize config: {}", e)))?;
         std::fs::write(path, contents)?;
         Ok(())
     }

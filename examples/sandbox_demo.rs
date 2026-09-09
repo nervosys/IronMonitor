@@ -9,11 +9,11 @@
 //! cargo run --release --features full --example sandbox_demo
 //! ```
 
-use simonlib::sandbox::SandboxDetector;
+use ironmonlib::sandbox::SandboxDetector;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║     Silicon Monitor - Sandbox Detection Demo                  ║");
+    println!("║     IronMonitor - Sandbox Detection Demo                  ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     let detector = SandboxDetector::new();

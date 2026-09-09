@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 
 /// Default maximum database size (100 MB)
 const DEFAULT_MAX_SIZE: u64 = 100 * 1024 * 1024;
@@ -51,7 +51,7 @@ pub fn parse_size(s: &str) -> Result<u64> {
     let num: u64 = num_str
         .trim()
         .parse()
-        .map_err(|_| SimonError::Configuration(format!("Invalid size: {}", s)))?;
+        .map_err(|_| IronError::Configuration(format!("Invalid size: {}", s)))?;
 
     Ok(num * multiplier)
 }
@@ -274,19 +274,19 @@ impl TimeSeriesDb {
             .read(true)
             .write(true)
             .open(&self.path)
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         // Read and validate header
         let mut header_bytes = vec![0u8; HEADER_SIZE as usize];
         file.read_exact(&mut header_bytes)
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         let header: DatabaseHeader = bincode::deserialize(&header_bytes)
-            .map_err(|e| SimonError::Configuration(format!("Invalid database header: {}", e)))?;
+            .map_err(|e| IronError::Configuration(format!("Invalid database header: {}", e)))?;
 
         // Validate magic bytes
         if &header.magic != MAGIC_BYTES {
-            return Err(SimonError::Configuration(
+            return Err(IronError::Configuration(
                 "Invalid database file (magic bytes mismatch)".to_string(),
             ));
         }
@@ -297,7 +297,7 @@ impl TimeSeriesDb {
         // read back into the current layout, and guessing which zeros were
         // absences would invent the very thing the change removed.
         if header.version > DB_VERSION {
-            return Err(SimonError::Configuration(format!(
+            return Err(IronError::Configuration(format!(
                 "Database version {} is newer than supported version {}",
                 header.version, DB_VERSION
             )));
@@ -322,7 +322,7 @@ impl TimeSeriesDb {
             // wrong, and nothing in the record says which definition produced
             // any given row. Version 3 was rejected for the same kind of reason
             // -- a stored zero that does not say whether it was measured.
-            return Err(SimonError::Configuration(format!(
+            return Err(IronError::Configuration(format!(
                 concat!(
                     "Database version {} predates version {}. Older files ",
                     "record an unreadable GPU figure as zero rather than as ",
@@ -332,7 +332,7 @@ impl TimeSeriesDb {
                     "compute one (before 5). None can be converted, because a ",
                     "stored number does not say which definition produced it. ",
                     "Record to a new file, or delete this one with ",
-                    "`simon record clear`.",
+                    "`ironmon record clear`.",
                 ),
                 header.version, DB_VERSION
             )));
@@ -352,7 +352,7 @@ impl TimeSeriesDb {
     fn create_new(&mut self) -> Result<()> {
         // Create parent directories if needed
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| SimonError::Other(e.to_string()))?;
+            fs::create_dir_all(parent).map_err(|e| IronError::Other(e.to_string()))?;
         }
 
         let mut file = OpenOptions::new()
@@ -361,7 +361,7 @@ impl TimeSeriesDb {
             .create(true)
             .truncate(true)
             .open(&self.path)
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         // Write header
         self.write_header(&mut file)?;
@@ -373,10 +373,10 @@ impl TimeSeriesDb {
     /// Write header to file
     fn write_header(&self, file: &mut File) -> Result<()> {
         file.seek(SeekFrom::Start(0))
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         let header_bytes = bincode::serialize(&self.header)
-            .map_err(|e| SimonError::Other(format!("Failed to serialize header: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to serialize header: {}", e)))?;
 
         // Pad to HEADER_SIZE
         let mut padded = vec![0u8; HEADER_SIZE as usize];
@@ -384,7 +384,7 @@ impl TimeSeriesDb {
             .copy_from_slice(&header_bytes[..header_bytes.len().min(HEADER_SIZE as usize)]);
 
         file.write_all(&padded)
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         Ok(())
     }
@@ -392,7 +392,7 @@ impl TimeSeriesDb {
     /// Record a system snapshot
     pub fn record_system(&mut self, snapshot: &SystemSnapshot) -> Result<()> {
         let data = bincode::serialize(snapshot)
-            .map_err(|e| SimonError::Other(format!("Failed to serialize snapshot: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to serialize snapshot: {}", e)))?;
 
         self.write_record(RecordType::System, &data, snapshot.timestamp)?;
 
@@ -414,24 +414,24 @@ impl TimeSeriesDb {
             let file = self
                 .file
                 .as_mut()
-                .ok_or_else(|| SimonError::Other("Database not open".to_string()))?;
+                .ok_or_else(|| IronError::Other("Database not open".to_string()))?;
 
             // Seek to end of data
             file.seek(SeekFrom::Start(HEADER_SIZE + self.header.data_size))
-                .map_err(|e| SimonError::Other(e.to_string()))?;
+                .map_err(|e| IronError::Other(e.to_string()))?;
 
             // Write record type
             file.write_all(&[record_type as u8])
-                .map_err(|e| SimonError::Other(e.to_string()))?;
+                .map_err(|e| IronError::Other(e.to_string()))?;
 
             // Write data length
             let len_bytes = (data.len() as u32).to_le_bytes();
             file.write_all(&len_bytes)
-                .map_err(|e| SimonError::Other(e.to_string()))?;
+                .map_err(|e| IronError::Other(e.to_string()))?;
 
             // Write data
             file.write_all(data)
-                .map_err(|e| SimonError::Other(e.to_string()))?;
+                .map_err(|e| IronError::Other(e.to_string()))?;
         }
 
         // Update header
@@ -453,13 +453,13 @@ impl TimeSeriesDb {
         let file = self
             .file
             .as_mut()
-            .ok_or_else(|| SimonError::Other("Database not open".to_string()))?;
+            .ok_or_else(|| IronError::Other("Database not open".to_string()))?;
 
         file.seek(SeekFrom::Start(0))
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         let header_bytes = bincode::serialize(&self.header)
-            .map_err(|e| SimonError::Other(format!("Failed to serialize header: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to serialize header: {}", e)))?;
 
         // Pad to HEADER_SIZE
         let mut padded = vec![0u8; HEADER_SIZE as usize];
@@ -467,9 +467,9 @@ impl TimeSeriesDb {
             .copy_from_slice(&header_bytes[..header_bytes.len().min(HEADER_SIZE as usize)]);
 
         file.write_all(&padded)
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
-        file.flush().map_err(|e| SimonError::Other(e.to_string()))?;
+        file.flush().map_err(|e| IronError::Other(e.to_string()))?;
 
         Ok(())
     }
@@ -516,13 +516,13 @@ impl TimeSeriesDb {
         let file = self
             .file
             .as_mut()
-            .ok_or_else(|| SimonError::Other("Database not open".to_string()))?;
+            .ok_or_else(|| IronError::Other("Database not open".to_string()))?;
 
         let mut snapshots = Vec::new();
 
         // Seek to start of data
         file.seek(SeekFrom::Start(HEADER_SIZE))
-            .map_err(|e| SimonError::Other(e.to_string()))?;
+            .map_err(|e| IronError::Other(e.to_string()))?;
 
         let mut offset = 0u64;
         while offset < self.header.data_size {
@@ -599,7 +599,7 @@ impl TimeSeriesDb {
     pub fn close(&mut self) -> Result<()> {
         if let Some(mut file) = self.file.take() {
             self.write_header(&mut file)?;
-            file.flush().map_err(|e| SimonError::Other(e.to_string()))?;
+            file.flush().map_err(|e| IronError::Other(e.to_string()))?;
         }
         Ok(())
     }
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn an_absent_sensor_survives_the_round_trip_as_absent() {
         let dir = std::env::temp_dir().join(format!(
-            "simon-tsdb-absence-{}-{:?}",
+            "ironmon-tsdb-absence-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -848,7 +848,7 @@ mod tests {
 
     /// A tick that read nothing must not come back as an idle machine.
     ///
-    /// This is the whole reason for the version 6 bump. `simon record` writes a
+    /// This is the whole reason for the version 6 bump. `ironmon record` writes a
     /// row per tick whether or not the readers succeeded, and the row is read
     /// back later by someone who was not there. `0.0%` CPU beside 0 bytes of
     /// memory is not a visible gap in the data -- it is a specific and entirely
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn a_tick_that_read_nothing_reads_back_as_nothing() {
         let dir = std::env::temp_dir().join(format!(
-            "simon-tsdb-unread-{}-{:?}",
+            "ironmon-tsdb-unread-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

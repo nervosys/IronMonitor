@@ -9,7 +9,7 @@
 //! - **Linux**: `/sys/class/regulator/`
 //! - **Windows / macOS**: Not available (no comparable subsystem)
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Regulator state.
@@ -142,13 +142,13 @@ pub struct VoltageRegulatorMonitor {
 
 impl VoltageRegulatorMonitor {
     /// Create a new voltage regulator monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -178,14 +178,14 @@ impl VoltageRegulatorMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<VoltageRegulatorOverview, SimonError> {
+    fn scan() -> Result<VoltageRegulatorOverview, IronError> {
         let reg_path = std::path::Path::new("/sys/class/regulator");
 
         if !reg_path.exists() {
             return Ok(Self::empty_overview());
         }
 
-        let entries = std::fs::read_dir(reg_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(reg_path).map_err(IronError::Io)?;
         let mut regulators = Vec::new();
 
         for entry in entries.flatten() {
@@ -304,12 +304,12 @@ impl VoltageRegulatorMonitor {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<VoltageRegulatorOverview, SimonError> {
+    fn scan() -> Result<VoltageRegulatorOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "voltage regulators are read from `/sys/class/regulator`, which this platform does not expose"
                 .into(),
         ))

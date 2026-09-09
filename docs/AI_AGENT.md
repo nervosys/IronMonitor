@@ -1,6 +1,6 @@
 # AI Agent for System Analysis
 
-Silicon Monitor includes a lightweight AI agent that can answer questions about system state, make predictions, and perform calculations—all without adding latency to standard monitoring.
+IronMonitor includes a lightweight AI agent that can answer questions about system state, make predictions, and perform calculations—all without adding latency to standard monitoring.
 
 ## Features
 
@@ -38,15 +38,15 @@ Choose the right balance of speed and intelligence:
 ### Basic Usage
 
 ```rust
-use simon::agent::{Agent, AgentConfig, ModelSize};
-use simon::SiliconMonitor;
+use ironmon::agent::{Agent, AgentConfig, ModelSize};
+use ironmon::IronMonitor;
 
 // Create agent with medium model (500M parameters)
 let config = AgentConfig::new(ModelSize::Medium);
 let mut agent = Agent::new(config)?;
 
 // Create monitor
-let monitor = SiliconMonitor::new()?;
+let monitor = IronMonitor::new()?;
 
 // Ask questions
 let response = agent.ask("What's my GPU temperature?", &monitor)?;
@@ -57,7 +57,7 @@ println!("Inference time: {}ms", response.inference_time_ms);
 ### Configuration Options
 
 ```rust
-use simon::agent::{AgentConfig, ModelSize};
+use ironmon::agent::{AgentConfig, ModelSize};
 use std::path::PathBuf;
 
 let config = AgentConfig::new(ModelSize::Large)
@@ -245,7 +245,7 @@ cargo run --release --features full --example agent_demo
 ### Example Output
 
 ```
-Silicon Monitor AI Agent - Simple Demo
+IronMonitor AI Agent - Simple Demo
 
 Initializing...
 ✓ Ready (2 GPUs detected)
@@ -330,10 +330,10 @@ timeout. Call it from a thread you own, never from a render or event loop.
 The agent seamlessly integrates with the monitoring system:
 
 ```rust
-use simon::{SiliconMonitor, Agent, AgentConfig};
+use ironmon::{IronMonitor, Agent, AgentConfig};
 
 // Standard monitoring (zero latency)
-let monitor = SiliconMonitor::new()?;
+let monitor = IronMonitor::new()?;
 let gpu_info = monitor.snapshot_gpus()?;
 
 // Agent queries (on-demand, non-blocking)

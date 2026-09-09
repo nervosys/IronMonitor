@@ -14,13 +14,13 @@ use crate::connections::{ConnectionInfo, ConnectionMonitor, ConnectionState, Pro
 use crate::core::cpu::CpuStats;
 use crate::core::memory::MemoryStats;
 use crate::disk::{self, DiskDevice};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use crate::gpu::{GpuCollection, GpuDynamicInfo, GpuStaticInfo};
 use crate::motherboard::{self, DriverInfo, MotherboardDevice, SystemInfo as MBSystemInfo};
 use crate::network_monitor::NetworkMonitor;
 use crate::process_monitor::{ProcessMonitor, ProcessMonitorInfo};
 use crate::system_stats::SystemStats;
-use crate::SiliconMonitor;
+use crate::UnifiedMonitor;
 
 /// Default history buffer size for time-series data
 pub const DEFAULT_HISTORY_SIZE: usize = 60;
@@ -555,7 +555,7 @@ pub struct MonitoringBackend {
     ///
     /// `motherboard::get_driver_versions` queries `Win32_PnPSignedDriver`, which
     /// measured 7.1s on this host — more than half the cost of constructing a backend,
-    /// paid by every `simon cli` invocation for a getter no caller in the tree ever
+    /// paid by every `ironmon cli` invocation for a getter no caller in the tree ever
     /// invokes.
     driver_info: std::cell::OnceCell<Vec<DriverInfo>>,
 
@@ -594,8 +594,8 @@ pub struct MonitoringBackend {
     /// Agent request timeout, held for the deferred construction.
     agent_timeout_secs: u64,
 
-    /// SiliconMonitor for agent context
-    silicon_monitor: Option<SiliconMonitor>,
+    /// UnifiedMonitor for agent context
+    unified_monitor: Option<UnifiedMonitor>,
 
     /// Agent response history
     agent_history: VecDeque<AgentResponse>,
@@ -683,11 +683,11 @@ impl MonitoringBackend {
         // Built on first use by `ask_agent`, not here.
         //
         // The comment this replaces claimed it shared the GPU collection above; it
-        // does not. `SiliconMonitor::new` runs its own `GpuCollection::auto_detect`,
+        // does not. `UnifiedMonitor::new` runs its own `GpuCollection::auto_detect`,
         // so constructing a backend enumerated every GPU twice — measured at 260ms on
         // an idle three-GPU host and seconds on a busy one — to serve an agent query
-        // that most invocations never make. `simon cli gpu` paid it in full.
-        let silicon_monitor = None;
+        // that most invocations never make. `ironmon cli gpu` paid it in full.
+        let unified_monitor = None;
 
         let mut backend = Self {
             agent_enabled: config.enable_agent,
@@ -721,7 +721,7 @@ impl MonitoringBackend {
             network_rx_history: HistoryBuffer::new(config.history_size),
             network_tx_history: HistoryBuffer::new(config.history_size),
             agent,
-            silicon_monitor,
+            unified_monitor,
             agent_history: VecDeque::with_capacity(config.agent_history_size),
             last_update: Instant::now(),
             update_interval: config.update_interval,
@@ -800,7 +800,7 @@ impl MonitoringBackend {
             //
             // `platform::macos::read_cpu_stats` has existed since 5.2.0 and reads
             // real per-core ticks from `host_processor_info`. It was wired into
-            // the ontology resolver and not into this backend, so `simon` and the
+            // the ontology resolver and not into this backend, so `ironmon` and the
             // ontology reported different CPU figures on the same Mac. This is
             // now the same call Windows and Linux make above.
             if let Ok(stats) = crate::platform::macos::read_cpu_stats() {
@@ -853,7 +853,7 @@ impl MonitoringBackend {
         // a Mac and every caller saw memory as simply absent. That is quieter
         // than the CPU path's invented figures and wrong in the same way: the
         // reader has existed since 5.2.0 and was wired only into the ontology, so
-        // `simon` reported no memory on a machine the ontology could read.
+        // `ironmon` reported no memory on a machine the ontology could read.
         #[cfg(target_os = "macos")]
         {
             if let Ok(stats) = crate::platform::macos::read_memory_stats() {
@@ -1093,7 +1093,7 @@ impl MonitoringBackend {
     /// Detect and construct the agent on first use.
     ///
     /// Deferred rather than done at construction: the probes take over a second and
-    /// every `simon cli` invocation paid for them, whether or not it asked anything.
+    /// every `ironmon cli` invocation paid for them, whether or not it asked anything.
     fn agent_slot(&self) -> &Option<Agent> {
         self.agent.get_or_init(|| {
             if !self.agent_enabled {
@@ -1133,8 +1133,8 @@ impl MonitoringBackend {
     /// Query the AI agent with a natural language question
     pub fn ask_agent(&mut self, question: &str) -> Result<AgentResponse> {
         // Enumerate on first use, then reuse the handles.
-        if self.silicon_monitor.is_none() {
-            self.silicon_monitor = Some(SiliconMonitor::new()?);
+        if self.unified_monitor.is_none() {
+            self.unified_monitor = Some(UnifiedMonitor::new()?);
         }
 
         // Force detection before borrowing mutably.
@@ -1143,12 +1143,12 @@ impl MonitoringBackend {
             .agent
             .get_mut()
             .and_then(|slot| slot.as_mut())
-            .ok_or_else(|| SimonError::Other("AI agent not available".to_string()))?;
+            .ok_or_else(|| IronError::Other("AI agent not available".to_string()))?;
 
         let monitor = self
-            .silicon_monitor
+            .unified_monitor
             .as_ref()
-            .ok_or_else(|| SimonError::Other("Silicon monitor not available".to_string()))?;
+            .ok_or_else(|| IronError::Other("Silicon monitor not available".to_string()))?;
 
         // Get response using the agent's ask method
         let response = agent.ask(question, monitor)?;
@@ -1178,7 +1178,7 @@ impl MonitoringBackend {
     /// Collect everything the backend can see.
     ///
     /// `state.network` was declared, exported, serialised by
-    /// `simon cli all --format json`, and **never populated** -- it came back
+    /// `ironmon cli all --format json`, and **never populated** -- it came back
     /// `[]` on a host with twenty interfaces, while every other section of the
     /// same document was filled. `NetworkState` was therefore a public type no
     /// code constructed, which is why its rate fields still held the bare `f64`

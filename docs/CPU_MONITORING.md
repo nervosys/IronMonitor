@@ -2,7 +2,7 @@
 
 ## Overview
 
-Silicon Monitor provides comprehensive CPU monitoring across all platforms with support for:
+IronMonitor provides comprehensive CPU monitoring across all platforms with support for:
 - Per-core frequency tracking
 - Per-core utilization
 - Temperature monitoring
@@ -23,19 +23,19 @@ Silicon Monitor provides comprehensive CPU monitoring across all platforms with 
 
 *macOS: Thermal pressure available, but not per-core temperatures
 
-†Windows: `simon cli temperature` reports no sensors on a desktop Ryzen system.
-Most board sensors need a signed kernel driver, which simon does not ship.
+†Windows: `ironmon cli temperature` reports no sensors on a desktop Ryzen system.
+Most board sensors need a signed kernel driver, which IronMonitor does not ship.
 
 > **This table describes `src/silicon/`, not `CpuStats`.** The two are separate:
 > `silicon` is the enhanced per-core and cluster layer, and `CpuStats` /
-> `stats::Simon` is the general path — which has **no macOS implementation at all**
+> `stats::IronMonitor` is the general path — which has **no macOS implementation at all**
 > (see the platform table in the README). A ✅ here does not imply the general path
 > works on that platform.
 >
 > The Windows column previously read 🚧 throughout, describing
 > `src/silicon/windows.rs` as "basic structure and skeleton" with a "placeholder
 > for WMI and Performance Counter integration". It is 644 lines across 25
-> functions, and `simon cli cpu` returns twenty-four distinct per-core figures on a
+> functions, and `ironmon cli cpu` returns twenty-four distinct per-core figures on a
 > Ryzen 9 9900X — not one average replicated, which is the defect this repository
 > has hit before. Per-core utilization is corrected to ✅ on that evidence.
 >
@@ -63,7 +63,7 @@ Most board sensors need a signed kernel driver, which simon does not ship.
    - Per-core utilization via performance counters — verified returning distinct
      per-core figures, not a replicated aggregate
    - CPU identity, core count and clock
-   - No temperature: board sensors need a signed kernel driver simon does not ship
+   - No temperature: board sensors need a signed kernel driver IronMonitor does not ship
 
 4. **macOS Implementation** (`src/silicon/apple.rs`)
    - Full powermetrics integration
@@ -136,11 +136,11 @@ CpuCluster {
 ## Usage Example
 
 ```rust
-use simon::silicon::{SiliconMonitor, CpuClusterType};
+use ironmon::silicon::{IronMonitor, CpuClusterType};
 
 // Linux
 #[cfg(target_os = "linux")]
-use simon::silicon::linux::LinuxSiliconMonitor;
+use ironmon::silicon::linux::LinuxSiliconMonitor;
 
 let monitor = LinuxSiliconMonitor::new()?;
 let (cores, clusters) = monitor.cpu_info()?;

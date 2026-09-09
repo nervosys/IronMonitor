@@ -13,7 +13,7 @@
 //! identical and every declared string wrong, and that is precisely the drift
 //! this file exists to catch.
 
-use simonlib::ontology::vocabulary;
+use ironmonlib::ontology::vocabulary;
 use std::collections::BTreeSet;
 
 /// The serialised tag or value of one instance.
@@ -60,7 +60,7 @@ fn assert_same(id: &str, actual: BTreeSet<String>) {
 
 #[test]
 fn provenance_matches_its_declaration() {
-    use simonlib::ontology::Provenance::*;
+    use ironmonlib::ontology::Provenance::*;
     let actual = [Measured, Specification, Derived, Unavailable]
         .iter()
         .map(|p| tag_of(p, "provenance"))
@@ -70,7 +70,7 @@ fn provenance_matches_its_declaration() {
 
 #[test]
 fn apply_status_matches_its_declaration() {
-    use simonlib::profile::apply::ApplyStatus::*;
+    use ironmonlib::profile::apply::ApplyStatus::*;
     let actual = [Applied, NeedsConfirm, NotWritable, Failed]
         .iter()
         .map(|s| tag_of(s, "status"))
@@ -80,7 +80,7 @@ fn apply_status_matches_its_declaration() {
 
 #[test]
 fn verdict_matches_its_declaration() {
-    use simonlib::tuning::verify::Verdict;
+    use ironmonlib::tuning::verify::Verdict;
     let actual = [
         Verdict::Improved {
             metric: "m".into(),
@@ -113,7 +113,7 @@ fn verdict_matches_its_declaration() {
 
 #[test]
 fn scan_status_matches_its_declaration() {
-    use simonlib::ids::ScanStatus;
+    use ironmonlib::ids::ScanStatus;
     let actual = [
         ScanStatus::NoBaseline {
             recorded: 0,
@@ -134,7 +134,7 @@ fn scan_status_matches_its_declaration() {
 
 #[test]
 fn severity_and_confidence_match_their_declarations() {
-    use simonlib::ids::{Confidence, Severity};
+    use ironmonlib::ids::{Confidence, Severity};
     let sev = [
         Severity::Info,
         Severity::Low,
@@ -160,7 +160,7 @@ fn severity_and_confidence_match_their_declarations() {
 
 #[test]
 fn support_matches_its_declaration() {
-    use simonlib::ontology::capability::Support;
+    use ironmonlib::ontology::capability::Support;
     let actual = [
         Support::Implemented,
         Support::Partial {

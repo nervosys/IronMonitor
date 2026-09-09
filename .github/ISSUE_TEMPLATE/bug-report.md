@@ -29,7 +29,7 @@ If applicable, add screenshots or terminal output to help explain your problem.
 ## Environment
 
 - OS: [e.g. Windows 11, Ubuntu 22.04, macOS 14]
-- silicon-monitor version: [e.g. 0.3.0]
+- iron-monitor version: [e.g. 0.3.0]
 - Rust version: [e.g. 1.75.0]
 - GPU: [e.g. NVIDIA RTX 4090, AMD RX 7900]
 

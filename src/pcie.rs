@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::pcie::{PcieMonitor, PcieDevice};
+//! use ironmonlib::pcie::{PcieMonitor, PcieDevice};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let devices = PcieMonitor::enumerate()?;
@@ -290,7 +290,7 @@ pub struct PcieMonitor;
 
 impl PcieMonitor {
     /// Enumerate all PCIe devices with link information
-    pub fn enumerate() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
+    pub fn enumerate() -> Result<Vec<PcieDevice>, crate::error::IronError> {
         #[cfg(target_os = "linux")]
         {
             Self::enumerate_linux()
@@ -305,14 +305,14 @@ impl PcieMonitor {
         }
         #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         {
-            Err(crate::error::SimonError::NotImplemented(
+            Err(crate::error::IronError::NotImplemented(
                 "PCIe monitoring not supported on this platform".into(),
             ))
         }
     }
 
     /// Enumerate only GPU PCIe devices
-    pub fn gpu_devices() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
+    pub fn gpu_devices() -> Result<Vec<PcieDevice>, crate::error::IronError> {
         Ok(Self::enumerate()?
             .into_iter()
             .filter(|d| d.is_gpu())
@@ -326,7 +326,7 @@ impl PcieMonitor {
     /// link in it is the alarm described on [`PcieDevice::is_downgraded`].
     /// `enumerate()` still returns those devices, so a caller who wants to see
     /// them can filter for `is_downgraded() == None`.
-    pub fn downgraded_devices() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
+    pub fn downgraded_devices() -> Result<Vec<PcieDevice>, crate::error::IronError> {
         Ok(Self::enumerate()?
             .into_iter()
             .filter(|d| d.is_downgraded() == Some(true))
@@ -334,7 +334,7 @@ impl PcieMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn enumerate_linux() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
+    fn enumerate_linux() -> Result<Vec<PcieDevice>, crate::error::IronError> {
         use std::fs;
         use std::path::Path;
 
@@ -342,7 +342,7 @@ impl PcieMonitor {
         let pci_base = Path::new("/sys/bus/pci/devices");
 
         let entries = fs::read_dir(pci_base).map_err(|e| {
-            crate::error::SimonError::Other(format!("Cannot read PCI devices: {}", e))
+            crate::error::IronError::Other(format!("Cannot read PCI devices: {}", e))
         })?;
 
         for entry in entries.flatten() {
@@ -469,18 +469,18 @@ impl PcieMonitor {
     }
 
     #[cfg(windows)]
-    fn enumerate_windows() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
+    fn enumerate_windows() -> Result<Vec<PcieDevice>, crate::error::IronError> {
         // On Windows we can use SetupAPI or WMI to enumerate PCI devices
         // For now, use WMI Win32_PnPEntity with PCI bus
         // This is a simplified implementation
-        Err(crate::error::SimonError::NotImplemented(
+        Err(crate::error::IronError::NotImplemented(
             "PCIe enumeration on Windows is not yet implemented. Use GPU-specific backends for GPU PCIe info.".into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn enumerate_macos() -> Result<Vec<PcieDevice>, crate::error::SimonError> {
-        Err(crate::error::SimonError::NotImplemented(
+    fn enumerate_macos() -> Result<Vec<PcieDevice>, crate::error::IronError> {
+        Err(crate::error::IronError::NotImplemented(
             "PCIe enumeration on macOS requires IOKit bindings (not yet implemented)".into(),
         ))
     }

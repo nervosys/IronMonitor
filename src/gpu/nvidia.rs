@@ -12,7 +12,7 @@
 //! - Process tracking
 //! - Jetson-specific features (jetson_clocks, nvpmodel, etc.)
 //!
-//! This integrates the existing Simon NVIDIA implementation with the unified GPU interface.
+//! This integrates the existing IronMonitor NVIDIA implementation with the unified GPU interface.
 
 use crate::gpu::{
     Gpu, GpuClocks, GpuCollection, GpuDynamicInfo, GpuEngines, GpuMemory, GpuPower, GpuProcess,

@@ -4,7 +4,7 @@
 
 use super::types::*;
 use super::{AiDataApi, ToolCategory, ToolDefinition};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde_json::json;
 
 /// `"WIDTHxHEIGHT"`, or `null` when the display's mode was not read.
@@ -641,7 +641,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
     // descriptions and worked examples, and neither had an implementation --- no
     // `tool_*` function and no arm in `call_tool`, so an agent that read the
     // catalogue and called one got "Unknown tool", which reads as the agent's
-    // own mistake rather than as simon's. The only other mention of the name was
+    // own mistake rather than as ironmon's. The only other mention of the name was
     // a label pushed into a text blob, which is not the tool.
     //
     // They are removed rather than stubbed. Answering "what was the GPU
@@ -700,7 +700,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
     });
     tools.push(ToolDefinition {
         name: "apply_profile_setting".to_string(),
-        description: "Write a profile setting (e.g. enable NVIDIA persistence mode). REQUIRES BOTH (a) confirm=true and (b) the environment variable SIMON_ALLOW_AGENT_WRITES=1 to actually attempt the write. Without those, the call returns a planned-but-not-applied outcome. Every attempt is JSON-logged to the audit log regardless.".to_string(),
+        description: "Write a profile setting (e.g. enable NVIDIA persistence mode). REQUIRES BOTH (a) confirm=true and (b) the environment variable IRONMON_ALLOW_AGENT_WRITES=1 to actually attempt the write. Without those, the call returns a planned-but-not-applied outcome. Every attempt is JSON-logged to the audit log regardless.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -779,7 +779,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let info = crate::motherboard::get_system_info()
-            .map_err(|e| SimonError::NotImplemented(e.to_string()))?;
+            .map_err(|e| IronError::NotImplemented(e.to_string()))?;
 
         let uptime = crate::stats::uptime().ok().map(|d| d.as_secs());
 
@@ -795,7 +795,7 @@ impl AiDataApi {
             model: info.product_name.clone(),
             // `read_uptime` has had a platform-specific implementation on
             // Linux, Windows and macOS the whole time; what was missing was a
-            // way to call it without building a `Simon`. Boot time follows from
+            // way to call it without building a `IronMonitor`. Boot time follows from
             // uptime, so both are present or both absent -- deriving one from a
             // clock that failed would be worse than reporting neither.
             uptime_seconds: uptime,
@@ -853,11 +853,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
 
         let status: Vec<_> = snapshots
             .iter()
@@ -899,11 +899,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
 
         let list: Vec<_> = snapshots
             .iter()
@@ -928,20 +928,20 @@ impl AiDataApi {
         let gpu_index = params
             .get("gpu_index")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| SimonError::InvalidArgument("gpu_index is required".to_string()))?
+            .ok_or_else(|| IronError::InvalidArgument("gpu_index is required".to_string()))?
             as usize;
 
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
 
         let info = snapshots.get(gpu_index).ok_or_else(|| {
-            SimonError::InvalidArgument(format!("GPU index {} not found", gpu_index))
+            IronError::InvalidArgument(format!("GPU index {} not found", gpu_index))
         })?;
 
         Ok(json!({
@@ -999,12 +999,12 @@ impl AiDataApi {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let gpu_procs = proc_mon
             .gpu_processes()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         let filtered: Vec<_> = gpu_procs
             .iter()
@@ -1042,7 +1042,7 @@ impl AiDataApi {
     /// errors with this wording; these now match it.
     fn check_gpu_index(gpu_index: Option<u64>, count: usize) -> Result<()> {
         match gpu_index {
-            Some(i) if i as usize >= count => Err(SimonError::InvalidArgument(format!(
+            Some(i) if i as usize >= count => Err(IronError::InvalidArgument(format!(
                 "GPU index {} not found",
                 i
             ))),
@@ -1059,11 +1059,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
         Self::check_gpu_index(gpu_index, snapshots.len())?;
 
         let util: Vec<_> = snapshots
@@ -1091,11 +1091,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
         Self::check_gpu_index(gpu_index, snapshots.len())?;
 
         let mem: Vec<_> = snapshots
@@ -1129,11 +1129,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
         Self::check_gpu_index(gpu_index, snapshots.len())?;
 
         let temps: Vec<_> = snapshots
@@ -1165,11 +1165,11 @@ impl AiDataApi {
         let gpus = self
             .gpus
             .as_ref()
-            .ok_or_else(|| SimonError::NotImplemented("No GPUs detected".to_string()))?;
+            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
 
         let snapshots = gpus
             .snapshot_all()
-            .map_err(|e| SimonError::GpuError(e.to_string()))?;
+            .map_err(|e| IronError::GpuError(e.to_string()))?;
         Self::check_gpu_index(gpu_index, snapshots.len())?;
 
         let power: Vec<_> = snapshots
@@ -1199,7 +1199,7 @@ impl AiDataApi {
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::cpu;
-            let stats = cpu::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+            let stats = cpu::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             Ok(json!({
                 "core_count": stats.cores.len(),
@@ -1218,7 +1218,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+                windows::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             Ok(json!({
                 "core_count": stats.cores.len(),
@@ -1248,7 +1248,7 @@ impl AiDataApi {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let stats = crate::platform::macos::read_cpu_stats()
-                .map_err(|e| SimonError::CpuError(e.to_string()))?;
+                .map_err(|e| IronError::CpuError(e.to_string()))?;
 
             Ok(json!({
                 "core_count": stats.cores.len(),
@@ -1271,7 +1271,7 @@ impl AiDataApi {
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::cpu;
-            let stats = cpu::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+            let stats = cpu::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             let cores: Vec<_> = stats
                 .cores
@@ -1297,7 +1297,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+                windows::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             let cores: Vec<_> = stats
                 .cores
@@ -1372,7 +1372,7 @@ impl AiDataApi {
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::cpu;
-            let stats = cpu::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+            let stats = cpu::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             let freqs: Vec<_> = stats
                 .cores
@@ -1396,7 +1396,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_cpu_stats().map_err(|e| SimonError::CpuError(e.to_string()))?;
+                windows::read_cpu_stats().map_err(|e| IronError::CpuError(e.to_string()))?;
 
             let freqs: Vec<_> = stats
                 .cores
@@ -1439,7 +1439,7 @@ impl AiDataApi {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let stats = crate::platform::macos::read_cpu_stats()
-                .map_err(|e| SimonError::CpuError(e.to_string()))?;
+                .map_err(|e| IronError::CpuError(e.to_string()))?;
 
             let freqs: Vec<_> = stats
                 .cores
@@ -1470,7 +1470,7 @@ impl AiDataApi {
         {
             use crate::platform::linux::memory;
             let stats =
-                memory::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                memory::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "ram": {
@@ -1501,7 +1501,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                windows::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "ram": {
@@ -1542,7 +1542,7 @@ impl AiDataApi {
         #[cfg(target_os = "macos")]
         {
             let stats = crate::platform::macos::read_memory_stats()
-                .map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                .map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "ram": {
@@ -1566,7 +1566,7 @@ impl AiDataApi {
 
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "memory is read through per-platform APIs and this platform has none implemented"
                     .into(),
             ))
@@ -1581,7 +1581,7 @@ impl AiDataApi {
         {
             use crate::platform::linux::memory;
             let stats =
-                memory::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                memory::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.ram.total,
@@ -1602,7 +1602,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                windows::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.ram.total,
@@ -1640,7 +1640,7 @@ impl AiDataApi {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let stats = crate::platform::macos::read_memory_stats()
-                .map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                .map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.ram.total,
@@ -1666,7 +1666,7 @@ impl AiDataApi {
         {
             use crate::platform::linux::memory;
             let stats =
-                memory::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                memory::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.swap.total,
@@ -1687,7 +1687,7 @@ impl AiDataApi {
         {
             use crate::platform::windows;
             let stats =
-                windows::read_memory_stats().map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                windows::read_memory_stats().map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.swap.total,
@@ -1721,7 +1721,7 @@ impl AiDataApi {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let stats = crate::platform::macos::read_memory_stats()
-                .map_err(|e| SimonError::MemoryError(e.to_string()))?;
+                .map_err(|e| IronError::MemoryError(e.to_string()))?;
 
             Ok(json!({
                 "total_kb": stats.swap.total,
@@ -1746,7 +1746,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let disks =
-            crate::disk::enumerate_disks().map_err(|e| SimonError::DiskError(e.to_string()))?;
+            crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
         let list: Vec<_> = disks
             .iter()
@@ -1779,10 +1779,10 @@ impl AiDataApi {
         let disk_name = params
             .get("disk_name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("disk_name is required".to_string()))?;
+            .ok_or_else(|| IronError::InvalidArgument("disk_name is required".to_string()))?;
 
         let disks =
-            crate::disk::enumerate_disks().map_err(|e| SimonError::DiskError(e.to_string()))?;
+            crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
         let disk = disks
             .iter()
@@ -1791,11 +1791,11 @@ impl AiDataApi {
                     .map(|i| i.name.contains(disk_name))
                     .unwrap_or(false)
             })
-            .ok_or_else(|| SimonError::InvalidArgument(format!("Disk {} not found", disk_name)))?;
+            .ok_or_else(|| IronError::InvalidArgument(format!("Disk {} not found", disk_name)))?;
 
         let info = disk
             .info()
-            .map_err(|e| SimonError::DiskError(e.to_string()))?;
+            .map_err(|e| IronError::DiskError(e.to_string()))?;
 
         Ok(json!({
             "name": info.name,
@@ -1819,7 +1819,7 @@ impl AiDataApi {
         let disk_name = params.get("disk_name").and_then(|v| v.as_str());
 
         let disks =
-            crate::disk::enumerate_disks().map_err(|e| SimonError::DiskError(e.to_string()))?;
+            crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
         let io_stats: Vec<_> = disks
             .iter()
@@ -1851,7 +1851,7 @@ impl AiDataApi {
         let disk_name = params.get("disk_name").and_then(|v| v.as_str());
 
         let disks =
-            crate::disk::enumerate_disks().map_err(|e| SimonError::DiskError(e.to_string()))?;
+            crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
         let health: Vec<_> = disks
             .iter()
@@ -1886,17 +1886,17 @@ impl AiDataApi {
             .unwrap_or(true);
 
         let net_mon = self.network_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Network monitor not available".to_string())
+            IronError::NotImplemented("Network monitor not available".to_string())
         })?;
 
         let interfaces = if active_only {
             net_mon
                 .active_interfaces()
-                .map_err(|e| SimonError::Network(e.to_string()))?
+                .map_err(|e| IronError::Network(e.to_string()))?
         } else {
             net_mon
                 .interfaces()
-                .map_err(|e| SimonError::Network(e.to_string()))?
+                .map_err(|e| IronError::Network(e.to_string()))?
         };
 
         let list: Vec<_> = interfaces
@@ -1924,12 +1924,12 @@ impl AiDataApi {
         let interface_name = params.get("interface_name").and_then(|v| v.as_str());
 
         let net_mon = self.network_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Network monitor not available".to_string())
+            IronError::NotImplemented("Network monitor not available".to_string())
         })?;
 
         let interfaces = net_mon
             .active_interfaces()
-            .map_err(|e| SimonError::Network(e.to_string()))?;
+            .map_err(|e| IronError::Network(e.to_string()))?;
 
         let bandwidth: Vec<_> = interfaces
             .iter()
@@ -1961,17 +1961,17 @@ impl AiDataApi {
         let interface_name = params
             .get("interface_name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("interface_name is required".to_string()))?;
+            .ok_or_else(|| IronError::InvalidArgument("interface_name is required".to_string()))?;
 
         let net_mon = self.network_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Network monitor not available".to_string())
+            IronError::NotImplemented("Network monitor not available".to_string())
         })?;
 
         let iface = net_mon
             .interface_by_name(interface_name)
-            .map_err(|e| SimonError::Network(e.to_string()))?
+            .map_err(|e| IronError::Network(e.to_string()))?
             .ok_or_else(|| {
-                SimonError::InvalidArgument(format!("Interface {} not found", interface_name))
+                IronError::InvalidArgument(format!("Interface {} not found", interface_name))
             })?;
 
         // See `tool_get_network_bandwidth`: absent until a second sample.
@@ -2007,12 +2007,12 @@ impl AiDataApi {
             .unwrap_or("cpu");
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let mut procs = proc_mon
             .processes()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         // Sort
         match sort_by {
@@ -2059,17 +2059,17 @@ impl AiDataApi {
         let pid = params
             .get("pid")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| SimonError::InvalidArgument("pid is required".to_string()))?
+            .ok_or_else(|| IronError::InvalidArgument("pid is required".to_string()))?
             as u32;
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let proc = proc_mon
             .process_by_pid(pid)
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?
-            .ok_or_else(|| SimonError::InvalidArgument(format!("Process {} not found", pid)))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?
+            .ok_or_else(|| IronError::InvalidArgument(format!("Process {} not found", pid)))?;
 
         Ok(json!({
             "pid": proc.pid,
@@ -2094,12 +2094,12 @@ impl AiDataApi {
         let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let top = proc_mon
             .processes_by_cpu()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         let list: Vec<_> = top
             .iter()
@@ -2124,12 +2124,12 @@ impl AiDataApi {
         let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let top = proc_mon
             .processes_by_memory()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         let list: Vec<_> = top
             .iter()
@@ -2156,12 +2156,12 @@ impl AiDataApi {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let top = proc_mon
             .processes_by_gpu_memory()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         let list: Vec<_> = top
             .iter()
@@ -2194,16 +2194,16 @@ impl AiDataApi {
         let pattern = params
             .get("pattern")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("pattern is required".to_string()))?
+            .ok_or_else(|| IronError::InvalidArgument("pattern is required".to_string()))?
             .to_lowercase();
 
         let proc_mon = self.process_monitor.as_mut().ok_or_else(|| {
-            SimonError::NotImplemented("Process monitor not available".to_string())
+            IronError::NotImplemented("Process monitor not available".to_string())
         })?;
 
         let procs = proc_mon
             .processes()
-            .map_err(|e| SimonError::ProcessError(e.to_string()))?;
+            .map_err(|e| IronError::ProcessError(e.to_string()))?;
 
         let matches: Vec<_> = procs
             .iter()
@@ -2233,7 +2233,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let sensors = crate::motherboard::enumerate_sensors()
-            .map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut readings = Vec::new();
 
@@ -2289,7 +2289,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let sensors = crate::motherboard::enumerate_sensors()
-            .map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut temps = Vec::new();
 
@@ -2342,7 +2342,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let sensors = crate::motherboard::enumerate_sensors()
-            .map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut fans = Vec::new();
 
@@ -2367,7 +2367,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let sensors = crate::motherboard::enumerate_sensors()
-            .map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut voltages = Vec::new();
 
@@ -2397,7 +2397,7 @@ impl AiDataApi {
             .unwrap_or("all");
 
         let drivers = crate::motherboard::get_driver_versions()
-            .map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let filtered: Vec<_> = drivers
             .iter()
@@ -2434,7 +2434,7 @@ impl AiDataApi {
             .get("device_type")
             .and_then(|v| v.as_str())
             .unwrap_or("all");
-        let monitor = AudioMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+        let monitor = AudioMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let devices: Vec<_> = monitor.devices().iter()
             .filter(|d| device_type == "all" || matches!((&d.device_type, device_type), (AudioDeviceType::Output, "output") | (AudioDeviceType::Input, "input") | (AudioDeviceType::Duplex, "output") | (AudioDeviceType::Duplex, "input")))
             .map(|d| json!({"id": d.id, "name": d.name, "type": format!("{:?}", d.device_type), "state": format!("{:?}", d.state), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
@@ -2446,7 +2446,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         use crate::audio::AudioMonitor;
-        let monitor = AudioMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+        let monitor = AudioMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         Ok(
             json!({"master_volume": monitor.master_volume(), "is_muted": monitor.is_muted(), "device_count": monitor.devices().len()}),
         )
@@ -2458,7 +2458,7 @@ impl AiDataApi {
     ) -> Result<serde_json::Value> {
         use crate::bluetooth::BluetoothMonitor;
         let monitor =
-            BluetoothMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            BluetoothMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let adapters: Vec<_> = monitor
             .adapters()
             .iter()
@@ -2478,7 +2478,7 @@ impl AiDataApi {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let monitor =
-            BluetoothMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            BluetoothMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": format!("{:?}", d.device_type), "state": format!("{:?}", d.state), "battery_percent": d.battery_percent})).collect();
         Ok(json!(devices))
     }
@@ -2488,8 +2488,7 @@ impl AiDataApi {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         use crate::display::DisplayMonitor;
-        let monitor =
-            DisplayMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+        let monitor = DisplayMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         // `"resolution": "0x0"` went out to agents for any display whose mode
         // was not readable, and `refresh_rate: 0.0` for every display on Linux
         // and macOS, where no reader parses a rate. Both are null now, which an
@@ -2522,15 +2521,14 @@ impl AiDataApi {
         let display_id = params
             .get("display_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("display_id required".to_string()))?;
-        let monitor =
-            DisplayMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+            .ok_or_else(|| IronError::InvalidArgument("display_id required".to_string()))?;
+        let monitor = DisplayMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let display = monitor
             .displays()
             .iter()
             .find(|d| d.id == display_id)
             .ok_or_else(|| {
-                SimonError::DeviceNotFound(format!("Display {} not found", display_id))
+                IronError::DeviceNotFound(format!("Display {} not found", display_id))
             })?;
         Ok(json!({
             "id": display.id,
@@ -2557,7 +2555,7 @@ impl AiDataApi {
             .get("class")
             .and_then(|v| v.as_str())
             .unwrap_or("all");
-        let monitor = UsbMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+        let monitor = UsbMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let devices: Vec<_> = monitor.devices().iter().filter(|d| class_filter == "all" || matches!((&d.class, class_filter), (UsbDeviceClass::Audio, "audio") | (UsbDeviceClass::Hid, "hid") | (UsbDeviceClass::MassStorage, "storage") | (UsbDeviceClass::Hub, "hub") | (UsbDeviceClass::Video, "video"))).map(|d| json!({"address": d.address, "vendor_id": d.vendor_id.map(|v| format!("{v:04x}")), "product_id": d.product_id.map(|p| format!("{p:04x}")), "vendor_name": d.manufacturer, "product_name": d.product, "class": format!("{:?}", d.class), "speed": format!("{:?}", d.speed)})).collect();
         Ok(json!(devices))
     }
@@ -2586,19 +2584,19 @@ impl AiDataApi {
             .get("address")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                SimonError::InvalidArgument(
+                IronError::InvalidArgument(
                     "address required: the device address from get_usb_devices, \
                      e.g. \"usb_vid_046d_pid_c548_mi_01_9_24c94812_0_0001\""
                         .to_string(),
                 )
             })?;
-        let monitor = UsbMonitor::new().map_err(|e| SimonError::HardwareError(e.to_string()))?;
+        let monitor = UsbMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let device = monitor
             .devices()
             .iter()
             .find(|d| d.address == address)
             .ok_or_else(|| {
-                SimonError::DeviceNotFound(format!("no USB device with address {address}"))
+                IronError::DeviceNotFound(format!("no USB device with address {address}"))
             })?;
         Ok(
             json!({"address": device.address, "vendor_id": device.vendor_id.map(|v| format!("{v:04x}")), "product_id": device.product_id.map(|p| format!("{p:04x}")), "vendor_name": device.manufacturer, "product_name": device.product, "class": format!("{:?}", device.class), "speed": format!("{:?}", device.speed)}),
@@ -2639,9 +2637,9 @@ impl AiDataApi {
         let name = params
             .get("subsystem")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("subsystem required".into()))?;
+            .ok_or_else(|| IronError::InvalidArgument("subsystem required".into()))?;
         let sub = Subsystem::parse(name)
-            .ok_or_else(|| SimonError::InvalidArgument(format!("unknown subsystem: {}", name)))?;
+            .ok_or_else(|| IronError::InvalidArgument(format!("unknown subsystem: {}", name)))?;
         let mut inspector = ProfileInspector::new();
         let groups = inspector.snapshot(sub);
         Ok(serde_json::to_value(groups)?)
@@ -2681,7 +2679,7 @@ impl AiDataApi {
         let id = params
             .get("setting_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("setting_id required".into()))?
+            .ok_or_else(|| IronError::InvalidArgument("setting_id required".into()))?
             .to_string();
         let confirm = params
             .get("confirm")
@@ -2697,26 +2695,26 @@ impl AiDataApi {
                 } else if let Some(f) = n.as_f64() {
                     crate::profile::SettingValue::Float(f)
                 } else {
-                    return Err(SimonError::InvalidArgument(
+                    return Err(IronError::InvalidArgument(
                         "unsupported numeric value".into(),
                     ));
                 }
             }
             Some(serde_json::Value::String(s)) => crate::profile::SettingValue::Text(s.clone()),
             Some(other) => {
-                return Err(SimonError::InvalidArgument(format!(
+                return Err(IronError::InvalidArgument(format!(
                     "unsupported value type: {}",
                     other
                 )))
             }
             None => {
-                return Err(SimonError::InvalidArgument("value required".into()));
+                return Err(IronError::InvalidArgument("value required".into()));
             }
         };
 
         // Belt-and-suspenders: AI agent writes also require the env-var gate
         // in addition to confirm. Operators must opt-in deliberately.
-        let agent_allowed = std::env::var("SIMON_ALLOW_AGENT_WRITES")
+        let agent_allowed = std::env::var("IRONMON_ALLOW_AGENT_WRITES")
             .map(|v| v == "1")
             .unwrap_or(false);
         let effective_confirm = confirm && agent_allowed;
@@ -2728,7 +2726,7 @@ impl AiDataApi {
                 obj.insert("agent_write_blocked".to_string(), json!(true));
                 obj.insert(
                     "agent_write_message".to_string(),
-                    json!("Agent write was suppressed because SIMON_ALLOW_AGENT_WRITES is not set to 1. Operator must enable this env-var to allow MCP tools to mutate hardware state."),
+                    json!("Agent write was suppressed because IRONMON_ALLOW_AGENT_WRITES is not set to 1. Operator must enable this env-var to allow MCP tools to mutate hardware state."),
                 );
             }
         }
@@ -2743,7 +2741,7 @@ impl AiDataApi {
         let id = params
             .get("setting_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("setting_id required".into()))?;
+            .ok_or_else(|| IronError::InvalidArgument("setting_id required".into()))?;
         let mut inspector = ProfileInspector::new();
         let snapshot = inspector.snapshot_all();
         match explain::explain(&snapshot, id) {
@@ -2785,7 +2783,7 @@ impl AiDataApi {
         let query = params
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SimonError::InvalidArgument("query required".into()))?;
+            .ok_or_else(|| IronError::InvalidArgument("query required".into()))?;
         let mut inspector = ProfileInspector::new();
         let snapshot = inspector.snapshot_all();
         let hits: Vec<_> = snapshot

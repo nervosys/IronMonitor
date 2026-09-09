@@ -1,6 +1,6 @@
 //! Fan monitoring and control
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -52,14 +52,14 @@ impl FanStats {
     /// Set fan speed
     pub fn set_speed(&mut self, name: &str, speed: u32, index: usize) -> Result<()> {
         if speed > 100 {
-            return Err(SimonError::InvalidValue(format!(
+            return Err(IronError::InvalidValue(format!(
                 "Fan speed must be 0-100, got {}",
                 speed
             )));
         }
 
         if !self.fans.contains_key(name) {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "Fan '{}' not found",
                 name
             )));
@@ -74,7 +74,7 @@ impl FanStats {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = index; // Suppress unused warning
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Fan control not yet implemented on Windows".to_string(),
             ))
         }
@@ -83,7 +83,7 @@ impl FanStats {
     /// Set fan profile (Jetson JP5+)
     pub fn set_profile(&mut self, name: &str, profile: &str) -> Result<()> {
         if !self.fans.contains_key(name) {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "Fan '{}' not found",
                 name
             )));
@@ -98,7 +98,7 @@ impl FanStats {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = profile; // Suppress unused warning
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Fan profile control only available on Linux Jetson devices".to_string(),
             ))
         }

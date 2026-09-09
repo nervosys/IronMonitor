@@ -1,6 +1,6 @@
 # Advanced Utilities
 
-The simon CLI provides advanced utilities for managing NVIDIA Jetson devices, including performance optimization, power mode management, and swap configuration.
+The ironmon CLI provides advanced utilities for managing NVIDIA Jetson devices, including performance optimization, power mode management, and swap configuration.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ Jetson Clocks is a performance maximization utility that sets all frequencies (C
 
 ```bash
 # Maximize all frequencies
-sudo simon cli jetson clocks enable
+sudo ironmon cli jetson clocks enable
 ```
 
 This will:
@@ -32,14 +32,14 @@ This will:
 
 ```bash
 # Restore original settings
-sudo simon cli jetson clocks disable
+sudo ironmon cli jetson clocks disable
 ```
 
 #### Check Status
 
 ```bash
 # Show jetson_clocks status
-simon cli jetson clocks status
+ironmon cli jetson clocks status
 ```
 
 Output:
@@ -59,7 +59,7 @@ Configured Engines:
 
 ```bash
 # Save current configuration
-sudo simon cli jetson clocks store
+sudo ironmon cli jetson clocks store
 ```
 
 ### Use Cases
@@ -78,7 +78,7 @@ NVPModel controls power modes on Jetson devices. Each mode represents a differen
 
 ```bash
 # Display current power mode
-simon cli jetson powermode show
+ironmon cli jetson powermode show
 ```
 
 Output:
@@ -92,7 +92,7 @@ Name: MAXN
 
 ```bash
 # List all available power modes
-simon cli jetson powermode list
+ironmon cli jetson powermode list
 ```
 
 Output:
@@ -115,20 +115,20 @@ Default Mode:
 
 ```bash
 # Set power mode by ID
-sudo simon cli jetson powermode set 1
+sudo ironmon cli jetson powermode set 1
 
 # Force mode change (skip confirmation)
-sudo simon cli jetson powermode set 1 --force
+sudo ironmon cli jetson powermode set 1 --force
 ```
 
 #### Set Mode by Name
 
 ```bash
 # Set power mode by name
-sudo simon cli jetson powermode set-name MODE_15W
+sudo ironmon cli jetson powermode set-name MODE_15W
 
 # Force mode change
-sudo simon cli jetson powermode set-name MODE_15W --force
+sudo ironmon cli jetson powermode set-name MODE_15W --force
 ```
 
 ### Power Modes
@@ -157,7 +157,7 @@ Create and manage swap files to extend available memory on Jetson devices.
 
 ```bash
 # Show current swap status
-simon cli jetson swap status
+ironmon cli jetson swap status
 ```
 
 Output:
@@ -171,13 +171,13 @@ NAME                           TYPE       SIZE       USED       PRIO
 
 ```bash
 # Create an 8GB swap file (default)
-sudo simon cli jetson swap create
+sudo ironmon cli jetson swap create
 
 # Create with custom path and size
-sudo simon cli jetson swap create --path /mnt/swapfile --size 16
+sudo ironmon cli jetson swap create --path /mnt/swapfile --size 16
 
 # Create and enable on boot
-sudo simon cli jetson swap create --auto
+sudo ironmon cli jetson swap create --auto
 ```
 
 Parameters:
@@ -189,21 +189,21 @@ Parameters:
 
 ```bash
 # Enable an existing swap file
-sudo simon cli jetson swap enable /swapfile
+sudo ironmon cli jetson swap enable /swapfile
 ```
 
 #### Disable Swap
 
 ```bash
 # Temporarily disable swap
-sudo simon cli jetson swap disable /swapfile
+sudo ironmon cli jetson swap disable /swapfile
 ```
 
 #### Remove Swap
 
 ```bash
 # Disable and remove swap file
-sudo simon cli jetson swap remove /swapfile
+sudo ironmon cli jetson swap remove /swapfile
 ```
 
 This will:
@@ -231,41 +231,41 @@ This will:
 
 ```bash
 # Set to MAXN mode
-sudo simon cli jetson powermode set-name MAXN --force
+sudo ironmon cli jetson powermode set-name MAXN --force
 
 # Enable jetson_clocks
-sudo simon cli jetson clocks enable
+sudo ironmon cli jetson clocks enable
 
 # Verify
-simon cli jetson powermode show
-simon cli jetson clocks status
+ironmon cli jetson powermode show
+ironmon cli jetson clocks status
 ```
 
 ### Power-Efficient Setup
 
 ```bash
 # Set to 10W mode
-sudo simon cli jetson powermode set-name MODE_10W --force
+sudo ironmon cli jetson powermode set-name MODE_10W --force
 
 # Disable jetson_clocks
-sudo simon cli jetson clocks disable
+sudo ironmon cli jetson clocks disable
 
 # Verify
-simon cli jetson powermode show
-simon cli jetson clocks status
+ironmon cli jetson powermode show
+ironmon cli jetson clocks status
 ```
 
 ### First-Time Setup
 
 ```bash
 # Create swap
-sudo simon cli jetson swap create --size 8 --auto
+sudo ironmon cli jetson swap create --size 8 --auto
 
 # Check system status
-simon cli all
+ironmon cli all
 
 # Monitor continuously
-simon
+ironmon
 ```
 
 ## Notes
@@ -302,7 +302,7 @@ Error: Permission denied
 
 **Solution**: Use `sudo` for operations that modify system settings:
 ```bash
-sudo simon cli jetson clocks enable
+sudo ironmon cli jetson clocks enable
 ```
 
 ### Swap creation failed
@@ -313,6 +313,6 @@ Error: Swap file already exists
 
 **Solution**: Remove the existing swap file first:
 ```bash
-sudo simon cli jetson swap remove /swapfile
+sudo ironmon cli jetson swap remove /swapfile
 ```
 

@@ -374,13 +374,13 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     use crate::core::cpu::{CpuCore, CpuStats, CpuTotal};
 
     let ticks = per_core_ticks().ok_or_else(|| {
-        crate::error::SimonError::UnsupportedPlatform(
+        crate::error::IronError::UnsupportedPlatform(
             "host_processor_info returned no per-core ticks".into(),
         )
     })?;
 
     let total_usage = aggregate_ticks(&ticks).percentages().ok_or_else(|| {
-        crate::error::SimonError::Parse(
+        crate::error::IronError::Parse(
             "per-core tick counters summed to zero, which means they were not read".into(),
         )
     })?;
@@ -441,10 +441,10 @@ pub fn read_memory_stats() -> crate::error::Result<crate::core::memory::MemorySt
     use crate::core::memory::{MemoryStats, RamInfo, SwapInfo};
 
     let vm = vm_stat().ok_or_else(|| {
-        crate::error::SimonError::Parse("vm_stat produced no parseable output".into())
+        crate::error::IronError::Parse("vm_stat produced no parseable output".into())
     })?;
     let total_bytes = sysctl_u64("hw.memsize").ok_or_else(|| {
-        crate::error::SimonError::UnsupportedPlatform("hw.memsize was not readable".into())
+        crate::error::IronError::UnsupportedPlatform("hw.memsize was not readable".into())
     })?;
 
     // A machine with swap disabled reports zeros through `vm.swapusage`, and
@@ -467,7 +467,7 @@ pub fn read_memory_stats() -> crate::error::Result<crate::core::memory::MemorySt
             // No macOS equivalent of the Linux "Buffers" line.
             buffers: None,
             cached: Some(vm.cached_bytes() / 1024),
-            // macOS has shared memory and simon does not read it, so `None`.
+            // macOS has shared memory and IronMonitor does not read it, so `None`.
             // This was a zero until 6.0.0, which read as a measurement of none.
             shared: None,
             lfb: None,

@@ -1,4 +1,4 @@
-//! Terminal User Interface (TUI) for Silicon Monitor
+//! Terminal User Interface (TUI) for IronMonitor
 //!
 //! This module provides an interactive terminal dashboard for real-time hardware monitoring.
 //! It displays CPU, GPU, memory, disk, and system information using the ratatui library.
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 pub mod app;
 // Renders frames into an in-memory buffer, so the TUI is inspectable without a
-// terminal — by tests, and by `simon tui --frame` for an agent that has no TTY.
+// terminal — by tests, and by `ironmon tui --frame` for an agent that has no TTY.
 pub mod headless;
 mod ui;
 

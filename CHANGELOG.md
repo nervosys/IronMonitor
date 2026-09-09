@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Silicon Monitor will be documented in this file.
+All notable changes to IronMonitor will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`simon status`** — a one-screen summary of the machine, terse by default and
+- **`ironmon status`** — a one-screen summary of the machine, terse by default and
   `--ascii` for the OS logo in the neofetch style, colourised when stdout is a
   terminal. It reads through the same resolver as `snapshot`, so the two cannot
   disagree about one machine.
@@ -18,18 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and "GPU enumeration failed" call for different responses, and this is the
   surface people paste into issues.
 
-- **`simon snapshot --format json-ld`** — a linked-data hardware report. The
+- **`ironmon snapshot --format json-ld`** — a linked-data hardware report. The
   existing JSON says what the readings are and not what any of the words mean;
-  the `@context` resolves simon's terms to IRIs and its units to QUDT, so an
-  agent that has never seen simon can interpret the graph.
+  the `@context` resolves ironmon's terms to IRIs and its units to QUDT, so an
+  agent that has never seen IronMonitor can interpret the graph.
 
   Units map to QUDT where a mapping exists and not where it does not:
   `identifier` and `text` are not quantities. A wrong `@type` is a
   machine-readable claim that a GUID is a measurable amount of something.
   Absence survives the encoding — an unavailable reading is a node with no
-  value and a `simon:unavailableReason`, never a zero or a null.
+  value and a `ironmon:unavailableReason`, never a zero or a null.
 
-- **`simon ids`** — the intrusion detectors, which had no command until the
+- **`ironmon ids`** — the intrusion detectors, which had no command until the
   capability catalogue was joined to the command list and reported that they
   were reachable from the library and from nothing typeable.
 
@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fabricated numbers behind a name that reads like a reader, and going to change
   it turned up three places that had been believing them.
 
-  - **`SiliconMonitor::snapshot_cpu` and `snapshot_memory` returned zeros.**
+  - **`IronMonitor::snapshot_cpu` and `snapshot_memory` returned zeros.**
     Public API, documented as "snapshot current statistics", implemented as the
     zero-constructor. Every library consumer calling them received 100% idle,
     no cores, and no memory. They now read the platform: 24 cores and 76.7% idle
@@ -81,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inviting `?` at call sites that then read like they had gathered something.
 
   `empty()` says what it does. Callers wanting a reading want the per-platform
-  readers, or `SiliconMonitor::snapshot_cpu` and `snapshot_memory`, which now
+  readers, or `IronMonitor::snapshot_cpu` and `snapshot_memory`, which now
   actually read.
 
   `tests/zero_constructors.rs` still runs, and its list of known fabricators is
@@ -92,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The tuning loop is closed: `simon tune` can now measure whether a setting
+- **The tuning loop is closed: `ironmon tune` can now measure whether a setting
   helped, and undo it if it did not.** `tuning::verify` measures a metric before
   a write, waits a settle period, measures again, and reverts on a demonstrated
   regression. `serve::cycle_verified` runs a tuning pass that way, and each
@@ -153,12 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified on `macos-latest` in CI, which is the first time these readers have
   executed at all.
 
-- **`simon ai models` reports what is in an IronVault model vault**, behind a
+- **`ironmon ai models` reports what is in an IronVault model vault**, behind a
   new `vault` feature that is **off by default**. It lists each stored model's
   name, format, version count, stored and compressed size, checksum and
   metadata, as a table or as JSON.
 
-  The integration is deliberately read-only. simon does not store, fetch,
+  The integration is deliberately read-only. IronMonitor does not store, fetch,
   decrypt or delete anything; it reads the vault's metadata index, which
   IronVault exposes without a passphrase, and reports it. A locked vault is
   still fully reportable — verified against a real vault holding two models
@@ -195,7 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     asking the handler registry which case applies rather than restating its
     `cfg`s.
   - `every_documented_command_exists` read a sentence in `HANDOFF.md` beginning
-    "simon already detects…" as a command. Self-inflicted, by pushing a
+    "IronMonitor already detects…" as a command. Self-inflicted, by pushing a
     docs-only change without re-running the suite.
   - `resolve_gpu` reported all three of its failure paths as an unavailable
     `gpu.0.name`, asserting an adapter exists that could not be read when the
@@ -224,7 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this.
 
 - **`--no-default-features --features cli` builds again.**
-  `handle_gui_frame_command` names `simonlib::gui` and was not behind
+  `handle_gui_frame_command` names `ironmonlib::gui` and was not behind
   `#[cfg(feature = "gui")]`, though its only caller was. The omission broke
   nothing at runtime and broke the `cli` feature completely.
 
@@ -242,7 +242,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no driver table at all, so it sat on a spinner for the duration.
 
   Headless reads gave up at 30s and returned a bare title. Intermittently:
-  `simon gui --frame --tab peripherals` produced nothing usable in **three runs
+  `ironmon gui --frame --tab peripherals` produced nothing usable in **three runs
   out of five**, and `every_gui_tab_paints_text` failed at the same rate. It now
   passes ten consecutive runs, and the tab returns in 8.8s with 192 lines of
   content instead of two.
@@ -276,7 +276,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `vault` feature raises the required Rust version to **1.89** for builds
   that enable it, because that is IronVault 7's MSRV — verified by building with
-  and without the feature on 1.88 and 1.89. simon's own floor stays at **1.88**,
+  and without the feature on 1.88 and 1.89. ironmon's own floor stays at **1.88**,
   which is why the dependency is optional rather than default: the 4.0.0 release
   raised the floor for a GUI dependency and that was a mistake worth not
   repeating.
@@ -285,7 +285,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creates the config, data and cache directories and writes a `config.yaml`
   before anything has been read. There is no non-creating path resolver, so a
   read-only caller cannot ask "where would the vault be?" without bringing one
-  into existence. simon works around this with an `installed()` probe that
+  into existence. ironmon works around this with an `installed()` probe that
   checks for the directories itself and refuses to construct a config when they
   are missing. If IronVault gains a resolver that does not write, that probe
   should be deleted.
@@ -300,7 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tuning::serve::revert_cycle` undoes everything one tuning cycle applied, in
   reverse order.
 
-  Until now `simon tune --apply` could change a machine and had no way to change
+  Until now `ironmon tune --apply` could change a machine and had no way to change
   it back: the handler trait could only write, and an outcome recorded only what
   was requested. An autonomous tuner that can move a machine in one direction
   only is not something to leave running unattended.
@@ -312,7 +312,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a worse failure than leaving it where the caller put it.
 
   `read_current` is implemented for the Windows active power scheme
-  (`PowerGetActiveScheme`, verified against `simon profile explain
+  (`PowerGetActiveScheme`, verified against `ironmon profile explain
   active_scheme_guid`, which reaches the same value through unrelated code) and
   for the Linux cpufreq governor. The Linux path is written by inspection and has
   not been run.
@@ -353,9 +353,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what it replaced.
 
 BREAKING CHANGE: `deweygui` is no longer a dependency, the `dewey-gui` feature
-and the `simonlib::gui_dewey` module are removed, and `gui --script` speaks
-simon's own `goto` / `assert` / `capture` vocabulary again rather than Dewey's
-JSON agent protocol. `simonlib::gui::headless` and `gui::app::SiliconMonitorApp`
+and the `ironmonlib::gui_dewey` module are removed, and `gui --script` speaks
+ironmon's own `goto` / `assert` / `capture` vocabulary again rather than Dewey's
+JSON agent protocol. `ironmonlib::gui::headless` and `gui::app::IronMonitorApp`
 are back. MSRV returns to 1.70 — Dewey's edition 2024 was the only thing that
 required 1.85.
 
@@ -371,14 +371,14 @@ required 1.85.
 
 - **The Overview is rebuilt from the egui GUI's own widgets**, read out of git
   rather than approximated. 4.0.3 had the original palette on a layout I had
-  invented, which is why it still did not look like simon.
+  invented, which is why it still did not look like ironmon.
 
   - The Glances-style **QuickLook strip**: four labelled mini-bars across a 32px
     surface panel, threshold-coloured, with the reading beside each. This sat at
     the top of the original Overview and is the most recognisable thing about
     it.
   - **Section headers**: a 14px cyan title followed by a hairline rule to the
-    right edge. The rule is what made a simon pane identifiable at a glance, and
+    right edge. The rule is what made a ironmon pane identifiable at a glance, and
     4.0.0 had dropped it entirely.
   - **Metric cards** at their original 140x70 proportions -- a 3px accent stripe
     down the left edge in the device colour, an 11px secondary title, an 18px
@@ -418,7 +418,7 @@ required 1.85.
   memory, orange disk, blue network. Section titles carry their device colour
   again, and stat tiles show their number in it. 4.0.0 had replaced all of this
   with a neutral palette of my own, which is the main reason the port stopped
-  looking like simon.
+  looking like ironmon.
 
 - Threshold bands are the original four at 90 / 70 / 50, not the three at 85 /
   60 the rewrite used, so a machine at 55% reads cyan again rather than green.
@@ -472,7 +472,7 @@ required 1.85.
 
 ### Fixed
 
-- **The GUI violated the Vulkan spec on every frame.** Running `simon gui` under
+- **The GUI violated the Vulkan spec on every frame.** Running `ironmon gui` under
   a Vulkan validation layer produced
   `VUID-vkQueueSubmit-pSignalSemaphores-00067` continuously: a binary semaphore
   still bound to a pending presentation was being resubmitted, because wgpu's
@@ -508,15 +508,15 @@ is gone.
 - **MSRV is 1.85**, up from 1.70. Dewey is edition 2024. Cargo resolves
   `rust-version` per crate rather than per feature, so this applies even to
   builds that do not enable `gui`.
-- **`simonlib::gui::headless` is removed.** Its job — render a tab without a
+- **`ironmonlib::gui::headless` is removed.** Its job — render a tab without a
   display — is now `gui::frame`, which returns the ontology tree as JSON rather
   than painted text.
-- **`simonlib::gui::app::SiliconMonitorApp` is removed**, along with the rest of
+- **`ironmonlib::gui::app::IronMonitorApp` is removed**, along with the rest of
   the egui implementation. `gui::run`, `gui::frame` and `gui::script` are the
   public surface.
 - **`gui::run` returns `Box<dyn Error>`** instead of `eframe::Error`.
 - **`gui --script` speaks Dewey's agent protocol** — one JSON request per line —
-  instead of the bespoke command vocabulary simon had invented.
+  instead of the bespoke command vocabulary IronMonitor had invented.
 
 ### Why
 
@@ -606,7 +606,7 @@ A bare-metal Windows 11 desktop is no longer reported as a virtual machine.
   a thinner reed than the pair, and they are set together on a root partition.
 
   Measured on this desktop: `ebx=0x002bb9ff`, with CreatePartitions,
-  AccessPartitionId and CpuManagement all set. `simon get
+  AccessPartitionId and CpuManagement all set. `ironmon get
   system.virtualization.platform` now answers `bare_metal [measured]`.
 
 - **The ontology's 3.7.0 workaround is withdrawn.** That release reported
@@ -683,7 +683,7 @@ server. AI and gaming are the first cases covered.
 
 ### Added
 
-- **`simon tune`** — detects what the machine is being used for (AI training, AI
+- **`ironmon tune`** — detects what the machine is being used for (AI training, AI
   inference, gaming, interactive, idle) and recommends the profile settings that
   suit it. `--watch N` turns it into the automatic server, re-evaluating every N
   seconds. `-f json` for the machine-facing form.
@@ -732,7 +732,7 @@ server. AI and gaming are the first cases covered.
   a parameter. `--max-risk dangerous` is **rejected with an explanation rather
   than clamped**, because a caller who asked for it has a different model of what
   the command does and clamping would let them keep it. `Dangerous` covers power,
-  thermal, voltage and MSR writes; no unattended loop in simon writes one.
+  thermal, voltage and MSR writes; no unattended loop in ironmon writes one.
 - `--apply` without `--confirm` exits 2 and writes nothing.
 
 ### Fixed
@@ -781,7 +781,7 @@ does not have, and one reading withdrawn for being wrong.
   development machine, an ASUS desktop, was detected as a VM for this reason.
 
   Telling the two apart needs the partition privilege mask from Hyper-V CPUID leaf
-  0x40000003, which simon does not read. Rather than guess, the entity resolves to
+  0x40000003, which IronMonitor does not read. Rather than guess, the entity resolves to
   `unavailable` with that explanation whenever Hyper-V is the detected hypervisor.
   This is the entity an agent consults before trusting every other reading, which
   makes it the worst possible place for a confident guess.
@@ -957,7 +957,7 @@ to name what the disk work had built.
 
 ### Added
 
-- **34 new ontology entities**, taking `simon describe` from 60 to 94. An agent
+- **34 new ontology entities**, taking `ironmon describe` from 60 to 94. An agent
   could read a drive's endurance through the library but could not discover it
   through `describe`, `get` or `snapshot`, which is the surface the agentic
   contract is written against.
@@ -1011,7 +1011,7 @@ to name what the disk work had built.
 
 - **A drive reporting its own failure could be scored back to healthy.**
   `SmartMonitor::infer_health` recomputed a verdict from counters and overwrote
-  whatever was already there. SMART trips on thresholds simon cannot read, so a
+  whatever was already there. SMART trips on thresholds IronMonitor cannot read, so a
   drive that predicts its own failure can still present clean counters — and did
   present as `Good`. `Failed` is now left alone, being the one verdict that was
   read rather than inferred.
@@ -1079,7 +1079,7 @@ the feature job checks the targets it was missing.
   test targets went unchecked on every feature set but `--all-features`. It now
   passes `--all-targets`, which immediately surfaced three breakages:
 
-  - `examples/gui.rs` named `simonlib::gui` and `eframe` with no
+  - `examples/gui.rs` named `ironmonlib::gui` and `eframe` with no
     `required-features`, so `cargo check --all-targets` failed on any set without
     `gui`.
   - A `#[test]` in `platform/windows.rs` called `num_cpus::get()`. `num_cpus` is an
@@ -1096,7 +1096,7 @@ macOS reads CPU and memory for the first time.
 
 ### Added
 
-- **macOS CPU and memory readers.** `stats::Simon` now reads CPU utilisation,
+- **macOS CPU and memory readers.** `stats::IronMonitor` now reads CPU utilisation,
   memory, swap, uptime and board information on macOS, by parsing `top`, `vm_stat`
   and `sysctl`. Listed as a known gap since 3.0.0 and as a false claim in the
   platform table before that.
@@ -1117,8 +1117,8 @@ macOS reads CPU and memory for the first time.
   output can be tested; `tests/macos_readers.rs` runs on `macos-latest` on every
   push and asserts what a reading has to satisfy to be one.
 
-- `Simon::cpu()`, `Simon::memory()` and `Simon::uptime()`, which read one thing
-  each. `Simon::snapshot()` requires every reader to succeed, so on macOS — where
+- `IronMonitor::cpu()`, `IronMonitor::memory()` and `IronMonitor::uptime()`, which read one thing
+  each. `IronMonitor::snapshot()` requires every reader to succeed, so on macOS — where
   GPU, power and temperature are still unimplemented — it fails and takes the
   working readers down with it. These accessors expose what works without the rest
   having to pretend.
@@ -1182,12 +1182,12 @@ macOS reads CPU and memory for the first time.
 
 ### Fixed
 
-- **The `cli` feature did not build on its own.** `simon` called
-  `simonlib::gui::run()` in the `None` arm of the command match without a
+- **The `cli` feature did not build on its own.** `ironmon` called
+  `ironmonlib::gui::run()` in the `None` arm of the command match without a
   `cfg(feature = "gui")`, so `--no-default-features --features cli` failed with five
   unresolved imports, and the arm also duplicated the `not(feature = "gui")`
   fallback that already existed twenty lines below. README has advertised `cli` as a
-  standalone flag since the first release. Built without `gui`, `simon` with no
+  standalone flag since the first release. Built without `gui`, `ironmon` with no
   subcommand now launches the TUI, which is what that fallback was written to do.
 
   Every CI job was green throughout, because every job enabled `gui` as well.
@@ -1195,13 +1195,13 @@ macOS reads CPU and memory for the first time.
   cannot catch a feature that only compiles because another supplies what it is
   missing.
 
-- **`cargo install silicon-monitor` failed on Linux.** `handle_jetson_command`
+- **`cargo install iron-monitor` failed on Linux.** `handle_jetson_command`
   dispatched to `handle_jetson_clocks`, `handle_nvpmodel` and `handle_swap` under
   `cfg(target_os = "linux")` alone, while all three functions are additionally gated
   on `jetson-utils`. `full` — the default feature set — includes `cli` and
   deliberately omits `jetson-utils`, so the default Linux build failed with three
   E0425s. Every published version carried it. On Linux without `jetson-utils`,
-  `simon jetson …` now exits with a message naming the feature to rebuild with,
+  `ironmon jetson …` now exits with a message naming the feature to rebuild with,
   matching how the non-Linux case already behaved.
 
   This one is why the new CI job checks combinations rather than the union:
@@ -1218,7 +1218,7 @@ macOS reads CPU and memory for the first time.
 
 ### Documentation
 
-- Installation covers crates.io: `cargo install silicon-monitor`, the Linux system
+- Installation covers crates.io: `cargo install iron-monitor`, the Linux system
   packages the default GUI build needs, and the `default-features = false`
   dependency line library consumers want.
 - Quick Start has a worked SMART/NVMe example — 3.0.0's headline feature shipped
@@ -1226,7 +1226,7 @@ macOS reads CPU and memory for the first time.
   Windows elevation behaviour.
 - The feature flag list was missing `apple`, `cpu`, `npu`, `io`, `network` and
   `gui`.
-- `simon` with no subcommand was documented as launching the TUI. It launches the
+- `ironmon` with no subcommand was documented as launching the TUI. It launches the
   GUI in a default build.
 
 ## [3.0.0] - 2026-08-06
@@ -1251,7 +1251,7 @@ SMART and NVMe support, and the removal of a fabrication the work uncovered.
 - **SMART reported fabricated readings for every drive.**
   `Get-StorageReliabilityCounter` requires elevation; unelevated it fails with
   `PermissionDenied`. That failure was swallowed by `-ErrorAction SilentlyContinue`
-  and replaced with `0`, so simon reported every drive as healthy with a
+  and replaced with `0`, so IronMonitor reported every drive as healthy with a
   temperature of 0 °C and zero power-on hours. An access error was being presented
   as a measurement.
 - **Every drive was named `PhysicalDrive0`.** `DeviceId` arrives from PowerShell as
@@ -1288,16 +1288,16 @@ SMART and NVMe support, and the removal of a fabrication the work uncovered.
   It called `src/silicon/windows.rs` "basic structure and skeleton" with a
   "placeholder for WMI and Performance Counter integration", and marked every
   Windows cell 🚧. The file is 644 lines across 25 functions with no TODO markers,
-  and `simon cli cpu` returns twenty-four distinct per-core figures on a Ryzen 9
+  and `ironmon cli cpu` returns twenty-four distinct per-core figures on a Ryzen 9
   9900X — not one average replicated, which is a defect this repository has shipped
   before. Per-core utilization corrected to ✅ on that evidence; temperature
-  corrected to ❌, since `simon cli temperature` finds no sensors and the board
-  ones need a signed kernel driver simon does not ship.
+  corrected to ❌, since `ironmon cli temperature` finds no sensors and the board
+  ones need a signed kernel driver IronMonitor does not ship.
 - **The same table marked macOS "✅ Complete" for a column nothing has ever
   exercised.** The crate could not build on macOS until 2.1.2. Those marks are now
   labelled unverified rather than corrected, because verifying them needs a Mac.
 - The table also did not say which subsystem it describes. `src/silicon/` is the
-  enhanced per-core layer; `CpuStats` / `stats::Simon` is the general path and has
+  enhanced per-core layer; `CpuStats` / `stats::IronMonitor` is the general path and has
   no macOS implementation at all. A ✅ in one table did not imply the other worked,
   and nothing said so.
 
@@ -1317,17 +1317,17 @@ SMART and NVMe support, and the removal of a fabrication the work uncovered.
 ### Fixed
 
 - **The documented commands did not exist.** The README's main usage block showed
-  `simon cpu`, `simon gpu`, `simon memory`, `simon processes`, `simon audio`,
-  `simon bluetooth`, `simon displays` and `simon usb`. All of these live under
-  `simon cli`, and `displays` is `display`. Anyone following the quick-start hit
+  `ironmon cpu`, `ironmon gpu`, `ironmon memory`, `ironmon processes`, `ironmon audio`,
+  `ironmon bluetooth`, `ironmon displays` and `ironmon usb`. All of these live under
+  `ironmon cli`, and `displays` is `display`. Anyone following the quick-start hit
   `error: unrecognized subcommand` on their first command — while the watch-mode
   examples ten lines below used the correct form. `CLI.md` had twenty-nine such
   lines and `docs/UTILITIES.md` one more.
 
 ### Added
 
-- A test comparing every `simon …` invocation in the documentation against
-  `simon describe --commands`, the machine-readable catalog the binary generates
+- A test comparing every `ironmon …` invocation in the documentation against
+  `ironmon describe --commands`, the machine-readable catalog the binary generates
   from its own argument parser. Documentation is not compiled, but the binary can
   be asked what it accepts, so the two can be checked against each other. It found
   `CLI.md`, which a manual sweep of the same question had missed entirely.
@@ -1386,8 +1386,8 @@ table, which is the reason for shipping a patch rather than waiting.
 
 - **114 compile errors in code that had never been built** — 73 on Linux, 41 on
   macOS, across roughly forty files. The manifest bug meant cargo never reached
-  simon's own source on those platforms, so none of it had ever been checked. Most
-  were mechanical (a `SimonError::IoError` variant that does not exist, at 23
+  ironmon's own source on those platforms, so none of it had ever been checked. Most
+  were mechanical (a `IronError::IoError` variant that does not exist, at 23
   sites; structs and enums whose fields and variants had been renamed under code
   that never recompiled). Several were not:
 
@@ -1419,7 +1419,7 @@ table, which is the reason for shipping a patch rather than waiting.
 
 - **The process-state set omitted `'I'`** — idle kernel thread, reported by Linux
   since 3.13 and carried by every `kworker/R-*`. The reader also fell back to `'?'`
-  for an unreadable state where the rest of simon uses `'U'`.
+  for an unreadable state where the rest of IronMonitor uses `'U'`.
 
 - **102 clippy findings in never-linted Linux code**, which CI rejects under
   `-D warnings`.
@@ -1434,10 +1434,10 @@ table, which is the reason for shipping a patch rather than waiting.
 
 ### Known gaps
 
-- **simon does not measure CPU or memory on macOS.** There are readers for Linux
+- **IronMonitor does not measure CPU or memory on macOS.** There are readers for Linux
   and Windows and none for macOS: `CpuStats::new` and `MemoryStats::new` return
-  empty, and `stats::Simon`'s ten platform functions report `UnsupportedPlatform`
-  naming `SiliconMonitor`, which does have working macOS paths. The crate builds,
+  empty, and `stats::IronMonitor`'s ten platform functions report `UnsupportedPlatform`
+  naming `IronMonitor`, which does have working macOS paths. The crate builds,
   lints, and passes its suite there — it does not yet read hardware. Tests that
   assert something *about a reading* are gated on `platform_has_hardware_readers()`
   so the gap is named once rather than hidden behind scattered `cfg`s. Implementing
@@ -1507,7 +1507,7 @@ guess.
 
 ### Changed
 
-- **`simon ai manifest` no longer advertises a fixed `supported_models` list.**
+- **`ironmon ai manifest` no longer advertises a fixed `supported_models` list.**
   Seven export formats each carried a frozen array of model ids. Nothing consumed
   them, every one had gone stale (the OpenAI entry still listed `gpt-4o`, the
   Anthropic entry `claude-3-opus-20240229`), and the claim was wrong in principle:
@@ -1600,22 +1600,22 @@ auto-dereferenced. Migration is `.as_ref()` where a `Box` is genuinely wanted.
 
 ### Added — Machine-readable ontology over every reading
 
-Every value simon reports now has a stable dotted id, a unit, and a **provenance**
+Every value IronMonitor reports now has a stable dotted id, a unit, and a **provenance**
 saying where it came from. The three interfaces share one vocabulary rather than
 three.
 
-- `simon describe` — the schema: ids, units, provenance, descriptions. Touches no
+- `ironmon describe` — the schema: ids, units, provenance, descriptions. Touches no
   hardware, so it is identical on every machine and can be fetched and cached
   ahead of time.
-- `simon describe --commands` — the command surface, walked out of the argument
+- `ironmon describe --commands` — the command surface, walked out of the argument
   parser so it cannot drift from what the binary accepts.
-- `simon describe --writable` — settings backed by a registered apply handler.
+- `ironmon describe --writable` — settings backed by a registered apply handler.
   Generated from the handler registry, so the schema cannot advertise a write the
   binary will reject.
-- `simon get <id>` — one reading. Exits 1 for an unknown id, 2 for a known id
+- `ironmon get <id>` — one reading. Exits 1 for an unknown id, 2 for a known id
   with no value here, so a caller can tell "no such thing" from "nothing to
   report".
-- `simon snapshot [--validate]` — every resolvable entity, across all ten domains.
+- `ironmon snapshot [--validate]` — every resolvable entity, across all ten domains.
   The count varies with the hardware present and the process table, so it is not
   quoted here.
 
@@ -1631,10 +1631,10 @@ is withheld rather than clamped.
 Both interactive surfaces can now be read and driven without a terminal or a
 display.
 
-- `simon tui --frame [--tab NAME]` and `simon gui --frame [--tab NAME]`
-- `simon tui --script` — `goto`, `key`, `refresh`, `capture`, `assert`, `refute`.
+- `ironmon tui --frame [--tab NAME]` and `ironmon gui --frame [--tab NAME]`
+- `ironmon tui --script` — `goto`, `key`, `refresh`, `capture`, `assert`, `refute`.
   Key steps go through the same handler the interactive loop calls.
-- `simon gui --script` — the same minus `key`, since GUI tabs are addressable by
+- `ironmon gui --script` — the same minus `key`, since GUI tabs are addressable by
   name.
 
 ### Fixed
@@ -1690,13 +1690,13 @@ Measured on a 3-GPU Windows host:
 | Cold start (first data) | 8–12 s | ~192 ms |
 | Frame data access | blocking driver call | 19 ns |
 
-TUI, GUI and `simon record` all read from the pipeline. TUI and GUI now repaint only
+TUI, GUI and `ironmon record` all read from the pipeline. TUI and GUI now repaint only
 when a new snapshot arrives instead of on a fixed tick.
 
 ### Added — IronWorks as the built-in inference engine
 
 [IronWorks](https://github.com/nervosys/ironworks) is now the default backend and the
-only engine simon ships against, reached over its OpenAI-compatible server. Every
+only engine ironmon ships against, reached over its OpenAI-compatible server. Every
 other backend is an external provider (`BackendType::is_builtin_engine`).
 
 ### Added — CLI AI providers
@@ -1722,7 +1722,7 @@ vendor. Backend selection prefers on-host inference.
 - **Windows fan RPM was hardcoded to 1000** whenever `ActiveCooling` was true.
 - **The GUI network chart plotted `(cumulative_bytes / 1MB) % 10000`** — a sawtooth
   of a running total, labelled as throughput. Now plots actual MB/s.
-- **`simon record` sampled at the wrong rate.** It slept the full interval on top of
+- **`ironmon record` sampled at the wrong rate.** It slept the full interval on top of
   ~1.2 s collection, so `--interval 1` recorded every ~2.2 s and every derived rate
   was wrong by that ratio.
 - **macOS audio never classified any device as Input** (`has_output || true` made the
@@ -1736,7 +1736,7 @@ vendor. Backend selection prefers on-host inference.
 
 ### Fixed — documentation that contradicted the code
 
-- All 53 doc tests were failing (`use simon::` vs the actual crate name `simonlib`),
+- All 53 doc tests were failing (`use ironmon::` vs the actual crate name `ironmonlib`),
   plus six examples that had drifted from their APIs. All 70 now pass.
 - The agent module documented four "Design Principles" that were each false: it
   claimed to run in a separate thread (no thread is ever spawned), to offer
@@ -1789,31 +1789,31 @@ Memory). Inspired by NVIDIA Profile Inspector, Intel XTU, AMD Ryzen Master, and
     Linux (`/sys/bus/i2c/devices/*/eeprom`).
 - **Apply (write) layer** with audit log:
   - `ApplyHandler` trait, `ApplyOutcome { status, message, timestamp, ... }`
-  - JSON-lines audit log at `%LOCALAPPDATA%\simon\profile_audit.log` (Windows) /
-    `$XDG_STATE_HOME/simon/profile_audit.log` (Linux), every attempt logged
+  - JSON-lines audit log at `%LOCALAPPDATA%\ironmon\profile_audit.log` (Windows) /
+    `$XDG_STATE_HOME/ironmon/profile_audit.log` (Linux), every attempt logged
     including refused/not-writable
   - Confirmation required (`--confirm` CLI flag, or `confirm=true` + env
-    `SIMON_ALLOW_AGENT_WRITES=1` double-gate for MCP)
+    `IRONMON_ALLOW_AGENT_WRITES=1` double-gate for MCP)
   - Concrete handlers: NVIDIA persistence mode (Linux NVML), Linux cpufreq
     governor, Linux AMD `power_dpm_force_performance_level`, Linux Intel
     `gt_max_freq_mhz`, Windows `PowerSetActiveScheme`
 - **Analysis surface**:
-  - `simon profile diff <baseline.json>` — drift report between snapshots
-  - `simon profile deviations` — settings changed from declared default,
+  - `ironmon profile diff <baseline.json>` — drift report between snapshots
+  - `ironmon profile deviations` — settings changed from declared default,
     sorted by risk
-  - `simon profile explain <id>` — full setting metadata with related-setting
+  - `ironmon profile explain <id>` — full setting metadata with related-setting
     lookup
-  - `simon profile active [--matched]` — running PIDs joined against NVIDIA
+  - `ironmon profile active [--matched]` — running PIDs joined against NVIDIA
     DRS database
-  - `simon profile search <query>` — substring match across all settings
-  - `simon profile watch [--interval]` — continuous change detection
-  - `simon profile bench` — per-provider snapshot timing
-  - `simon profile schemes` — enumerate Windows power schemes with friendly
+  - `ironmon profile search <query>` — substring match across all settings
+  - `ironmon profile watch [--interval]` — continuous change detection
+  - `ironmon profile bench` — per-provider snapshot timing
+  - `ironmon profile schemes` — enumerate Windows power schemes with friendly
     names
 - **Caching**: `CachedProfileInspector` with per-subsystem TTLs (NVMe 30s, GPU
   15s, Memory 60s, Display 5s, CPU 2s); process-global hit/miss counters.
 - **Interfaces**:
-  - 16 CLI subcommands under `simon profile`
+  - 16 CLI subcommands under `ironmon profile`
   - 12 MCP tools (`list_profile_subsystems`, `get_profile_settings`,
     `search_profile_settings`, `get_active_app_profiles`, `get_profile_deviations`,
     `explain_profile_setting`, `list_writable_profile_settings`,
@@ -1851,18 +1851,18 @@ Memory). Inspired by NVIDIA Profile Inspector, Intel XTU, AMD Ryzen Master, and
 
 ### Added
 - **Latest AI model support** - GPT-4o, GPT-4.5, o1, o3, Claude 4 Opus/Sonnet, Gemini 2.0, Grok 3, Llama 4, Mistral Large, DeepSeek-R1/V3
-- **New CLI subcommand structure** - `simon ai query/manifest/server` and `amon query/manifest/server`
-- **MCP server** - Claude Desktop integration via `simon ai server` or `amon server`
+- **New CLI subcommand structure** - `ironmon ai query/manifest/server` and `amon query/manifest/server`
+- **MCP server** - Claude Desktop integration via `ironmon ai server` or `amon server`
 - **Multi-format manifest export** - openai, anthropic, gemini, grok, llama, mistral, deepseek, mcp, jsonld formats
 - **AI agent export formats** - Export tool definitions for all major AI providers
 
 ### Changed  
 - CLI restructured with nested subcommands for better organization
-- `amon` now mirrors `simon ai` subcommand structure
+- `amon` now mirrors `ironmon ai` subcommand structure
 
 ### Fixed
 - CI badge links in README (ci.yml → build-and-push.yml)
-- Crates.io badge (simon → silicon-monitor)
+- Crates.io badge (ironmon → iron-monitor)
 - Compiler warnings for unused fields
 
 ## [0.1.0] - 2026-01-30
@@ -1910,4 +1910,4 @@ Memory). Inspired by NVIDIA Profile Inspector, Intel XTU, AMD Ryzen Master, and
 
 ---
 
-[0.1.0]: https://github.com/nervosys/SiliconMonitor/releases/tag/v0.1.0
+[0.1.0]: https://github.com/nervosys/IronMonitor/releases/tag/v0.1.0

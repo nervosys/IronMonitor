@@ -1,6 +1,6 @@
-//! Continuous monitoring example using Silicon Monitor
+//! Continuous monitoring example using IronMonitor
 
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;

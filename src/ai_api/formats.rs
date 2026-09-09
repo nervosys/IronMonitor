@@ -51,7 +51,7 @@ impl AgentManifest {
     pub fn new() -> Self {
         Self {
             version: "1.0.0".to_string(),
-            name: "Silicon Monitor".to_string(),
+            name: "IronMonitor".to_string(),
             description: "Comprehensive hardware monitoring for AI agents.".to_string(),
             capabilities: vec![
                 "hardware_monitoring".to_string(),
@@ -273,7 +273,7 @@ impl AgentManifest {
     ///
     /// This arm ignored `self.tools` entirely. Every sibling exporter maps the
     /// catalogue into its format's tool schema; this one emitted six fixed keys
-    /// naming the application and stopped, so `simon ai manifest --format
+    /// naming the application and stopped, so `ironmon ai manifest --format
     /// jsonld` returned 295 bytes where `--format openai` returns 25 KB. Not an
     /// error and not an empty list with a reason: a well-formed document that
     /// describes the program and claims nothing about what it can do, offered
@@ -281,9 +281,9 @@ impl AgentManifest {
     ///
     /// `potentialAction` is schema.org's property for the actions an entity
     /// supports, which is what a tool is. The parameter schema has no
-    /// schema.org vocabulary, so it goes under the `simon:` prefix the context
+    /// schema.org vocabulary, so it goes under the `ironmon:` prefix the context
     /// already declares -- the same choice `ontology::jsonld` makes for
-    /// `simon:unavailableReason`.
+    /// `ironmon:unavailableReason`.
     fn to_json_ld(&self) -> Value {
         let actions: Vec<Value> = self
             .tools
@@ -293,12 +293,21 @@ impl AgentManifest {
                     "@type": "Action",
                     "name": tool.name,
                     "description": tool.description,
-                    "simon:parameters": tool.parameters,
+                    "ironmon:parameters": tool.parameters,
                 })
             })
             .collect();
         json!({
-            "@context": { "@vocab": "https://schema.org/", "simon": "https://schema.siliconmonitor.dev/" },
+            // The same namespace the ontology publishes, rather than a second
+            // one. This read `https://schema.siliconmonitor.dev/` while
+            // `ontology::jsonld` used `nervosys.github.io/.../ns#`, so the
+            // `ironmon:` prefix meant two different vocabularies depending on
+            // which command produced the document. The rename surfaced it; the
+            // disagreement predates it.
+            "@context": {
+                "@vocab": "https://schema.org/",
+                "ironmon": crate::ontology::jsonld::IRONMON_NS,
+            },
             "@type": "SoftwareApplication",
             "name": self.name,
             "description": self.description,
@@ -321,7 +330,7 @@ impl AgentManifest {
             })
             .collect();
         json!({
-            "name": "silicon-monitor",
+            "name": "iron-monitor",
             "version": self.version,
             "description": self.description,
             "protocol_version": "2024-11-05",

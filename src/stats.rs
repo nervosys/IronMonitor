@@ -34,8 +34,8 @@ pub struct Snapshot {
     pub uptime: Duration,
 }
 
-/// Main Simon interface
-pub struct Simon {
+/// Main IronMonitor interface
+pub struct IronMonitor {
     /// Update interval
     interval: Duration,
     /// Last snapshot
@@ -44,8 +44,8 @@ pub struct Simon {
     board_info: BoardInfo,
 }
 
-impl Simon {
-    /// Create a new Simon instance
+impl IronMonitor {
+    /// Create a new IronMonitor instance
     ///
     /// # Arguments
     ///
@@ -54,15 +54,15 @@ impl Simon {
     /// # Example
     ///
     /// ```no_run
-    /// use simonlib::Simon;
+    /// use ironmonlib::IronMonitor;
     ///
-    /// let stats = Simon::new().unwrap();
+    /// let stats = IronMonitor::new().unwrap();
     /// ```
     pub fn new() -> Result<Self> {
         Self::with_interval(1.0)
     }
 
-    /// Create a new Simon instance with custom interval
+    /// Create a new IronMonitor instance with custom interval
     ///
     /// # Arguments
     ///
@@ -71,9 +71,9 @@ impl Simon {
     /// # Example
     ///
     /// ```no_run
-    /// use simonlib::Simon;
+    /// use ironmonlib::IronMonitor;
     ///
-    /// let stats = Simon::with_interval(0.5).unwrap();
+    /// let stats = IronMonitor::with_interval(0.5).unwrap();
     /// ```
     pub fn with_interval(interval: f64) -> Result<Self> {
         let interval = Duration::from_secs_f64(interval);
@@ -93,9 +93,9 @@ impl Simon {
     /// # Example
     ///
     /// ```no_run
-    /// use simonlib::Simon;
+    /// use ironmonlib::IronMonitor;
     ///
-    /// let mut stats = Simon::new().unwrap();
+    /// let mut stats = IronMonitor::new().unwrap();
     /// let snapshot = stats.snapshot().unwrap();
     /// println!("CPU cores: {}", snapshot.cpu.cores.len());
     /// ```
@@ -173,9 +173,9 @@ impl Simon {
     }
 }
 
-/// Seconds since boot, without building a [`Simon`].
+/// Seconds since boot, without building a [`IronMonitor`].
 ///
-/// [`Simon::uptime`] needs an instance, and constructing one collects board
+/// [`IronMonitor::uptime`] needs an instance, and constructing one collects board
 /// information a caller who only wants uptime has no use for. The agent tool
 /// surface reported `uptime_seconds: 0` with the comment "would need
 /// platform-specific impl" while `read_uptime` had one on all three platforms;
@@ -222,9 +222,9 @@ fn read_uptime() -> Result<Duration> {
     let uptime_secs: f64 = uptime_str
         .split_whitespace()
         .next()
-        .ok_or_else(|| crate::error::SimonError::Parse("Invalid uptime format".to_string()))?
+        .ok_or_else(|| crate::error::IronError::Parse("Invalid uptime format".to_string()))?
         .parse()
-        .map_err(|e| crate::error::SimonError::Parse(format!("Failed to parse uptime: {}", e)))?;
+        .map_err(|e| crate::error::IronError::Parse(format!("Failed to parse uptime: {}", e)))?;
     Ok(Duration::from_secs_f64(uptime_secs))
 }
 
@@ -514,14 +514,14 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
 // Platform implementations for macOS.
 //
 // `stats.rs` has carried Linux and Windows implementations of these since the
-// beginning and never had macOS ones, so `Simon` could not be built there at all —
+// beginning and never had macOS ones, so `IronMonitor` could not be built there at all —
 // the manifest bug meant nothing ever tried, and the gap went unnoticed.
 //
 // These report `UnsupportedPlatform` rather than guessing. Writing real ones means
 // sysctl and IOKit work that has to be verified on actual hardware; a plausible
 // implementation that returned made-up numbers would be worse than an honest
 // refusal, because callers cannot tell fabricated telemetry from measured
-// telemetry. `SiliconMonitor` (see `lib.rs`) has working macOS paths and is the
+// telemetry. `UnifiedMonitor` (see `lib.rs`) has working macOS paths and is the
 // type to use there today.
 #[cfg(target_os = "macos")]
 mod macos_stats {
@@ -529,11 +529,11 @@ mod macos_stats {
     use crate::core::cpu::{CpuCore, CpuTotal};
     use crate::core::memory::{RamInfo, SwapInfo};
     use crate::core::platform_info::{HardwareInfo, LibraryVersions, PlatformInfo};
-    use crate::error::SimonError;
+    use crate::error::IronError;
 
-    fn unsupported(what: &str) -> SimonError {
-        SimonError::UnsupportedPlatform(format!(
-            "{what} is not implemented for macOS in `stats::Simon`; use `SiliconMonitor`"
+    fn unsupported(what: &str) -> IronError {
+        IronError::UnsupportedPlatform(format!(
+            "{what} is not implemented for macOS in `stats::IronMonitor`; use `UnifiedMonitor`"
         ))
     }
 
@@ -685,7 +685,7 @@ mod macos_stats {
     pub(super) fn detect_platform_info() -> Result<BoardInfo> {
         use crate::platform::macos;
 
-        // `Simon::with_interval` calls this in its constructor, so a failure here
+        // `IronMonitor::with_interval` calls this in its constructor, so a failure here
         // makes the whole type unconstructible — which is what kept CPU and memory
         // out of reach on macOS even after they were implemented.
         let machine = macos::sysctl_string("hw.machine").unwrap_or_default();
@@ -765,7 +765,7 @@ use macos_stats::{
 /// implementations are `pub(super)` inside a nested module and cannot be
 /// re-exported, and three callers outside this module need a reader that works
 /// everywhere. Until 6.0.0 they used `CpuStats::new()` instead, which returns
-/// 100% idle — `SiliconMonitor::snapshot_cpu`, the health checks and the
+/// 100% idle — `UnifiedMonitor::snapshot_cpu`, the health checks and the
 /// Prometheus exporter all published that as a measurement.
 pub(crate) fn platform_cpu_stats() -> Result<CpuStats> {
     read_cpu_stats()

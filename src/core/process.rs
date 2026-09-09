@@ -87,8 +87,8 @@ impl Default for ProcessStats {
 #[cfg(target_os = "linux")]
 pub(crate) mod linux {
     use super::*;
+    use crate::error::IronError;
     use crate::error::Result;
-    use crate::error::SimonError;
     use std::fs;
     use std::path::Path;
 
@@ -192,9 +192,9 @@ pub(crate) mod linux {
         let uptime: f64 = uptime_str
             .split_whitespace()
             .next()
-            .ok_or_else(|| SimonError::Parse("Invalid uptime format".to_string()))?
+            .ok_or_else(|| IronError::Parse("Invalid uptime format".to_string()))?
             .parse()
-            .map_err(|e| SimonError::Parse(format!("Failed to parse uptime: {}", e)))?;
+            .map_err(|e| IronError::Parse(format!("Failed to parse uptime: {}", e)))?;
         Ok(uptime)
     }
 
@@ -209,7 +209,7 @@ pub(crate) mod linux {
 
         // Check if process still exists
         if !Path::new(&proc_path).exists() {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "Process {} not found",
                 pid
             )));
@@ -220,7 +220,7 @@ pub(crate) mod linux {
         let stat_parts: Vec<&str> = stat_content.split_whitespace().collect();
 
         if stat_parts.len() < 22 {
-            return Err(SimonError::Parse("Invalid stat format".to_string()));
+            return Err(IronError::Parse("Invalid stat format".to_string()));
         }
 
         // Extract fields (indices from man proc)

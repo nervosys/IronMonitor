@@ -76,7 +76,7 @@ pub struct UsbDevice {
     pub port_number: Option<u8>,
     /// USB vendor id, or `None` for an entry that has none — a root hub's
     /// PnP id is `USB\ROOT_HUB30\...` with no `VID_` at all. This was `u16`
-    /// and a missing id parsed to zero, so `simon cli usb` printed
+    /// and a missing id parsed to zero, so `ironmon cli usb` printed
     /// `[0000:0000]` and the agent surface published `"vendor_id": "0000"`,
     /// neither distinguishable from a device that reports those ids.
     pub vendor_id: Option<u16>,
@@ -213,7 +213,7 @@ pub struct UsbMonitor {
 }
 
 impl UsbMonitor {
-    pub fn new() -> Result<Self, crate::error::SimonError> {
+    pub fn new() -> Result<Self, crate::error::IronError> {
         let mut monitor = Self {
             devices: Vec::new(),
         };
@@ -225,7 +225,7 @@ impl UsbMonitor {
     /// Returns `Err` when the enumeration failed, and `Ok` with an empty list
     /// only when it succeeded and found nothing -- which the resolver publishes
     /// as `usb.<none>`, a claim about the machine. See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), crate::error::SimonError> {
+    pub fn refresh(&mut self) -> Result<(), crate::error::IronError> {
         self.devices.clear();
         #[cfg(target_os = "windows")]
         self.refresh_windows()?;
@@ -240,7 +240,7 @@ impl UsbMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), crate::error::IronError> {
         // Two independent enumerations. Either one succeeding is enough to
         // trust an empty result; both failing is not an empty machine, and
         // both failing used to be reported as one.
@@ -259,7 +259,7 @@ impl UsbMonitor {
         }
 
         match (wmi, registry) {
-            (Err(wmi_err), Err(registry_err)) => Err(crate::error::SimonError::System(format!(
+            (Err(wmi_err), Err(registry_err)) => Err(crate::error::IronError::System(format!(
                 "no USB enumeration succeeded: WMI said {wmi_err}; the registry walk said \
                  {registry_err}"
             ))),
@@ -268,14 +268,14 @@ impl UsbMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), crate::error::IronError> {
         use std::fs;
         use std::path::Path;
         // Read from /sys/bus/usb/devices
         let usb_path = Path::new("/sys/bus/usb/devices");
         if usb_path.exists() {
             let entries = fs::read_dir(usb_path).map_err(|e| {
-                crate::error::SimonError::System(format!("cannot read {usb_path:?}: {e}"))
+                crate::error::IronError::System(format!("cannot read {usb_path:?}: {e}"))
             })?;
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
@@ -331,7 +331,7 @@ impl UsbMonitor {
         //
         // This used to invent one when the sysfs walk found nothing: an Intel
         // root hub, vendor 0x8086, product 0x0001, running at high speed. None
-        // of that was read from anything. A machine whose USB tree simon cannot
+        // of that was read from anything. A machine whose USB tree IronMonitor cannot
         // enumerate reported one device that does not exist, and a caller had
         // no way to tell it from a machine with exactly one hub.
         //
@@ -340,7 +340,7 @@ impl UsbMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), crate::error::SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), crate::error::IronError> {
         // `Err(_) => return` here reported a machine with no USB devices at all
         // whenever `system_profiler` could not be spawned, and a non-zero exit
         // was never looked at.
@@ -491,7 +491,7 @@ impl Default for UsbMonitor {
 #[cfg(target_os = "windows")]
 impl UsbMonitor {
     /// Enumerate USB devices using WMI Win32_PnPEntity
-    fn wmi_enumerate_usb() -> Result<Vec<UsbDevice>, crate::error::SimonError> {
+    fn wmi_enumerate_usb() -> Result<Vec<UsbDevice>, crate::error::IronError> {
         use std::process::Command;
         let mut devices = Vec::new();
 
@@ -516,7 +516,7 @@ impl UsbMonitor {
                 ),
             ])
             .output()
-            .map_err(|e| crate::error::SimonError::Other(format!("WMI query failed: {}", e)))?;
+            .map_err(|e| crate::error::IronError::Other(format!("WMI query failed: {}", e)))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -631,7 +631,7 @@ impl UsbMonitor {
     }
 
     /// Fallback: enumerate USB devices from registry
-    fn registry_enumerate_usb() -> Result<Vec<UsbDevice>, crate::error::SimonError> {
+    fn registry_enumerate_usb() -> Result<Vec<UsbDevice>, crate::error::IronError> {
         use std::process::Command;
         let mut devices = Vec::new();
 
@@ -643,9 +643,7 @@ impl UsbMonitor {
                  [PSCustomObject]@{Dependent=$_.Dependent.ToString()} } | ConvertTo-Json -Compress",
             ])
             .output()
-            .map_err(|e| {
-                crate::error::SimonError::Other(format!("Registry query failed: {}", e))
-            })?;
+            .map_err(|e| crate::error::IronError::Other(format!("Registry query failed: {}", e)))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -739,7 +737,7 @@ pub enum UsbEvent {
 impl UsbMonitor {
     /// Check for device changes since last refresh
     /// Returns a list of connect/disconnect events
-    pub fn poll_events(&mut self) -> Result<Vec<UsbEvent>, crate::error::SimonError> {
+    pub fn poll_events(&mut self) -> Result<Vec<UsbEvent>, crate::error::IronError> {
         let old_devices = self.devices.clone();
         self.refresh()?;
 
@@ -805,7 +803,7 @@ mod tests {
 
     /// A root hub has no VID or PID, and must not be given one.
     ///
-    /// `simon cli usb` printed `[0000:0000]` for every root hub and virtual
+    /// `ironmon cli usb` printed `[0000:0000]` for every root hub and virtual
     /// device on this desktop — four of forty-one entries — an identifier no
     /// caller could tell from a device that genuinely reports those ids. The
     /// ids below are verbatim from `Get-PnpDevice -Class USB`.

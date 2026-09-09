@@ -40,140 +40,140 @@ fn main() {
 
     probe!(
         "input",
-        simonlib::input::InputMonitor,
-        |m: &simonlib::input::InputMonitor| m.devices().len()
+        ironmonlib::input::InputMonitor,
+        |m: &ironmonlib::input::InputMonitor| m.devices().len()
     );
     probe!(
         "services",
-        simonlib::services::ServiceMonitor,
-        |m: &simonlib::services::ServiceMonitor| m.services().len()
+        ironmonlib::services::ServiceMonitor,
+        |m: &ironmonlib::services::ServiceMonitor| m.services().len()
     );
     probe!(
         "storage_controller",
-        simonlib::storage_controller::StorageControllerMonitor,
-        |m: &simonlib::storage_controller::StorageControllerMonitor| m.controllers().len()
+        ironmonlib::storage_controller::StorageControllerMonitor,
+        |m: &ironmonlib::storage_controller::StorageControllerMonitor| m.controllers().len()
     );
     probe!(
         "iommu",
-        simonlib::iommu::IommuMonitor,
-        |m: &simonlib::iommu::IommuMonitor| m.groups().len()
+        ironmonlib::iommu::IommuMonitor,
+        |m: &ironmonlib::iommu::IommuMonitor| m.groups().len()
     );
     probe!(
         "interrupt_map",
-        simonlib::interrupt_map::InterruptMapMonitor,
-        |m: &simonlib::interrupt_map::InterruptMapMonitor| m.interrupts().len()
+        ironmonlib::interrupt_map::InterruptMapMonitor,
+        |m: &ironmonlib::interrupt_map::InterruptMapMonitor| m.interrupts().len()
     );
     probe!(
         "io_scheduler",
-        simonlib::io_scheduler::IoSchedulerMonitor,
-        |m: &simonlib::io_scheduler::IoSchedulerMonitor| m.devices().len()
+        ironmonlib::io_scheduler::IoSchedulerMonitor,
+        |m: &ironmonlib::io_scheduler::IoSchedulerMonitor| m.devices().len()
     );
     probe!(
         "dma_engine",
-        simonlib::dma_engine::DmaEngineMonitor,
-        |m: &simonlib::dma_engine::DmaEngineMonitor| m.controllers().len()
+        ironmonlib::dma_engine::DmaEngineMonitor,
+        |m: &ironmonlib::dma_engine::DmaEngineMonitor| m.controllers().len()
     );
     probe!(
         "gpu_topology",
-        simonlib::gpu_topology::GpuTopologyMonitor,
-        |m: &simonlib::gpu_topology::GpuTopologyMonitor| m.gpus().len()
+        ironmonlib::gpu_topology::GpuTopologyMonitor,
+        |m: &ironmonlib::gpu_topology::GpuTopologyMonitor| m.gpus().len()
     );
     probe!(
         "power_profile",
-        simonlib::power_profile::PowerProfileMonitor,
-        |m: &simonlib::power_profile::PowerProfileMonitor| m.power_plans().len()
+        ironmonlib::power_profile::PowerProfileMonitor,
+        |m: &ironmonlib::power_profile::PowerProfileMonitor| m.power_plans().len()
     );
     probe!(
         "thermal_zone",
-        simonlib::thermal_zone::ThermalZoneMonitor,
-        |m: &simonlib::thermal_zone::ThermalZoneMonitor| m.zones().len()
+        ironmonlib::thermal_zone::ThermalZoneMonitor,
+        |m: &ironmonlib::thermal_zone::ThermalZoneMonitor| m.zones().len()
     );
     probe!(
         "voltage_regulator",
-        simonlib::voltage_regulator::VoltageRegulatorMonitor,
-        |m: &simonlib::voltage_regulator::VoltageRegulatorMonitor| m.regulators().len()
+        ironmonlib::voltage_regulator::VoltageRegulatorMonitor,
+        |m: &ironmonlib::voltage_regulator::VoltageRegulatorMonitor| m.regulators().len()
     );
     probe!(
         "watchdog",
-        simonlib::watchdog::WatchdogMonitor,
-        |m: &simonlib::watchdog::WatchdogMonitor| m.devices().len()
+        ironmonlib::watchdog::WatchdogMonitor,
+        |m: &ironmonlib::watchdog::WatchdogMonitor| m.devices().len()
     );
     probe!(
         "audio",
-        simonlib::audio::AudioMonitor,
-        |m: &simonlib::audio::AudioMonitor| m.devices().len()
+        ironmonlib::audio::AudioMonitor,
+        |m: &ironmonlib::audio::AudioMonitor| m.devices().len()
     );
     probe!(
         "bluetooth",
-        simonlib::bluetooth::BluetoothMonitor,
-        |m: &simonlib::bluetooth::BluetoothMonitor| m.adapters().len()
+        ironmonlib::bluetooth::BluetoothMonitor,
+        |m: &ironmonlib::bluetooth::BluetoothMonitor| m.adapters().len()
     );
     probe!(
         "camera",
-        simonlib::camera::CameraMonitor,
-        |m: &simonlib::camera::CameraMonitor| m.cameras().len()
+        ironmonlib::camera::CameraMonitor,
+        |m: &ironmonlib::camera::CameraMonitor| m.cameras().len()
     );
     probe!(
         "codec",
-        simonlib::codec::CodecMonitor,
-        |m: &simonlib::codec::CodecMonitor| m.capabilities().len()
+        ironmonlib::codec::CodecMonitor,
+        |m: &ironmonlib::codec::CodecMonitor| m.capabilities().len()
     );
     probe!(
         "printer",
-        simonlib::printer::PrinterMonitor,
-        |m: &simonlib::printer::PrinterMonitor| m.printers().len()
+        ironmonlib::printer::PrinterMonitor,
+        |m: &ironmonlib::printer::PrinterMonitor| m.printers().len()
     );
 
     // Singleton reports rather than collections: one item when they construct.
     probe!(
         "kernel_params",
-        simonlib::kernel_params::KernelParamsMonitor,
+        ironmonlib::kernel_params::KernelParamsMonitor,
         // Was a hardcoded `1`, which counted nothing and reported "answers here"
         // for a reader that returns nothing on this machine. The table exists to
         // replace guesses about which readers answer; a constant in it is the
         // one thing it must not contain.
-        |m: &simonlib::kernel_params::KernelParamsMonitor| m.report().params.len()
+        |m: &ironmonlib::kernel_params::KernelParamsMonitor| m.report().params.len()
     );
     probe!(
         "memory_bandwidth",
-        simonlib::memory_bandwidth::MemoryBandwidthMonitor,
+        ironmonlib::memory_bandwidth::MemoryBandwidthMonitor,
         // 1 only when the memory generation was identified. Everything this
         // reader produces rests on that, and without it the estimator falls back
         // to 3200 MT/s and a 0.75 efficiency factor -- so a constant here would
         // report "answers" for a machine where nothing was read.
-        |m: &simonlib::memory_bandwidth::MemoryBandwidthMonitor| {
+        |m: &ironmonlib::memory_bandwidth::MemoryBandwidthMonitor| {
             usize::from(
-                m.estimate().generation != simonlib::memory_bandwidth::MemoryGeneration::Unknown,
+                m.estimate().generation != ironmonlib::memory_bandwidth::MemoryGeneration::Unknown,
             )
         }
     );
     probe!(
         "memory_topology",
-        simonlib::memory_topology::MemoryTopologyMonitor,
-        |m: &simonlib::memory_topology::MemoryTopologyMonitor| m.populated_dimms().len()
+        ironmonlib::memory_topology::MemoryTopologyMonitor,
+        |m: &ironmonlib::memory_topology::MemoryTopologyMonitor| m.populated_dimms().len()
     );
     probe!(
         "cpu_microarch",
-        simonlib::cpu_microarch::CpuMicroarchMonitor,
-        |m: &simonlib::cpu_microarch::CpuMicroarchMonitor| m.supported_extensions().len()
+        ironmonlib::cpu_microarch::CpuMicroarchMonitor,
+        |m: &ironmonlib::cpu_microarch::CpuMicroarchMonitor| m.supported_extensions().len()
     );
     probe!(
         "crypto_accel",
-        simonlib::crypto_accel::CryptoAccelMonitor,
+        ironmonlib::crypto_accel::CryptoAccelMonitor,
         // The features and RNG sources are the facts this reader holds; the
         // score beside them is a table lookup and is not published anywhere.
-        |m: &simonlib::crypto_accel::CryptoAccelMonitor| {
+        |m: &ironmonlib::crypto_accel::CryptoAccelMonitor| {
             m.report().features.len() + m.report().rng_sources.len()
         }
     );
     probe!(
         "interconnect",
-        simonlib::interconnect::InterconnectMonitor,
-        |m: &simonlib::interconnect::InterconnectMonitor| m.inter_socket_links().len()
+        ironmonlib::interconnect::InterconnectMonitor,
+        |m: &ironmonlib::interconnect::InterconnectMonitor| m.inter_socket_links().len()
     );
     probe!(
         "security_mitigations",
-        simonlib::security_mitigations::SecurityMitigationsMonitor,
-        |m: &simonlib::security_mitigations::SecurityMitigationsMonitor| m.unmitigated().len()
+        ironmonlib::security_mitigations::SecurityMitigationsMonitor,
+        |m: &ironmonlib::security_mitigations::SecurityMitigationsMonitor| m.unmitigated().len()
     );
 }

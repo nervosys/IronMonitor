@@ -1,7 +1,7 @@
 //! Unified GPU Monitoring Example
 //!
 //! This example demonstrates monitoring all GPU vendors (NVIDIA, AMD, Intel)
-//! using Silicon Monitor's unified Device trait interface.
+//! using IronMonitor's unified Device trait interface.
 //!
 //! # Usage
 //!
@@ -15,11 +15,11 @@
 //! cargo run --example all_gpus --features intel
 //! ```
 
-use simonlib::gpu::traits::{Device, Vendor};
+use ironmonlib::gpu::traits::{Device, Vendor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("═══════════════════════════════════════════════════════════");
-    println!("       Silicon Monitor - Unified GPU Monitoring");
+    println!("       IronMonitor - Unified GPU Monitoring");
     println!("═══════════════════════════════════════════════════════════\n");
 
     let mut all_devices: Vec<Box<dyn Device>> = Vec::new();
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "nvidia")]
     {
         print!("[SCAN] Scanning for NVIDIA GPUs... ");
-        match simonlib::gpu::nvidia_new::enumerate() {
+        match ironmonlib::gpu::nvidia_new::enumerate() {
             Ok(devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "amd")]
     {
         print!("[SCAN] Scanning for AMD GPUs... ");
-        match simonlib::gpu::amd_rocm::enumerate() {
+        match ironmonlib::gpu::amd_rocm::enumerate() {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "intel")]
     {
         print!("[SCAN] Scanning for Intel GPUs... ");
-        match simonlib::gpu::intel_levelzero::enumerate() {
+        match ironmonlib::gpu::intel_levelzero::enumerate() {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -236,10 +236,10 @@ fn print_gpu_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Error>>
     if let Ok(Some(fan)) = device.fan_speed() {
         println!("\n[FAN] Fan:");
         match fan {
-            simonlib::gpu::traits::FanSpeed::Rpm(rpm) => {
+            ironmonlib::gpu::traits::FanSpeed::Rpm(rpm) => {
                 println!("  Speed:   {} RPM", rpm);
             }
-            simonlib::gpu::traits::FanSpeed::Percent(percent) => {
+            ironmonlib::gpu::traits::FanSpeed::Percent(percent) => {
                 println!("  Speed:   {}%", percent);
             }
         }

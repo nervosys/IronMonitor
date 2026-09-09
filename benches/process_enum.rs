@@ -10,7 +10,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 fn bench_process_list(c: &mut Criterion) {
     c.bench_function("process_list", |b| {
         b.iter(|| {
-            if let Ok(mut pm) = simonlib::process_monitor::ProcessMonitor::new() {
+            if let Ok(mut pm) = ironmonlib::process_monitor::ProcessMonitor::new() {
                 let _ = pm.processes();
             }
         });
@@ -18,7 +18,7 @@ fn bench_process_list(c: &mut Criterion) {
 }
 
 fn bench_process_classify(c: &mut Criterion) {
-    use simonlib::process_monitor::ProcessCategory;
+    use ironmonlib::process_monitor::ProcessCategory;
 
     let names = [
         "chrome",

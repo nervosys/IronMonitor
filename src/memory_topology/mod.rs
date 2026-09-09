@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Memory technology type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,7 +199,7 @@ pub struct MemoryTopologyMonitor {
 
 impl MemoryTopologyMonitor {
     /// Create a new memory topology monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let dimms = Self::enumerate_dimms()?;
         let analysis = Self::analyze(&dimms);
         Ok(Self {
@@ -208,7 +208,7 @@ impl MemoryTopologyMonitor {
     }
 
     /// Refresh data.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.topology.dimms = Self::enumerate_dimms()?;
         self.topology.analysis = Self::analyze(&self.topology.dimms);
         Ok(())
@@ -407,7 +407,7 @@ impl MemoryTopologyMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn enumerate_dimms() -> Result<Vec<DimmInfo>, SimonError> {
+    fn enumerate_dimms() -> Result<Vec<DimmInfo>, IronError> {
         // Try dmidecode parsing
         let output = std::process::Command::new("dmidecode")
             .args(["-t", "memory"])
@@ -426,7 +426,7 @@ impl MemoryTopologyMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn enumerate_dimms() -> Result<Vec<DimmInfo>, SimonError> {
+    fn enumerate_dimms() -> Result<Vec<DimmInfo>, IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -445,7 +445,7 @@ impl MemoryTopologyMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn enumerate_dimms() -> Result<Vec<DimmInfo>, SimonError> {
+    fn enumerate_dimms() -> Result<Vec<DimmInfo>, IronError> {
         let output = std::process::Command::new("system_profiler")
             .args(["SPMemoryDataType", "-json"])
             .output();
@@ -460,7 +460,7 @@ impl MemoryTopologyMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn enumerate_dimms() -> Result<Vec<DimmInfo>, SimonError> {
+    fn enumerate_dimms() -> Result<Vec<DimmInfo>, IronError> {
         Ok(Vec::new())
     }
 

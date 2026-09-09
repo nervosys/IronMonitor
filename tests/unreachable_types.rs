@@ -10,7 +10,7 @@
 //! `NetworkState` kept the bare `f64` rate fields that `e425908` took off every
 //! other network rate in the crate, because the sweep looked for code that runs
 //! and nothing constructed a `NetworkState`. When `ed4ec44` finally populated
-//! `FullSystemState::network` — a public field, serialised by `simon cli all
+//! `FullSystemState::network` — a public field, serialised by `ironmon cli all
 //! --format json`, that had come back `[]` on a host with twenty interfaces —
 //! the fabrication came with it and had to be fixed on the way through.
 //!

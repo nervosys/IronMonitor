@@ -1,11 +1,11 @@
-//! Time `MonitoringBackend` construction and update — the path behind `simon cli`.
+//! Time `MonitoringBackend` construction and update — the path behind `ironmon cli`.
 
 fn main() {
     println!("--- step breakdown ---");
     breakdown();
     println!("--- whole path ---");
     let t = std::time::Instant::now();
-    let mut backend = match simonlib::backend::MonitoringBackend::new() {
+    let mut backend = match ironmonlib::backend::MonitoringBackend::new() {
         Ok(b) => b,
         Err(e) => {
             println!("new() failed: {e}");
@@ -44,46 +44,51 @@ fn breakdown() {
 
     let gpus = step!(
         "GpuCollection::auto_detect",
-        simonlib::gpu::GpuCollection::auto_detect().ok()
+        ironmonlib::gpu::GpuCollection::auto_detect().ok()
     );
     if let Some(ref g) = gpus {
         step!("gpus.snapshot_all", g.snapshot_all().unwrap_or_default());
     }
-    step!("ProcessMonitor::new", simonlib::ProcessMonitor::new().ok());
+    step!(
+        "ProcessMonitor::new",
+        ironmonlib::ProcessMonitor::new().ok()
+    );
     step!(
         "NetworkMonitor::new",
-        simonlib::network_monitor::NetworkMonitor::new().ok()
+        ironmonlib::network_monitor::NetworkMonitor::new().ok()
     );
     step!(
         "ConnectionMonitor::new",
-        simonlib::connections::ConnectionMonitor::new().ok()
+        ironmonlib::connections::ConnectionMonitor::new().ok()
     );
     step!(
         "disk::enumerate_disks",
-        simonlib::disk::enumerate_disks().unwrap_or_default().len()
+        ironmonlib::disk::enumerate_disks()
+            .unwrap_or_default()
+            .len()
     );
     step!(
         "motherboard::enumerate_sensors",
-        simonlib::motherboard::enumerate_sensors()
+        ironmonlib::motherboard::enumerate_sensors()
             .unwrap_or_default()
             .len()
     );
     step!(
         "motherboard::get_system_info",
-        simonlib::motherboard::get_system_info().ok()
+        ironmonlib::motherboard::get_system_info().ok()
     );
     step!(
         "motherboard::get_driver_versions",
-        simonlib::motherboard::get_driver_versions()
+        ironmonlib::motherboard::get_driver_versions()
             .unwrap_or_default()
             .len()
     );
     step!(
         "SystemStats::new",
-        simonlib::system_stats::SystemStats::new().ok()
+        ironmonlib::system_stats::SystemStats::new().ok()
     );
     step!(
         "AgentConfig::auto_detect",
-        simonlib::agent::AgentConfig::auto_detect().ok()
+        ironmonlib::agent::AgentConfig::auto_detect().ok()
     );
 }

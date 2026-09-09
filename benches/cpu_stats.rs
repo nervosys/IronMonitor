@@ -11,11 +11,11 @@ fn bench_read_cpu_stats(c: &mut Criterion) {
         b.iter(|| {
             #[cfg(target_os = "linux")]
             {
-                let _ = simonlib::platform::linux::cpu::read_cpu_stats();
+                let _ = ironmonlib::platform::linux::cpu::read_cpu_stats();
             }
             #[cfg(windows)]
             {
-                let _ = simonlib::platform::windows::read_cpu_stats();
+                let _ = ironmonlib::platform::windows::read_cpu_stats();
             }
         });
     });
@@ -26,11 +26,11 @@ fn bench_read_memory_stats(c: &mut Criterion) {
         b.iter(|| {
             #[cfg(target_os = "linux")]
             {
-                let _ = simonlib::platform::linux::memory::read_memory_stats();
+                let _ = ironmonlib::platform::linux::memory::read_memory_stats();
             }
             #[cfg(windows)]
             {
-                let _ = simonlib::platform::windows::read_memory_stats();
+                let _ = ironmonlib::platform::windows::read_memory_stats();
             }
         });
     });

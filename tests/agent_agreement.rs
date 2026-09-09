@@ -1,6 +1,6 @@
 //! What the agent tool surface says, against what the ontology resolves.
 //!
-//! `AiDataApi::call_tool` is what an LLM driving simon through MCP reads, and it
+//! `AiDataApi::call_tool` is what an LLM driving ironmon through MCP reads, and it
 //! is a *third* collection path over the same hardware — separate from both the
 //! ontology resolver and the Prometheus exporters. `tests/ai_tool_surface.rs`
 //! covers its shape: no absence words, no fabricated zeros, no empty strings.
@@ -20,8 +20,8 @@
 //! memory figures alone. A path that has stopped existing is either a renamed
 //! field or a dropped one, and both are worth a red test.
 
+use ironmonlib::ai_api::AiDataApi;
 use serde_json::Value;
-use simonlib::ai_api::AiDataApi;
 
 /// The `data` of one tool call, or `None` where the tool declined.
 ///
@@ -36,7 +36,7 @@ fn tool(name: &str) -> Option<Value> {
         .flatten()
 }
 
-fn reading(readings: &[simonlib::ontology::resolve::Reading], id: &str) -> Option<f64> {
+fn reading(readings: &[ironmonlib::ontology::resolve::Reading], id: &str) -> Option<f64> {
     readings
         .iter()
         .find(|r| r.id == id)
@@ -52,7 +52,7 @@ fn at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 /// Capacities and counts, as the tool surface and the ontology each report them.
 #[test]
 fn the_agent_surface_and_the_ontology_agree_on_what_does_not_move() {
-    let readings = simonlib::ontology::resolve::snapshot();
+    let readings = ironmonlib::ontology::resolve::snapshot();
     let mut compared = 0usize;
     let mut problems: Vec<String> = Vec::new();
 

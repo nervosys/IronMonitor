@@ -9,7 +9,7 @@
 //! cargo run --release --features nvidia --example ai_chatbot_test
 //! ```
 
-use simonlib::ai_api::AiDataApi;
+use ironmonlib::ai_api::AiDataApi;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AI Data API Chatbot Integration Test ===\n");

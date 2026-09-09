@@ -369,7 +369,7 @@ const HWMON_NAMESPACES: [&str; 2] = ["root\\OpenHardwareMonitor", "root\\LibreHa
 /// tick, so on the common machine it was paying for two failed namespace connections
 /// every tick, forever, to learn the same thing each time. The answer is cached and
 /// re-probed occasionally, so installing a hardware monitor is still picked up
-/// without restarting simon.
+/// without restarting ironmon.
 static HWMON_NAMESPACE: std::sync::Mutex<Option<(std::time::Instant, Option<&'static str>)>> =
     std::sync::Mutex::new(None);
 

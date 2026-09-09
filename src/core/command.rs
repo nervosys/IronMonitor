@@ -22,7 +22,7 @@
 //! it is load-dependent by construction: rare on a developer's machine, rare in
 //! CI, not rare on a busy host.
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Run `program` with `args` and return its stdout as text.
 ///
@@ -30,16 +30,16 @@ use crate::error::SimonError;
 /// exit, or output that is not UTF-8. An `Ok("")` therefore means the program
 /// ran, succeeded, and printed nothing, which is the only case a caller may
 /// read as "there is nothing there".
-pub fn capture(program: &str, args: &[&str]) -> Result<String, SimonError> {
+pub fn capture(program: &str, args: &[&str]) -> Result<String, IronError> {
     let output = std::process::Command::new(program)
         .args(args)
         .output()
-        .map_err(|e| SimonError::CommandFailed(format!("{program}: {e}")))?;
+        .map_err(|e| IronError::CommandFailed(format!("{program}: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
-        return Err(SimonError::CommandFailed(if detail.is_empty() {
+        return Err(IronError::CommandFailed(if detail.is_empty() {
             format!("{program} exited {}", output.status)
         } else {
             format!("{program} exited {}: {detail}", output.status)
@@ -47,7 +47,7 @@ pub fn capture(program: &str, args: &[&str]) -> Result<String, SimonError> {
     }
 
     String::from_utf8(output.stdout)
-        .map_err(|e| SimonError::Parse(format!("{program} output is not UTF-8: {e}")))
+        .map_err(|e| IronError::Parse(format!("{program} output is not UTF-8: {e}")))
 }
 
 /// Run `program` and parse its stdout as JSON.
@@ -56,14 +56,14 @@ pub fn capture(program: &str, args: &[&str]) -> Result<String, SimonError> {
 /// `ConvertTo-Json` prints nothing at all for an empty result set, so this is
 /// the shape that genuinely means "no devices". Anything else that fails to
 /// parse is an error, not an empty machine.
-pub fn capture_json(program: &str, args: &[&str]) -> Result<Option<serde_json::Value>, SimonError> {
+pub fn capture_json(program: &str, args: &[&str]) -> Result<Option<serde_json::Value>, IronError> {
     let text = capture(program, args)?;
     if text.trim().is_empty() {
         return Ok(None);
     }
     serde_json::from_str(&text)
         .map(Some)
-        .map_err(|e| SimonError::Parse(format!("{program} output is not JSON: {e}")))
+        .map_err(|e| IronError::Parse(format!("{program} output is not JSON: {e}")))
 }
 
 /// The items of a JSON document that is either one object or an array of them.
@@ -88,9 +88,9 @@ mod tests {
     /// same value.
     #[test]
     fn a_missing_program_is_an_error_not_an_empty_result() {
-        let err = capture("simon-no-such-program-exists", &[]).unwrap_err();
+        let err = capture("ironmon-no-such-program-exists", &[]).unwrap_err();
         assert!(
-            err.to_string().contains("simon-no-such-program-exists"),
+            err.to_string().contains("ironmon-no-such-program-exists"),
             "the error should name the program that failed: {err}"
         );
     }

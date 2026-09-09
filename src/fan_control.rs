@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::fan_control::{FanMonitor, FanProfile};
+//! use ironmonlib::fan_control::{FanMonitor, FanProfile};
 //!
 //! let monitor = FanMonitor::new().unwrap();
 //!
@@ -23,7 +23,7 @@
 //! monitor.set_profile("cpu_fan", FanProfile::Quiet).unwrap();
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -63,7 +63,7 @@ impl std::fmt::Display for FanProfile {
 }
 
 impl std::str::FromStr for FanProfile {
-    type Err = SimonError;
+    type Err = IronError;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
@@ -74,7 +74,7 @@ impl std::str::FromStr for FanProfile {
             "manual" => Ok(FanProfile::Manual),
             "auto" | "automatic" => Ok(FanProfile::Auto),
             "temp_control" => Ok(FanProfile::TempControl),
-            _ => Err(SimonError::InvalidValue(format!(
+            _ => Err(IronError::InvalidValue(format!(
                 "Unknown fan profile: {}",
                 s
             ))),
@@ -451,7 +451,7 @@ impl FanMonitor {
     /// Set fan speed (percentage 0-100)
     pub fn set_speed(&self, fan_name: &str, speed_percent: f32) -> Result<()> {
         if !(0.0..=100.0).contains(&speed_percent) {
-            return Err(SimonError::InvalidValue(format!(
+            return Err(IronError::InvalidValue(format!(
                 "Speed must be 0-100%, got {}",
                 speed_percent
             )));
@@ -470,7 +470,7 @@ impl FanMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = (fan_name, speed_percent);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Fan control not supported on this platform".to_string(),
             ))
         }
@@ -492,7 +492,7 @@ impl FanMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (fan_name, profile);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Fan profile control not supported on this platform".to_string(),
             ))
         }
@@ -568,10 +568,10 @@ impl FanMonitor {
         }
 
         for entry in fs::read_dir(hwmon_path)
-            .map_err(|e| SimonError::System(format!("Failed to read hwmon: {}", e)))?
+            .map_err(|e| IronError::System(format!("Failed to read hwmon: {}", e)))?
         {
             let entry =
-                entry.map_err(|e| SimonError::System(format!("Failed to read entry: {}", e)))?;
+                entry.map_err(|e| IronError::System(format!("Failed to read entry: {}", e)))?;
 
             let path = entry.path();
 
@@ -722,10 +722,10 @@ impl FanMonitor {
         }
 
         for entry in fs::read_dir(thermal_path)
-            .map_err(|e| SimonError::System(format!("Failed to read thermal: {}", e)))?
+            .map_err(|e| IronError::System(format!("Failed to read thermal: {}", e)))?
         {
             let entry =
-                entry.map_err(|e| SimonError::System(format!("Failed to read entry: {}", e)))?;
+                entry.map_err(|e| IronError::System(format!("Failed to read entry: {}", e)))?;
 
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -805,12 +805,12 @@ impl FanMonitor {
             .fans
             .iter()
             .find(|f| f.name == fan_name)
-            .ok_or_else(|| SimonError::DeviceNotFound(format!("Fan '{}' not found", fan_name)))?;
+            .ok_or_else(|| IronError::DeviceNotFound(format!("Fan '{}' not found", fan_name)))?;
 
         let path = fan
             .sysfs_path
             .as_ref()
-            .ok_or_else(|| SimonError::System("No sysfs path for fan".to_string()))?;
+            .ok_or_else(|| IronError::System("No sysfs path for fan".to_string()))?;
 
         // Calculate PWM value
         let pwm = ((speed_percent / 100.0) * 255.0).round() as u8;
@@ -821,13 +821,13 @@ impl FanMonitor {
         for pwm_file in &pwm_files {
             if pwm_file.exists() {
                 fs::write(pwm_file, format!("{}", pwm)).map_err(|e| {
-                    SimonError::System(format!("Failed to write PWM (need root?): {}", e))
+                    IronError::System(format!("Failed to write PWM (need root?): {}", e))
                 })?;
                 return Ok(());
             }
         }
 
-        Err(SimonError::System("No writable PWM file found".to_string()))
+        Err(IronError::System("No writable PWM file found".to_string()))
     }
 
     #[cfg(target_os = "linux")]
@@ -838,12 +838,12 @@ impl FanMonitor {
             .fans
             .iter()
             .find(|f| f.name == fan_name)
-            .ok_or_else(|| SimonError::DeviceNotFound(format!("Fan '{}' not found", fan_name)))?;
+            .ok_or_else(|| IronError::DeviceNotFound(format!("Fan '{}' not found", fan_name)))?;
 
         let path = fan
             .sysfs_path
             .as_ref()
-            .ok_or_else(|| SimonError::System("No sysfs path for fan".to_string()))?;
+            .ok_or_else(|| IronError::System("No sysfs path for fan".to_string()))?;
 
         // For standard hwmon, set pwm_enable
         // 0 = DC mode
@@ -862,7 +862,7 @@ impl FanMonitor {
             };
 
             fs::write(&pwm_enable_file, format!("{}", enable_value)).map_err(|e| {
-                SimonError::System(format!("Failed to set fan profile (need root?): {}", e))
+                IronError::System(format!("Failed to set fan profile (need root?): {}", e))
             })?;
 
             return Ok(());
@@ -878,12 +878,12 @@ impl FanMonitor {
             };
 
             fs::write(&temp_control, value)
-                .map_err(|e| SimonError::System(format!("Failed to set temp control: {}", e)))?;
+                .map_err(|e| IronError::System(format!("Failed to set temp control: {}", e)))?;
 
             return Ok(());
         }
 
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "Fan profile control not available for this fan".to_string(),
         ))
     }
@@ -1053,7 +1053,7 @@ impl FanMonitor {
 
     #[cfg(target_os = "windows")]
     fn windows_set_fan_speed(&self, _fan_name: &str, _speed_percent: f32) -> Result<()> {
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "Fan control on Windows requires vendor-specific tools or OpenHardwareMonitor"
                 .to_string(),
         ))

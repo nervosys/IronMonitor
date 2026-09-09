@@ -63,7 +63,7 @@ pub struct ServerConfig {
     /// So the flag has to live here to reach the gate at all.
     ///
     /// Intended for a loopback bind, where a local user could read the same
-    /// telemetry by running simon directly. Leave it false when binding to a
+    /// telemetry by running ironmon directly. Leave it false when binding to a
     /// routable address.
     pub allow_anonymous: bool,
     /// Enable WebSocket
@@ -431,7 +431,7 @@ impl OpenApiSpec {
         Self {
             openapi: "3.0.3".to_string(),
             info: OpenApiInfo {
-                title: "Silicon Monitor Observability API".to_string(),
+                title: "IronMonitor Observability API".to_string(),
                 description: "Full system observability API with MCP-like permissions".to_string(),
                 version: "1.0.0".to_string(),
             },

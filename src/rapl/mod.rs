@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Power domain type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -124,7 +124,7 @@ pub struct RaplMonitor {
 
 impl RaplMonitor {
     /// Create a new RAPL monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let readings = Self::read_energy()?;
         Ok(Self {
             readings: readings.clone(),
@@ -138,7 +138,7 @@ impl RaplMonitor {
     }
 
     /// Refresh readings and compute power deltas.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         let now = Instant::now();
         self.prev_readings = self.readings.clone();
         self.readings = Self::read_energy()?;
@@ -273,7 +273,7 @@ impl RaplMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_energy() -> Result<Vec<EnergyReading>, SimonError> {
+    fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
         let mut readings = Vec::new();
         let powercap = std::path::Path::new("/sys/class/powercap");
 
@@ -368,22 +368,22 @@ impl RaplMonitor {
     // and collapsing "this platform has no interface" into it means a caller
     // cannot tell an unsupported host from an unpowered one.
     #[cfg(target_os = "windows")]
-    fn read_energy() -> Result<Vec<EnergyReading>, SimonError> {
-        Err(SimonError::UnsupportedPlatform(
+    fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
+        Err(IronError::UnsupportedPlatform(
             "Windows exposes no RAPL interface to unprivileged code: the MSRs behind it need a kernel driver, and there is no sysfs equivalent"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn read_energy() -> Result<Vec<EnergyReading>, SimonError> {
-        Err(SimonError::PermissionDenied(
+    fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
+        Err(IronError::PermissionDenied(
             "macOS exposes package energy only through powermetrics, which requires root".into(),
         ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn read_energy() -> Result<Vec<EnergyReading>, SimonError> {
+    fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
         Ok(Vec::new())
     }
 }

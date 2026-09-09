@@ -9,7 +9,7 @@
 //! cargo run --release --features full --example profile_inspector -- search xmp
 //! ```
 
-use simonlib::profile::{ProfileInspector, Subsystem};
+use ironmonlib::profile::{ProfileInspector, Subsystem};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -3,12 +3,12 @@
 //! Demonstrates network interface monitoring with bandwidth tracking.
 //! Shows all network interfaces with their statistics and real-time rates.
 
-use simonlib::{NetworkMonitor, Result};
+use ironmonlib::{NetworkMonitor, Result};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    println!("=== Silicon Monitor - Network Monitoring ===\n");
+    println!("=== IronMonitor - Network Monitoring ===\n");
 
     // Create network monitor
     let mut monitor = match NetworkMonitor::new() {

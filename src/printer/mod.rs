@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::printer::PrinterMonitor;
+//! use ironmonlib::printer::PrinterMonitor;
 //!
 //! let monitor = PrinterMonitor::new().unwrap();
 //! for printer in monitor.printers() {
@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Printer connection type
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,7 +170,7 @@ fn status_from_cim(extended: u64, basic: u64) -> PrinterStatus {
 
 impl PrinterMonitor {
     /// Create a new PrinterMonitor and detect printers.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             printers: Vec::new(),
         };
@@ -183,7 +183,7 @@ impl PrinterMonitor {
     ///
     /// Returns `Err` when the enumeration failed, and `Ok` with an empty list
     /// only when it succeeded and found nothing. See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.printers.clear();
 
         #[cfg(target_os = "linux")]
@@ -225,7 +225,7 @@ impl PrinterMonitor {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn refresh_cups(&mut self) -> Result<(), SimonError> {
+    fn refresh_cups(&mut self) -> Result<(), IronError> {
         // Get default printer
         let default_name = std::process::Command::new("lpstat")
             .args(["-d"])
@@ -252,17 +252,17 @@ impl PrinterMonitor {
         {
             Ok(o) => o,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(SimonError::CommandFailed(format!("lpstat: {e}"))),
+            Err(e) => return Err(IronError::CommandFailed(format!("lpstat: {e}"))),
         };
         if !raw.status.success() {
-            return Err(SimonError::CommandFailed(format!(
+            return Err(IronError::CommandFailed(format!(
                 "lpstat exited {}: {}",
                 raw.status,
                 String::from_utf8_lossy(&raw.stderr).trim()
             )));
         }
         let output = String::from_utf8(raw.stdout)
-            .map_err(|e| SimonError::Parse(format!("lpstat output is not UTF-8: {e}")))?;
+            .map_err(|e| IronError::Parse(format!("lpstat output is not UTF-8: {e}")))?;
 
         // Parse devices
         let device_output = std::process::Command::new("lpstat")
@@ -416,7 +416,7 @@ impl PrinterMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         const QUERY: &str = "Get-CimInstance Win32_Printer | Select-Object Name, DriverName, PortName, PrinterStatus, ExtendedPrinterStatus, Comment, Location, Shared, Capabilities, Default, PrinterState, JobCountSinceLastReset, Network | ConvertTo-Json -Compress";
 
         let Some(val) =

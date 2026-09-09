@@ -5,14 +5,14 @@
 //!
 //! # Why linked data rather than another JSON shape
 //!
-//! `simon snapshot --format json` already emits every reading. What it does not
+//! `ironmon snapshot --format json` already emits every reading. What it does not
 //! emit is what any of the words mean. An agent receiving `{"id":
 //! "cpu.total.utilization", "unit": "percent"}` has to be told out of band that
 //! `percent` is a unit, that `cpu.total.utilization` names a measurement rather
 //! than a setting, and that `unavailable` is not a value.
 //!
 //! JSON-LD carries that in the document. Terms resolve to IRIs, units resolve to
-//! [QUDT], and a consumer that has never seen simon can follow the `@context` to
+//! [QUDT], and a consumer that has never seen IronMonitor can follow the `@context` to
 //! find out what it is looking at.
 //!
 //! [QUDT]: https://qudt.org/
@@ -21,7 +21,7 @@
 //!
 //! `celsius`, `percent`, `bytes`, `hertz`, `watts`, `volts` and the rest have
 //! exact QUDT terms and are mapped to them. `identifier` and `text` are not
-//! quantities and have no QUDT equivalent, so they carry simon's own term rather
+//! quantities and have no QUDT equivalent, so they carry ironmon's own term rather
 //! than being forced into a unit ontology where they do not belong.
 //!
 //! A wrong `@type` is worse than an absent one: it is a machine-readable claim
@@ -32,20 +32,20 @@
 //!
 //! This is the property the whole crate is built on and it is easy to lose in a
 //! serialisation. An unavailable reading is emitted as a node with **no value**
-//! and a `simon:unavailableReason`, not as a value of zero, null, or an omitted
+//! and a `ironmon:unavailableReason`, not as a value of zero, null, or an omitted
 //! node. An agent walking the graph can tell "not read, because X" from "read as
-//! X" without knowing anything about simon.
+//! X" without knowing anything about ironmon.
 
 use super::resolve::Reading;
 use super::{Provenance, Unit};
 use serde_json::{json, Map, Value};
 
-/// The IRI prefix for simon's own terms.
-pub const SIMON_NS: &str = "https://nervosys.github.io/SiliconMonitor/ns#";
+/// The IRI prefix for ironmon's own terms.
+pub const IRONMON_NS: &str = "https://nervosys.github.io/IronMonitor/ns#";
 /// QUDT's unit vocabulary, used for the units that have an exact equivalent.
 pub const QUDT_UNIT_NS: &str = "http://qudt.org/vocab/unit/";
 
-/// The QUDT unit IRI for a simon unit, where one exists.
+/// The QUDT unit IRI for a ironmon unit, where one exists.
 ///
 /// `None` for the two that are not quantities. Forcing `identifier` into a unit
 /// ontology would tell a consumer that a GUID is a measurable amount of
@@ -79,7 +79,7 @@ pub fn qudt_unit(unit: Unit) -> Option<&'static str> {
 /// The `@context` a consumer follows to interpret the graph.
 pub fn context() -> Value {
     json!({
-        "simon": SIMON_NS,
+        "ironmon": IRONMON_NS,
         "qudt": "http://qudt.org/schema/qudt/",
         // The QUDT unit vocabulary, as a prefix. This and the property below
         // were both called `unit` in the first version, so the object had a
@@ -93,19 +93,19 @@ pub fn context() -> Value {
         // `value` is deliberately not coerced to a single xsd type: readings are
         // numbers, strings and booleans depending on the entity, and declaring
         // one would misdescribe the others.
-        "value": "simon:value",
+        "value": "ironmon:value",
         // `@type: @id` so the value is read as an IRI reference rather than a
         // string that happens to contain a colon.
         "hasUnit": {
             "@id": "qudt:hasUnit",
             "@type": "@id"
         },
-        "provenance": "simon:provenance",
-        "unavailableReason": "simon:unavailableReason",
-        "entityKind": "simon:entityKind",
-        "domain": "simon:domain",
+        "provenance": "ironmon:provenance",
+        "unavailableReason": "ironmon:unavailableReason",
+        "entityKind": "ironmon:entityKind",
+        "domain": "ironmon:domain",
         "observedAt": {
-            "@id": "simon:observedAt",
+            "@id": "ironmon:observedAt",
             "@type": "xsd:dateTime"
         }
     })
@@ -114,21 +114,21 @@ pub fn context() -> Value {
 /// One reading as a JSON-LD node.
 fn node(reading: &Reading, ontology: &super::Ontology) -> Value {
     let mut map = Map::new();
-    map.insert("id".into(), json!(format!("{SIMON_NS}{}", reading.id)));
+    map.insert("id".into(), json!(format!("{IRONMON_NS}{}", reading.id)));
 
     // The type says what kind of thing this is, from the schema rather than
-    // from the value's shape. An entity simon has no declaration for gets
-    // `simon:Reading` and nothing more specific, which is honest.
+    // from the value's shape. An entity IronMonitor has no declaration for gets
+    // `ironmon:Reading` and nothing more specific, which is honest.
     let entity = ontology.template_for(&reading.id);
     let kind = entity
         .map(|e| match e.kind {
-            super::EntityKind::Measurement => "simon:Measurement",
-            super::EntityKind::Identity => "simon:Identity",
-            super::EntityKind::Setting => "simon:Setting",
-            super::EntityKind::Limit => "simon:Limit",
-            super::EntityKind::Diagnostic => "simon:Diagnostic",
+            super::EntityKind::Measurement => "ironmon:Measurement",
+            super::EntityKind::Identity => "ironmon:Identity",
+            super::EntityKind::Setting => "ironmon:Setting",
+            super::EntityKind::Limit => "ironmon:Limit",
+            super::EntityKind::Diagnostic => "ironmon:Diagnostic",
         })
-        .unwrap_or("simon:Reading");
+        .unwrap_or("ironmon:Reading");
     map.insert("type".into(), json!(kind));
 
     if let Some(e) = entity {
@@ -155,8 +155,8 @@ fn node(reading: &Reading, ontology: &super::Ontology) -> Value {
             if let Some(u) = reading.unit.and_then(qudt_unit) {
                 map.insert("hasUnit".into(), json!(format!("unit:{u}")));
             } else if let Some(u) = reading.unit {
-                // simon's own term for the things QUDT does not describe.
-                map.insert("hasUnit".into(), json!(format!("simon:{}", u.as_str())));
+                // ironmon's own term for the things QUDT does not describe.
+                map.insert("hasUnit".into(), json!(format!("ironmon:{}", u.as_str())));
             }
         }
     }
@@ -174,10 +174,10 @@ pub fn document(readings: &[Reading], observed_at: &str) -> Value {
 
     json!({
         "@context": context(),
-        "id": format!("{SIMON_NS}snapshot"),
-        "type": "simon:Snapshot",
+        "id": format!("{IRONMON_NS}snapshot"),
+        "type": "ironmon:Snapshot",
         "observedAt": observed_at,
-        "simon:readingCount": graph.len(),
+        "ironmon:readingCount": graph.len(),
         "@graph": graph,
     })
 }
@@ -304,7 +304,7 @@ mod tests {
         let n = &doc["@graph"][0];
         assert_eq!(n["value"], json!(42.5));
         assert_eq!(n["hasUnit"], json!("unit:PERCENT"));
-        assert!(n["id"].as_str().unwrap().starts_with(SIMON_NS));
+        assert!(n["id"].as_str().unwrap().starts_with(IRONMON_NS));
     }
 
     /// A wrong `@type` is worse than an absent one.
@@ -319,7 +319,7 @@ mod tests {
         );
         let unit = doc["@graph"][0]["hasUnit"].as_str().unwrap();
         assert!(
-            unit.starts_with("simon:"),
+            unit.starts_with("ironmon:"),
             "a text field must not be typed as a physical quantity — something \
              downstream will do arithmetic on it. got {unit}"
         );
@@ -380,6 +380,6 @@ mod tests {
         );
         let n = &doc["@graph"][0];
         assert_eq!(n["domain"], json!("cpu"));
-        assert!(n["type"].as_str().unwrap().starts_with("simon:"));
+        assert!(n["type"].as_str().unwrap().starts_with("ironmon:"));
     }
 }

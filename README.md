@@ -1,13 +1,13 @@
 ﻿<p align="center">
-  <img src="assets/banner.png" alt="Silicon Monitor (simon)" width="100%">
+  <img src="assets/banner.png" alt="IronMonitor (ironmon)" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/silicon-monitor"><img src="https://img.shields.io/crates/v/silicon-monitor.svg?style=flat-square&logo=rust&color=orange" alt="Crates.io"></a>
-  <a href="https://github.com/nervosys/SiliconMonitor/actions/workflows/build-and-push.yml"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/SiliconMonitor/build-and-push.yml?style=flat-square&logo=github&label=CI" alt="CI Status"></a>
-  <a href="https://github.com/nervosys/SiliconMonitor/actions"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/SiliconMonitor/build-and-push.yml?style=flat-square&logo=github&label=build" alt="Security"></a>
-  <a href="https://github.com/nervosys/SiliconMonitor/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square" alt="License"></a>
-  <a href="https://github.com/nervosys/SiliconMonitor/stargazers"><img src="https://img.shields.io/github/stars/nervosys/SiliconMonitor?style=flat-square&color=yellow" alt="Stars"></a>
+  <a href="https://crates.io/crates/iron-monitor"><img src="https://img.shields.io/crates/v/iron-monitor.svg?style=flat-square&logo=rust&color=orange" alt="Crates.io"></a>
+  <a href="https://github.com/nervosys/IronMonitor/actions/workflows/build-and-push.yml"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/IronMonitor/build-and-push.yml?style=flat-square&logo=github&label=CI" alt="CI Status"></a>
+  <a href="https://github.com/nervosys/IronMonitor/actions"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/IronMonitor/build-and-push.yml?style=flat-square&logo=github&label=build" alt="Security"></a>
+  <a href="https://github.com/nervosys/IronMonitor/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square" alt="License"></a>
+  <a href="https://github.com/nervosys/IronMonitor/stargazers"><img src="https://img.shields.io/github/stars/nervosys/IronMonitor?style=flat-square&color=yellow" alt="Stars"></a>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 ## Cross-platform agentic system monitoring
 
-Silicon Monitor is a powerful, cross-platform hardware monitoring utility designed primarily for **AI agents** and **interactive interfaces**. It provides deep insights into CPUs, GPUs, memory, disks, motherboards, and network interfaces across Windows, Linux, and macOS.
+IronMonitor is a powerful, cross-platform hardware monitoring utility designed primarily for **AI agents** and **interactive interfaces**. It provides deep insights into CPUs, GPUs, memory, disks, motherboards, and network interfaces across Windows, Linux, and macOS.
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -26,19 +26,19 @@ Silicon Monitor is a powerful, cross-platform hardware monitoring utility design
 
 | Mode           | Command             | Description                                                                |
 | -------------- | ------------------- | -------------------------------------------------------------------------- |
-| 🤖 **AI Agent** | `amon` / `simon ai` | Natural language queries, MCP server for Claude, tool manifests for LLMs   |
-| 💻 **CLI**      | `simon <component>` | Command-line monitoring with JSON output for scripting                     |
-| 🖥️ **TUI**      | `simon tui`         | Interactive terminal dashboard with real-time graphs and selectable themes |
-| 🪟 **GUI**      | `simon gui`         | Native desktop application with egui                                       |
+| 🤖 **AI Agent** | `amon` / `ironmon ai` | Natural language queries, MCP server for Claude, tool manifests for LLMs   |
+| 💻 **CLI**      | `ironmon <component>` | Command-line monitoring with JSON output for scripting                     |
+| 🖥️ **TUI**      | `ironmon tui`         | Interactive terminal dashboard with real-time graphs and selectable themes |
+| 🪟 **GUI**      | `ironmon gui`         | Native desktop application with egui                                       |
 
 ## Overview
 
-Silicon Monitor reads hardware across Linux, Windows and macOS. What it reads
+IronMonitor reads hardware across Linux, Windows and macOS. What it reads
 varies by platform and by machine, and it is built to say which — see
-[What simon cannot do](#what-simon-cannot-do).
+[What IronMonitor cannot do](#what-ironmon-cannot-do).
 
 
-- **🛠 Hardware Profile Inspector**: NVIDIA Profile Inspector / Intel XTU / AMD Ryzen Master / nvme-cli equivalents — read & (selectively) write driver profiles, per-app NVIDIA DRS data, CPU power limits, NVMe Get-Features, EDID/XMP/EXPO, with audit-logged apply layer. See [`simon profile --help`](#hardware-profile-inspector).
+- **🛠 Hardware Profile Inspector**: NVIDIA Profile Inspector / Intel XTU / AMD Ryzen Master / nvme-cli equivalents — read & (selectively) write driver profiles, per-app NVIDIA DRS data, CPU power limits, NVMe Get-Features, EDID/XMP/EXPO, with audit-logged apply layer. See [`ironmon profile --help`](#hardware-profile-inspector).
 - **🎮 GPU Monitoring**: NVIDIA, AMD, and Intel GPUs with utilization, memory, temperature, power, and process tracking
 - **💻 CPU Monitoring**: Per-core metrics, frequencies, temperatures, and hybrid architecture support
 - **🧠 Memory Monitoring**: RAM, swap, bandwidth, and latency tracking
@@ -59,10 +59,10 @@ varies by platform and by machine, and it is built to say which — see
 - **🖥️ TUI**: Beautiful terminal interface with real-time graphs, selectable themes, and integrated AI chat
 - **🪟 GUI**: Native desktop application with multiple themes and visualizations
 
-## What simon cannot do
+## What IronMonitor cannot do
 
 Every item here is something the project has checked and can point at, not a
-disclaimer. simon's whole design position is that an absence reported honestly
+disclaimer. ironmon's whole design position is that an absence reported honestly
 beats a confident wrong answer, and that applies to its own capabilities.
 
 **Readings that are not what their name suggests**
@@ -73,10 +73,10 @@ beats a confident wrong answer, and that applies to its own capabilities.
   to 11.4%. Treat it as the rated clock. There is no unelevated live figure.
 - **CPU percentages on Linux and macOS are averages since boot**, derived from
   cumulative tick counters, not instantaneous rates. The TUI and GUI graphs are
-  built from repeated samples and do show change over time; a single `simon cpu`
+  built from repeated samples and do show change over time; a single `ironmon cpu`
   is not a snapshot of this second.
-- **macOS has no GPU, power or temperature readers.** `Simon::snapshot()` fails
-  there because it requires all of them. `Simon::cpu()`, `memory()` and
+- **macOS has no GPU, power or temperature readers.** `IronMonitor::snapshot()` fails
+  there because it requires all of them. `IronMonitor::cpu()`, `memory()` and
   `uptime()` work.
 
 **Code that compiles everywhere and has not run everywhere**
@@ -93,12 +93,12 @@ beats a confident wrong answer, and that applies to its own capabilities.
 
 **Things that are structurally out of reach**
 
-- **`simon tune` can apply settings and currently cannot verify them.** The
+- **`ironmon tune` can apply settings and currently cannot verify them.** The
   verification loop is implemented and its metric registry is deliberately empty:
   every candidate metric was checked and none survived. Applying a setting
   therefore reports `unverifiable` rather than an improvement. That is the honest
   output, not a placeholder — see `src/tuning/verify.rs`.
-- **Intrusion detection watches socket tables, not traffic.** simon cannot see
+- **Intrusion detection watches socket tables, not traffic.** IronMonitor cannot see
   packet contents, so it detects what is *listening* and what changed against a
   baseline. File integrity covers an explicit watchlist, not a filesystem sweep,
   and choosing that watchlist is the part that decides whether it is useful.
@@ -108,7 +108,7 @@ beats a confident wrong answer, and that applies to its own capabilities.
 - **The ontology declares entities no resolver reads yet.** Those resolve as
   `unavailable` with the reason "no resolver bound on this build" rather than
   being omitted, so an agent can tell "this machine has no such device" from
-  "simon cannot read this". `simon snapshot --validate` reports the coverage.
+  "IronMonitor cannot read this". `ironmon snapshot --validate` reports the coverage.
 
 **Nothing here writes without being told twice**
 
@@ -168,10 +168,10 @@ block a connection, kill a process, or quarantine a file.
 
 ### Process Monitoring with GPU Attribution
 
-Silicon Monitor uniquely correlates system processes with GPU usage across all vendors:
+IronMonitor uniquely correlates system processes with GPU usage across all vendors:
 
 ```rust
-use simonlib::{ProcessMonitor, GpuCollection};
+use ironmonlib::{ProcessMonitor, GpuCollection};
 
 let gpu_collection = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpu_collection)?;
@@ -189,7 +189,7 @@ for proc in gpu_procs.iter().take(10) {
 Ask questions about your system in natural language:
 
 ```rust
-use simonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
 
 let config = AgentConfig::new(ModelSize::Medium); // 500M parameters
 let mut agent = Agent::new(config)?;
@@ -208,20 +208,20 @@ let response = agent.ask("How much power am I using?", &monitor)?;
 - Multiple model sizes (100M, 500M, 1B parameters)
 - Zero latency impact on monitoring (non-blocking)
 - Response caching for instant repeated queries
-- See [docs/AI_AGENT.md](docs/AI_AGENT.md) for the agent itself, [AI_INTEGRATION.md](AI_INTEGRATION.md) for model providers, and [AGENTS.md](AGENTS.md) for driving simon programmatically
+- See [docs/AI_AGENT.md](docs/AI_AGENT.md) for the agent itself, [AI_INTEGRATION.md](AI_INTEGRATION.md) for model providers, and [AGENTS.md](AGENTS.md) for driving ironmon programmatically
 
 
 ### Use-case tuning
 
-`simon tune` works out what the machine is being used for — AI training, AI
+`ironmon tune` works out what the machine is being used for — AI training, AI
 inference, gaming, interactive, idle — and recommends the hardware profile
 settings that suit it. `--watch N` turns it into the automatic server.
 
 ```bash
-simon tune                      # classify and recommend; writes nothing
-simon tune --watch 60           # the server: re-evaluate every minute
-simon tune --as gaming          # plan for a use case without waiting for it
-simon tune -f json              # the machine-facing form
+ironmon tune                      # classify and recommend; writes nothing
+ironmon tune --watch 60           # the server: re-evaluate every minute
+ironmon tune --as gaming          # plan for a use case without waiting for it
+ironmon tune -f json              # the machine-facing form
 ```
 
 ```
@@ -254,19 +254,19 @@ plausible-looking one.
 
 ### AI Agent Discoverability & Hardware Ontology
 
-Silicon Monitor is designed from the ground up to be **discoverable by AI agents**. It provides a structured hardware ontology that allows agents to understand what monitoring capabilities are available and how to query them.
+IronMonitor is designed from the ground up to be **discoverable by AI agents**. It provides a structured hardware ontology that allows agents to understand what monitoring capabilities are available and how to query them.
 
 #### Hardware Ontology
 
-Every value simon can report has a stable dotted id, a unit, and — the part that
+Every value IronMonitor can report has a stable dotted id, a unit, and — the part that
 matters — a **provenance** saying whether it was measured, taken from a
 specification, derived, or is unavailable here. No model or library linkage is
 needed; it is a command:
 
 ```bash
-simon describe --format json          # the schema: ids, units, provenance
-simon get gpu.0.thermal.temperature   # read one value
-simon snapshot --validate             # read everything, range-checked
+ironmon describe --format json          # the schema: ids, units, provenance
+ironmon get gpu.0.thermal.temperature   # read one value
+ironmon snapshot --validate             # read everything, range-checked
 ```
 
 ```json
@@ -290,7 +290,7 @@ mistakes a plausible constant for a live reading:
 }
 ```
 
-Coverage is deliberately reported rather than claimed. `simon describe` prints
+Coverage is deliberately reported rather than claimed. `ironmon describe` prints
 the entity count, and the ontology currently names **134 entities across 12
 domains** — cpu (including cache topology), gpu, memory (including per-slot DIMM
 topology, NUMA layout and ECC error counts), disk (including SMART, health and NVMe endurance), network, power,
@@ -304,7 +304,7 @@ them. `pci.{addr}.link.width` against `pci.{addr}.link.max_width` on the
 development machine shows a card negotiated at **x8 in a x16-capable slot** —
 half its bandwidth, and not an error anywhere in the system.
 
-It does not yet name everything the library can read. simon has around 88
+It does not yet name everything the library can read. IronMonitor has around 88
 subsystem modules, and the ones without ontology entities — NUMA topology, RAPL,
 sensors, virtualization, EDAC, and others — are reachable through the library and
 the `cli` subcommands but not yet through `describe`, `get` and `snapshot`. That
@@ -334,14 +334,14 @@ cargo test --test ontology_conformance -- --nocapture   # includes a coverage ta
 See **[AGENTS.md](AGENTS.md)** for the full contract: exit codes, the write
 surface, and how to read the TUI and GUI without a terminal or display.
 
-> The older `simonlib::ai_api::HardwareOntology` is superseded. It carries no
+> The older `ironmonlib::ai_api::HardwareOntology` is superseded. It carries no
 > provenance, cannot resolve an id to a value, and no command exposes it.
 
 <details>
 <summary>Legacy library-only ontology (superseded)</summary>
 
 ```rust
-use simonlib::ai_api::HardwareOntology;
+use ironmonlib::ai_api::HardwareOntology;
 
 let ontology = HardwareOntology::complete();
 println!("{}", serde_json::to_string_pretty(&ontology)?);
@@ -350,7 +350,7 @@ println!("{}", serde_json::to_string_pretty(&ontology)?);
 ```json
 {
   "version": "1.0.0",
-  "name": "Silicon Monitor Hardware Ontology",
+  "name": "IronMonitor Hardware Ontology",
   "domains": [
     {
       "id": "gpu",
@@ -377,7 +377,7 @@ println!("{}", serde_json::to_string_pretty(&ontology)?);
 AI agents can enumerate all available monitoring tools with their schemas:
 
 ```rust
-use simonlib::ai_api::{AiDataApi, ToolDefinition};
+use ironmonlib::ai_api::{AiDataApi, ToolDefinition};
 
 let api = AiDataApi::new()?;
 let tools: Vec<ToolDefinition> = api.list_tools();
@@ -394,7 +394,7 @@ for tool in &tools {
 For seamless integration with Claude Desktop and other MCP-compatible AI systems:
 
 ```bash
-simon ai server   # or: amon server
+ironmon ai server   # or: amon server
 ```
 
 Configure in Claude Desktop's `claude_desktop_config.json`:
@@ -402,8 +402,8 @@ Configure in Claude Desktop's `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "silicon-monitor": {
-      "command": "simon",
+    "iron-monitor": {
+      "command": "ironmon",
       "args": ["ai", "server"]
     }
   }
@@ -432,10 +432,10 @@ This enables AI agents to:
 ### From crates.io
 
 ```bash
-cargo install silicon-monitor
+cargo install iron-monitor
 ```
 
-That installs both binaries, `simon` and `amon`. Default features are `full`,
+That installs both binaries, `ironmon` and `amon`. Default features are `full`,
 which includes the GUI, so on Linux the build needs system development packages:
 
 ```bash
@@ -447,21 +447,21 @@ As a library, where the GUI and CLI stacks are usually unwanted:
 
 ```toml
 [dependencies]
-silicon-monitor = { version = "3.0", default-features = false, features = ["cpu", "io", "network"] }
+iron-monitor = { version = "3.0", default-features = false, features = ["cpu", "io", "network"] }
 ```
 
-The crate is published as `silicon-monitor` and imported as `simonlib`:
+The crate is published as `iron-monitor` and imported as `ironmonlib`:
 
 ```rust
-use simonlib::disk;
+use ironmonlib::disk;
 ```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/nervosys/SiliconMonitor
-cd SiliconMonitor
+git clone https://github.com/nervosys/IronMonitor
+cd IronMonitor
 
 # Build with all GPU vendor support
 cargo build --release --features full
@@ -477,50 +477,50 @@ cargo build --release --features nvidia,amd  # NVIDIA + AMD
 
 The CLI provides two binary names optimized for different use cases:
 
-#### `simon` - Full Silicon Monitor
+#### `ironmon` - Full IronMonitor
 
 Subcommands for specific metrics:
 
 ```bash
 # No subcommand: launches the GUI, or the TUI if built without the `gui` feature
-simon
+ironmon
 
 # Launch the TUI explicitly
-simon tui
+ironmon tui
 
 # Monitor specific components
-simon cli cpu
-simon cli gpu
-simon cli memory
-simon cli processes
+ironmon cli cpu
+ironmon cli gpu
+ironmon cli memory
+ironmon cli processes
 
 
 # Peripheral hardware
-simon cli audio       # List audio devices and volume
-simon cli bluetooth   # List Bluetooth adapters and devices
-simon cli display     # Show connected displays
-simon cli usb         # List USB devices
+ironmon cli audio       # List audio devices and volume
+ironmon cli bluetooth   # List Bluetooth adapters and devices
+ironmon cli display     # Show connected displays
+ironmon cli usb         # List USB devices
 
 # Watch mode: continuously monitor devices (press 'q' to quit)
-simon cli audio --watch          # Watch audio devices
-simon cli bluetooth --watch      # Watch Bluetooth devices
-simon cli display --watch        # Watch connected displays
-simon cli usb --watch            # Watch USB devices
-simon cli usb --watch -i 2.0     # Watch USB with 2s refresh interval
-simon ai query "What's my GPU temperature?"  # Ask a question
-simon ai query                                 # Interactive AI mode
-simon ai manifest --format openai             # Export for OpenAI/GPT
-simon ai manifest --format anthropic          # Export for Claude
-simon ai manifest --format gemini             # Export for Gemini
-simon ai manifest --format grok               # Export for xAI Grok
-simon ai manifest --format llama              # Export for Meta Llama
-simon ai manifest --format mistral            # Export for Mistral
-simon ai manifest --format deepseek           # Export for DeepSeek
-simon ai server                               # Start MCP server for Claude Desktop
+ironmon cli audio --watch          # Watch audio devices
+ironmon cli bluetooth --watch      # Watch Bluetooth devices
+ironmon cli display --watch        # Watch connected displays
+ironmon cli usb --watch            # Watch USB devices
+ironmon cli usb --watch -i 2.0     # Watch USB with 2s refresh interval
+ironmon ai query "What's my GPU temperature?"  # Ask a question
+ironmon ai query                                 # Interactive AI mode
+ironmon ai manifest --format openai             # Export for OpenAI/GPT
+ironmon ai manifest --format anthropic          # Export for Claude
+ironmon ai manifest --format gemini             # Export for Gemini
+ironmon ai manifest --format grok               # Export for xAI Grok
+ironmon ai manifest --format llama              # Export for Meta Llama
+ironmon ai manifest --format mistral            # Export for Mistral
+ironmon ai manifest --format deepseek           # Export for DeepSeek
+ironmon ai server                               # Start MCP server for Claude Desktop
 
 #### `amon` - AI Monitor
 
-Dedicated AI agent interface for natural language system queries. This is syntactic sugar for `simon ai`:
+Dedicated AI agent interface for natural language system queries. This is syntactic sugar for `ironmon ai`:
 
 ```bash
 # Query subcommand (default if no subcommand)
@@ -545,7 +545,7 @@ amon server
 # List available AI backends
 amon --list-backends
 
-Both binaries provide the same underlying functionality - use **`simon`** for traditional monitoring commands or **`amon`** for AI-focused interactions!
+Both binaries provide the same underlying functionality - use **`ironmon`** for traditional monitoring commands or **`amon`** for AI-focused interactions!
 
 ```bash
 # Build both binaries
@@ -568,7 +568,7 @@ cargo build --release --features cli
 
 Every feature builds in isolation, and CI checks each one that way on every push —
 `--all-features` cannot catch a feature that only compiles because another supplies
-what it is missing. Built without `gui`, `simon` with no subcommand launches the
+what it is missing. Built without `gui`, `ironmon` with no subcommand launches the
 TUI instead of the desktop window.
 
 ## Quick Start
@@ -576,7 +576,7 @@ TUI instead of the desktop window.
 ### GPU Monitoring
 
 ```rust
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect all GPUs (NVIDIA, AMD, Intel)
@@ -601,7 +601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### CPU Monitoring
 
 ```rust
-use simonlib::cpu::CpuMonitor;
+use ironmonlib::cpu::CpuMonitor;
 
 let mut monitor = CpuMonitor::new()?;
 let info = monitor.update()?;
@@ -616,7 +616,7 @@ for (idx, core) in info.cores.iter().enumerate() {
 ### Memory Monitoring
 
 ```rust
-use simonlib::memory::MemoryMonitor;
+use ironmonlib::memory::MemoryMonitor;
 
 let mut monitor = MemoryMonitor::new()?;
 let info = monitor.update()?;
@@ -630,7 +630,7 @@ println!("Swap: {} / {} MB",
 ### Disk, SMART and NVMe Monitoring
 
 ```rust
-use simonlib::disk::{self, DiskType};
+use ironmonlib::disk::{self, DiskType};
 
 for device in disk::enumerate_disks()? {
     let info = device.info()?;
@@ -679,7 +679,7 @@ fields still resolve while the counters come back `None`.
 Drives that reach the WMI fallback — no longer NVMe or SATA, but still USB bridges
 and anything else the two passthroughs decline — are served from one collector
 sweep shared across every drive and accessor for two seconds. A sweep is around a
-second, so this matters. Construct a `simonlib::smart::SmartMonitor` directly if
+second, so this matters. Construct a `ironmonlib::smart::SmartMonitor` directly if
 you need a guaranteed-fresh one.
 
 See `cargo run --all-features --example disk_monitor` for the full surface.
@@ -687,7 +687,7 @@ See `cargo run --all-features --example disk_monitor` for the full surface.
 ### Network Monitoring
 
 ```rust
-use simonlib::network_monitor::NetworkMonitor;
+use ironmonlib::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 let interfaces = monitor.interfaces()?;
@@ -703,10 +703,10 @@ for iface in interfaces {
 
 ### Network Diagnostic Tools (nmap, traceroute, ping style)
 
-Silicon Monitor includes network diagnostic utilities inspired by popular CLI tools:
+IronMonitor includes network diagnostic utilities inspired by popular CLI tools:
 
 ```rust
-use simonlib::{ping, traceroute, scan_ports, dns_lookup, check_port};
+use ironmonlib::{ping, traceroute, scan_ports, dns_lookup, check_port};
 use std::time::Duration;
 
 // Ping a host
@@ -745,12 +745,12 @@ println!("Port 80: {}", if open { "OPEN" } else { "CLOSED" });
 
 ### Peripheral Hardware Monitoring
 
-Silicon Monitor provides cross-platform monitoring for audio, Bluetooth, display, and USB devices:
+IronMonitor provides cross-platform monitoring for audio, Bluetooth, display, and USB devices:
 
 #### Audio Devices
 
 ```rust
-use simonlib::audio::AudioMonitor;
+use ironmonlib::audio::AudioMonitor;
 
 let mut monitor = AudioMonitor::new()?;
 let devices = monitor.devices();
@@ -774,7 +774,7 @@ if let Some(volume) = monitor.master_volume() {
 #### Bluetooth Devices
 
 ```rust
-use simonlib::bluetooth::BluetoothMonitor;
+use ironmonlib::bluetooth::BluetoothMonitor;
 
 let mut monitor = BluetoothMonitor::new()?;
 
@@ -796,7 +796,7 @@ for device in monitor.devices() {
 #### Display/Monitor Information
 
 ```rust
-use simonlib::display::DisplayMonitor;
+use ironmonlib::display::DisplayMonitor;
 
 let monitor = DisplayMonitor::new()?;
 
@@ -816,7 +816,7 @@ for display in monitor.displays() {
 #### USB Devices
 
 ```rust
-use simonlib::usb::UsbMonitor;
+use ironmonlib::usb::UsbMonitor;
 
 let monitor = UsbMonitor::new()?;
 
@@ -831,7 +831,7 @@ for device in monitor.devices() {
 ```
 
 
-Silicon Monitor includes a lightweight AI agent that can answer questions about your system in natural language:
+IronMonitor includes a lightweight AI agent that can answer questions about your system in natural language:
 
 ### Command Line Interface
 
@@ -847,18 +847,18 @@ amon
 # You: What's my GPU doing?
 # 🤖 Agent: Your GPU is currently at 45% utilization...
 
-# Or use simon ai subcommand
-simon ai query "Analyze my system performance"
-simon ai  # Interactive mode
+# Or use ironmon ai subcommand
+ironmon ai query "Analyze my system performance"
+ironmon ai  # Interactive mode
 ```
 
 ### Programmatic Usage
 
 ```rust
-use simonlib::agent::{Agent, AgentConfig, ModelSize};
-use simonlib::SiliconMonitor;
+use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::IronMonitor;
 
-let monitor = SiliconMonitor::new()?;
+let monitor = IronMonitor::new()?;
 let config = AgentConfig::new(ModelSize::Medium);
 let mut agent = Agent::new(config)?;
 
@@ -885,7 +885,7 @@ println!("{}", response.response);
 
 - **[IronWorks](https://github.com/nervosys/ironworks)** — the default. Pure-Rust
   inference engine, reached over its OpenAI-compatible server on `localhost:8080`.
-  This is the only engine simon ships against; everything below is an external
+  This is the only engine ironmon ships against; everything below is an external
   provider you install or sign in to separately.
 
 **External servers**:
@@ -949,7 +949,7 @@ ollama serve                         # Ollama on port 11434
 ### Programmatic Backend Selection
 
 ```rust
-use simonlib::agent::{AgentConfig, BackendConfig, BackendType};
+use ironmonlib::agent::{AgentConfig, BackendConfig, BackendType};
 
 // Auto-detect best backend
 let config = AgentConfig::auto_detect()?;
@@ -974,14 +974,14 @@ let mut agent = Agent::new(config)?;
 
 ## Terminal User Interface (TUI)
 
-Silicon Monitor includes a beautiful TUI for real-time monitoring with integrated AI agent:
+IronMonitor includes a beautiful TUI for real-time monitoring with integrated AI agent:
 
 ```bash
 # Build and run the TUI
 cargo run --release --features cli --example tui
 
 # Or after installation (using either binary name)
-simon
+ironmon
 amon    # AI Monitor alias
 ```
 
@@ -1021,12 +1021,12 @@ See [AGENTS.md](AGENTS.md) for driving the TUI from an agent, including reading 
 <details>
 <summary><strong>📸 What the TUI looks like</strong> (click to expand)</summary>
 
-Captured from a real run with `simon tui --frame --tab Overview`, using the same
+Captured from a real run with `ironmon tui --frame --tab Overview`, using the same
 headless renderer the test suite drives — so it cannot drift from what the TUI
 actually draws. Only the hostname is substituted.
 
 ```text
-┌Silicon Monitor │ CPU:99% MEM:45% GPU:0 │ hostname────────────────────────────────────────────────┐
+┌IronMonitor │ CPU:99% MEM:45% GPU:0 │ hostname────────────────────────────────────────────────┐
 │ Overview │ Processes │ CPU │ Accelerators │ Memory │ System │ Peripherals │ Profiles │ Agent     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌CPU───────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -1055,14 +1055,14 @@ Every other tab renders the same way — pass `--tab Processes`, `CPU`,
 
 ## Graphical User Interface (GUI)
 
-Silicon Monitor also includes a native desktop GUI built with egui for a modern graphical experience. It can also be read without a display via `simon gui --frame`, or driven by a script with `simon gui --script`:
+IronMonitor also includes a native desktop GUI built with egui for a modern graphical experience. It can also be read without a display via `ironmon gui --frame`, or driven by a script with `ironmon gui --script`:
 
 ```bash
 # Build and run the GUI
 cargo run --release --features gui
 
 # Or after installation
-simon gui
+ironmon gui
 ```
 
 **GUI Features:**
@@ -1076,31 +1076,31 @@ simon gui
 
 > **Screenshots pending.** This section previously linked six PNGs under
 > `docs/images/` that were never added, so every one rendered as a broken image
-> here and on crates.io. Run `simon gui` to see it, or read a tab's text content
-> without a display via `simon gui --frame --tab Overview`. The capture guidelines
+> here and on crates.io. Run `ironmon gui` to see it, or read a tab's text content
+> without a display via `ironmon gui --frame --tab Overview`. The capture guidelines
 > for contributing real screenshots are in [`docs/images/README.md`](docs/images/README.md).
 
 ## Hardware Profile Inspector
 
-Silicon Monitor v1.4 ships a unified inspector for vendor driver settings,
+IronMonitor v1.4 ships a unified inspector for vendor driver settings,
 application profiles, and tunable hardware parameters — the same surface
 exposed by NVIDIA Profile Inspector, Intel XTU, AMD Ryzen Master, and
 `nvme-cli`, but with one cross-platform CLI / GUI / TUI / MCP interface.
 
 ```bash
-simon profile list                          # summary across 5 subsystems
-simon profile show gpu                      # all GPU driver settings
-simon profile search xmp                    # is XMP/EXPO active?
-simon profile active --matched              # running PIDs with NVIDIA profiles
-simon profile deviations                    # changed from declared default
-simon profile explain power_limit_mw        # full metadata for one setting
-simon profile diff baseline.json            # drift report vs saved snapshot
-simon profile watch -i 5                    # continuous change detector
-simon profile bench                         # per-provider snapshot timing
-simon profile schemes                       # list Windows power schemes
-simon profile writable                      # registered apply handlers
-simon profile set scaling_governor performance --confirm
-simon profile audit -l 20                   # tail the apply audit log
+ironmon profile list                          # summary across 5 subsystems
+ironmon profile show gpu                      # all GPU driver settings
+ironmon profile search xmp                    # is XMP/EXPO active?
+ironmon profile active --matched              # running PIDs with NVIDIA profiles
+ironmon profile deviations                    # changed from declared default
+ironmon profile explain power_limit_mw        # full metadata for one setting
+ironmon profile diff baseline.json            # drift report vs saved snapshot
+ironmon profile watch -i 5                    # continuous change detector
+ironmon profile bench                         # per-provider snapshot timing
+ironmon profile schemes                       # list Windows power schemes
+ironmon profile writable                      # registered apply handlers
+ironmon profile set scaling_governor performance --confirm
+ironmon profile audit -l 20                   # tail the apply audit log
 ```
 
 **Subsystems covered**: GPU (NVML, NVIDIA DRS scan, AMD sysfs, Intel i915/xe,
@@ -1109,13 +1109,13 @@ Windows power schemes), NVMe (sysfs + NVMe Get-Features ioctl), Display
 (refresh / HDR / EDID), Memory (SMBIOS Type 17 + XMP 2.0/3.0 + AMD EXPO).
 
 **Apply layer**: opt-in write handlers behind `--confirm`. Every attempt is
-JSON-line audited. MCP agents additionally require `SIMON_ALLOW_AGENT_WRITES=1`.
+JSON-line audited. MCP agents additionally require `IRONMON_ALLOW_AGENT_WRITES=1`.
 Current handlers: NVIDIA persistence mode (Linux), Linux cpufreq governor,
 AMD `power_dpm_force_performance_level`, Intel `gt_max_freq_mhz`, Windows
 active power scheme.
 
-**Prometheus metrics**: `simon_profile_deviations_count{risk}`,
-`simon_profile_settings_total{subsystem}`, `simon_profile_cache_hits_total`,
+**Prometheus metrics**: `ironmon_profile_deviations_count{risk}`,
+`ironmon_profile_settings_total{subsystem}`, `ironmon_profile_cache_hits_total`,
 and friends — wired into the existing exporter.
 
 See [`examples/profile_inspector.rs`](examples/profile_inspector.rs) and
@@ -1168,14 +1168,14 @@ cargo run --release --features full --example agent_simple
 
 ✅ Fully Supported | 🚧 Partial/In Progress | ❌ Not Supported
 
-> **macOS CPU and memory are partial.** `stats::Simon` reads CPU utilisation
+> **macOS CPU and memory are partial.** `stats::IronMonitor` reads CPU utilisation
 > (per-core, including nice time, via `host_processor_info`), memory, swap, uptime
 > and board info on macOS. As on Linux, CPU percentages come from cumulative ticks
 > and so are averages since boot rather than instantaneous rates.
 >
-> `Simon::snapshot()` still fails on macOS because it requires every reader, and
-> GPU, power and temperature remain unimplemented there. Use `Simon::cpu()`,
-> `Simon::memory()` and `Simon::uptime()`, which read only what works. The table
+> `IronMonitor::snapshot()` still fails on macOS because it requires every reader, and
+> GPU, power and temperature remain unimplemented there. Use `IronMonitor::cpu()`,
+> `IronMonitor::memory()` and `IronMonitor::uptime()`, which read only what works. The table
 > claimed full CPU and memory support through 2.1.2, when neither existed; that
 > claim survived because the crate could not build on macOS at all, so nothing ever
 > exercised it.
@@ -1220,7 +1220,7 @@ cargo run --release --features full --example agent_simple
 ## Architecture
 
 ```shell
-simon/
+ironmon/
 ├── core/                    # Core metric structs (CPU, memory, power, etc.)
 ├── gpu/                     # Multi-vendor GPU abstraction
 │   ├── mod.rs               # Unified Device trait, GpuCollection
@@ -1251,7 +1251,7 @@ simon/
 The `GpuCollection` provides a unified interface for all GPU vendors:
 
 ```rust
-use simonlib::gpu::{GpuCollection, Device};
+use ironmonlib::gpu::{GpuCollection, Device};
 
 // Auto-detect all available GPUs
 let collection = GpuCollection::auto_detect()?;
@@ -1273,8 +1273,8 @@ for device in collection.gpus() {
 The `ProcessMonitor` correlates system processes with GPU usage:
 
 ```rust
-use simonlib::process_monitor::ProcessMonitor;
-use simonlib::gpu::GpuCollection;
+use ironmonlib::process_monitor::ProcessMonitor;
+use ironmonlib::gpu::GpuCollection;
 
 let gpus = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpus)?;
@@ -1297,7 +1297,7 @@ let gpu_only = monitor.gpu_processes()?;
 The `NetworkMonitor` tracks network interface statistics:
 
 ```rust
-use simonlib::network_monitor::NetworkMonitor;
+use ironmonlib::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 
@@ -1362,8 +1362,8 @@ xcode-select --install
 
 ```bash
 # Clone the repository
-git clone https://github.com/nervosys/SiliconMonitor
-cd SiliconMonitor
+git clone https://github.com/nervosys/IronMonitor
+cd IronMonitor
 
 # Development build
 cargo build --features full
@@ -1382,9 +1382,9 @@ cargo run --release --features nvidia --example gpu_monitor
 
 Contributions are welcome! Areas that need help:
 
-- **macOS CPU and memory readers** — the largest gap. simon builds and passes its
+- **macOS CPU and memory readers** — the largest gap. ironmon builds and passes its
   suite on macOS but reads neither: there is no `platform/macos.rs`, and
-  `stats::Simon`'s ten platform functions return `UnsupportedPlatform`. This needs
+  `stats::IronMonitor`'s ten platform functions return `UnsupportedPlatform`. This needs
   sysctl and IOKit work verified on real hardware.
 - **Apple GPU enhancements**: Apple Silicon GPU auto-detection is integrated via `GpuCollection::auto_detect()`; could add Metal Performance Shaders for richer metrics
 - **macOS Process I/O**: I/O read/write bytes and handle counts on macOS
@@ -1426,7 +1426,7 @@ See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for commercial licensing deta
 
 ## Acknowledgments
 
-Silicon Monitor builds upon and is inspired by:
+IronMonitor builds upon and is inspired by:
 
 - **[jetson-stats](https://github.com/rbonghi/jetson_stats)** by Raffaello Bonghi - Comprehensive monitoring for NVIDIA Jetson devices
 - **[nvtop](https://github.com/Syllo/nvtop)** - GPU monitoring TUI for Linux
@@ -1441,9 +1441,9 @@ Special thanks to the Rust community and the maintainers of the following crates
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/nervosys/SiliconMonitor/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/nervosys/SiliconMonitor/discussions)
-- **Documentation**: [docs.rs/simon](https://docs.rs/simon)
+- **Issues**: [GitHub Issues](https://github.com/nervosys/IronMonitor/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/nervosys/IronMonitor/discussions)
+- **Documentation**: [docs.rs/ironmon](https://docs.rs/ironmon)
 
 ---
 

@@ -1,6 +1,6 @@
 //! GPU monitoring and control
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -105,7 +105,7 @@ impl GpuStats {
     /// Set 3D scaling for a GPU (Jetson only)
     pub fn set_3d_scaling(&mut self, name: &str, enabled: bool) -> Result<()> {
         if !self.gpus.contains_key(name) {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "GPU '{}' not found",
                 name
             )));
@@ -120,7 +120,7 @@ impl GpuStats {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = enabled; // Suppress unused warning
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "3D scaling control only available on Linux Jetson devices".to_string(),
             ))
         }
@@ -129,7 +129,7 @@ impl GpuStats {
     /// Set railgate for a GPU (Jetson only)
     pub fn set_railgate(&mut self, name: &str, enabled: bool) -> Result<()> {
         if !self.gpus.contains_key(name) {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "GPU '{}' not found",
                 name
             )));
@@ -144,7 +144,7 @@ impl GpuStats {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = enabled; // Suppress unused warning
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Railgate control only available on Linux Jetson devices".to_string(),
             ))
         }

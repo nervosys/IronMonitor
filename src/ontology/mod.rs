@@ -1,4 +1,4 @@
-//! Machine-readable ontology over everything simon can report.
+//! Machine-readable ontology over everything IronMonitor can report.
 //!
 //! The three interfaces — CLI, TUI, GUI — all render the same underlying readings,
 //! but until now each described them in its own words. `cli board` printed
@@ -8,7 +8,7 @@
 //!
 //! ## What an entity is
 //!
-//! Every value simon can report has a stable dotted id — `gpu.0.thermal.temperature`,
+//! Every value IronMonitor can report has a stable dotted id — `gpu.0.thermal.temperature`,
 //! `cpu.total.utilization`, `disk.0.capacity` — plus a unit and, most importantly,
 //! a [`Provenance`].
 //!
@@ -166,7 +166,7 @@ impl EntityKind {
 }
 
 /// The subsystem an entity belongs to. Mirrors the CLI's top-level nouns so that
-/// `simon cli gpu` and the `gpu.*` id space are obviously the same thing.
+/// `ironmon cli gpu` and the `gpu.*` id space are obviously the same thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Domain {
@@ -225,7 +225,7 @@ impl Domain {
     }
 }
 
-/// One named thing simon can report.
+/// One named thing IronMonitor can report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entity {
     /// Stable dotted id. `{domain}.{instance}.{path}`, where `instance` is omitted
@@ -246,7 +246,7 @@ pub struct Entity {
     /// whose provenance is [`Provenance::Derived`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived_from: Vec<String>,
-    /// The `simon profile set` id that writes this, when one exists.
+    /// The `ironmon profile set` id that writes this, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub writable_via: Option<String>,
 }
@@ -310,7 +310,7 @@ impl Entity {
     }
 }
 
-/// The full set of entities simon knows how to name.
+/// The full set of entities IronMonitor knows how to name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ontology {
     pub version: String,
@@ -743,7 +743,7 @@ impl Ontology {
         //
         // CPUID and its equivalents, which is the processor describing itself.
         // `Specification` rather than `Measured` for that reason: these values
-        // do not change while the machine runs, and simon read a declaration
+        // do not change while the machine runs, and ironmon read a declaration
         // rather than sampling anything.
         //
         // The reader also computes a `single_thread_score` and a matching
@@ -770,7 +770,7 @@ impl Ontology {
             Some(U::Identifier),
             P::Specification,
             false,
-            "Microarchitecture as simon recognises it - Zen 5, Golden Cove, \
+            "Microarchitecture as ironmon recognises it - Zen 5, Golden Cove, \
              Firestorm. Distinct from `cpu.model`, which is the marketing \
              string: processors with different model names share a \
              microarchitecture, and it is the microarchitecture that decides \
@@ -784,7 +784,7 @@ impl Ontology {
             P::Specification,
             true,
             "Vendor code name for this silicon - Granite Ridge, Raptor Lake-S. \
-             Nullable: simon does not hold one for every part it can name.",
+             Nullable: IronMonitor does not hold one for every part it can name.",
         ));
         add(Entity::new(
             "cpu.microarch.vendor",
@@ -815,7 +815,7 @@ impl Ontology {
             true,
             "Manufacturing process node in nanometres. A marketing figure as much \
              as a physical one across vendors, so it is comparable within a \
-             vendor and not between them. Nullable where simon holds none.",
+             vendor and not between them. Nullable where IronMonitor holds none.",
         ));
         add(Entity::new(
             "cpu.microarch.year",
@@ -824,9 +824,9 @@ impl Ontology {
             Some(U::Count),
             P::Specification,
             true,
-            "Year this microarchitecture was introduced. From simon's own table \
+            "Year this microarchitecture was introduced. From ironmon's own table \
              rather than from the silicon - it is the age of the design, not of \
-             this chip. Nullable where simon holds no date.",
+             this chip. Nullable where IronMonitor holds no date.",
         ));
         add(Entity::new(
             "cpu.microarch.hybrid",
@@ -915,7 +915,7 @@ impl Ontology {
             P::Unavailable,
             true,
             "Present when no instruction set extension was enumerated, carrying \
-             why. An empty list is never the answer: every processor simon runs \
+             why. An empty list is never the answer: every processor ironmon runs \
              on supports something, so nothing enumerated means the reader \
              failed rather than that the CPU is bare.",
         ));
@@ -946,7 +946,7 @@ impl Ontology {
             Some(U::Text),
             P::Specification,
             false,
-            "A sentence on what the extension does. simon's own text rather than \
+            "A sentence on what the extension does. ironmon's own text rather than \
              the vendor's, and it is there so an agent that has not met an \
              extension can still tell whether it matters to the task at hand.",
         ));
@@ -989,7 +989,7 @@ impl Ontology {
             Some(U::Identifier),
             P::Specification,
             false,
-            "The CPU flag that reports it, as the platform spells it. Included so a consumer can match against the flag names it already has rather than against the naming simon chose.",
+            "The CPU flag that reports it, as the platform spells it. Included so a consumer can match against the flag names it already has rather than against the naming ironmon chose.",
         ));
         add(Entity::new(
             "cpu.crypto.feature.{n}.category",
@@ -1010,7 +1010,7 @@ impl Ontology {
             "Estimated per-core throughput for this primitive. A constant scaled \
              to bytes, not a measurement of this processor: a consumer sizing a \
              pipeline from it is reading a rule of thumb. Nullable, because \
-             simon holds no estimate for every primitive.",
+             IronMonitor holds no estimate for every primitive.",
         )
         .derived(&["cpu.crypto.feature.{n}.name"]));
         add(Entity::new(
@@ -1062,9 +1062,9 @@ impl Ontology {
         //
         // Everything here comes from the SMBIOS type-17 tables, which the board
         // fills in at POST. Until 6.0.0 the whole cluster was declared
-        // `Measured`, which claimed simon had sampled a part number off the
+        // `Measured`, which claimed IronMonitor had sampled a part number off the
         // module -- it had not; it read a table the firmware wrote. A board that
-        // lies about its own DIMMs makes simon repeat the lie, and a consumer
+        // lies about its own DIMMs makes ironmon repeat the lie, and a consumer
         // deciding whether to trust one of these figures needs to know that
         // before it decides. `ecc` stays `Derived`: it is a comparison of two of
         // the fields below rather than a field of its own.
@@ -1434,7 +1434,7 @@ impl Ontology {
         // `category` are what the platform reported and are published here.
         // `is_recommended`, `recommended`, `security_score`, `network_score` and
         // `recommendations` are this crate's judgement about what the values
-        // ought to be, and they are deliberately absent: `simon tune`'s standing
+        // ought to be, and they are deliberately absent: `ironmon tune`'s standing
         // rule is that a proposed value comes from what the system declared,
         // never from this crate. An agent reading `security_score` off a
         // hardware report would be taking an opinion for a measurement, and the
@@ -1758,7 +1758,7 @@ impl Ontology {
         // force. A setting in every sense -- it is writable, and it changes
         // every frequency and power figure elsewhere in this snapshot -- but it
         // is declared as an identity here because the ontology's `Setting` kind
-        // is bound to the apply layer, and simon does not yet write these.
+        // is bound to the apply layer, and IronMonitor does not yet write these.
         // Declaring it writable when nothing can write it would be the same
         // overclaim in a different field.
         add(Entity::new(
@@ -2113,7 +2113,7 @@ impl Ontology {
             P::Measured,
             true,
             "Negotiated PCIe link width — x1, x4, x16. Unavailable on Windows, \
-             which exposes no link state through the interfaces simon uses.",
+             which exposes no link state through the interfaces IronMonitor uses.",
         ));
         add(Entity::new(
             "pci.{addr}.link.max_width",
@@ -2839,7 +2839,7 @@ impl Ontology {
             P::Derived,
             true,
             "What the STREAM Triad benchmark would be expected to report. Named \
-             after the benchmark but not produced by running it - simon runs no \
+             after the benchmark but not produced by running it - ironmon runs no \
              benchmarks, and a consumer comparing this against a real STREAM \
              result is comparing an estimate to a measurement. Nullable with peak and achievable, which it is scaled from.",
         )
@@ -3071,7 +3071,7 @@ impl Ontology {
         //
         // Until this existed, `EntityKind::Setting` and `Entity::writable_via` were
         // declared and populated by nothing: the ontology described a machine an
-        // agent could only read, while `simon profile set` could write.
+        // agent could only read, while `ironmon profile set` could write.
         for handler in crate::profile::apply::builtin_handlers() {
             let setting_id = handler.setting_id();
             let domain = setting_domain(handler.subsystem());
@@ -3263,8 +3263,8 @@ mod tests {
     }
 
     /// The converse: a handler the binary exposes but the schema hides is a
-    /// capability an agent cannot discover. Reading `simon profile writable` should
-    /// not reveal anything `simon describe` omits.
+    /// capability an agent cannot discover. Reading `ironmon profile writable` should
+    /// not reveal anything `ironmon describe` omits.
     #[test]
     fn every_registered_handler_is_discoverable_in_the_schema() {
         let ont = Ontology::build();
@@ -3402,7 +3402,7 @@ mod tests {
 /// The CLI printed `Kernel:`, the GUI printed `Kernel Version`, and the JSON emitted
 /// `kernel_version` — three names for one reading, which is exactly what stops an
 /// agent correlating what a user reports seeing with what it can query. These
-/// helpers give the TUI and GUI the same source the CLI and `simon describe` use, so
+/// helpers give the TUI and GUI the same source the CLI and `ironmon describe` use, so
 /// a label shown on screen can be turned back into an id.
 pub mod labels {
     use super::{Domain, Ontology};

@@ -8,19 +8,19 @@
 //! cargo run --release --features full --example agent_demo
 //! ```
 
-use simonlib::agent::{Agent, AgentConfig, ModelSize};
-use simonlib::SiliconMonitor;
+use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::UnifiedMonitor;
 use std::error::Error;
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("═══════════════════════════════════════════════════════════════");
-    println!("     Silicon Monitor AI Agent Demo");
+    println!("     IronMonitor AI Agent Demo");
     println!("═══════════════════════════════════════════════════════════════\n");
 
     // Initialize system monitor
     println!("Initializing hardware monitor...");
-    let monitor = SiliconMonitor::new()?;
+    let monitor = UnifiedMonitor::new()?;
     println!("✓ Detected {} GPU(s)\n", monitor.gpu_count());
 
     // Create agent with different model sizes
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Get fresh monitor state
-        let current_monitor = SiliconMonitor::new()?;
+        let current_monitor = UnifiedMonitor::new()?;
 
         let response = agent.ask(query, &current_monitor)?;
 

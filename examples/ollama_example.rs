@@ -15,8 +15,8 @@
 //! cargo run --release --example ollama_example --features "cli,remote-backends,nvidia"
 //! ```
 
-use simonlib::agent::local::{InferenceRequest, OllamaClient};
-use simonlib::agent::LocalInferenceClient;
+use ironmonlib::agent::local::{InferenceRequest, OllamaClient};
+use ironmonlib::agent::LocalInferenceClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

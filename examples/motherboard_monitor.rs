@@ -2,10 +2,10 @@
 //
 // Demonstrates motherboard sensor monitoring and system information retrieval
 
-use simonlib::motherboard;
+use ironmonlib::motherboard;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Silicon Monitor: Motherboard & System Information ===\n");
+    println!("=== IronMonitor: Motherboard & System Information ===\n");
 
     // System Information
     println!("=================================================");

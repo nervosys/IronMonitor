@@ -8,7 +8,7 @@
 //!
 //! IronWorks is a 30-crate workspace and is not published on crates.io under the name
 //! `ironworks` (that name belongs to an unrelated project). Depending on it by path
-//! would make `silicon-monitor` unpublishable and would pull an entire inference
+//! would make `iron-monitor` unpublishable and would pull an entire inference
 //! engine, with its GPU toolchains, into every build of a hardware monitor.
 //!
 //! Talking to `ironworks serve` over its OpenAI-compatible API keeps this crate
@@ -32,7 +32,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::{IronWorksClient, LocalInferenceClient, InferenceRequest};
+//! use ironmonlib::agent::local::{IronWorksClient, LocalInferenceClient, InferenceRequest};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = IronWorksClient::default_endpoint()?;
@@ -51,7 +51,7 @@
 //! ```
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use async_trait::async_trait;
 #[cfg(feature = "remote-backends")]
 use serde::Deserialize;
@@ -81,7 +81,7 @@ impl IronWorksClient {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             Ok(Self {
                 endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -92,7 +92,7 @@ impl IronWorksClient {
         #[cfg(not(feature = "remote-backends"))]
         {
             let _ = endpoint;
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "IronWorks client requires the 'remote-backends' feature".to_string(),
             ))
         }
@@ -214,10 +214,10 @@ impl LocalInferenceClient for IronWorksClient {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(format!(
+                return Err(IronError::Agent(format!(
                     "IronWorks returned {} listing models",
                     response.status()
                 )));
@@ -226,7 +226,7 @@ impl LocalInferenceClient for IronWorksClient {
             let models: ModelsResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse model list: {e}")))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse model list: {e}")))?;
 
             Ok(models
                 .data
@@ -242,7 +242,7 @@ impl LocalInferenceClient for IronWorksClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "IronWorks client requires the 'remote-backends' feature".to_string(),
         ))
     }
@@ -286,7 +286,7 @@ impl LocalInferenceClient for IronWorksClient {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             let status = response.status();
             if !status.is_success() {
@@ -294,7 +294,7 @@ impl LocalInferenceClient for IronWorksClient {
                 // model, context overflow) there, and the bare status is rarely
                 // enough to act on.
                 let detail = response.text().await.unwrap_or_default();
-                return Err(SimonError::Agent(format!(
+                return Err(IronError::Agent(format!(
                     "IronWorks API error {status}: {}",
                     detail.trim()
                 )));
@@ -303,10 +303,10 @@ impl LocalInferenceClient for IronWorksClient {
             let completion: ChatCompletionResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse completion: {e}")))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse completion: {e}")))?;
 
             let choice = completion.choices.into_iter().next().ok_or_else(|| {
-                SimonError::Agent("IronWorks returned no completion choices".to_string())
+                IronError::Agent("IronWorks returned no completion choices".to_string())
             })?;
 
             let text = choice.message.map(|m| m.content).unwrap_or_default();
@@ -331,7 +331,7 @@ impl LocalInferenceClient for IronWorksClient {
         #[cfg(not(feature = "remote-backends"))]
         {
             let _ = request;
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "IronWorks client requires the 'remote-backends' feature".to_string(),
             ))
         }
@@ -343,7 +343,7 @@ impl LocalInferenceClient for IronWorksClient {
             .into_iter()
             .find(|m| m.name == model_name)
             .ok_or_else(|| {
-                SimonError::Agent(format!(
+                IronError::Agent(format!(
                     "IronWorks is not serving a model named {model_name}"
                 ))
             })

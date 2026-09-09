@@ -4,7 +4,7 @@
 //!
 //! Run with: cargo run --example display_monitor
 
-use simonlib::display::{DisplayConnection, DisplayMonitor};
+use ironmonlib::display::{DisplayConnection, DisplayMonitor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Display Monitor Example ===\n");

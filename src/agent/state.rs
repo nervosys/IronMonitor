@@ -3,14 +3,14 @@
 //! This module extracts relevant system state from the hardware monitor
 //! to provide context for agent responses.
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use crate::gpu::GpuInfo;
-use crate::SiliconMonitor;
+use crate::UnifiedMonitor;
 use serde::{Deserialize, Serialize};
 
 use super::Query;
 
-/// GPU temperature at or above which simon calls a device hot, in Celsius.
+/// GPU temperature at or above which ironmon calls a device hot, in Celsius.
 ///
 /// Consumer GPUs run in the 70–85 °C band under sustained load by design, so this is
 /// deliberately well above "warm". It is stated in the agent context because a model
@@ -19,7 +19,7 @@ use super::Query;
 /// typical operating threshold".
 pub const GPU_TEMP_HOT_C: u32 = 80;
 
-/// GPU temperature at or above which simon calls a device critical, in Celsius.
+/// GPU temperature at or above which ironmon calls a device critical, in Celsius.
 pub const GPU_TEMP_CRITICAL_C: u32 = 90;
 
 /// Condensed CPU state for agent context
@@ -131,10 +131,10 @@ pub struct GpuState {
 
 impl SystemState {
     /// Extract system state from monitor based on query
-    pub fn from_monitor(monitor: &SiliconMonitor, query: &Query) -> Result<Self> {
+    pub fn from_monitor(monitor: &UnifiedMonitor, query: &Query) -> Result<Self> {
         let gpu_infos = monitor
             .snapshot_gpus()
-            .map_err(|e| SimonError::Other(format!("Failed to get GPU state: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to get GPU state: {}", e)))?;
 
         // Determine which GPUs to include
         let gpu_states: Vec<GpuState> = if query.all_gpus || query.gpu_indices.is_empty() {
@@ -418,14 +418,14 @@ impl SystemState {
             }
         }
 
-        // Give the model the same thresholds simon uses for its own warnings. Without
+        // Give the model the same thresholds IronMonitor uses for its own warnings. Without
         // them it substitutes a guess, and the guess runs cold: a 3090 Ti at 52 °C —
         // an ordinary idle-to-light-load reading — was reported to the user as
         // overheating. These are the constants behind `GpuState::is_hot` and
         // `is_critical`, so the answer and the UI cannot disagree.
         if !self.gpus.is_empty() {
             context.push_str(&format!(
-                "\nReference thresholds (used by simon's own warnings):\n\
+                "\nReference thresholds (used by ironmon's own warnings):\n\
                  - GPU temperature below {hot}°C is normal, including under sustained load.\n\
                  - {hot}°C or above is hot; {crit}°C or above is critical.\n\
                  Do not describe a temperature as high unless it meets these.\n",
@@ -663,7 +663,7 @@ mod tests {
         );
     }
 
-    /// The context must carry the thresholds simon judges by, not just raw numbers.
+    /// The context must carry the thresholds ironmon judges by, not just raw numbers.
     ///
     /// Asked "is anything overheating?" with a 3090 Ti at 52 °C in context, a local
     /// model answered that it was, "above the typical operating threshold" — a

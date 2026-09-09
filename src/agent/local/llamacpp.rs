@@ -19,7 +19,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::{LlamaCppClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonlib::agent::local::{LlamaCppClient, InferenceRequest, LocalInferenceClient};
 //! use std::path::PathBuf;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,7 +41,7 @@
 //! ```
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Command;
@@ -60,7 +60,7 @@ impl LlamaCppClient {
     /// Create new llama.cpp client with model path
     pub fn new(model_path: PathBuf) -> Result<Self> {
         if !model_path.exists() {
-            return Err(SimonError::Configuration(format!(
+            return Err(IronError::Configuration(format!(
                 "Model file not found: {}",
                 model_path.display()
             )));
@@ -146,7 +146,7 @@ impl LlamaCppClient {
             }
         }
 
-        Err(SimonError::Configuration(
+        Err(IronError::Configuration(
             "No GGUF models found in standard locations".to_string(),
         ))
     }
@@ -175,7 +175,7 @@ impl LocalInferenceClient for LlamaCppClient {
 
     async fn generate(&self, request: InferenceRequest) -> Result<InferenceResponse> {
         let exe = self.executable.as_ref().ok_or_else(|| {
-            SimonError::NotImplemented(
+            IronError::NotImplemented(
                 "llama.cpp executable not found. Install llama.cpp and ensure llama-cli is in PATH.".to_string(),
             )
         })?;
@@ -203,11 +203,11 @@ impl LocalInferenceClient for LlamaCppClient {
         // Execute synchronously (async subprocess would require tokio::process)
         let output = cmd
             .output()
-            .map_err(|e| SimonError::CommandFailed(format!("Failed to run llama.cpp: {}", e)))?;
+            .map_err(|e| IronError::CommandFailed(format!("Failed to run llama.cpp: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SimonError::CommandFailed(format!(
+            return Err(IronError::CommandFailed(format!(
                 "llama.cpp failed: {}",
                 stderr
             )));

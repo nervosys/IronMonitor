@@ -1,4 +1,4 @@
-//! Main application state and logic for Silicon Monitor GUI
+//! Main application state and logic for IronMonitor GUI
 
 use eframe::egui;
 use egui::{RichText, ScrollArea, Vec2};
@@ -83,7 +83,7 @@ struct AgentResponse {
 }
 
 /// Main application state
-pub struct SiliconMonitorApp {
+pub struct IronMonitorApp {
     // Current tab
     current_tab: Tab,
 
@@ -381,7 +381,7 @@ enum ProcessSortColumn {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum AiBackendSelection {
-    /// simon's own engine, and the reason it is first: inference stays on the host,
+    /// ironmon's own engine, and the reason it is first: inference stays on the host,
     /// so telemetry never leaves the machine.
     IronWorks,
     #[default]
@@ -400,8 +400,8 @@ impl AiBackendSelection {
     /// Every provider offered in the dropdown, in preference order.
     ///
     /// This used to list five, while the library supported IronWorks, vLLM,
-    /// TensorRT-LLM and four CLI tools as well — so the engine simon ships against
-    /// could not be selected from simon's own UI.
+    /// TensorRT-LLM and four CLI tools as well — so the engine ironmon ships against
+    /// could not be selected from ironmon's own UI.
     const ALL: &'static [Self] = &[
         Self::IronWorks,
         Self::Ollama,
@@ -448,7 +448,7 @@ impl AiBackendSelection {
             Self::Anthropic => "🧠 Anthropic",
             // GitHub shut this service down on 2026-07-30 — catalogue, inference,
             // and BYOK all gone. Say so in the menu rather than offering a provider
-            // that cannot answer, which reads to the user as a bug in simon.
+            // that cannot answer, which reads to the user as a bug in ironmon.
             Self::GitHub => "🐙 GitHub Models (retired)",
             Self::Cli(CliProvider::Claude) => "🖥 Claude Code CLI",
             Self::Cli(CliProvider::Codex) => "🖥 Codex CLI",
@@ -459,7 +459,7 @@ impl AiBackendSelection {
 
     /// Base URL whose `/models` endpoint lists what the provider can serve.
     ///
-    /// `None` means the provider exposes no listing simon can read — a CLI tool
+    /// `None` means the provider exposes no listing IronMonitor can read — a CLI tool
     /// chooses its own model, so there is nothing to enumerate.
     fn models_endpoint(self) -> Option<&'static str> {
         use crate::agent::local::CliProvider;
@@ -483,7 +483,7 @@ impl AiBackendSelection {
     /// The listing endpoints of hosted providers all require authentication, so
     /// without this the live fetch answers 401 and the dropdown silently falls back
     /// to the hardcoded guess below — which is exactly the staleness the fetch
-    /// exists to avoid. A key the user exported before launching simon is just as
+    /// exists to avoid. A key the user exported before launching IronMonitor is just as
     /// usable as one typed into the field.
     fn api_key_env_var(self) -> Option<&'static str> {
         match self {
@@ -497,7 +497,7 @@ impl AiBackendSelection {
     /// Names to offer when the provider could not be asked.
     ///
     /// Only reached when a listing is unavailable — the server is down, or a hosted
-    /// provider has no key anywhere simon can see. A live listing is always
+    /// provider has no key anywhere IronMonitor can see. A live listing is always
     /// preferred: a hardcoded list is stale the moment a provider ships a model,
     /// which is how this tab came to offer `gpt-3.5-turbo` and `claude-3-sonnet`.
     /// The dropdown labels these "Not listed by provider" for that reason — they are
@@ -657,7 +657,7 @@ impl Default for AppSettings {
     }
 }
 
-impl SiliconMonitorApp {
+impl IronMonitorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::with_context(&cc.egui_ctx)
     }
@@ -1686,7 +1686,7 @@ impl SiliconMonitorApp {
     }
 }
 
-impl eframe::App for SiliconMonitorApp {
+impl eframe::App for IronMonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply theme only when it actually changes. `apply_*_theme` calls
         // `ctx.set_fonts()` which rebuilds the font atlas — doing that every
@@ -1756,7 +1756,7 @@ impl eframe::App for SiliconMonitorApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 // Logo/Title
-                ui.heading(RichText::new("⚡ Silicon Monitor").color(CyberColors::CYAN));
+                ui.heading(RichText::new("⚡ IronMonitor").color(CyberColors::CYAN));
                 ui.separator();
 
                 // Tabs - use local variable to avoid borrow issues
@@ -1927,10 +1927,10 @@ impl eframe::App for SiliconMonitorApp {
     }
 }
 
-impl SiliconMonitorApp {
+impl IronMonitorApp {
     /// Draw whichever tab is selected.
     ///
-    /// Split out of `update` so that `simon gui --frame` and the headless tests can
+    /// Split out of `update` so that `ironmon gui --frame` and the headless tests can
     /// render one tab without driving a whole eframe cycle. Both paths go through
     /// this, so a frame an agent reads is drawn by the same code a user sees.
     pub fn draw_current_tab(&mut self, ui: &mut egui::Ui) {
@@ -1981,7 +1981,7 @@ impl SiliconMonitorApp {
     }
 }
 
-impl SiliconMonitorApp {
+impl IronMonitorApp {
     /// Check for threshold violations and generate alerts
     fn check_alerts(&mut self) {
         let settings = self.settings.alert_settings.clone();
@@ -4728,7 +4728,7 @@ impl SiliconMonitorApp {
                     );
                 });
                 ui.label(
-                    RichText::new("Simon will auto-detect LHM sensors when it's running.")
+                    RichText::new("IronMonitor will auto-detect LHM sensors when it's running.")
                         .color(CyberColors::TEXT_MUTED)
                         .small(),
                 );
@@ -6158,8 +6158,8 @@ impl SiliconMonitorApp {
         // auto-detection found.
         //
         // `send_agent_query` builds its own `AgentConfig` from the selections on this
-        // tab and constructs its own `Agent` and `SiliconMonitor` inside the worker
-        // thread. It never read `self.agent`, nor the `SiliconMonitor` the app used to
+        // tab and constructs its own `Agent` and `UnifiedMonitor` inside the worker
+        // thread. It never read `self.agent`, nor the `UnifiedMonitor` the app used to
         // build synchronously at startup purely to gate this banner. Testing those
         // announced "AI backend not connected" over a tab that worked perfectly well,
         // whenever a startup probe missed or that second GPU enumeration failed. The
@@ -6587,7 +6587,7 @@ impl SiliconMonitorApp {
                 // Create fresh agent and monitor in background thread
                 let mut agent = crate::agent::Agent::new(config)
                     .map_err(|e| format!("Failed to create agent: {}", e))?;
-                let monitor = crate::SiliconMonitor::new()
+                let monitor = crate::UnifiedMonitor::new()
                     .map_err(|e| format!("Failed to create monitor: {}", e))?;
 
                 // Get tool context in background thread (avoids blocking UI)
@@ -6972,7 +6972,7 @@ impl SiliconMonitorApp {
                         ui.add_space(5.0);
                         let detail = match other {
                             AiBackendSelection::IronWorks => {
-                                "simon's built-in engine. Serve a model on \
+                                "ironmon's built-in engine. Serve a model on \
                                  http://localhost:8080 and it is used automatically. \
                                  Inference stays on this machine."
                             }
@@ -6985,7 +6985,7 @@ impl SiliconMonitorApp {
                             }
                             AiBackendSelection::Cli(_) => {
                                 "Driven as a subprocess. Install the tool, sign in with \
-                                 it once, and simon will call it — the tool chooses its \
+                                 it once, and IronMonitor will call it — the tool chooses its \
                                  own model, so the model list stays empty."
                             }
                             _ => "",
@@ -7431,7 +7431,7 @@ mod model_listing_tests {
     /// The stale-model bug in one assertion.
     ///
     /// A hardcoded fallback list is only ever reached when the live listing failed,
-    /// and for a hosted provider the overwhelmingly common cause is that simon had
+    /// and for a hosted provider the overwhelmingly common cause is that IronMonitor had
     /// no credential to authenticate the listing request with. If such a provider
     /// has nowhere to look for a key, its dropdown can *never* show live names — it
     /// is permanently pinned to whatever was true the day the list was written.

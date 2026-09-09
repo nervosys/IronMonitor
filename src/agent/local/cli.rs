@@ -25,8 +25,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::cli::{CliClient, CliProvider};
-//! use simonlib::agent::local::{InferenceRequest, LocalInferenceClient};
+//! use ironmonlib::agent::local::cli::{CliClient, CliProvider};
+//! use ironmonlib::agent::local::{InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Use whichever supported tool is installed.
@@ -54,7 +54,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 
 /// How long to wait for a CLI tool before giving up and killing it.
 ///
@@ -329,7 +329,7 @@ impl CliClient {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                SimonError::Agent(format!("failed to start {}: {e}", self.binary.display()))
+                IronError::Agent(format!("failed to start {}: {e}", self.binary.display()))
             })?;
 
         let deadline = Instant::now() + self.timeout;
@@ -341,7 +341,7 @@ impl CliClient {
                         // Best-effort cleanup; the error below is the real result.
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(SimonError::Agent(format!(
+                        return Err(IronError::Agent(format!(
                             "{} did not respond within {}s",
                             self.provider.display_name(),
                             self.timeout.as_secs()
@@ -350,7 +350,7 @@ impl CliClient {
                     std::thread::sleep(POLL_INTERVAL);
                 }
                 Err(e) => {
-                    return Err(SimonError::Agent(format!(
+                    return Err(IronError::Agent(format!(
                         "failed while waiting on {}: {e}",
                         self.provider.display_name()
                     )))
@@ -359,7 +359,7 @@ impl CliClient {
         }
 
         let output = child.wait_with_output().map_err(|e| {
-            SimonError::Agent(format!(
+            IronError::Agent(format!(
                 "failed to read output from {}: {e}",
                 self.provider.display_name()
             ))
@@ -367,7 +367,7 @@ impl CliClient {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SimonError::Agent(format!(
+            return Err(IronError::Agent(format!(
                 "{} exited with {}: {}",
                 self.provider.display_name(),
                 output.status,
@@ -386,7 +386,7 @@ impl LocalInferenceClient for CliClient {
     }
 
     /// The binary was located at construction, so this re-checks that it is still
-    /// present — a tool can be uninstalled while simon runs.
+    /// present — a tool can be uninstalled while ironmon runs.
     async fn is_available(&self) -> bool {
         self.binary.is_file()
     }
@@ -394,7 +394,7 @@ impl LocalInferenceClient for CliClient {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         // Only Ollama exposes a machine-readable model list without a round trip to a
         // hosted API. For the rest, the model is whatever the tool is configured for,
-        // which simon cannot enumerate.
+        // which IronMonitor cannot enumerate.
         if self.provider != CliProvider::Ollama {
             return Ok(Vec::new());
         }
@@ -443,7 +443,7 @@ impl LocalInferenceClient for CliClient {
             .into_iter()
             .find(|m| m.name == model_name)
             .ok_or_else(|| {
-                SimonError::Agent(format!(
+                IronError::Agent(format!(
                     "{} does not report a model named {model_name}",
                     self.provider.display_name()
                 ))
@@ -550,7 +550,7 @@ mod tests {
     /// pulled, while still covering spawn, the timeout loop, stdout capture,
     /// exit-status handling and parsing.
     ///
-    /// Opt-in via `SIMON_TEST_EXTERNAL_CLI=1`. It talks to a background service whose
+    /// Opt-in via `IRONMON_TEST_EXTERNAL_CLI=1`. It talks to a background service whose
     /// response time is not under this suite's control: run in parallel with the rest
     /// of the tests on a loaded machine, `ollama list` has taken anywhere from 0.4s to
     /// long enough to look like a hang, which made `cargo test` flaky and once wedged
@@ -561,8 +561,8 @@ mod tests {
     /// does go wrong fails fast rather than idling.
     #[tokio::test]
     async fn ollama_subprocess_round_trip() {
-        if std::env::var_os("SIMON_TEST_EXTERNAL_CLI").is_none() {
-            eprintln!("skipping: set SIMON_TEST_EXTERNAL_CLI=1 to run against a live ollama");
+        if std::env::var_os("IRONMON_TEST_EXTERNAL_CLI").is_none() {
+            eprintln!("skipping: set IRONMON_TEST_EXTERNAL_CLI=1 to run against a live ollama");
             return;
         }
 
@@ -636,6 +636,6 @@ mod tests {
 
     #[test]
     fn which_on_path_rejects_nonexistent_binary() {
-        assert!(which_on_path("simon-definitely-not-a-real-binary-xyzzy").is_none());
+        assert!(which_on_path("ironmon-definitely-not-a-real-binary-xyzzy").is_none());
     }
 }

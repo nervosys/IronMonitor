@@ -4,7 +4,7 @@
 //! all frequencies (CPU, GPU, EMC, engines) to their maximum values.
 
 use super::verify_sudo_available;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -31,7 +31,7 @@ fn find_jetson_clocks() -> Result<String> {
         .iter()
         .find(|p| Path::new(p).exists())
         .map(|s| s.to_string())
-        .ok_or_else(|| SimonError::DeviceNotFound("jetson_clocks not found".to_string()))
+        .ok_or_else(|| IronError::DeviceNotFound("jetson_clocks not found".to_string()))
 }
 
 /// Enable jetson_clocks (maximize performance)
@@ -44,11 +44,11 @@ pub fn enable() -> Result<()> {
     let output = Command::new("sudo")
         .arg(&jetson_clocks)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to enable jetson_clocks: {}",
             stderr
         )));
@@ -68,11 +68,11 @@ pub fn disable() -> Result<()> {
         .arg(&jetson_clocks)
         .arg("--restore")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to disable jetson_clocks: {}",
             stderr
         )));
@@ -88,11 +88,11 @@ pub fn show() -> Result<JetsonClocksStatus> {
     let output = Command::new(&jetson_clocks)
         .arg("--show")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to get jetson_clocks status: {}",
             stderr
         )));
@@ -176,11 +176,11 @@ pub fn store() -> Result<()> {
         .arg(&jetson_clocks)
         .arg("--store")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to store jetson_clocks config: {}",
             stderr
         )));

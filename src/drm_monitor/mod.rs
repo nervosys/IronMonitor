@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// DRM connector status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,13 +162,13 @@ pub struct DrmMonitor {
 
 impl DrmMonitor {
     /// Create a new DRM monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -189,7 +189,7 @@ impl DrmMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<DrmOverview, SimonError> {
+    fn scan() -> Result<DrmOverview, IronError> {
         let drm_path = std::path::Path::new("/sys/class/drm");
         let mut devices = Vec::new();
 
@@ -203,7 +203,7 @@ impl DrmMonitor {
             });
         }
 
-        let entries = std::fs::read_dir(drm_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(drm_path).map_err(IronError::Io)?;
 
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -240,7 +240,7 @@ impl DrmMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_drm_device(card_name: &str, path: &std::path::Path) -> Result<DrmDevice, SimonError> {
+    fn read_drm_device(card_name: &str, path: &std::path::Path) -> Result<DrmDevice, IronError> {
         let device_path = path.join("device");
 
         // Read driver
@@ -425,7 +425,7 @@ impl DrmMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn scan() -> Result<DrmOverview, SimonError> {
+    fn scan() -> Result<DrmOverview, IronError> {
         // Windows uses WDDM, not DRM. Provide basic info via WMI.
         let mut devices = Vec::new();
 
@@ -500,7 +500,7 @@ impl DrmMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn scan() -> Result<DrmOverview, SimonError> {
+    fn scan() -> Result<DrmOverview, IronError> {
         Ok(DrmOverview {
             devices: Vec::new(),
             clients: Vec::new(),
@@ -511,7 +511,7 @@ impl DrmMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn scan() -> Result<DrmOverview, SimonError> {
+    fn scan() -> Result<DrmOverview, IronError> {
         Ok(DrmOverview {
             devices: Vec::new(),
             clients: Vec::new(),

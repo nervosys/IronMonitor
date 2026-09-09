@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::sandbox::SandboxDetector;
+//! use ironmonlib::sandbox::SandboxDetector;
 //!
 //! let detector = SandboxDetector::new();
 //! if detector.is_sandboxed() {
@@ -454,8 +454,8 @@ impl SandboxDetector {
         // command, so every run launched from bash, zsh or sh reported
         // "Sandboxed: Debugger Attached". On this desktop that made
         // `is_sandboxed()` true, which made `has_consent` false for every
-        // scope, which made `simon privacy status` answer "DENIED" on the line
-        // after `simon privacy opt-in` said "enabled". The other three say
+        // scope, which made `ironmon privacy status` answer "DENIED" on the line
+        // after `ironmon privacy opt-in` said "enabled". The other three say
         // nothing about *this* process either: gdb does not export `GDB`, and
         // `PYTHONBREAKPOINT` configures a Python hook, in a Rust binary.
         //
@@ -479,8 +479,8 @@ mod tests {
     /// command. It was in this module's debugger-variable list, so any run
     /// started from bash, zsh or sh reported a debugger and therefore a
     /// sandbox — and `ConsentManager::has_consent` refuses every scope inside
-    /// a sandbox, so `simon privacy status` answered "DENIED" immediately
-    /// after `simon privacy opt-in` recorded consent.
+    /// a sandbox, so `ironmon privacy status` answered "DENIED" immediately
+    /// after `ironmon privacy opt-in` recorded consent.
     ///
     /// The test runner sets `_` under `cargo test` from a shell, so this
     /// assertion exercised the defect directly: it failed before the list was

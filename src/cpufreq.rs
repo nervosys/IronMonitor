@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::cpufreq::{CpuFreqMonitor, Governor};
+//! use ironmonlib::cpufreq::{CpuFreqMonitor, Governor};
 //!
 //! let mut monitor = CpuFreqMonitor::new().unwrap();
 //!
@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -75,7 +75,7 @@ impl std::fmt::Display for Governor {
 }
 
 impl std::str::FromStr for Governor {
-    type Err = SimonError;
+    type Err = IronError;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
@@ -118,7 +118,7 @@ impl std::fmt::Display for EnergyPreference {
 }
 
 impl std::str::FromStr for EnergyPreference {
-    type Err = SimonError;
+    type Err = IronError;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().replace('-', "_").as_str() {
@@ -126,7 +126,7 @@ impl std::str::FromStr for EnergyPreference {
             "balance_performance" => Ok(EnergyPreference::BalancePerformance),
             "balance_power" | "normal" => Ok(EnergyPreference::BalancePower),
             "power" | "powersave" => Ok(EnergyPreference::Power),
-            _ => Err(SimonError::InvalidValue(format!(
+            _ => Err(IronError::InvalidValue(format!(
                 "Unknown energy preference: {}",
                 s
             ))),
@@ -401,7 +401,7 @@ impl CpuFreqMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = governor;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "CPU governor control not supported on this platform".to_string(),
             ))
         }
@@ -417,7 +417,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (cpu_id, governor);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Per-CPU governor control not supported on this platform".to_string(),
             ))
         }
@@ -433,7 +433,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = freq_khz;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Frequency control not supported on this platform".to_string(),
             ))
         }
@@ -449,7 +449,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = freq_khz;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Frequency control not supported on this platform".to_string(),
             ))
         }
@@ -458,7 +458,7 @@ impl CpuFreqMonitor {
     /// Set CPU online/offline
     pub fn set_cpu_online(&mut self, cpu_id: u32, online: bool) -> Result<()> {
         if cpu_id == 0 {
-            return Err(SimonError::InvalidValue(
+            return Err(IronError::InvalidValue(
                 "Cannot take CPU0 offline".to_string(),
             ));
         }
@@ -471,7 +471,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (cpu_id, online);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "CPU hotplug not supported on this platform".to_string(),
             ))
         }
@@ -480,7 +480,7 @@ impl CpuFreqMonitor {
     /// Enable/disable turbo boost
     pub fn set_turbo(&mut self, enabled: bool) -> Result<()> {
         if !self.turbo.controllable {
-            return Err(SimonError::UnsupportedPlatform(
+            return Err(IronError::UnsupportedPlatform(
                 "Turbo boost control not available".to_string(),
             ));
         }
@@ -493,7 +493,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = enabled;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Turbo boost control not supported on this platform".to_string(),
             ))
         }
@@ -509,7 +509,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = pref;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Energy preference control not supported on this platform".to_string(),
             ))
         }
@@ -525,7 +525,7 @@ impl CpuFreqMonitor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (cpu_id, state_idx, enabled);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "CPU idle state control not supported on this platform".to_string(),
             ))
         }
@@ -562,7 +562,7 @@ impl CpuFreqMonitor {
 
         let cpu_path = std::path::Path::new("/sys/devices/system/cpu");
         if !cpu_path.exists() {
-            return Err(SimonError::UnsupportedPlatform(
+            return Err(IronError::UnsupportedPlatform(
                 "No CPU sysfs interface found".to_string(),
             ));
         }
@@ -581,10 +581,10 @@ impl CpuFreqMonitor {
 
         // Enumerate CPUs
         for entry in fs::read_dir(cpu_path)
-            .map_err(|e| SimonError::System(format!("Failed to read CPU sysfs: {}", e)))?
+            .map_err(|e| IronError::System(format!("Failed to read CPU sysfs: {}", e)))?
         {
             let entry =
-                entry.map_err(|e| SimonError::System(format!("Failed to read entry: {}", e)))?;
+                entry.map_err(|e| IronError::System(format!("Failed to read entry: {}", e)))?;
 
             let name = entry.file_name().to_string_lossy().to_string();
             if !name.starts_with("cpu") {
@@ -723,10 +723,10 @@ impl CpuFreqMonitor {
         use std::fs;
 
         for entry in fs::read_dir(cpuidle_dir)
-            .map_err(|e| SimonError::System(format!("Failed to read cpuidle: {}", e)))?
+            .map_err(|e| IronError::System(format!("Failed to read cpuidle: {}", e)))?
         {
             let entry =
-                entry.map_err(|e| SimonError::System(format!("Failed to read entry: {}", e)))?;
+                entry.map_err(|e| IronError::System(format!("Failed to read entry: {}", e)))?;
 
             let name = entry.file_name().to_string_lossy().to_string();
             if !name.starts_with("state") {
@@ -860,7 +860,7 @@ impl CpuFreqMonitor {
                 let gov_file = path.join("cpufreq/scaling_governor");
                 if gov_file.exists() {
                     fs::write(&gov_file, &gov_str).map_err(|e| {
-                        SimonError::System(format!(
+                        IronError::System(format!(
                             "Failed to set governor for CPU{} (need root?): {}",
                             cpu.id, e
                         ))
@@ -881,19 +881,16 @@ impl CpuFreqMonitor {
             .cpus
             .iter()
             .find(|c| c.id == cpu_id)
-            .ok_or_else(|| SimonError::DeviceNotFound(format!("CPU{} not found", cpu_id)))?;
+            .ok_or_else(|| IronError::DeviceNotFound(format!("CPU{} not found", cpu_id)))?;
 
         if !cpu.online {
-            return Err(SimonError::InvalidValue(format!(
-                "CPU{} is offline",
-                cpu_id
-            )));
+            return Err(IronError::InvalidValue(format!("CPU{} is offline", cpu_id)));
         }
 
         if let Some(ref path) = cpu.sysfs_path {
             let gov_file = path.join("cpufreq/scaling_governor");
             fs::write(&gov_file, governor.to_string()).map_err(|e| {
-                SimonError::System(format!("Failed to set governor for CPU{}: {}", cpu_id, e))
+                IronError::System(format!("Failed to set governor for CPU{}: {}", cpu_id, e))
             })?;
         }
 
@@ -914,7 +911,7 @@ impl CpuFreqMonitor {
                 let freq_file = path.join("cpufreq/scaling_min_freq");
                 if freq_file.exists() {
                     fs::write(&freq_file, freq_khz.to_string()).map_err(|e| {
-                        SimonError::System(format!(
+                        IronError::System(format!(
                             "Failed to set min freq for CPU{}: {}",
                             cpu.id, e
                         ))
@@ -940,7 +937,7 @@ impl CpuFreqMonitor {
                 let freq_file = path.join("cpufreq/scaling_max_freq");
                 if freq_file.exists() {
                     fs::write(&freq_file, freq_khz.to_string()).map_err(|e| {
-                        SimonError::System(format!(
+                        IronError::System(format!(
                             "Failed to set max freq for CPU{}: {}",
                             cpu.id, e
                         ))
@@ -961,7 +958,7 @@ impl CpuFreqMonitor {
         let value = if online { "1" } else { "0" };
 
         fs::write(&online_file, value).map_err(|e| {
-            SimonError::System(format!("Failed to set CPU{} online status: {}", cpu_id, e))
+            IronError::System(format!("Failed to set CPU{} online status: {}", cpu_id, e))
         })?;
 
         self.refresh()?;
@@ -977,7 +974,7 @@ impl CpuFreqMonitor {
         if intel_turbo.exists() {
             let value = if enabled { "0" } else { "1" }; // no_turbo is inverted
             fs::write(intel_turbo, value)
-                .map_err(|e| SimonError::System(format!("Failed to set turbo: {}", e)))?;
+                .map_err(|e| IronError::System(format!("Failed to set turbo: {}", e)))?;
             self.turbo.enabled = enabled;
             return Ok(());
         }
@@ -987,12 +984,12 @@ impl CpuFreqMonitor {
         if generic_boost.exists() {
             let value = if enabled { "1" } else { "0" };
             fs::write(generic_boost, value)
-                .map_err(|e| SimonError::System(format!("Failed to set turbo: {}", e)))?;
+                .map_err(|e| IronError::System(format!("Failed to set turbo: {}", e)))?;
             self.turbo.enabled = enabled;
             return Ok(());
         }
 
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "No turbo control interface found".to_string(),
         ))
     }
@@ -1012,7 +1009,7 @@ impl CpuFreqMonitor {
                 let epp_file = path.join("cpufreq/energy_performance_preference");
                 if epp_file.exists() {
                     fs::write(&epp_file, &pref_str).map_err(|e| {
-                        SimonError::System(format!("Failed to set EPP for CPU{}: {}", cpu.id, e))
+                        IronError::System(format!("Failed to set EPP for CPU{}: {}", cpu.id, e))
                     })?;
                 }
             }
@@ -1033,7 +1030,7 @@ impl CpuFreqMonitor {
 
         let value = if enabled { "0" } else { "1" };
         fs::write(&disable_file, value).map_err(|e| {
-            SimonError::System(format!(
+            IronError::System(format!(
                 "Failed to set idle state{} for CPU{}: {}",
                 state_idx, cpu_id, e
             ))
@@ -1138,7 +1135,7 @@ impl CpuFreqMonitor {
         // Power Saver = Powersave equivalent
 
         let _ = governor;
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "Use Windows Power Options to change power plan".to_string(),
         ))
     }

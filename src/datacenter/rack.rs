@@ -114,23 +114,23 @@ impl RackInfo {
 
     /// Detect from environment variables
     pub fn from_env() -> Option<Self> {
-        let rack_id = std::env::var("SIMON_RACK_ID").ok()?;
+        let rack_id = std::env::var("IRONMON_RACK_ID").ok()?;
         let mut builder = Self::builder(rack_id);
 
-        if let Ok(loc) = std::env::var("SIMON_RACK_LOCATION") {
+        if let Ok(loc) = std::env::var("IRONMON_RACK_LOCATION") {
             builder = builder.location(loc);
         }
-        if let Ok(units) = std::env::var("SIMON_RACK_UNITS") {
+        if let Ok(units) = std::env::var("IRONMON_RACK_UNITS") {
             if let Ok(u) = units.parse() {
                 builder = builder.total_units(u);
             }
         }
-        if let Ok(used) = std::env::var("SIMON_RACK_USED_UNITS") {
+        if let Ok(used) = std::env::var("IRONMON_RACK_USED_UNITS") {
             if let Ok(u) = used.parse() {
                 builder = builder.used_units(u);
             }
         }
-        if let Ok(max) = std::env::var("SIMON_RACK_MAX_POWER") {
+        if let Ok(max) = std::env::var("IRONMON_RACK_MAX_POWER") {
             if let Ok(p) = max.parse() {
                 builder = builder.max_power_watts(p);
             }

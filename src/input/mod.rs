@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::input::InputMonitor;
+//! use ironmonlib::input::InputMonitor;
 //!
 //! let monitor = InputMonitor::new().unwrap();
 //! for device in monitor.devices() {
@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Type of input device
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,7 +252,7 @@ fn device_product(instance_id: &str) -> String {
 
 impl InputMonitor {
     /// Create a new InputMonitor and enumerate all input devices.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             devices: Vec::new(),
         };
@@ -266,7 +266,7 @@ impl InputMonitor {
     /// Returns `Err` when the enumeration failed, and `Ok` with an empty list
     /// only when it succeeded and found nothing -- which the resolver publishes
     /// as `board.input.<none>`. See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.devices.clear();
 
         #[cfg(target_os = "linux")]
@@ -321,7 +321,7 @@ impl InputMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         // Parse /proc/bus/input/devices for comprehensive device info
         // A machine with no /proc/bus/input/devices has no input layer at
         // all, which is a real answer; an unreadable one is not.
@@ -329,7 +329,7 @@ impl InputMonitor {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => {
-                return Err(SimonError::System(format!(
+                return Err(IronError::System(format!(
                     "cannot read /proc/bus/input/devices: {e}"
                 )))
             }
@@ -552,7 +552,7 @@ impl InputMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // Keyboards via WMI
         let keyboards = crate::core::command::capture_json(
             "powershell",
@@ -641,7 +641,7 @@ impl InputMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // Use system_profiler for HID devices
         let text = crate::core::command::capture(
             "system_profiler",

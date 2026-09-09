@@ -13,7 +13,7 @@
 //! ## Basic Process Monitoring
 //!
 //! ```no_run
-//! use simonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonlib::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create monitor with GPU attribution
@@ -34,7 +34,7 @@
 //! ## Top GPU Consumers
 //!
 //! ```no_run
-//! use simonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonlib::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -59,7 +59,7 @@
 //! ## Top CPU Consumers
 //!
 //! ```no_run
-//! use simonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonlib::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -82,7 +82,7 @@
 //! ## Monitor Specific Process
 //!
 //! ```no_run
-//! use simonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonlib::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -111,7 +111,7 @@
 //! | Windows  | ✅ Win32 API  | 🚧              | ✅    | ✅     | ✅   |
 //! | macOS    | ✅ libproc    | 🚧              | ✅    | ✅     | 🚧   |
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use crate::gpu::GpuCollection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -168,7 +168,7 @@ impl ProcessCategory {
         //
         // This branch used to run first and end with `return Self::GpuCompute`
         // for anything not matching an AI/ML or game name, so every windowed
-        // application on Windows landed there: `simon cli processes` reported
+        // application on Windows landed there: `ironmon cli processes` reported
         // 24 processes under "GPU Compute", the top five being
         // WindowsTerminal.exe, brave.exe, Code.exe and a Logitech settings
         // agent. `nvidia-smi` labels all of them `C+G` with `[N/A]` memory —
@@ -1322,7 +1322,7 @@ impl ProcessMonitor {
     /// # Examples
     ///
     /// ```no_run
-    /// use simonlib::{ProcessMonitor, GpuCollection};
+    /// use ironmonlib::{ProcessMonitor, GpuCollection};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let gpus = GpuCollection::auto_detect()?;
@@ -1346,10 +1346,10 @@ impl ProcessMonitor {
                 .arg(format!("-{}", signal))
                 .arg(pid.to_string())
                 .status()
-                .map_err(SimonError::Io)?;
+                .map_err(IronError::Io)?;
 
             if !status.success() {
-                return Err(SimonError::Other(format!(
+                return Err(IronError::Other(format!(
                     "Failed to kill process {}: {}",
                     pid,
                     status.code().unwrap_or(-1)
@@ -1370,11 +1370,11 @@ impl ProcessMonitor {
 
             unsafe {
                 let handle = OpenProcess(PROCESS_TERMINATE, false, pid).map_err(|e| {
-                    SimonError::Other(format!("Failed to open process {}: {}", pid, e))
+                    IronError::Other(format!("Failed to open process {}: {}", pid, e))
                 })?;
 
                 if handle.is_invalid() {
-                    return Err(SimonError::Other(format!(
+                    return Err(IronError::Other(format!(
                         "Invalid handle for process {}",
                         pid
                     )));
@@ -1384,7 +1384,7 @@ impl ProcessMonitor {
                 let _ = CloseHandle(handle);
 
                 if result.is_err() {
-                    return Err(SimonError::Other(format!(
+                    return Err(IronError::Other(format!(
                         "Failed to terminate process {}",
                         pid
                     )));
@@ -1403,10 +1403,10 @@ impl ProcessMonitor {
                 .arg(format!("-{}", signal))
                 .arg(pid.to_string())
                 .status()
-                .map_err(SimonError::Io)?;
+                .map_err(IronError::Io)?;
 
             if !status.success() {
-                return Err(SimonError::Other(format!(
+                return Err(IronError::Other(format!(
                     "Failed to kill process {}: {}",
                     pid,
                     status.code().unwrap_or(-1)
@@ -1419,7 +1419,7 @@ impl ProcessMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
             let _ = (pid, force);
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Process termination not supported on this platform".to_string(),
             ))
         }
@@ -1453,7 +1453,7 @@ mod linux {
 
         let proc_dir = Path::new("/proc");
         if !proc_dir.exists() {
-            return Err(SimonError::UnsupportedPlatform(
+            return Err(IronError::UnsupportedPlatform(
                 "/proc filesystem not available".to_string(),
             ));
         }
@@ -1483,9 +1483,9 @@ mod linux {
         let uptime: f64 = uptime_str
             .split_whitespace()
             .next()
-            .ok_or_else(|| SimonError::Parse("Invalid uptime format".to_string()))?
+            .ok_or_else(|| IronError::Parse("Invalid uptime format".to_string()))?
             .parse()
-            .map_err(|e| SimonError::Parse(format!("Failed to parse uptime: {}", e)))?;
+            .map_err(|e| IronError::Parse(format!("Failed to parse uptime: {}", e)))?;
         Ok(uptime)
     }
 
@@ -1494,7 +1494,7 @@ mod linux {
         let proc_dir = Path::new(&proc_path);
 
         if !proc_dir.exists() {
-            return Err(SimonError::DeviceNotFound(format!(
+            return Err(IronError::DeviceNotFound(format!(
                 "Process {} not found",
                 pid
             )));
@@ -1508,7 +1508,7 @@ mod linux {
         let (name, stat_fields) = parse_stat_line(&stat_content)?;
 
         if stat_fields.len() < 22 {
-            return Err(SimonError::Parse(
+            return Err(IronError::Parse(
                 "Insufficient fields in stat file".to_string(),
             ));
         }
@@ -1520,7 +1520,7 @@ mod linux {
         // 10: cmajflt, 11: utime, 12: stime, 13: cutime, 14: cstime,
         // 15: priority, 16: nice, 17: num_threads, 18: itrealvalue,
         // 19: starttime, 20: vsize, 21: rss
-        // 'U' rather than '?' for an unreadable state: the rest of simon uses 'U'
+        // 'U' rather than '?' for an unreadable state: the rest of IronMonitor uses 'U'
         // to mean "not reported", and two different sentinels for one condition
         // means every consumer has to know both.
         let state = stat_fields[0].chars().next().unwrap_or('U');
@@ -1656,10 +1656,10 @@ mod linux {
         // Name can contain spaces and parentheses, so we need to find the last ')'
         let start = stat
             .find('(')
-            .ok_or_else(|| SimonError::Parse("No opening parenthesis in stat".to_string()))?;
+            .ok_or_else(|| IronError::Parse("No opening parenthesis in stat".to_string()))?;
         let end = stat
             .rfind(')')
-            .ok_or_else(|| SimonError::Parse("No closing parenthesis in stat".to_string()))?;
+            .ok_or_else(|| IronError::Parse("No closing parenthesis in stat".to_string()))?;
 
         let name = stat[start + 1..end].to_string();
         let rest = &stat[end + 2..]; // Skip ') '
@@ -1860,11 +1860,11 @@ mod windows_impl {
         unsafe {
             // Take a snapshot of all processes
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| {
-                SimonError::Other(format!("Failed to create process snapshot: {}", e))
+                IronError::Other(format!("Failed to create process snapshot: {}", e))
             })?;
 
             if snapshot.is_invalid() {
-                return Err(SimonError::Other("Invalid snapshot handle".to_string()));
+                return Err(IronError::Other("Invalid snapshot handle".to_string()));
             }
 
             let mut entry = PROCESSENTRY32W {
@@ -2080,7 +2080,7 @@ mod windows_impl {
 
                 if !emitted {
                     // The process could not be opened — almost always because it runs
-                    // as SYSTEM or is protected, and simon is not elevated.
+                    // as SYSTEM or is protected, and IronMonitor is not elevated.
                     //
                     // Previously such processes were skipped entirely, so an
                     // unelevated run silently omitted every SYSTEM process (System,
@@ -2229,7 +2229,7 @@ mod macos {
             // First, get the number of processes
             let num_pids = proc_listpids(1, 0, std::ptr::null_mut(), 0); // PROC_ALL_PIDS = 1
             if num_pids <= 0 {
-                return Err(SimonError::Other("Failed to get process count".to_string()));
+                return Err(IronError::Other("Failed to get process count".to_string()));
             }
 
             // Allocate buffer for PIDs
@@ -2245,7 +2245,7 @@ mod macos {
             );
 
             if actual_size <= 0 {
-                return Err(SimonError::Other("Failed to list processes".to_string()));
+                return Err(IronError::Other("Failed to list processes".to_string()));
             }
 
             let num_processes = (actual_size / mem::size_of::<i32>() as i32) as usize;

@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Interrupt delivery type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +109,7 @@ pub struct InterruptMapMonitor {
 
 impl InterruptMapMonitor {
     /// Create a new interrupt map monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let (interrupts, cpu_count) = Self::read_interrupts()?;
         let analysis = Self::analyze(&interrupts, cpu_count);
         Ok(Self {
@@ -120,7 +120,7 @@ impl InterruptMapMonitor {
     }
 
     /// Refresh data.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         let (interrupts, cpu_count) = Self::read_interrupts()?;
         self.analysis = Self::analyze(&interrupts, cpu_count);
         self.interrupts = interrupts;
@@ -239,8 +239,8 @@ impl InterruptMapMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), SimonError> {
-        let content = std::fs::read_to_string("/proc/interrupts").map_err(SimonError::Io)?;
+    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), IronError> {
+        let content = std::fs::read_to_string("/proc/interrupts").map_err(IronError::Io)?;
         let mut lines = content.lines();
 
         // First line has CPU headers
@@ -360,30 +360,30 @@ impl InterruptMapMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), SimonError> {
+    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), IronError> {
         // An empty list plus a CPU count read as "this machine has no
         // interrupts", which is impossible. The error carries the reason.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "interrupt affinity is read from `/proc/interrupts` and `/proc/irq`, which Windows does not expose"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), SimonError> {
+    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), IronError> {
         // An empty list plus a CPU count read as "this machine has no
         // interrupts", which is impossible. The error carries the reason.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "interrupt affinity is read from `/proc/interrupts` and `/proc/irq`, which macOS does not expose"
                 .into(),
         ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), SimonError> {
+    fn read_interrupts() -> Result<(Vec<InterruptInfo>, u32), IronError> {
         // An empty list plus a CPU count read as "this machine has no
         // interrupts", which is impossible. The error carries the reason.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "interrupt affinity is read from `/proc/interrupts` and `/proc/irq`, which this platform does not expose"
                 .into(),
         ))

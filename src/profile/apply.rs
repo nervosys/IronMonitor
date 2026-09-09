@@ -9,7 +9,7 @@
 //! - **Opt-in writes.** Each handler advertises an exact `(subsystem,
 //!   setting_id)` it can write. There is no generic write path.
 //! - **Audit everything.** Every attempt — whether allowed, refused, or
-//!   failed — appends a JSON line to `<state_dir>/simon_profile_audit.log`.
+//!   failed — appends a JSON line to `<state_dir>/ironmon_profile_audit.log`.
 //! - **No silent elevation.** If the OS rejects the write for permissions,
 //!   the error bubbles up with a "needs admin/root" hint. We never re-launch
 //!   ourselves elevated.
@@ -161,7 +161,7 @@ pub fn apply_setting_reversible(
                 requested: value,
                 status: ApplyStatus::Refused,
                 message: format!(
-                    "Refused: the value currently in effect for {setting_id:?} could not be read, so this write could not be undone. Use apply_setting (or `simon profile set`) to write it anyway, accepting that it is one-way."
+                    "Refused: the value currently in effect for {setting_id:?} could not be read, so this write could not be undone. Use apply_setting (or `ironmon profile set`) to write it anyway, accepting that it is one-way."
                 ),
                 timestamp: now,
                 previous: None,
@@ -279,37 +279,41 @@ pub fn apply_setting(setting_id: &str, value: SettingValue, confirm: bool) -> Ap
     outcome
 }
 
-/// Resolve the audit log path. Honors `SIMON_AUDIT_LOG` if set; otherwise
-/// falls back to `%LOCALAPPDATA%\simon\profile_audit.log` on Windows,
-/// `$XDG_STATE_HOME/simon/profile_audit.log` on Linux, and the OS temp dir
+/// Resolve the audit log path. Honors `IRONMON_AUDIT_LOG` if set; otherwise
+/// falls back to `%LOCALAPPDATA%\ironmon\profile_audit.log` on Windows,
+/// `$XDG_STATE_HOME/ironmon/profile_audit.log` on Linux, and the OS temp dir
 /// elsewhere.
 pub fn audit_log_path() -> PathBuf {
     static CACHED: OnceLock<PathBuf> = OnceLock::new();
     CACHED
         .get_or_init(|| {
-            if let Ok(p) = std::env::var("SIMON_AUDIT_LOG") {
+            if let Ok(p) = std::env::var("IRONMON_AUDIT_LOG") {
                 return PathBuf::from(p);
             }
             #[cfg(windows)]
             {
                 if let Ok(local) = std::env::var("LOCALAPPDATA") {
-                    return PathBuf::from(local).join("simon").join("profile_audit.log");
+                    return PathBuf::from(local)
+                        .join("ironmon")
+                        .join("profile_audit.log");
                 }
             }
             #[cfg(unix)]
             {
                 if let Ok(state) = std::env::var("XDG_STATE_HOME") {
-                    return PathBuf::from(state).join("simon").join("profile_audit.log");
+                    return PathBuf::from(state)
+                        .join("ironmon")
+                        .join("profile_audit.log");
                 }
                 if let Ok(home) = std::env::var("HOME") {
                     return PathBuf::from(home)
                         .join(".local")
                         .join("state")
-                        .join("simon")
+                        .join("ironmon")
                         .join("profile_audit.log");
                 }
             }
-            std::env::temp_dir().join("simon_profile_audit.log")
+            std::env::temp_dir().join("ironmon_profile_audit.log")
         })
         .clone()
 }
@@ -1029,7 +1033,7 @@ mod tests {
     ///
     /// Without this the setting is one-way: `apply_setting` records no prior
     /// value and `revert_setting` refuses. Cross-checked against
-    /// `simon profile explain active_scheme_guid`, which reaches the same
+    /// `ironmon profile explain active_scheme_guid`, which reaches the same
     /// registry through entirely different code in `profile::cpu`.
     #[cfg(windows)]
     #[test]

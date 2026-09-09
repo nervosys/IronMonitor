@@ -285,7 +285,7 @@ pub fn read_all_nvidia_sensors() -> Vec<HwSensor> {
 /// for the purpose — LibreHardwareMonitor bundles WinRing0.sys.
 ///
 /// Shipping such a driver is out of scope: it is a well-known privilege-escalation
-/// vector, and loading one would give simon far more kernel authority than a monitor
+/// vector, and loading one would give ironmon far more kernel authority than a monitor
 /// warrants. Use [`read_wmi_temperatures`] for what Windows does expose, or run
 /// LibreHardwareMonitor alongside and read its WMI namespace.
 pub fn read_superio_sensors() -> Vec<HwSensor> {

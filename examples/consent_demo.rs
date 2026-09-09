@@ -18,12 +18,12 @@
 //! - Consent status viewing
 //! - Simulated data collection (gated by consent + sandbox check)
 
-use simonlib::consent::{ConsentManager, ConsentScope};
-use simonlib::sandbox::SandboxDetector;
+use ironmonlib::consent::{ConsentManager, ConsentScope};
+use ironmonlib::sandbox::SandboxDetector;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║     Silicon Monitor - Ethical Consent System Demo            ║");
+    println!("║     IronMonitor - Ethical Consent System Demo            ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     // STEP 1: Check for sandbox/analysis environment FIRST

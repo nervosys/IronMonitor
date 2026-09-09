@@ -5,13 +5,13 @@
 //!
 //! Run with: cargo run --example system_stats
 
-use simonlib::SystemStats;
+use ironmonlib::SystemStats;
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════════════╗");
-    println!("║           Silicon Monitor - System Stats (Linux/BSD Style)        ║");
+    println!("║           IronMonitor - System Stats (Linux/BSD Style)        ║");
     println!("╚═══════════════════════════════════════════════════════════════════╝");
     println!();
 

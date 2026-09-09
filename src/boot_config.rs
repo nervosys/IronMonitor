@@ -1,4 +1,4 @@
-// boot_config.rs - System boot configuration monitoring for simon
+// boot_config.rs - System boot configuration monitoring for ironmon
 //
 // Provides boot configuration, startup items, and boot time analysis.
 // Inspired by jetson_stats boot management features.

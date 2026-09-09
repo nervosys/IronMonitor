@@ -18,7 +18,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::firmware::FirmwareInventory;
+//! use ironmonlib::firmware::FirmwareInventory;
 //!
 //! let inventory = FirmwareInventory::new().unwrap();
 //! for fw in inventory.items() {
@@ -27,7 +27,7 @@
 //! println!("Risk score: {}/100", inventory.risk_score());
 //! ```
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Firmware component type.
@@ -111,7 +111,7 @@ pub struct FirmwareInventory {
 }
 
 impl FirmwareInventory {
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut inv = Self {
             entries: Vec::new(),
             secure_boot: SecureBootStatus::Unknown,
@@ -124,7 +124,7 @@ impl FirmwareInventory {
         Ok(inv)
     }
 
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.entries.clear();
 
         #[cfg(target_os = "linux")]
@@ -489,7 +489,7 @@ impl FirmwareInventory {
     /// stays `Unknown`, which is what `Confirm-SecureBootUEFI` does anyway
     /// without elevation.
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // `GetFirmwareType` answers this, and this crate already wraps it --
         // `boot_config` calls the same helper and its comment says why:
         // "claiming Legacy on a failed query is how the old code got it wrong".
@@ -512,7 +512,7 @@ impl FirmwareInventory {
         self.read_windows_secure_boot();
 
         match (bios, storage) {
-            (Err(bios_err), Err(storage_err)) => Err(SimonError::System(format!(
+            (Err(bios_err), Err(storage_err)) => Err(IronError::System(format!(
                 "no firmware source could be read: Win32_BIOS said {bios_err}; \
                  Get-PhysicalDisk said {storage_err}"
             ))),
@@ -522,7 +522,7 @@ impl FirmwareInventory {
 
     /// The system BIOS entry, from `Win32_BIOS`.
     #[cfg(target_os = "windows")]
-    fn read_windows_bios(&mut self) -> Result<(), SimonError> {
+    fn read_windows_bios(&mut self) -> Result<(), IronError> {
         const QUERY: &str = concat!(
             "Get-CimInstance Win32_BIOS | Select-Object ",
             "Manufacturer,SMBIOSBIOSVersion,ReleaseDate | ConvertTo-Json"
@@ -576,7 +576,7 @@ impl FirmwareInventory {
 
     /// One entry per drive that reports a firmware revision.
     #[cfg(target_os = "windows")]
-    fn read_windows_storage_firmware(&mut self) -> Result<(), SimonError> {
+    fn read_windows_storage_firmware(&mut self) -> Result<(), IronError> {
         const QUERY: &str = concat!(
             "Get-PhysicalDisk | Select-Object ",
             "FriendlyName,Manufacturer,FirmwareVersion | ConvertTo-Json"

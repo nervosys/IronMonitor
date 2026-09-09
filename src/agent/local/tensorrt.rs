@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::{TensorRtClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonlib::agent::local::{TensorRtClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TensorRtClient::new("localhost:8001")?;
@@ -39,7 +39,7 @@
 //! ```
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use async_trait::async_trait;
 #[cfg(feature = "remote-backends")]
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ impl TensorRtClient {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             Ok(Self {
                 triton_url: triton_url.to_string(),
@@ -70,7 +70,7 @@ impl TensorRtClient {
 
         #[cfg(not(feature = "remote-backends"))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "TensorRT-LLM client requires 'remote-backends' feature".to_string(),
             ))
         }
@@ -127,10 +127,10 @@ impl LocalInferenceClient for TensorRtClient {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(
+                return Err(IronError::Agent(
                     "Failed to list models from Triton".to_string(),
                 ));
             }
@@ -139,7 +139,7 @@ impl LocalInferenceClient for TensorRtClient {
             let text = response
                 .text()
                 .await
-                .map_err(|e| SimonError::Agent(e.to_string()))?;
+                .map_err(|e| IronError::Agent(e.to_string()))?;
             if let Ok(repo) = serde_json::from_str::<TritonModelRepository>(&text) {
                 return Ok(repo
                     .models
@@ -158,7 +158,7 @@ impl LocalInferenceClient for TensorRtClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "TensorRT-LLM client requires 'remote-backends' feature".to_string(),
         ))
     }
@@ -201,20 +201,21 @@ impl LocalInferenceClient for TensorRtClient {
                 .json(&triton_request)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                return Err(SimonError::Agent(format!(
+                return Err(IronError::Agent(format!(
                     "Triton inference failed ({}): {}",
                     status, body
                 )));
             }
 
-            let triton_response: TritonInferResponse = response.json().await.map_err(|e| {
-                SimonError::Agent(format!("Failed to parse Triton response: {}", e))
-            })?;
+            let triton_response: TritonInferResponse = response
+                .json()
+                .await
+                .map_err(|e| IronError::Agent(format!("Failed to parse Triton response: {}", e)))?;
 
             // Extract text from response
             let text = triton_response
@@ -234,7 +235,7 @@ impl LocalInferenceClient for TensorRtClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "TensorRT-LLM client requires 'remote-backends' feature".to_string(),
         ))
     }

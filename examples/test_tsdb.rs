@@ -2,7 +2,9 @@
 //!
 //! Tests the time-series database by recording and reading back data
 
-use simonlib::tsdb::{format_size, MetricsRecorder, ProcessSnapshot, SystemSnapshot, TimeSeriesDb};
+use ironmonlib::tsdb::{
+    format_size, MetricsRecorder, ProcessSnapshot, SystemSnapshot, TimeSeriesDb,
+};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

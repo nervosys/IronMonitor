@@ -1,8 +1,8 @@
-// Memory Management Example for Simon
+// Memory Management Example for IronMonitor
 //
 // Demonstrates comprehensive memory and swap monitoring.
 
-use simonlib::{format_bytes, memory_summary, MemoryMonitor, MemoryPressure, SwapType};
+use ironmonlib::{format_bytes, memory_summary, MemoryMonitor, MemoryPressure, SwapType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🧠 Memory & Swap Monitor");

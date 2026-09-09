@@ -1,4 +1,4 @@
-//! Silicon Monitor GUI - Cyber-themed hardware monitoring dashboard
+//! IronMonitor GUI - Cyber-themed hardware monitoring dashboard
 //!
 //! A modern, visually appealing GUI inspired by GNOME System Monitor and Glances,
 //! with a cyberpunk aesthetic featuring neon colors, dark backgrounds, and
@@ -8,7 +8,7 @@ use eframe::egui;
 
 pub mod app;
 // Renders the GUI's widget tree without a window and reads back the text that was
-// painted. Originally test-only, now also the backing for `simon gui --frame`: the
+// painted. Originally test-only, now also the backing for `ironmon gui --frame`: the
 // TUI became inspectable headlessly and leaving the GUI window-only made it the one
 // surface an agent still could not see.
 pub mod headless;
@@ -16,21 +16,21 @@ mod profile_tab;
 mod theme;
 pub mod widgets;
 
-pub use app::SiliconMonitorApp;
+pub use app::IronMonitorApp;
 
-/// Run the Silicon Monitor GUI application
+/// Run the IronMonitor GUI application
 pub fn run() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([800.0, 600.0])
-            .with_title("Silicon Monitor")
+            .with_title("IronMonitor")
             .with_icon(load_icon()),
         // Painting already goes through the GPU — egui tessellates on the CPU and
         // submits triangles via glow/OpenGL. Stated explicitly rather than inherited
         // from a default that can change.
         //
-        // `Preferred`, not `Required`: simon is expected to run on headless servers
+        // `Preferred`, not `Required`: IronMonitor is expected to run on headless servers
         // and over remote sessions where no accelerated context exists, and refusing
         // to open a window there would be worse than falling back to software.
         hardware_acceleration: eframe::HardwareAcceleration::Preferred,
@@ -41,9 +41,9 @@ pub fn run() -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "Silicon Monitor",
+        "IronMonitor",
         options,
-        Box::new(|cc| Ok(Box::new(SiliconMonitorApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(IronMonitorApp::new(cc)))),
     )
 }
 

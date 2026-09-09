@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::ai_api::{AiDataApi, ToolCall, ToolResult};
+//! use ironmonlib::ai_api::{AiDataApi, ToolCall, ToolResult};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut api = AiDataApi::new()?;
@@ -38,7 +38,7 @@ pub mod ontology;
 pub mod tools;
 pub mod types;
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use crate::gpu::GpuCollection;
 use crate::NetworkMonitor;
 use crate::ProcessMonitor;
@@ -383,10 +383,7 @@ impl AiDataApi {
             "list_writable_profile_settings" => self.tool_list_writable_profile_settings(params),
             "apply_profile_setting" => self.tool_apply_profile_setting(params),
 
-            _ => Err(SimonError::NotImplemented(format!(
-                "Unknown tool: {}",
-                name
-            ))),
+            _ => Err(IronError::NotImplemented(format!("Unknown tool: {}", name))),
         };
 
         let exec_time = start.elapsed().as_millis() as u64;

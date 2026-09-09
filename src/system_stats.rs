@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::SystemStats;
+//! use ironmonlib::SystemStats;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let stats = SystemStats::new()?;
@@ -168,7 +168,7 @@ impl SystemStats {
 
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "System stats not implemented for this platform".into(),
             ))
         }

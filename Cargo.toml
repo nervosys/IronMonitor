@@ -1,5 +1,5 @@
 [package]
-name = "silicon-monitor"
+name = "iron-monitor"
 version = "6.0.0"
 edition = "2021"
 # Verified by building against each installed toolchain, not asserted. This said
@@ -21,13 +21,13 @@ edition = "2021"
 # --all-targets` verifies it in one command instead of two with one expected to
 # fail.
 rust-version = "1.89"
-default-run = "simon"
+default-run = "ironmon"
 authors = ["nervosys"]
 license = "AGPL-3.0-or-later"
-description = "Silicon Monitor: hardware monitoring for CPUs, GPUs, NPUs, memory, I/O and network silicon on Linux, Windows and macOS, which reports what it cannot read as well as what it can"
-repository = "https://github.com/nervosys/SiliconMonitor"
-homepage = "https://github.com/nervosys/SiliconMonitor"
-documentation = "https://docs.rs/silicon-monitor"
+description = "IronMonitor: hardware monitoring for CPUs, GPUs, NPUs, memory, I/O and network silicon on Linux, Windows and macOS, which reports what it cannot read as well as what it can"
+repository = "https://github.com/nervosys/IronMonitor"
+homepage = "https://github.com/nervosys/IronMonitor"
+documentation = "https://docs.rs/iron-monitor"
 readme = "README.md"
 keywords = ["silicon", "monitor", "gpu", "cpu", "hardware"]
 categories = [
@@ -50,11 +50,11 @@ exclude = [
 ]
 
 [lib]
-name = "simonlib"
+name = "ironmonlib"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib", "staticlib"]
 
-# `examples/gui.rs` names `simonlib::gui` and `eframe` directly, so it cannot
+# `examples/gui.rs` names `ironmonlib::gui` and `eframe` directly, so it cannot
 # build without the feature that supplies them. Without this, `cargo check
 # --all-targets` on any feature set lacking `gui` fails on the example rather than
 # skipping it — the same shape as the `cli`-without-`gui` breakage fixed in 3.0.1,
@@ -66,11 +66,19 @@ path = "examples/gui.rs"
 required-features = ["gui"]
 
 [[bin]]
-name = "simon"
+name = "ironmon"
 path = "src/bin/main.rs"
 required-features = ["cli"]
 
 # AI Monitor (amon) - dedicated AI agent interface
+# `imon` is the short name for the same tool: one binary, two names, so
+# `ironmon snapshot` and `imon snapshot` are the same command. Cargo builds it
+# from the same source rather than a shim, which keeps them from drifting.
+[[bin]]
+name = "imon"
+path = "src/bin/main.rs"
+required-features = ["cli"]
+
 [[bin]]
 name = "amon"
 path = "src/bin/amon.rs"
@@ -124,9 +132,9 @@ egui_plot = { version = "0.30", optional = true }
 open = { version = "5.3", optional = true }
 
 
-# IronVault — nervosys' secure vault for AI model formats. simon reads it to
+# IronVault — nervosys' secure vault for AI model formats. IronMonitor reads it to
 # report which models are on a machine beside the hardware that would run them;
-# see `src/model_vault.rs`. Read-only: simon never unlocks a vault and holds no
+# see `src/model_vault.rs`. Read-only: IronMonitor never unlocks a vault and holds no
 # passphrase, which is possible because IronVault's metadata listing does not
 # require a key.
 #
@@ -297,7 +305,7 @@ local-ollama = ["remote-backends"]   # Ollama local inference server
 #
 # In-process llama-cpp-rs FFI bindings were considered and deliberately not adopted:
 # they would add a C++ toolchain to every build and complicate the 3-OS CI matrix,
-# for lower per-call overhead that does not matter at simon's one-query-at-a-time
+# for lower per-call overhead that does not matter at ironmon's one-query-at-a-time
 # usage. The subprocess path has no such cost and is discovered automatically.
 local-llamacpp = []
 local-vllm = ["remote-backends"]     # vLLM high-performance server

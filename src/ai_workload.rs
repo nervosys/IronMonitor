@@ -12,7 +12,7 @@
 //! ## Monitor Training Workload
 //!
 //! ```no_run
-//! use simonlib::ai_workload::{AiWorkloadMonitor, WorkloadType};
+//! use ironmonlib::ai_workload::{AiWorkloadMonitor, WorkloadType};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = AiWorkloadMonitor::new()?;
@@ -38,7 +38,7 @@
 //! ## Monitor Inference Latency
 //!
 //! ```no_run
-//! use simonlib::ai_workload::AiWorkloadMonitor;
+//! use ironmonlib::ai_workload::AiWorkloadMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = AiWorkloadMonitor::new()?;
@@ -342,7 +342,7 @@ impl AiWorkloadMonitor {
         use std::fs;
 
         // Scan /proc for Python/AI processes
-        let proc_entries = fs::read_dir("/proc").map_err(crate::error::SimonError::Io)?;
+        let proc_entries = fs::read_dir("/proc").map_err(crate::error::IronError::Io)?;
 
         for entry in proc_entries.filter_map(|e| e.ok()) {
             if let Ok(file_name) = entry.file_name().into_string() {
@@ -433,7 +433,7 @@ impl AiWorkloadMonitor {
 
     #[cfg(target_os = "windows")]
     fn detect_windows(&mut self) -> Result<()> {
-        use crate::error::SimonError;
+        use crate::error::IronError;
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -442,7 +442,7 @@ impl AiWorkloadMonitor {
 
         // Take a snapshot of all processes
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-            .map_err(|e| SimonError::System(format!("Failed to create snapshot: {}", e)))?;
+            .map_err(|e| IronError::System(format!("Failed to create snapshot: {}", e)))?;
 
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -568,14 +568,14 @@ impl AiWorkloadMonitor {
 
     #[cfg(target_os = "macos")]
     fn detect_macos(&mut self) -> Result<()> {
-        use crate::error::SimonError;
+        use crate::error::IronError;
         use std::process::Command;
 
         // Use ps to list all processes with full command lines
         let output = Command::new("ps")
             .args(["-axo", "pid,command"])
             .output()
-            .map_err(|e| SimonError::System(format!("Failed to run ps: {}", e)))?;
+            .map_err(|e| IronError::System(format!("Failed to run ps: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 

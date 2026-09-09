@@ -8,7 +8,7 @@
 //! cargo run --release --features nvidia --example ai_api_demo
 //! ```
 
-use simonlib::ai_api::{AiDataApi, ToolCategory, ToolResult};
+use ironmonlib::ai_api::{AiDataApi, ToolCategory, ToolResult};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {

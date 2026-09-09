@@ -10,7 +10,7 @@
 //! - **Windows**: I/O priority via performance counters
 //! - **macOS**: IOKit disk stats
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// I/O scheduler type.
@@ -193,13 +193,13 @@ pub struct IoSchedulerMonitor {
 
 impl IoSchedulerMonitor {
     /// Create a new I/O scheduler monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -220,7 +220,7 @@ impl IoSchedulerMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<IoSchedulerOverview, SimonError> {
+    fn scan() -> Result<IoSchedulerOverview, IronError> {
         let block_path = std::path::Path::new("/sys/block");
         let mut devices = Vec::new();
 
@@ -233,7 +233,7 @@ impl IoSchedulerMonitor {
             });
         }
 
-        let entries = std::fs::read_dir(block_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(block_path).map_err(IronError::Io)?;
 
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -399,36 +399,36 @@ impl IoSchedulerMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn scan() -> Result<IoSchedulerOverview, SimonError> {
+    fn scan() -> Result<IoSchedulerOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "the block I/O scheduler is read from `/sys/block/*/queue/scheduler`, which Windows does not expose"
                 .into(),
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn scan() -> Result<IoSchedulerOverview, SimonError> {
+    fn scan() -> Result<IoSchedulerOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "the block I/O scheduler is read from `/sys/block/*/queue/scheduler`, which macOS does not expose"
                 .into(),
         ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn scan() -> Result<IoSchedulerOverview, SimonError> {
+    fn scan() -> Result<IoSchedulerOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "the block I/O scheduler is read from `/sys/block/*/queue/scheduler`, which this platform does not expose"
                 .into(),
         ))

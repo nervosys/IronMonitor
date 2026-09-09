@@ -1,10 +1,10 @@
-//! Simple example using Silicon Monitor's new unified API
+//! Simple example using IronMonitor's new unified API
 
-use simonlib::gpu::GpuCollection;
+use ironmonlib::gpu::GpuCollection;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("=== Silicon Monitor - Basic Example ===\n");
+    println!("=== IronMonitor - Basic Example ===\n");
 
     // Auto-detect all available GPUs
     let gpus = GpuCollection::auto_detect()?;

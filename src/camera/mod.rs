@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::camera::CameraMonitor;
+//! use ironmonlib::camera::CameraMonitor;
 //!
 //! let monitor = CameraMonitor::new().unwrap();
 //! for cam in monitor.cameras() {
@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// Camera connection type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ pub struct CameraMonitor {
 
 impl CameraMonitor {
     /// Create a new CameraMonitor and enumerate all cameras.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self {
             cameras: Vec::new(),
         };
@@ -138,7 +138,7 @@ impl CameraMonitor {
     /// until 6.0.0, and the resolver publishes the second as a fact about the
     /// machine -- `"no cameras detected"`, an answer to "can this machine see".
     /// See [`crate::core::command`].
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.cameras.clear();
 
         #[cfg(target_os = "linux")]
@@ -164,7 +164,7 @@ impl CameraMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         // Enumerate /sys/class/video4linux/
         let v4l_path = std::path::Path::new("/sys/class/video4linux");
         if !v4l_path.exists() {
@@ -173,7 +173,7 @@ impl CameraMonitor {
         }
 
         let entries = std::fs::read_dir(v4l_path)
-            .map_err(|e| SimonError::System(format!("cannot read /sys/class/video4linux: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read /sys/class/video4linux: {e}")))?;
         for entry in entries.flatten() {
             let dev_name = entry.file_name().to_string_lossy().to_string();
             if !dev_name.starts_with("video") {
@@ -361,7 +361,7 @@ impl CameraMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         let in_use = Self::camera_in_use_windows();
 
         let json = crate::core::command::capture_json(
@@ -369,7 +369,7 @@ impl CameraMonitor {
             &["-NoProfile", "-Command",
                 // `Image` is the PnP class for still-image devices --
                 // scanners, and the scanner half of a multifunction printer.
-                // Including it here made `simon` report a Brother MFC-L2900DW
+                // Including it here made `ironmon` report a Brother MFC-L2900DW
                 // as two cameras, which is not a camera enumeration that is
                 // slightly too generous; it is a wrong answer to the question
                 // "can this machine see". Windows 10 1703 and later put every
@@ -429,7 +429,7 @@ impl CameraMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         let text = crate::core::command::capture(
             "system_profiler",
             &["SPCameraDataType", "-detailLevel", "full"],

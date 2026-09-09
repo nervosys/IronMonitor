@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::wsl::{WslDetector, WslInfo};
+//! use ironmonlib::wsl::{WslDetector, WslInfo};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let info = WslDetector::detect();

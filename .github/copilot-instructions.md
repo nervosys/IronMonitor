@@ -1,8 +1,8 @@
-# Silicon Monitor (simon) - AI Agent Instructions
+# IronMonitor (ironmon) - AI Agent Instructions
 
 ## Project Overview
 
-**Silicon Monitor** is a comprehensive Rust library for cross-platform hardware monitoring, providing unified APIs for CPUs, GPUs (NVIDIA/AMD/Intel), memory, disks, motherboards, processes, and network interfaces. Originally evolved from a Jetson-specific monitoring tool (simon), it now supports multi-vendor GPU monitoring across Linux/Windows/macOS.
+**IronMonitor** is a comprehensive Rust library for cross-platform hardware monitoring, providing unified APIs for CPUs, GPUs (NVIDIA/AMD/Intel), memory, disks, motherboards, processes, and network interfaces. Originally evolved from a Jetson-specific monitoring tool (ironmon), it now supports multi-vendor GPU monitoring across Linux/Windows/macOS.
 
 **Key Architecture**: Trait-based GPU abstraction (`Device` trait in `src/gpu/traits.rs`) with vendor-specific backends, platform-specific implementations under `src/platform/`, and unified monitoring APIs in `src/`.
 
@@ -88,26 +88,26 @@ GPU process data comes from NVML (`nvidia_new.rs`), AMD sysfs (`/sys/class/drm/c
 
 ### 5. Error Handling Convention
 
-Use `thiserror` for error types. Main error type is `simonError` in `src/error.rs`:
+Use `thiserror` for error types. Main error type is `IronError` in `src/error.rs`:
 
 ```rust
 // ✅ CORRECT: Use typed errors
-use crate::error::{simonError, Result};
+use crate::error::{IronError, Result};
 
 pub fn my_function() -> Result<Data> {
     // Platform-specific check
     #[cfg(not(target_os = "linux"))]
-    return Err(simonError::NotImplemented(
+    return Err(IronError::NotImplemented(
         "Only supported on Linux".into()
     ));
     
     // GPU errors use GpuError from traits
     gpu.temperature()
-        .map_err(|e| simonError::GpuError(e.to_string()))
+        .map_err(|e| IronError::GpuError(e.to_string()))
 }
 ```
 
-GPU-specific errors use `gpu::traits::Error`, wrapped into `simonError::GpuError` at API boundaries.
+GPU-specific errors use `gpu::traits::Error`, wrapped into `IronError::GpuError` at API boundaries.
 
 ### 6. Serde Serialization for All Metrics
 
@@ -183,9 +183,9 @@ When adding utilities that execute commands or require elevated privileges, impl
 
 ```
 src/
-├── lib.rs                    # Public API, re-exports, SiliconMonitor wrapper
-├── error.rs                  # simonError, Result type
-├── stats.rs                  # simon legacy API (Jetson-focused)
+├── lib.rs                    # Public API, re-exports, IronMonitor wrapper
+├── error.rs                  # IronError, Result type
+├── stats.rs                  # ironmon legacy API (Jetson-focused)
 ├── gpu/
 │   ├── mod.rs                # GpuCollection, vendor enum, unified API
 │   ├── traits.rs             # Device trait (PREFERRED for new code)

@@ -1,6 +1,6 @@
 //! Intel GPU Monitoring Example
 //!
-//! This example demonstrates Intel GPU monitoring using Silicon Monitor.
+//! This example demonstrates Intel GPU monitoring using IronMonitor.
 //! Supports both integrated (iGPU) and discrete (Arc) GPUs.
 //!
 //! # Requirements
@@ -16,11 +16,11 @@
 //! ```
 
 #[cfg(feature = "intel")]
-use simonlib::gpu::intel_levelzero;
+use ironmonlib::gpu::intel_levelzero;
 
 #[cfg(feature = "intel")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Silicon Monitor - Intel GPU Monitoring\n");
+    println!("IronMonitor - Intel GPU Monitoring\n");
 
     let devices = match intel_levelzero::enumerate() {
         Ok(devs) => devs,

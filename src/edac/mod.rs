@@ -15,7 +15,7 @@
 //!   SMBIOS, for `memory.dimm.{n}.ecc`.
 //! - **macOS**: nothing, for the same reason
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// EDAC memory type (from EDAC subsystem).
@@ -122,13 +122,13 @@ pub struct EdacMonitor {
 
 impl EdacMonitor {
     /// Create a new EDAC monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -164,7 +164,7 @@ impl EdacMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<EdacOverview, SimonError> {
+    fn scan() -> Result<EdacOverview, IronError> {
         // An absent `edac` directory is the driver not being loaded, which is
         // not the same fact as a loaded driver finding no controller -- and an
         // empty overview said the second while meaning the first. The
@@ -172,7 +172,7 @@ impl EdacMonitor {
         // ECC errors" and "nothing here counts them".
         let mc_base = std::path::Path::new("/sys/devices/system/edac");
         if !mc_base.exists() {
-            return Err(SimonError::FeatureNotAvailable(
+            return Err(IronError::FeatureNotAvailable(
                 "the kernel exposes no /sys/devices/system/edac: no EDAC driver \
                  is loaded for this memory controller"
                     .into(),
@@ -357,7 +357,7 @@ impl EdacMonitor {
     /// the reason three ECC entities were absent. Nothing had been asked: the
     /// function consulted no interface on any platform but Linux. The
     /// resolver's other branch -- the one whose comment already said "on
-    /// Windows and macOS there is no EDAC equivalent simon reads, so this is
+    /// Windows and macOS there is no EDAC equivalent IronMonitor reads, so this is
     /// the common path" -- was unreachable, and the comment described what the
     /// author believed rather than what the code did.
     ///
@@ -368,10 +368,10 @@ impl EdacMonitor {
     /// not answer whether a controller is *reporting* corrections, which is
     /// what these three entities ask and what no Windows interface exposes.
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<EdacOverview, SimonError> {
-        Err(SimonError::UnsupportedPlatform(
+    fn scan() -> Result<EdacOverview, IronError> {
+        Err(IronError::UnsupportedPlatform(
             "ECC error counts are read from /sys/devices/system/edac, which \
-             exists on Linux only; this platform exposes no interface simon \
+             exists on Linux only; this platform exposes no interface ironmon \
              reads for correctable and uncorrectable counts"
                 .into(),
         ))

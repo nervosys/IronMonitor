@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2024 NervoSys
 
-//! The claims simon makes about itself, checked against simon.
+//! The claims IronMonitor makes about itself, checked against ironmon.
 //!
 //! Documentation drifts. A README that was true when written and false a year
 //! later is worse than no README, because it is believed — and a hardware
@@ -63,7 +63,7 @@ fn the_crate_description_promises_nothing_it_cannot_keep() {
         assert!(
             !description.contains(word),
             "the crate description claims {word:?}. That line is what crates.io \
-             shows to someone deciding whether to trust this tool, and simon does \
+             shows to someone deciding whether to trust this tool, and IronMonitor does \
              not monitor everything on every platform — macOS has no GPU, power or \
              temperature reader, and the README says so. Describe what it reads."
         );
@@ -74,7 +74,7 @@ fn the_crate_description_promises_nothing_it_cannot_keep() {
 #[test]
 fn the_readme_states_its_limits_where_a_reader_will_reach_them() {
     let readme = read("README.md");
-    let heading = "## What simon cannot do";
+    let heading = "## What IronMonitor cannot do";
     let at = readme
         .find(heading)
         .unwrap_or_else(|| panic!("README.md has no {heading:?} section"));
@@ -96,7 +96,7 @@ fn the_readme_states_its_limits_where_a_reader_will_reach_them() {
 /// false, and this fails until the sentence is rewritten.
 #[test]
 fn the_claim_that_tuning_cannot_verify_matches_the_code() {
-    use simonlib::tuning::verify::metric_for;
+    use ironmonlib::tuning::verify::metric_for;
 
     let registered: Vec<&str> = [
         "active_scheme_guid",
@@ -115,7 +115,7 @@ fn the_claim_that_tuning_cannot_verify_matches_the_code() {
     if registered.is_empty() {
         assert!(
             claims_empty,
-            "no metric is registered, so `simon tune` genuinely cannot verify a \
+            "no metric is registered, so `ironmon tune` genuinely cannot verify a \
              setting, and the README should keep saying so"
         );
     } else {
@@ -132,7 +132,7 @@ fn the_claim_that_tuning_cannot_verify_matches_the_code() {
 /// That is a property of the code, so it is checked as one.
 #[test]
 fn a_first_intrusion_scan_really_cannot_report_clean() {
-    use simonlib::ids::{file, ScanStatus};
+    use ironmonlib::ids::{file, ScanStatus};
 
     let status = file::scan(&[], &file::Baseline::default());
     assert!(
@@ -185,15 +185,15 @@ fn unreadable_entities_carry_a_reason_rather_than_vanishing() {
     assert!(
         readme.contains("no resolver bound on this build"),
         "the README quotes the exact phrase an agent will see for an entity \
-         simon does not read yet. If the wording changed, the README should \
+         IronMonitor does not read yet. If the wording changed, the README should \
          match what the tool actually emits — a quoted string that does not \
          appear in the output teaches a reader to distrust the rest."
     );
 
-    let snapshot = simonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonlib::ontology::resolve::snapshot();
     let unavailable_without_reason = snapshot
         .iter()
-        .filter(|r| r.provenance == simonlib::ontology::Provenance::Unavailable)
+        .filter(|r| r.provenance == ironmonlib::ontology::Provenance::Unavailable)
         .filter(|r| r.note.as_deref().unwrap_or("").trim().is_empty())
         .count();
     assert_eq!(
@@ -227,10 +227,10 @@ fn unreadable_entities_carry_a_reason_rather_than_vanishing() {
 /// support and fail on entities that are perfectly honest.
 #[test]
 fn a_reading_never_resolves_weaker_than_its_entity_declares() {
-    use simonlib::ontology::Provenance;
+    use ironmonlib::ontology::Provenance;
 
-    let ontology = simonlib::ontology::Ontology::build();
-    let violations: Vec<String> = simonlib::ontology::resolve::snapshot()
+    let ontology = ironmonlib::ontology::Ontology::build();
+    let violations: Vec<String> = ironmonlib::ontology::resolve::snapshot()
         .iter()
         .filter(|r| r.provenance != Provenance::Unavailable)
         .filter_map(|r| {

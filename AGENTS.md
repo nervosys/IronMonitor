@@ -1,16 +1,16 @@
-# Driving simon from an AI agent
+# Driving ironmon from an AI agent
 
-simon's three interfaces — CLI, TUI and GUI — are built to be operated by a program,
+ironmon's three interfaces — CLI, TUI and GUI — are built to be operated by a program,
 not only by a person. This document is the contract.
 
 The short version: fetch the schema, read values by id, check the provenance before
 you believe a number.
 
 ```bash
-simon describe --format json          # what exists: ids, units, provenance
-simon describe --commands             # what can be run, generated from the parser
-simon get gpu.0.thermal.temperature   # read one value
-simon snapshot --validate             # read everything, range-checked
+ironmon describe --format json          # what exists: ids, units, provenance
+ironmon describe --commands             # what can be run, generated from the parser
+ironmon get gpu.0.thermal.temperature   # read one value
+ironmon snapshot --validate             # read everything, range-checked
 ```
 
 ## Provenance is the part that matters
@@ -28,7 +28,7 @@ difference between a reading and a plausible-looking constant.
 Only `measured` satisfies `is_observation()`. Check it:
 
 ```bash
-simon get gpu.0.power.limit --format json
+ironmon get gpu.0.power.limit --format json
 {
   "id": "gpu.0.power.limit",
   "value": 450000,
@@ -57,7 +57,7 @@ at the point of consumption. `provenance` makes the difference machine-checkable
 ## Absence is reported, not implied
 
 A domain that enumerates nothing still produces a row, so "this machine has no
-disks" stays distinguishable from "simon does not read disks":
+disks" stays distinguishable from "IronMonitor does not read disks":
 
 ```
 disk.<none>   unavailable   — no block devices enumerated on this machine
@@ -73,18 +73,18 @@ process.<truncated>   unavailable   — 443 processes exist; this snapshot repor
 
 ## Exit codes carry information
 
-`simon get` distinguishes the two ways it can fail to give you a number:
+`ironmon get` distinguishes the two ways it can fail to give you a number:
 
 | Code | Meaning |
 |---|---|
 | 0 | Read succeeded |
-| 1 | No such entity id — check spelling with `simon describe --search` |
+| 1 | No such entity id — check spelling with `ironmon describe --search` |
 | 2 | Known id, no value available here |
 
 Collapsing 1 and 2 would leave an agent retrying a typo forever, or abandoning a
 device that is merely idle.
 
-`simon snapshot --validate` exits 3 if any live reading is physically impossible.
+`ironmon snapshot --validate` exits 3 if any live reading is physically impossible.
 It also withholds such values rather than clamping them: a clamped number looks
 like a reading and is not one.
 
@@ -101,10 +101,10 @@ cpu.core.7.utilization
 ```
 
 The schema uses templates (`gpu.{n}.name`) for anything with instances. A template
-is a schema construct, not a question with an answer — `simon get gpu.{n}.name`
+is a schema construct, not a question with an answer — `ironmon get gpu.{n}.name`
 exits 1 by design. Expand it against a snapshot.
 
-Ids may be added but never repurposed. `simon describe --format json` carries a
+Ids may be added but never repurposed. `ironmon describe --format json` carries a
 `version` so you can tell which contract you hold.
 
 ## Rates need two samples
@@ -126,8 +126,8 @@ Reads are unrestricted; writes are not. `--writable` lists only entities backed 
 a registered apply handler:
 
 ```bash
-simon describe --writable
-simon profile set active_scheme_guid <value> --confirm
+ironmon describe --writable
+ironmon profile set active_scheme_guid <value> --confirm
 ```
 
 Every attempt — allowed, refused or failed — is appended to the apply audit log.
@@ -136,7 +136,7 @@ Writing requires `--confirm`; the library never prompts and never elevates itsel
 The write surface is generated from the handler registry, so the schema cannot
 advertise a write the binary will reject.
 
-`simon tune` obeys the same contract, including in its automatic mode. It detects
+`ironmon tune` obeys the same contract, including in its automatic mode. It detects
 what the machine is being used for and recommends profile settings; `--watch N`
 re-evaluates on an interval. It **writes nothing** unless given both `--apply` and
 `--confirm`, and even then goes through the same audited path. Unattended
@@ -155,8 +155,8 @@ The TUI and GUI draw to a terminal and a window respectively, neither of which a
 agent has. Both render headlessly instead.
 
 ```bash
-simon tui --frame --tab CPU --width 160 --height 40
-simon gui --frame --tab profiles
+ironmon tui --frame --tab CPU --width 160 --height 40
+ironmon gui --frame --tab profiles
 ```
 
 The GUI prints the text it actually painted rather than a screenshot, which
@@ -173,7 +173,7 @@ back a frame for a tab you did not ask for.
 TUI navigation is key-driven and stateful, so it can be scripted:
 
 ```bash
-simon tui --script - <<'EOF'
+ironmon tui --script - <<'EOF'
 goto CPU          # select a tab by name or index
 key 5             # send a key through the real handler
 assert Memory     # fail unless the frame contains this
@@ -199,7 +199,7 @@ The GUI takes the same shape, minus `key`. Its tabs are addressable by name, so
 `goto` covers navigation and there is no keystroke state to drive:
 
 ```bash
-simon gui --script - <<'EOF'
+ironmon gui --script - <<'EOF'
 goto profiles
 assert Hardware Profile Inspector
 refute Traceback
@@ -223,7 +223,7 @@ domain differently from the ontology.
 
 ## Guarantees worth relying on
 
-- `simon describe` touches no hardware, so it is identical on every machine and can
+- `ironmon describe` touches no hardware, so it is identical on every machine and can
   be fetched ahead of time and cached.
 - Everything the resolver emits is declared in the schema, and vice versa.
 - An unavailable reading never carries a value, and always carries a reason.
@@ -232,10 +232,10 @@ domain differently from the ontology.
 
 These are asserted in `tests/agentic_contract.rs`, which drives the built binary
 rather than the library — argv is the surface an agent touches, and a library test
-would pass while `simon get` was broken.
+would pass while `ironmon get` was broken.
 
 ## See Also
 
 - [CLI.md](CLI.md) — full command reference
-- [AI_INTEGRATION.md](AI_INTEGRATION.md) — connecting simon to a model provider
+- [AI_INTEGRATION.md](AI_INTEGRATION.md) — connecting ironmon to a model provider
 - [README.md](README.md) — project overview

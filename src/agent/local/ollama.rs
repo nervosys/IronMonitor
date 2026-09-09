@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::local::{OllamaClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonlib::agent::local::{OllamaClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = OllamaClient::new("http://localhost:11434")?;
@@ -36,7 +36,7 @@
 //! ```
 
 use super::{InferenceRequest, InferenceResponse, LocalInferenceClient, ModelInfo};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
@@ -60,7 +60,7 @@ impl OllamaClient {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             Ok(Self {
                 endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -70,7 +70,7 @@ impl OllamaClient {
 
         #[cfg(not(feature = "remote-backends"))]
         {
-            Err(SimonError::NotImplemented(
+            Err(IronError::NotImplemented(
                 "Ollama client requires 'remote-backends' feature".to_string(),
             ))
         }
@@ -117,10 +117,10 @@ impl OllamaClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| SimonError::Network(e.to_string()))?;
+            .map_err(|e| IronError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(SimonError::Agent(format!(
+            return Err(IronError::Agent(format!(
                 "Ollama API error: {}",
                 response.status()
             )));
@@ -129,7 +129,7 @@ impl OllamaClient {
         let ollama_response: OllamaChatResponse = response
             .json()
             .await
-            .map_err(|e| SimonError::Agent(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| IronError::Agent(format!("Failed to parse response: {}", e)))?;
 
         Ok(InferenceResponse {
             text: ollama_response.message.content,
@@ -156,10 +156,10 @@ impl OllamaClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| SimonError::Network(e.to_string()))?;
+            .map_err(|e| IronError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(SimonError::Agent(format!(
+            return Err(IronError::Agent(format!(
                 "Failed to pull model: {}",
                 response.status()
             )));
@@ -195,10 +195,10 @@ impl LocalInferenceClient for OllamaClient {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(
+                return Err(IronError::Agent(
                     "Failed to list models from Ollama".to_string(),
                 ));
             }
@@ -206,7 +206,7 @@ impl LocalInferenceClient for OllamaClient {
             let tags: OllamaTagsResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse models: {}", e)))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse models: {}", e)))?;
 
             Ok(tags
                 .models
@@ -222,7 +222,7 @@ impl LocalInferenceClient for OllamaClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "Ollama client requires 'remote-backends' feature".to_string(),
         ))
     }
@@ -259,10 +259,10 @@ impl LocalInferenceClient for OllamaClient {
                 .json(&request_body)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(format!(
+                return Err(IronError::Agent(format!(
                     "Ollama API error: {}",
                     response.status()
                 )));
@@ -271,7 +271,7 @@ impl LocalInferenceClient for OllamaClient {
             let ollama_response: OllamaGenerateResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse response: {}", e)))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse response: {}", e)))?;
 
             Ok(InferenceResponse {
                 text: ollama_response.response,
@@ -283,7 +283,7 @@ impl LocalInferenceClient for OllamaClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "Ollama client requires 'remote-backends' feature".to_string(),
         ))
     }
@@ -304,16 +304,16 @@ impl LocalInferenceClient for OllamaClient {
                 .json(&request_body)
                 .send()
                 .await
-                .map_err(|e| SimonError::Network(e.to_string()))?;
+                .map_err(|e| IronError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(SimonError::Agent(format!("Model {} not found", model_name)));
+                return Err(IronError::Agent(format!("Model {} not found", model_name)));
             }
 
             let show_response: OllamaShowResponse = response
                 .json()
                 .await
-                .map_err(|e| SimonError::Agent(format!("Failed to parse model info: {}", e)))?;
+                .map_err(|e| IronError::Agent(format!("Failed to parse model info: {}", e)))?;
 
             Ok(ModelInfo {
                 name: model_name.to_string(),
@@ -325,7 +325,7 @@ impl LocalInferenceClient for OllamaClient {
         }
 
         #[cfg(not(feature = "remote-backends"))]
-        Err(SimonError::NotImplemented(
+        Err(IronError::NotImplemented(
             "Ollama client requires 'remote-backends' feature".to_string(),
         ))
     }

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::services::{ServiceMonitor, ServiceStatus};
+//! use ironmonlib::services::{ServiceMonitor, ServiceStatus};
 //!
 //! let monitor = ServiceMonitor::new().unwrap();
 //!
@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -279,7 +279,7 @@ impl ServiceMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = name;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Service control not supported".to_string(),
             ))
         }
@@ -300,7 +300,7 @@ impl ServiceMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = name;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Service control not supported".to_string(),
             ))
         }
@@ -324,7 +324,7 @@ impl ServiceMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = name;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Service control not supported".to_string(),
             ))
         }
@@ -345,7 +345,7 @@ impl ServiceMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = name;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Service control not supported".to_string(),
             ))
         }
@@ -366,7 +366,7 @@ impl ServiceMonitor {
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = name;
-            Err(SimonError::UnsupportedPlatform(
+            Err(IronError::UnsupportedPlatform(
                 "Service control not supported".to_string(),
             ))
         }
@@ -580,11 +580,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to start service '{}' (check permissions)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!(
+            Err(e) => Err(IronError::System(format!(
                 "Failed to execute systemctl: {}",
                 e
             ))),
@@ -601,11 +601,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to stop service '{}' (check permissions)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!(
+            Err(e) => Err(IronError::System(format!(
                 "Failed to execute systemctl: {}",
                 e
             ))),
@@ -622,11 +622,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to restart service '{}' (check permissions)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!(
+            Err(e) => Err(IronError::System(format!(
                 "Failed to execute systemctl: {}",
                 e
             ))),
@@ -643,11 +643,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to enable service '{}' (check permissions)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!(
+            Err(e) => Err(IronError::System(format!(
                 "Failed to execute systemctl: {}",
                 e
             ))),
@@ -664,11 +664,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to disable service '{}' (check permissions)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!(
+            Err(e) => Err(IronError::System(format!(
                 "Failed to execute systemctl: {}",
                 e
             ))),
@@ -765,11 +765,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to start service '{}' (run as Administrator)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!("Failed to execute sc: {}", e))),
+            Err(e) => Err(IronError::System(format!("Failed to execute sc: {}", e))),
         }
     }
 
@@ -781,11 +781,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to stop service '{}' (run as Administrator)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!("Failed to execute sc: {}", e))),
+            Err(e) => Err(IronError::System(format!("Failed to execute sc: {}", e))),
         }
     }
 
@@ -806,11 +806,11 @@ impl ServiceMonitor {
 
         match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(_) => Err(SimonError::System(format!(
+            Ok(_) => Err(IronError::System(format!(
                 "Failed to configure service '{}' (run as Administrator)",
                 name
             ))),
-            Err(e) => Err(SimonError::System(format!("Failed to execute sc: {}", e))),
+            Err(e) => Err(IronError::System(format!("Failed to execute sc: {}", e))),
         }
     }
 

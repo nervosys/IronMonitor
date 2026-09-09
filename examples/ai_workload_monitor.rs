@@ -12,7 +12,7 @@
 //! - Cloud provider identification
 //! - GPU usage attribution
 
-use simonlib::{AiWorkloadMonitor, GpuCollection, ProcessMonitor};
+use ironmonlib::{AiWorkloadMonitor, GpuCollection, ProcessMonitor};
 use std::thread;
 use std::time::Duration;
 

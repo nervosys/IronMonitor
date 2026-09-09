@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::process_tree::{ProcessTree, ProcessNode};
+//! use ironmonlib::process_tree::{ProcessTree, ProcessNode};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let tree = ProcessTree::build()?;
@@ -23,7 +23,7 @@
 //! # }
 //! ```
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -159,13 +159,13 @@ impl ProcessTree {
 
         let proc_dir = std::path::Path::new("/proc");
         if !proc_dir.exists() {
-            return Err(SimonError::NotImplemented(
+            return Err(IronError::NotImplemented(
                 "Process tree requires /proc filesystem".into(),
             ));
         }
 
         for entry in fs::read_dir(proc_dir)
-            .map_err(|e| SimonError::Other(format!("Failed to read /proc: {}", e)))?
+            .map_err(|e| IronError::Other(format!("Failed to read /proc: {}", e)))?
         {
             let entry = match entry {
                 Ok(e) => e,
@@ -412,7 +412,7 @@ impl ProcessTree {
 
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-                .map_err(|e| SimonError::Other(format!("Failed to create snapshot: {}", e)))?;
+                .map_err(|e| IronError::Other(format!("Failed to create snapshot: {}", e)))?;
 
             let mut entry: PROCESSENTRY32W = mem::zeroed();
             entry.dwSize = mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -464,7 +464,7 @@ impl ProcessTree {
         let output = std::process::Command::new("ps")
             .args(["-axo", "pid,ppid,rss,comm"])
             .output()
-            .map_err(|e| SimonError::Other(format!("Failed to run ps: {}", e)))?;
+            .map_err(|e| IronError::Other(format!("Failed to run ps: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines().skip(1) {

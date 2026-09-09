@@ -5,7 +5,7 @@
 //!
 //! # Why this watches listeners rather than traffic
 //!
-//! simon can enumerate sockets ([`crate::connections`]); it cannot see packet
+//! IronMonitor can enumerate sockets ([`crate::connections`]); it cannot see packet
 //! contents, and a detector built on what it cannot see would be a stub with a
 //! confident name. What a socket table does answer well is the question that
 //! matters most after a compromise: **what is accepting connections on this
@@ -27,7 +27,7 @@
 //!
 //! # Unattributed is not unowned
 //!
-//! A socket whose process simon cannot read — commonly one owned by another user
+//! A socket whose process IronMonitor cannot read — commonly one owned by another user
 //! without elevation — carries `process: None`, not `"unknown"`. On Windows the
 //! owning PID is usually available and the *name* often is not; both are
 //! reported independently for that reason.

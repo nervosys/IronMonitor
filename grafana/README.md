@@ -1,15 +1,15 @@
-# Simon Grafana Dashboards
+# IronMonitor Grafana Dashboards
 
-Pre-built Grafana dashboards for Silicon Monitor (simon) metrics.
+Pre-built Grafana dashboards for IronMonitor (ironmon) metrics.
 
 ## Setup
 
 ### 1. Enable Prometheus Endpoint
 
-Start simon with the HTTP server and Prometheus exporter:
+Start ironmon with the HTTP server and Prometheus exporter:
 
 ```bash
-simon serve --port 9100
+ironmon serve --port 9100
 ```
 
 By default this binds to loopback and serves read-only endpoints without
@@ -17,7 +17,7 @@ authentication. To expose it on the network, bind explicitly — note that this
 makes full hardware telemetry readable by anything that can reach the port:
 
 ```bash
-simon serve --port 9100 --bind 0.0.0.0
+ironmon serve --port 9100 --bind 0.0.0.0
 ```
 
 ### 2. Configure Prometheus
@@ -27,7 +27,7 @@ Metrics are served at `/api/v1/metrics/prometheus`, not at Prometheus's default
 
 ```yaml
 scrape_configs:
-  - job_name: 'simon'
+  - job_name: 'ironmon'
     scrape_interval: 5s
     metrics_path: /api/v1/metrics/prometheus
     static_configs:
@@ -53,35 +53,35 @@ scrape_configs:
 
 ## Metric Reference
 
-All metrics use the `simon_` prefix:
+All metrics use the `ironmon_` prefix:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `simon_cpu_usage_percent` | gauge | CPU usage per core |
-| `simon_cpu_frequency_mhz` | gauge | CPU frequency per core |
-| `simon_cpu_temperature_celsius` | gauge | CPU temperature |
-| `simon_memory_used_bytes` | gauge | Used memory |
-| `simon_memory_total_bytes` | gauge | Total memory |
-| `simon_memory_usage_percent` | gauge | Memory usage percentage |
-| `simon_swap_used_bytes` | gauge | Used swap |
-| `simon_swap_total_bytes` | gauge | Total swap |
-| `simon_gpu_temperature_celsius` | gauge | GPU temperature |
-| `simon_gpu_utilization_percent` | gauge | GPU utilization |
-| `simon_gpu_memory_used_bytes` | gauge | GPU memory used |
-| `simon_gpu_memory_total_bytes` | gauge | GPU memory total |
-| `simon_gpu_power_watts` | gauge | GPU power draw |
-| `simon_gpu_clock_graphics_mhz` | gauge | GPU graphics clock |
-| `simon_gpu_clock_memory_mhz` | gauge | GPU memory clock |
-| `simon_gpu_fan_speed_percent` | gauge | GPU fan speed |
-| `simon_disk_used_bytes` | gauge | Disk space used |
-| `simon_disk_total_bytes` | gauge | Disk space total |
-| `simon_disk_usage_percent` | gauge | Disk usage percentage |
-| `simon_network_rx_bytes_total` | counter | Network bytes received |
-| `simon_network_tx_bytes_total` | counter | Network bytes transmitted |
-| `simon_process_count` | gauge | Total process count |
-| `simon_load_average_1m` | gauge | 1-minute load average |
-| `simon_load_average_5m` | gauge | 5-minute load average |
-| `simon_uptime_seconds` | gauge | System uptime |
+| `ironmon_cpu_usage_percent` | gauge | CPU usage per core |
+| `ironmon_cpu_frequency_mhz` | gauge | CPU frequency per core |
+| `ironmon_cpu_temperature_celsius` | gauge | CPU temperature |
+| `ironmon_memory_used_bytes` | gauge | Used memory |
+| `ironmon_memory_total_bytes` | gauge | Total memory |
+| `ironmon_memory_usage_percent` | gauge | Memory usage percentage |
+| `ironmon_swap_used_bytes` | gauge | Used swap |
+| `ironmon_swap_total_bytes` | gauge | Total swap |
+| `ironmon_gpu_temperature_celsius` | gauge | GPU temperature |
+| `ironmon_gpu_utilization_percent` | gauge | GPU utilization |
+| `ironmon_gpu_memory_used_bytes` | gauge | GPU memory used |
+| `ironmon_gpu_memory_total_bytes` | gauge | GPU memory total |
+| `ironmon_gpu_power_watts` | gauge | GPU power draw |
+| `ironmon_gpu_clock_graphics_mhz` | gauge | GPU graphics clock |
+| `ironmon_gpu_clock_memory_mhz` | gauge | GPU memory clock |
+| `ironmon_gpu_fan_speed_percent` | gauge | GPU fan speed |
+| `ironmon_disk_used_bytes` | gauge | Disk space used |
+| `ironmon_disk_total_bytes` | gauge | Disk space total |
+| `ironmon_disk_usage_percent` | gauge | Disk usage percentage |
+| `ironmon_network_rx_bytes_total` | counter | Network bytes received |
+| `ironmon_network_tx_bytes_total` | counter | Network bytes transmitted |
+| `ironmon_process_count` | gauge | Total process count |
+| `ironmon_load_average_1m` | gauge | 1-minute load average |
+| `ironmon_load_average_5m` | gauge | 5-minute load average |
+| `ironmon_uptime_seconds` | gauge | System uptime |
 
 ## Customization
 

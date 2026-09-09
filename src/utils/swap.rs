@@ -3,7 +3,7 @@
 //! Create, enable, disable, and manage swap files.
 
 use super::verify_sudo_available;
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,7 +36,7 @@ pub fn status() -> Result<Vec<SwapInfo>> {
         .arg("--noheadings")
         .arg("--raw")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         return Ok(Vec::new());
@@ -97,19 +97,19 @@ fn validate_swap_path(path: &Path) -> Result<PathBuf> {
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().map_err(SimonError::Io)?.join(path)
+        std::env::current_dir().map_err(IronError::Io)?.join(path)
     };
 
     // Get parent directory for validation
     let parent = abs_path
         .parent()
-        .ok_or_else(|| SimonError::InvalidValue("Invalid path: no parent directory".into()))?;
+        .ok_or_else(|| IronError::InvalidValue("Invalid path: no parent directory".into()))?;
 
     // Check if parent exists and canonicalize to resolve symlinks
     let canonical_parent = if parent.exists() {
-        parent.canonicalize().map_err(SimonError::Io)?
+        parent.canonicalize().map_err(IronError::Io)?
     } else {
-        return Err(SimonError::InvalidValue(format!(
+        return Err(IronError::InvalidValue(format!(
             "Parent directory does not exist: {}",
             parent.display()
         )));
@@ -122,7 +122,7 @@ fn validate_swap_path(path: &Path) -> Result<PathBuf> {
         .any(|allowed_dir| path_str.starts_with(allowed_dir));
 
     if !is_allowed {
-        return Err(SimonError::PermissionDenied(format!(
+        return Err(IronError::PermissionDenied(format!(
             "Swap files only allowed in approved directories: {:?}. Got: {}",
             ALLOWED_SWAP_DIRS,
             canonical_parent.display()
@@ -132,13 +132,13 @@ fn validate_swap_path(path: &Path) -> Result<PathBuf> {
     // Reconstruct full path with canonical parent
     let filename = abs_path
         .file_name()
-        .ok_or_else(|| SimonError::InvalidValue("Invalid filename".into()))?;
+        .ok_or_else(|| IronError::InvalidValue("Invalid filename".into()))?;
 
     let validated_path = canonical_parent.join(filename);
 
     // Security check: ensure the final path doesn't exist as a symlink
     if validated_path.exists() && validated_path.is_symlink() {
-        return Err(SimonError::InvalidValue(
+        return Err(IronError::InvalidValue(
             "Path is a symlink, which is not allowed for security reasons".into(),
         ));
     }
@@ -153,13 +153,13 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
 
     // Security: Validate size limit to prevent disk exhaustion
     if size_gb == 0 {
-        return Err(SimonError::InvalidValue(
+        return Err(IronError::InvalidValue(
             "Swap size must be greater than 0".into(),
         ));
     }
 
     if size_gb > MAX_SWAP_SIZE_GB {
-        return Err(SimonError::InvalidValue(format!(
+        return Err(IronError::InvalidValue(format!(
             "Swap size exceeds maximum allowed: {} GB (max: {} GB)",
             size_gb, MAX_SWAP_SIZE_GB
         )));
@@ -170,7 +170,7 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
 
     // Check if already exists
     if validated_path.exists() {
-        return Err(SimonError::InvalidValue(format!(
+        return Err(IronError::InvalidValue(format!(
             "Swap file already exists: {}",
             validated_path.display()
         )));
@@ -194,11 +194,11 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
         .arg(format!("count={}", block_count))
         .arg("status=progress")
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to create swap file: {}",
             stderr
         )));
@@ -210,18 +210,18 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
         .arg("600")
         .arg(&validated_path)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     // Make swap
     let output = Command::new("sudo")
         .arg("mkswap")
         .arg(&validated_path)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to make swap: {}",
             stderr
         )));
@@ -248,11 +248,11 @@ pub fn enable(path: &Path) -> Result<()> {
         .arg("swapon")
         .arg(path)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to enable swap: {}",
             stderr
         )));
@@ -270,11 +270,11 @@ pub fn disable(path: &Path) -> Result<()> {
         .arg("swapoff")
         .arg(path)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to disable swap: {}",
             stderr
         )));
@@ -288,7 +288,7 @@ fn add_to_fstab(path: &Path) -> Result<()> {
     use std::io::Write;
 
     // Canonicalize path to prevent injection
-    let canonical_path = path.canonicalize().map_err(SimonError::Io)?;
+    let canonical_path = path.canonicalize().map_err(IronError::Io)?;
 
     let fstab_entry = format!("{} none swap sw 0 0\n", canonical_path.display());
 
@@ -308,20 +308,20 @@ fn add_to_fstab(path: &Path) -> Result<()> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     // Write to stdin
     if let Some(ref mut stdin) = child.stdin {
         stdin
             .write_all(fstab_entry.as_bytes())
-            .map_err(SimonError::Io)?;
+            .map_err(IronError::Io)?;
     }
 
-    let output = child.wait_with_output().map_err(SimonError::Io)?;
+    let output = child.wait_with_output().map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to add to fstab: {}",
             stderr
         )));
@@ -346,11 +346,11 @@ pub fn remove(path: &Path) -> Result<()> {
         .arg("rm")
         .arg(path)
         .output()
-        .map_err(SimonError::Io)?;
+        .map_err(IronError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SimonError::CommandFailed(format!(
+        return Err(IronError::CommandFailed(format!(
             "Failed to remove swap file: {}",
             stderr
         )));

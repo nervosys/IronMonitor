@@ -4,7 +4,7 @@
 //! using local models and remote APIs.
 
 use crate::agent::{AgentConfig, Query, RemoteClient, SystemState};
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::time::Instant;
 
 /// Inference engine (ML-powered only)
@@ -21,7 +21,7 @@ impl InferenceEngine {
         let remote_client = if let Some(ref backend_config) = config.backend {
             RemoteClient::new(backend_config.clone())?
         } else {
-            return Err(SimonError::Configuration(
+            return Err(IronError::Configuration(
                 "No backend configured. Agent requires an AI backend (Ollama, OpenAI, etc.)"
                     .to_string(),
             ));
@@ -44,7 +44,7 @@ impl InferenceEngine {
         // Check timeout
         let elapsed = start.elapsed();
         if elapsed.as_secs() > self.config.timeout_seconds {
-            return Err(SimonError::Other(format!(
+            return Err(IronError::Other(format!(
                 "Inference timeout after {} seconds",
                 elapsed.as_secs()
             )));
@@ -66,7 +66,7 @@ impl InferenceEngine {
         // Build system prompt with context
         let system_prompt = if has_tool_context {
             // When tool context is embedded, instruct the AI to use it
-            "You are a hardware monitoring assistant for Silicon Monitor. \
+            "You are a hardware monitoring assistant for IronMonitor. \
             The user's question includes REAL-TIME SYSTEM DATA in JSON format that was \
             automatically gathered from monitoring tools. Use this data to provide specific, \
             accurate answers. Reference actual values from the JSON (temperatures, memory usage, \

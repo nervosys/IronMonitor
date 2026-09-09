@@ -8,7 +8,7 @@
 //! - **Linux**: `/sys/class/watchdog/`, `/dev/watchdog*`
 //! - **Windows / macOS**: Basic detection only
 
-use crate::error::SimonError;
+use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
 /// Watchdog device type.
@@ -127,13 +127,13 @@ pub struct WatchdogMonitor {
 
 impl WatchdogMonitor {
     /// Create a new watchdog monitor.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let overview = Self::scan()?;
         Ok(Self { overview })
     }
 
     /// Refresh.
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.overview = Self::scan()?;
         Ok(())
     }
@@ -154,14 +154,14 @@ impl WatchdogMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn scan() -> Result<WatchdogOverview, SimonError> {
+    fn scan() -> Result<WatchdogOverview, IronError> {
         let wdt_path = std::path::Path::new("/sys/class/watchdog");
 
         if !wdt_path.exists() {
             return Ok(Self::empty_overview());
         }
 
-        let entries = std::fs::read_dir(wdt_path).map_err(SimonError::Io)?;
+        let entries = std::fs::read_dir(wdt_path).map_err(IronError::Io)?;
         let mut devices = Vec::new();
 
         for entry in entries.flatten() {
@@ -272,12 +272,12 @@ impl WatchdogMonitor {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn scan() -> Result<WatchdogOverview, SimonError> {
+    fn scan() -> Result<WatchdogOverview, IronError> {
         // Returning an empty overview here made "this platform cannot
         // answer" indistinguishable from "this machine has none", which
         // is the same defect RAPL shipped once. The reason travels with
         // the error so a caller can report it.
-        Err(SimonError::UnsupportedPlatform(
+        Err(IronError::UnsupportedPlatform(
             "watchdog devices are read from `/sys/class/watchdog`, which this platform does not expose"
                 .into(),
         ))

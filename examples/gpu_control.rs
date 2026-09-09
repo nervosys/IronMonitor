@@ -5,13 +5,13 @@ use std::error::Error;
 fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "linux")]
     {
-        // `SiliconMonitor` has no `snapshot`; the type with one — returning a
-        // `Snapshot` whose `gpus` is the map this example walks — is `stats::Simon`.
+        // `UnifiedMonitor` has no `snapshot`; the type with one — returning a
+        // `Snapshot` whose `gpus` is the map this example walks — is `stats::IronMonitor`.
         // Being Linux-only, this example had never been compiled.
         // `GpuStats` is used only by the commented-out control block below.
-        use simonlib::stats::Simon;
+        use ironmonlib::stats::IronMonitor;
 
-        let mut stats = Simon::new()?;
+        let mut stats = IronMonitor::new()?;
         let snapshot = stats.snapshot()?;
 
         println!("=== GPU Control Example (Jetson) ===\n");
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // the block rather than outside it — left outside, it was a binding the
         // live code never used, which clippy rejects under -D warnings.
         /*
-        let mut gpu_stats = simonlib::core::gpu::GpuStats::new();
+        let mut gpu_stats = ironmonlib::core::gpu::GpuStats::new();
         if let Some((name, gpu)) = snapshot.gpus.iter().next() {
             if let Some(current_scaling) = gpu.status.scaling_3d {
                 println!("Toggling 3D scaling for GPU: {}", name);

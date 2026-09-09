@@ -2,7 +2,7 @@
 
 ## Overview
 
-Silicon Monitor (simon) provides comprehensive disk and storage monitoring across all major platforms, supporting NVMe SSDs, SATA SSDs/HDDs, and other storage devices.
+IronMonitor (ironmon) provides comprehensive disk and storage monitoring across all major platforms, supporting NVMe SSDs, SATA SSDs/HDDs, and other storage devices.
 
 ## Architecture
 
@@ -108,12 +108,12 @@ Silicon Monitor (simon) provides comprehensive disk and storage monitoring acros
 > `IOCTL_ATA_PASS_THROUGH` is the obvious way to read SATA SMART and it cannot be
 > done unelevated: the I/O manager checks the handle's access mask before the
 > driver is reached, and a read/write handle on `\\.\PhysicalDriveN` requires
-> Administrator. Measured on all four drives of the development machine. simon
+> Administrator. Measured on all four drives of the development machine. ironmon
 > therefore asks `IOCTL_STORAGE_PREDICT_FAILURE` instead, whose 512
 > vendor-specific bytes are the SMART READ DATA structure for an ATA device.
 >
 > Devices that answer neither — USB bridges that do not tunnel SMART — still
-> depend on `Get-StorageReliabilityCounter` and so on elevation. simon reports
+> depend on `Get-StorageReliabilityCounter` and so on elevation. IronMonitor reports
 > their counters as unavailable rather than as zero — the pre-3.0.0 behaviour
 > turned an access-denied error into "0 °C, 0 power-on hours, healthy" for every
 > drive on the system.
@@ -238,7 +238,7 @@ NVMe-specific information:
 ### Basic Disk Enumeration
 
 ```rust
-use simon::disk;
+use ironmon::disk;
 
 // Enumerate all disks
 let disks = disk::enumerate_disks()?;
@@ -255,7 +255,7 @@ for disk in disks {
 ### I/O Statistics Monitoring
 
 ```rust
-use simon::disk;
+use ironmon::disk;
 use std::time::Duration;
 
 let disks = disk::enumerate_disks()?;
@@ -277,7 +277,7 @@ println!("Write: {} MB/s", write_bytes_per_sec / 1_000_000);
 ### Temperature Monitoring
 
 ```rust
-use simon::disk;
+use ironmon::disk;
 
 let disks = disk::enumerate_disks()?;
 
@@ -291,7 +291,7 @@ for disk in disks {
 ### Filesystem Information
 
 ```rust
-use simon::disk;
+use ironmon::disk;
 
 let disks = disk::enumerate_disks()?;
 
@@ -311,7 +311,7 @@ for disk in disks {
 ### Per-Process I/O (Linux)
 
 ```rust
-use simon::disk::linux;
+use ironmon::disk::linux;
 
 // Get I/O stats for a specific process
 let io = linux::get_process_io(1234)?;

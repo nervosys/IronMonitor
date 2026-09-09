@@ -1,10 +1,10 @@
-# Silicon Monitor (simon) — Development Roadmap
+# IronMonitor (ironmon) — Development Roadmap
 
 ## Overview
 
-Silicon Monitor is the world's first agentic system monitoring utility and API. Built in Rust, it provides unified cross-platform APIs for CPUs, GPUs (NVIDIA/AMD/Intel/Apple), NPUs, memory, disks, motherboards, processes, network interfaces, peripherals (audio, Bluetooth, display, USB), and more — with native AI agent integration.
+IronMonitor is the world's first agentic system monitoring utility and API. Built in Rust, it provides unified cross-platform APIs for CPUs, GPUs (NVIDIA/AMD/Intel/Apple), NPUs, memory, disks, motherboards, processes, network interfaces, peripherals (audio, Bluetooth, display, USB), and more — with native AI agent integration.
 
-- **Crate**: [`silicon-monitor`](https://crates.io/crates/silicon-monitor) v1.1.0
+- **Crate**: [`iron-monitor`](https://crates.io/crates/iron-monitor) v1.1.0
 - **License**: AGPL-3.0-or-later (commercial dual-license available)
 - **MSRV**: Rust 1.70+
 
@@ -63,7 +63,7 @@ Silicon Monitor is the world's first agentic system monitoring utility and API. 
   - Data export (JSON/CSV)
   - Emoji font support (Noto Emoji)
 - [x] **TUI (ratatui)** — Terminal dashboard with selectable color themes, Peripherals tab, process detail view
-- [x] **CLI** — `simon` (component monitoring) + `amon` (AI agent interface), `--watch` mode
+- [x] **CLI** — `ironmon` (component monitoring) + `amon` (AI agent interface), `--watch` mode
 
 ### Infrastructure
 - [x] **Time-series DB** — File-based TSDB with binary format, rotation, process snapshots
@@ -122,7 +122,7 @@ Silicon Monitor is the world's first agentic system monitoring utility and API. 
 - [x] Criterion benchmarks (CPU stats, GPU queries, process enumeration)
 - [x] 293 tests passing
 - [x] Release profile optimized (`lto = true`, `codegen-units = 1`, `strip = true`)
-- [x] Published to [crates.io](https://crates.io/crates/silicon-monitor)
+- [x] Published to [crates.io](https://crates.io/crates/iron-monitor)
 
 ---
 
@@ -198,7 +198,7 @@ Legend: ✅ Supported | ⚠️ Partial | ❌ Not applicable
 
 ## 📅 Release History
 
-### v1.1.0 (February 19, 2026) — [crates.io](https://crates.io/crates/silicon-monitor/1.1.0)
+### v1.1.0 (February 19, 2026) — [crates.io](https://crates.io/crates/iron-monitor/1.1.0)
 - Datacenter monitoring: IPMI/BMC sensors, chassis detection, rack topology
 - Virtualization: hypervisor detection (17 types), guest resources, container engines (10 types)
 - Fleet management: multi-host registration, health scoring, threshold alerting

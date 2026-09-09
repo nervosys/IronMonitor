@@ -1,10 +1,10 @@
 {
   "dashboard": {
     "id": null,
-    "uid": "simon-fleet-overview",
-    "title": "Simon Fleet Overview",
-    "description": "Multi-host fleet monitoring with Silicon Monitor",
-    "tags": ["simon", "fleet"],
+    "uid": "ironmon-fleet-overview",
+    "title": "IronMonitor Fleet Overview",
+    "description": "Multi-host fleet monitoring with IronMonitor",
+    "tags": ["ironmon", "fleet"],
     "timezone": "browser",
     "refresh": "10s",
     "time": { "from": "now-1h", "to": "now" },
@@ -13,7 +13,7 @@
         {
           "name": "instance",
           "type": "query",
-          "query": "label_values(simon_cpu_usage_percent, instance)",
+          "query": "label_values(ironmon_cpu_usage_percent, instance)",
           "multi": true,
           "includeAll": true
         }
@@ -24,73 +24,73 @@
         "title": "Host Count",
         "type": "stat",
         "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
-        "targets": [{ "expr": "count(up{job=\"simon\"})" }]
+        "targets": [{ "expr": "count(up{job=\"ironmon\"})" }]
       },
       {
         "title": "GPU Count",
         "type": "stat",
         "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
-        "targets": [{ "expr": "count(simon_gpu_temperature_celsius)" }]
+        "targets": [{ "expr": "count(ironmon_gpu_temperature_celsius)" }]
       },
       {
         "title": "Fleet Health",
         "type": "gauge",
         "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
-        "targets": [{ "expr": "avg(100 - simon_cpu_usage_percent{instance=~\"$instance\"})" }],
+        "targets": [{ "expr": "avg(100 - ironmon_cpu_usage_percent{instance=~\"$instance\"})" }],
         "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" } }
       },
       {
         "title": "CPU Usage by Host",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-        "targets": [{ "expr": "simon_cpu_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+        "targets": [{ "expr": "ironmon_cpu_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
       },
       {
         "title": "Memory Usage by Host",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-        "targets": [{ "expr": "simon_memory_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+        "targets": [{ "expr": "ironmon_memory_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
       },
       {
         "title": "GPU Temperature",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-        "targets": [{ "expr": "simon_gpu_temperature_celsius{instance=~\"$instance\"}", "legendFormat": "{{instance}} GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_temperature_celsius{instance=~\"$instance\"}", "legendFormat": "{{instance}} GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "celsius" } }
       },
       {
         "title": "GPU Utilization",
         "type": "timeseries",
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-        "targets": [{ "expr": "simon_gpu_utilization_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}} GPU{{gpu}}" }],
+        "targets": [{ "expr": "ironmon_gpu_utilization_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}} GPU{{gpu}}" }],
         "fieldConfig": { "defaults": { "unit": "percent" } }
       },
       {
         "title": "Network RX",
         "type": "timeseries",
         "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
-        "targets": [{ "expr": "rate(simon_network_rx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "{{instance}}" }],
+        "targets": [{ "expr": "rate(ironmon_network_rx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "{{instance}}" }],
         "fieldConfig": { "defaults": { "unit": "Bps" } }
       },
       {
         "title": "Network TX",
         "type": "timeseries",
         "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
-        "targets": [{ "expr": "rate(simon_network_tx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "{{instance}}" }],
+        "targets": [{ "expr": "rate(ironmon_network_tx_bytes_total{instance=~\"$instance\"}[5m])", "legendFormat": "{{instance}}" }],
         "fieldConfig": { "defaults": { "unit": "Bps" } }
       },
       {
         "title": "Disk Usage",
         "type": "bargauge",
         "gridPos": { "h": 6, "w": 12, "x": 0, "y": 26 },
-        "targets": [{ "expr": "simon_disk_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}} {{device}}" }],
+        "targets": [{ "expr": "ironmon_disk_usage_percent{instance=~\"$instance\"}", "legendFormat": "{{instance}} {{device}}" }],
         "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" } }
       },
       {
         "title": "Process Count",
         "type": "stat",
         "gridPos": { "h": 6, "w": 12, "x": 12, "y": 26 },
-        "targets": [{ "expr": "simon_process_count{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+        "targets": [{ "expr": "ironmon_process_count{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
       }
     ]
   }

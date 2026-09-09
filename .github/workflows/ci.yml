@@ -48,7 +48,7 @@ jobs:
     # enabled *alone*, because some other feature always supplies what it is
     # missing.
     #
-    # In 3.0.0 that gap was live: `simon` called `simonlib::gui::run()` in the
+    # In 3.0.0 that gap was live: `ironmon` called `ironmonlib::gui::run()` in the
     # `None` arm of the command match without a `cfg(feature = "gui")`, so
     # `--no-default-features --features cli` failed with five unresolved imports.
     # The README advertised `cli` as a standalone flag for eight published
@@ -75,14 +75,14 @@ jobs:
           # isolation tests cargo, not this crate.
           features=$(cargo metadata --no-deps --format-version 1 | node -e "
           let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
-            const p=JSON.parse(s).packages.find(p=>p.name==='silicon-monitor');
+            const p=JSON.parse(s).packages.find(p=>p.name==='iron-monitor');
             const optional=new Set(p.dependencies.filter(d=>d.optional).map(d=>d.name));
             console.log(Object.keys(p.features).filter(f=>f!=='default'&&!optional.has(f)).join('\n'));
           });")
           # --all-targets, so examples and test targets are covered too. Without
           # it this job checked only the library and binaries, and missed three
           # things of exactly the kind it exists to find: examples/gui.rs naming
-          # `simonlib::gui` with no required-features, a #[test] in
+          # `ironmonlib::gui` with no required-features, a #[test] in
           # platform/windows.rs calling `num_cpus` (an optional dependency the
           # `cli` feature supplies), and examples/all_gpus.rs failing to infer a
           # HashMap type with no vendor feature enabled.

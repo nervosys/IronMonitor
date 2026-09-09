@@ -142,12 +142,12 @@ impl ChassisInfo {
             version: read_opt("product_version"),
             sku: read_opt("product_sku"),
             location: ServerLocation {
-                rack_id: std::env::var("SIMON_RACK_ID").ok(),
-                rack_unit: std::env::var("SIMON_RACK_UNIT")
+                rack_id: std::env::var("IRONMON_RACK_ID").ok(),
+                rack_unit: std::env::var("IRONMON_RACK_UNIT")
                     .ok()
                     .and_then(|v| v.parse().ok()),
-                datacenter: std::env::var("SIMON_DATACENTER").ok(),
-                room: std::env::var("SIMON_ROOM").ok(),
+                datacenter: std::env::var("IRONMON_DATACENTER").ok(),
+                room: std::env::var("IRONMON_ROOM").ok(),
             },
         })
     }

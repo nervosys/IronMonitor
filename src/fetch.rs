@@ -6,19 +6,19 @@
 //! # What this is for
 //!
 //! One screen a person can read at a glance, and paste into an issue. It is the
-//! least precise surface simon has and the most looked at, which is exactly why
+//! least precise surface IronMonitor has and the most looked at, which is exactly why
 //! it must not round an absence into a plausible number.
 //!
 //! # Unknown is printed as unknown
 //!
 //! Every other tool of this shape prints a dash, a zero, or omits the line. This
 //! one prints the reason where there is room for it, because the difference
-//! between "this machine has no GPU" and "simon cannot read GPUs on this
+//! between "this machine has no GPU" and "IronMonitor cannot read GPUs on this
 //! platform" is the difference between buying hardware and filing a bug.
 //!
 //! The rendering is deliberately built from [`crate::ontology::resolve`] rather
 //! than from the individual monitors. One resolver means one set of answers: a
-//! summary that disagreed with `simon snapshot` about the same machine would
+//! summary that disagreed with `ironmon snapshot` about the same machine would
 //! make both untrustworthy, and the summary is the one people quote.
 
 use crate::ontology::resolve::Reading;
@@ -77,7 +77,7 @@ pub struct ArtLine(pub &'static str, pub Colour);
 ///
 /// The shapes are the conventional ones — a four-pane flag, a penguin, an apple —
 /// because a summary people paste into issues should look like the tool they
-/// expect. They are not vendor logos and simon claims no trademark in them.
+/// expect. They are not vendor logos and ironmon claims no trademark in them.
 pub fn logo() -> Vec<ArtLine> {
     #[cfg(windows)]
     {
@@ -177,13 +177,13 @@ fn find<'a>(readings: &'a [Reading], id: &str) -> Option<&'a Reading> {
 /// Render one reading as a line, carrying its reason when it has no value.
 /// Every reading measured in degrees Celsius, whatever its id.
 ///
-/// `simon cli temperature` used to render `Simon::snapshot().temperature`,
+/// `ironmon cli temperature` used to render `IronMonitor::snapshot().temperature`,
 /// whose Windows reader looks only for CPU and motherboard sensors through
 /// OpenHardwareMonitor, LibreHardwareMonitor and ACPI thermal zones — and
 /// deliberately skips GPUs, with the comment "GPU temps come from NVML". That
 /// is true of the crate and false of the command. With none of those three
 /// present the map was empty and the command printed "No temperature sensors
-/// detected", on a desktop where `simon snapshot` read two GPUs and three NVMe
+/// detected", on a desktop where `ironmon snapshot` read two GPUs and three NVMe
 /// drives seconds earlier, in the same binary.
 ///
 /// Selecting on the declared unit rather than on the id shape means a
@@ -205,7 +205,7 @@ pub fn temperatures(readings: &[Reading]) -> Vec<&Reading> {
 /// and a milliwatt draw are all power facts with different units — so this
 /// matches on the id. The defect it fixes is the same one as [`temperatures`]:
 /// `PowerStats.rails` is hwmon, which Windows does not expose, so
-/// `simon cli power` said "No power rails exposed by this platform" while the
+/// `ironmon cli power` said "No power rails exposed by this platform" while the
 /// ontology held both GPUs' draw and limit, the battery percentage and the
 /// active power profile.
 pub fn power(readings: &[Reading]) -> Vec<&Reading> {
@@ -304,7 +304,7 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
 
     // GPUs are instanced, so they are gathered rather than named. A machine with
     // none gets the `gpu.<none>` diagnostic and its reason, which is the whole
-    // point: "no GPU here" and "simon cannot read GPUs here" look different.
+    // point: "no GPU here" and "IronMonitor cannot read GPUs here" look different.
     let gpus: BTreeMap<&str, &Reading> = readings
         .iter()
         .filter(|r| r.id.starts_with("gpu.") && r.id.ends_with(".name"))
@@ -468,7 +468,7 @@ mod tests {
         assert!(
             rendered.contains("permission denied"),
             "a summary that prints a dash makes a reader guess whether the \
-             machine lacks the thing or simon lacks the reader: {rendered}"
+             machine lacks the thing or ironmon lacks the reader: {rendered}"
         );
     }
 
@@ -622,7 +622,7 @@ mod tests {
 
     /// The command named "temperature" must not show one subsystem's sensors.
     ///
-    /// `simon cli temperature` printed "No temperature sensors detected" on a
+    /// `ironmon cli temperature` printed "No temperature sensors detected" on a
     /// desktop with five readable sensors, because it rendered a struct whose
     /// Windows reader covers CPU and motherboard only and skips GPUs on
     /// purpose. Every temperature entity is declared in the ontology whether or
@@ -701,7 +701,7 @@ mod tests {
         assert!(
             power.iter().any(|r| r.id.contains(".power.")),
             concat!(
-                "no per-device power reading was selected; `simon cli power` ",
+                "no per-device power reading was selected; `ironmon cli power` ",
                 "would again report nothing on a platform without hwmon rails"
             )
         );

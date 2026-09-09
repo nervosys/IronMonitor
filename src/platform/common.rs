@@ -1,6 +1,6 @@
 //! Common platform utilities
 
-use crate::error::{Result, SimonError};
+use crate::error::{IronError, Result};
 use std::fs;
 use std::path::Path;
 
@@ -14,7 +14,7 @@ pub fn read_file_u64<P: AsRef<Path>>(path: P) -> Result<u64> {
     let content = read_file_string(path)?;
     content
         .parse()
-        .map_err(|e| SimonError::Parse(format!("Failed to parse u64: {}", e)))
+        .map_err(|e| IronError::Parse(format!("Failed to parse u64: {}", e)))
 }
 
 /// Read file and parse as u32
@@ -22,7 +22,7 @@ pub fn read_file_u32<P: AsRef<Path>>(path: P) -> Result<u32> {
     let content = read_file_string(path)?;
     content
         .parse()
-        .map_err(|e| SimonError::Parse(format!("Failed to parse u32: {}", e)))
+        .map_err(|e| IronError::Parse(format!("Failed to parse u32: {}", e)))
 }
 
 /// Read file and parse as f32
@@ -30,7 +30,7 @@ pub fn read_file_f32<P: AsRef<Path>>(path: P) -> Result<f32> {
     let content = read_file_string(path)?;
     content
         .parse()
-        .map_err(|e| SimonError::Parse(format!("Failed to parse f32: {}", e)))
+        .map_err(|e| IronError::Parse(format!("Failed to parse f32: {}", e)))
 }
 
 /// Check if file/directory exists

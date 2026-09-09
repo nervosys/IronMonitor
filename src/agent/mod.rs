@@ -15,7 +15,7 @@
 //! Read these before building on this module — several are easy to assume otherwise.
 //!
 //! - **A backend is required.** There is no built-in offline inference. [`Agent::new`]
-//!   fails with [`SimonError::Configuration`] when no backend is configured. Set one
+//!   fails with [`IronError::Configuration`] when no backend is configured. Set one
 //!   explicitly, or use [`AgentConfig::auto_detect`] to discover a running local
 //!   server.
 //! - **Where your telemetry goes depends on the backend you choose.** A local backend
@@ -48,8 +48,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use simonlib::agent::{Agent, AgentConfig};
-//! use simonlib::SiliconMonitor;
+//! use ironmonlib::agent::{Agent, AgentConfig};
+//! use ironmonlib::UnifiedMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Discover a locally running inference server. Fails if none is available —
@@ -57,7 +57,7 @@
 //! let config = AgentConfig::auto_detect()?;
 //! let mut agent = Agent::new(config)?;
 //!
-//! let monitor = SiliconMonitor::new()?;
+//! let monitor = UnifiedMonitor::new()?;
 //!
 //! // Blocking call: run this off any UI thread.
 //! let response = agent.ask("What's my GPU temperature and is it safe?", &monitor)?;
@@ -75,8 +75,8 @@ pub mod query;
 pub mod remote;
 pub mod state;
 
-use crate::error::{Result, SimonError};
-use crate::SiliconMonitor;
+use crate::error::{IronError, Result};
+use crate::UnifiedMonitor;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -93,7 +93,7 @@ pub use state::SystemState;
 
 /// The model to ask a hosted provider for when the caller named none.
 ///
-/// These are the only place in the non-interactive path where simon picks a model
+/// These are the only place in the non-interactive path where ironmon picks a model
 /// name, and a name is all a hosted provider will accept — unlike a local server,
 /// there is nothing to ask "what are you serving?" without a credential. So they
 /// are a starting point, not a claim about what is current: a provider ships a new
@@ -224,19 +224,19 @@ impl AgentConfig {
         }
     }
 
-    /// Get default model directory (~/.cache/simon/models)
+    /// Get default model directory (~/.cache/ironmon/models)
     fn default_model_dir() -> PathBuf {
         #[cfg(unix)]
         {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join(".cache/simon/models")
+            PathBuf::from(home).join(".cache/ironmon/models")
         }
 
         #[cfg(windows)]
         {
             let local_app_data =
                 std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Temp".to_string());
-            PathBuf::from(local_app_data).join("simon\\models")
+            PathBuf::from(local_app_data).join("ironmon\\models")
         }
     }
 
@@ -294,7 +294,7 @@ impl AgentConfig {
         let available_backends = discovery.available();
 
         if available_backends.is_empty() {
-            return Err(SimonError::Configuration(
+            return Err(IronError::Configuration(
                 "No AI backends available. Please install Ollama (https://ollama.com), \
                 configure an API key (OPENAI_API_KEY or GITHUB_TOKEN), or set up another backend."
                     .to_string(),
@@ -307,7 +307,7 @@ impl AgentConfig {
         let backend_config = match backend_type {
             BackendType::IronWorks => {
                 // The server decides which model it serves; "default" asks for
-                // whatever is loaded rather than pinning a name simon cannot know.
+                // whatever is loaded rather than pinning a name IronMonitor cannot know.
                 BackendConfig::ironworks("default")
             }
             // CLI tools use whatever model they are already configured for;
@@ -335,7 +335,7 @@ impl AgentConfig {
                 BackendConfig::tensorrt("local-model") // TensorRT model
             }
             _ => {
-                return Err(SimonError::Configuration(format!(
+                return Err(IronError::Configuration(format!(
                     "Backend {} auto-detection not supported. Please configure manually.",
                     backend_type.display_name()
                 )));
@@ -364,7 +364,7 @@ impl AgentConfig {
             BackendType::RemoteVllm => BackendConfig::vllm("local-model"),
             BackendType::RemoteTensorRT => BackendConfig::tensorrt("local-model"),
             _ => {
-                return Err(SimonError::Configuration(format!(
+                return Err(IronError::Configuration(format!(
                     "Backend {} is not supported or requires manual configuration",
                     backend_type.display_name()
                 )));
@@ -494,18 +494,18 @@ impl Agent {
     /// # Example
     ///
     /// ```no_run
-    /// # use simonlib::agent::{Agent, AgentConfig};
-    /// # use simonlib::SiliconMonitor;
+    /// # use ironmonlib::agent::{Agent, AgentConfig};
+    /// # use ironmonlib::UnifiedMonitor;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut agent = Agent::new(AgentConfig::default())?;
-    /// let monitor = SiliconMonitor::new()?;
+    /// let monitor = UnifiedMonitor::new()?;
     ///
     /// let response = agent.ask("What's my GPU utilization?", &monitor)?;
     /// println!("Agent: {}", response.response);
     /// # Ok(())
     /// # }
     /// ```
-    pub fn ask(&mut self, question: &str, monitor: &SiliconMonitor) -> Result<AgentResponse> {
+    pub fn ask(&mut self, question: &str, monitor: &UnifiedMonitor) -> Result<AgentResponse> {
         self.refuse_if_offline_and_offhost()?;
 
         let start = Instant::now();
@@ -545,7 +545,7 @@ impl Agent {
             let mut engine_lock = self.engine.lock().unwrap();
             let engine = engine_lock
                 .as_mut()
-                .ok_or_else(|| SimonError::Other("Agent not initialized".to_string()))?;
+                .ok_or_else(|| IronError::Other("Agent not initialized".to_string()))?;
 
             engine.generate_response(&query, &state)?
         };
@@ -608,7 +608,7 @@ impl Agent {
         if backend.backend_type.runs_on_host() {
             return Ok(());
         }
-        Err(crate::error::SimonError::Other(format!(
+        Err(crate::error::IronError::Other(format!(
             "refusing to query {:?} in offline mode: it would send this machine's \
              hardware details off-host. Use a backend that runs locally (IronWorks, \
              Ollama), or drop --offline if you intend the data to leave.",
@@ -619,7 +619,7 @@ impl Agent {
     pub fn ask_with_timeout(
         &mut self,
         question: &str,
-        monitor: &SiliconMonitor,
+        monitor: &UnifiedMonitor,
         _timeout: Duration,
     ) -> Result<AgentResponse> {
         self.ask(question, monitor)
@@ -706,7 +706,7 @@ mod offline_enforcement_tests {
     #[test]
     fn offline_refuses_a_backend_that_would_send_data_off_host() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("SIMON_OFFLINE", "1");
+        std::env::set_var("IRONMON_OFFLINE", "1");
 
         let agent = agent_with(BackendConfig::anthropic(
             DEFAULT_ANTHROPIC_MODEL,
@@ -725,7 +725,7 @@ mod offline_enforcement_tests {
             "the refusal should name a way forward: {msg}"
         );
 
-        std::env::remove_var("SIMON_OFFLINE");
+        std::env::remove_var("IRONMON_OFFLINE");
     }
 
     /// Over-blocking would make the flag useless for the private path it exists to
@@ -733,7 +733,7 @@ mod offline_enforcement_tests {
     #[test]
     fn offline_permits_a_backend_that_runs_on_this_machine() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("SIMON_OFFLINE", "1");
+        std::env::set_var("IRONMON_OFFLINE", "1");
 
         let agent = agent_with(BackendConfig::ironworks("test-model"));
         assert!(
@@ -742,14 +742,14 @@ mod offline_enforcement_tests {
              pushes users toward the hosted path it is meant to avoid"
         );
 
-        std::env::remove_var("SIMON_OFFLINE");
+        std::env::remove_var("IRONMON_OFFLINE");
     }
 
     /// Without the flag nothing changes; the guard must not alter default behaviour.
     #[test]
     fn without_offline_a_hosted_backend_is_permitted() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var("SIMON_OFFLINE");
+        std::env::remove_var("IRONMON_OFFLINE");
 
         let agent = agent_with(BackendConfig::anthropic(
             DEFAULT_ANTHROPIC_MODEL,

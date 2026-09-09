@@ -1,14 +1,14 @@
-# Commercial License for Silicon Monitor
+# Commercial License for IronMonitor
 
 Copyright (C) 2024-2026 NERVOSYS. All rights reserved.
 
 ## Dual Licensing
 
-Silicon Monitor is available under two licensing options:
+IronMonitor is available under two licensing options:
 
 ### 1. GNU Affero General Public License v3 (AGPL-3.0-or-later)
 
-The default license for Silicon Monitor is the **GNU Affero General Public License v3**. Under this license:
+The default license for IronMonitor is the **GNU Affero General Public License v3**. Under this license:
 
 - You may freely use, copy, modify, and distribute the software.
 - If you modify the software and make it available over a network (e.g., as a web service), you **must** make the complete source code of your modified version available to users of that service.
@@ -19,9 +19,9 @@ The default license for Silicon Monitor is the **GNU Affero General Public Licen
 
 If the AGPL requirements are incompatible with your use case — for example, if you want to:
 
-- Integrate Silicon Monitor into proprietary/closed-source software
-- Distribute Silicon Monitor without disclosing your source code
-- Offer Silicon Monitor as a hosted/SaaS service without AGPL obligations
+- Integrate IronMonitor into proprietary/closed-source software
+- Distribute IronMonitor without disclosing your source code
+- Offer IronMonitor as a hosted/SaaS service without AGPL obligations
 - Use the software under terms that do not require network-use disclosure
 - Receive dedicated support, warranty, or indemnification
 

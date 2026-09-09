@@ -7,16 +7,16 @@
 //! cargo run --release --features full --example agent_simple
 //! ```
 
-use simonlib::agent::{Agent, AgentConfig, ModelSize};
-use simonlib::SiliconMonitor;
+use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::UnifiedMonitor;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("Silicon Monitor AI Agent - Simple Demo\n");
+    println!("IronMonitor AI Agent - Simple Demo\n");
 
     // Initialize
     println!("Initializing...");
-    let monitor = SiliconMonitor::new()?;
+    let monitor = UnifiedMonitor::new()?;
     let config = AgentConfig::new(ModelSize::Medium);
     let mut agent = Agent::new(config)?;
     println!("✓ Ready ({} GPUs detected)\n", monitor.gpu_count());

@@ -339,7 +339,7 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
                 format!("Scheme: {}", name),
                 SettingValue::Text(guid.clone()),
             )
-            .with_description("Available Windows power scheme (use its GUID with `simon profile set active_scheme_guid <guid> --confirm`).")
+            .with_description("Available Windows power scheme (use its GUID with `ironmon profile set active_scheme_guid <guid> --confirm`).")
             .with_source("PowerEnumerate(ACCESS_SCHEME)"),
         );
     }

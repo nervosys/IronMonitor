@@ -67,7 +67,7 @@ pub struct BatteryMonitor {
 }
 
 impl BatteryMonitor {
-    pub fn new() -> Result<Self, crate::error::SimonError> {
+    pub fn new() -> Result<Self, crate::error::IronError> {
         let mut monitor = Self {
             batteries: Vec::new(),
             ac_connected: None,
@@ -76,7 +76,7 @@ impl BatteryMonitor {
         Ok(monitor)
     }
 
-    pub fn refresh(&mut self) -> Result<(), crate::error::SimonError> {
+    pub fn refresh(&mut self) -> Result<(), crate::error::IronError> {
         self.batteries.clear();
         self.ac_connected = None;
 

@@ -4,11 +4,11 @@
 //!
 //! # The built-in engine
 //!
-//! **IronWorks is simon's only built-in inference engine** — the engine simon ships
+//! **IronWorks is ironmon's only built-in inference engine** — the engine ironmon ships
 //! against, and the default everywhere. See [`ironworks`].
 //!
 //! Everything else here is an **external provider**: software you install, start, or
-//! sign in to separately. They are fully supported, but simon does not embed them.
+//! sign in to separately. They are fully supported, but IronMonitor does not embed them.
 //! [`crate::agent::backend::BackendType::is_builtin_engine`] draws the line in code.
 //!
 //! # External providers
@@ -46,7 +46,7 @@
 //! # Example - Ollama
 //!
 //! ```no_run
-//! use simonlib::agent::local::{OllamaClient, LocalInferenceClient, InferenceRequest};
+//! use ironmonlib::agent::local::{OllamaClient, LocalInferenceClient, InferenceRequest};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = OllamaClient::new("http://localhost:11434")?;

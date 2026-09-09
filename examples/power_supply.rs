@@ -4,7 +4,7 @@
 //!
 //! Run: cargo run --release --example power_supply
 
-use simonlib::{
+use ironmonlib::{
     BatteryHealth, ChargingStatus, PowerSupplyInfo, PowerSupplyMonitor, PowerSupplyType,
 };
 
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitor = PowerSupplyMonitor::new()?;
 
     // Print summary using helper functions
-    let summary = simonlib::power_summary()?;
+    let summary = ironmonlib::power_summary()?;
     println!("║                                                                    ║");
     println!(
         "║  Quick Summary: AC={}, Battery={}                              ║",
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // "Not on AC" is a reading only when something said so. It used to be
     // printed whenever the question could not be answered.
-    match simonlib::is_on_ac_power() {
+    match ironmonlib::is_on_ac_power() {
         Some(true) => {
             println!("║  Status: 🔌 Running on AC Power                                   ║")
         }
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("║  Status: ·  Mains state not read                                  ║"),
     }
 
-    if let Some(pct) = simonlib::battery_percent() {
+    if let Some(pct) = ironmonlib::battery_percent() {
         let bar_len = (pct as f32 / 5.0) as usize;
         let bar: String = "█".repeat(bar_len);
         let empty: String = "░".repeat(20 - bar_len);

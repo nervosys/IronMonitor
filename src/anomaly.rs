@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::anomaly::{AnomalyDetector, AnomalyConfig};
+//! use ironmonlib::anomaly::{AnomalyDetector, AnomalyConfig};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut detector = AnomalyDetector::new(AnomalyConfig::default());
@@ -362,7 +362,7 @@ impl AnomalyDetector {
                     now,
                     "Memory usage is critically high — OOM risk",
                     vec![
-                        "Identify memory-hungry processes with `simon process --sort memory`"
+                        "Identify memory-hungry processes with `ironmon process --sort memory`"
                             .into(),
                         "Check for memory leaks in long-running services".into(),
                         "Consider adding swap or increasing RAM".into(),

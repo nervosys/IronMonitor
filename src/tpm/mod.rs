@@ -11,7 +11,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use simonlib::tpm::TpmMonitor;
+//! use ironmonlib::tpm::TpmMonitor;
 //!
 //! let monitor = TpmMonitor::new().unwrap();
 //! if let Some(tpm) = monitor.tpm() {
@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SimonError;
+use crate::error::IronError;
 
 /// TPM specification version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ fn version_from_node(pnp_ids: &str) -> Option<TpmVersion> {
 
 impl TpmMonitor {
     /// Create a new TpmMonitor and detect TPM.
-    pub fn new() -> Result<Self, SimonError> {
+    pub fn new() -> Result<Self, IronError> {
         let mut monitor = Self { tpm_info: None };
         monitor.refresh()?;
         Ok(monitor)
@@ -138,7 +138,7 @@ impl TpmMonitor {
     /// no TPM". That premise was false, because until 6.0.0 this could not
     /// report a failure at all, and "the query did not run" was published as
     /// "this machine has no TPM".
-    pub fn refresh(&mut self) -> Result<(), SimonError> {
+    pub fn refresh(&mut self) -> Result<(), IronError> {
         self.tpm_info = None;
 
         #[cfg(target_os = "linux")]
@@ -172,7 +172,7 @@ impl TpmMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn refresh_linux(&mut self) -> Result<(), SimonError> {
+    fn refresh_linux(&mut self) -> Result<(), IronError> {
         let tpm_class = std::path::Path::new("/sys/class/tpm");
         if !tpm_class.exists() {
             // A real answer: this kernel exposes no TPM class at all.
@@ -180,7 +180,7 @@ impl TpmMonitor {
         }
 
         let entries = std::fs::read_dir(tpm_class)
-            .map_err(|e| SimonError::System(format!("cannot read /sys/class/tpm: {e}")))?;
+            .map_err(|e| IronError::System(format!("cannot read /sys/class/tpm: {e}")))?;
         {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -277,7 +277,7 @@ impl TpmMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn refresh_windows(&mut self) -> Result<(), SimonError> {
+    fn refresh_windows(&mut self) -> Result<(), IronError> {
         // Two sources, and the first is expected to fail on an ordinary
         // account: `root/cimv2/Security/MicrosoftTpm` answers "Access denied"
         // without elevation. So its failure is carried, not raised -- the
@@ -343,7 +343,7 @@ impl TpmMonitor {
         let present = match (&registry, wmi) {
             (Ok(text), _) => text.trim() == "present",
             (Err(registry_err), Err(wmi_err)) => {
-                return Err(SimonError::System(format!(
+                return Err(IronError::System(format!(
                     "no TPM detection succeeded: the WMI class said {wmi_err}; the registry check \
                      said {registry_err}"
                 )))
@@ -352,7 +352,7 @@ impl TpmMonitor {
                 // The privileged query ran and reported no TPM object; the
                 // registry check is what would have confirmed it, and it did
                 // not run. Neither answer is available.
-                return Err(SimonError::System(format!(
+                return Err(IronError::System(format!(
                     "the TPM service registry check could not be made: {registry_err}"
                 )));
             }
@@ -418,7 +418,7 @@ impl TpmMonitor {
     }
 
     #[cfg(target_os = "macos")]
-    fn refresh_macos(&mut self) -> Result<(), SimonError> {
+    fn refresh_macos(&mut self) -> Result<(), IronError> {
         // macOS uses Secure Enclave instead of discrete TPM
         // T1 chip (2016 MBP), T2 chip (2018+), Apple Silicon (M1+) all have SE
         let text = crate::core::command::capture("system_profiler", &["SPHardwareDataType"])?;
