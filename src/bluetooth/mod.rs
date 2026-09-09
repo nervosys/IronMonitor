@@ -156,13 +156,46 @@ fn device_type_from_name(name: &str) -> BluetoothDeviceType {
 pub struct BluetoothMonitor {
     adapters: Vec<BluetoothAdapter>,
     devices: Vec<BluetoothDevice>,
+    /// Why the device walk produced less than it should have, when it did.
+    ///
+    /// Same shape as `SensorMonitor::note`. An empty device list with no note
+    /// means the enumeration ran and this machine has no paired devices, which
+    /// is a reading. An empty list *with* a note means nobody could look, which
+    /// is not.
+    last_note: Option<String>,
 }
 
 impl BluetoothMonitor {
+    /// Why the device enumeration is short, if it is. `None` means it ran
+    /// cleanly, so an empty device list can be read as a fact about the machine.
+    pub fn note(&self) -> Option<&str> {
+        self.last_note.as_deref()
+    }
+
+    /// Record a reason. Later notes append, because one refresh can fail in more
+    /// than one way and the first reason is not automatically the useful one.
+    ///
+    /// Only the Linux refresh calls this today; the Windows and macOS arms
+    /// return their reasons as an `Err` from `refresh`. Annotated rather than
+    /// `cfg`-gated so that adding a caller on another platform does not also
+    /// require remembering to widen a gate.
+    #[allow(dead_code)]
+    fn record_note(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        match &mut self.last_note {
+            Some(existing) => {
+                existing.push_str("; ");
+                existing.push_str(&msg);
+            }
+            None => self.last_note = Some(msg),
+        }
+    }
+
     pub fn new() -> Result<Self, crate::error::IronError> {
         let mut monitor = Self {
             adapters: Vec::new(),
             devices: Vec::new(),
+            last_note: None,
         };
         monitor.refresh()?;
         Ok(monitor)
@@ -294,13 +327,20 @@ impl BluetoothMonitor {
             }
         }
 
-        // Use bluetoothctl to list paired/connected devices
-        if let Ok(output) = std::process::Command::new("bluetoothctl")
-            .args(["devices"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
+        // Use bluetoothctl to list paired/connected devices.
+        //
+        // Through `capture`, not a bare `Command`. `bluetoothctl devices` blocks
+        // forever on a host where the binary exists but `bluetoothd` is not
+        // answering — it waits on D-Bus, and a closed stdin does not release it.
+        // The macOS arm below has always gone through the helper; this one was
+        // fixed where somebody was looking rather than where the cause was, the
+        // same shape as the four `vm.swapusage` parsers.
+        //
+        // A failure here is an absent device list, not an empty one: the caller
+        // above has already recorded the adapters, and `note()` carries why the
+        // device walk produced nothing.
+        match crate::core::command::capture("bluetoothctl", &["devices"]) {
+            Ok(stdout) => {
                 for line in stdout.lines() {
                     // Format: "Device AA:BB:CC:DD:EE:FF Device Name"
                     let parts: Vec<&str> = line.splitn(3, ' ').collect();
@@ -308,12 +348,25 @@ impl BluetoothMonitor {
                         let address = parts[1].to_string();
                         let name = parts[2].to_string();
 
-                        // Check if connected
-                        let is_connected = std::process::Command::new("bluetoothctl")
-                            .args(["info", &address])
-                            .output()
-                            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Connected: yes"))
-                            .unwrap_or(false);
+                        // Whether the device is connected. An `info` call that
+                        // fails leaves this unknown, and `Paired` is what this
+                        // enum has for "known to us, not known to be connected"
+                        // — so a failed probe is recorded rather than read as a
+                        // disconnection.
+                        let info =
+                            crate::core::command::capture("bluetoothctl", &["info", &address]);
+                        let state = match &info {
+                            Ok(text) if text.contains("Connected: yes") => {
+                                BluetoothState::Connected
+                            }
+                            Ok(_) => BluetoothState::Paired,
+                            Err(e) => {
+                                self.record_note(format!(
+                                    "connection state for {address} is unknown: {e}"
+                                ));
+                                BluetoothState::Paired
+                            }
+                        };
 
                         let dtype = classify_bt_device(&name);
 
@@ -321,15 +374,14 @@ impl BluetoothMonitor {
                             address,
                             name: Some(name),
                             device_type: dtype,
-                            state: if is_connected {
-                                BluetoothState::Connected
-                            } else {
-                                BluetoothState::Paired
-                            },
+                            state,
                             battery_percent: None,
                         });
                     }
                 }
+            }
+            Err(e) => {
+                self.record_note(format!("bluetoothctl could not list devices: {e}"));
             }
         }
         Ok(())
