@@ -177,6 +177,7 @@ Since the tag, on `master` and green on all three platforms:
 | `3ad6eb9` | A fallback of 1 core, defeating the guard that tests for 0 |
 | `be68e21` | The third copy of the page size that must not be assumed |
 | `ee73edd` | A failed sysctl described every Mac as a base M1 |
+| `b638e46` | Eight shader cores, wrapped in `Some` to say they were read |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -292,6 +293,24 @@ Four of the twenty-one sites are closed. Seventeen files remain, and the triage
 questions are now three: whether `platform::macos` already owns the reading,
 whether the fallback is a value the consumer's guard would accept, **and whether
 it is a value a reader would believe.**
+
+**Then the third question was turned into its own grep, which is the better
+move.** `unwrap_or(` with a **non-zero literal**: 52 sites outside the GUI and
+tests, against 793 for the unfiltered pattern. Most are honest defaults — a
+request's `max_tokens`, a parameter's `limit`, a bounded buffer length, the
+`255` that is genuinely `pwm1_max`'s sysfs default. Two looked like readers, and
+one was:
+
+- `hwmon/smart.rs`'s `unwrap_or(40)` is a **string length**, bounding a slice
+  while looking for a null terminator. Checked and fine.
+- `gpu/apple.rs` seeded `cores` with `8`, parsed with `unwrap_or(8)`, and
+  published `shader_cores: Some(self.cores)` — **a sentinel wrapped in the very
+  type that exists to say whether anything was read.** Eight is a base M1's GPU
+  core count, so an M3 Max with forty would have reported eight. `b638e46`.
+
+**Grep for the shape, not the file.** Walking files found three of these; one
+grep over the shape found the fourth in a module nobody was looking at, and
+bounded the remaining search to fifty lines that can be read in an afternoon.
 
 `hardware_ai`'s four sites were checked in passing and use `unwrap_or(0)`, which
 the guards read as unread.
