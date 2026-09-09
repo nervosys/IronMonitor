@@ -387,7 +387,11 @@ pub struct CpuMetrics {
     /// Overall CPU utilization (0-100)
     pub utilization_percent: f32,
     /// Per-core utilization
-    pub per_core_utilization: Vec<f32>,
+    /// Per-core utilization, `None` for a core whose idle time was not read.
+    ///
+    /// A core that reported nothing used to arrive here as `100.0 - 100.0`, a
+    /// measured 0% busy. See `agent::state::CpuState::per_core_usage`.
+    pub per_core_utilization: Vec<Option<f32>>,
     /// Current frequency in MHz
     pub frequency_mhz: Option<u32>,
     /// Temperature in Celsius

@@ -360,8 +360,23 @@ impl PrometheusExporter {
                 metric_type: MetricType::Gauge,
                 samples: Vec::new(),
             };
+            // One series per core that reported its idle time.
+            //
+            // `core.idle.unwrap_or(100.0)` published `100 - 100 = 0%` for a
+            // core whose idle time was not read -- a measured, idle core, on a
+            // gauge a dashboard graphs. The same reasoning as the temperature
+            // block below: a core that reports nothing emits nothing, which
+            // Prometheus already reads as "not reported", and the
+            // `samples.is_empty()` guard below drops the family entirely when
+            // no core answered.
+            //
+            // The tsdb writer and `simon serve`'s snapshot path both had this
+            // and both were fixed; this is the third of eight copies.
             for core in &cpu.cores {
-                let usage = 100.0 - core.idle.unwrap_or(100.0) as f64;
+                let Some(idle) = core.idle else {
+                    continue;
+                };
+                let usage = 100.0 - idle as f64;
                 let mut labels = BTreeMap::new();
                 labels.insert("core".into(), core.id.to_string());
                 per_core.samples.push(MetricSample {

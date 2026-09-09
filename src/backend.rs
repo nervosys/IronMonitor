@@ -83,7 +83,13 @@ pub struct CpuState {
     pub frequency_mhz: Option<u64>,
 
     /// Per-core utilization
-    pub per_core_usage: Vec<f32>,
+    /// Per-core utilization, `None` for a core whose idle time was not read.
+    ///
+    /// Was `Vec<f32>`, filled with `100.0 - c.idle.unwrap_or(100.0)` -- so an
+    /// unread core arrived as a measured 0% busy. The type could not say
+    /// "not read", which is the fault the queued section of the handoff is
+    /// about, and it had eight copies.
+    pub per_core_usage: Vec<Option<f32>>,
 }
 
 /// Memory state for AI context
@@ -1226,7 +1232,7 @@ impl MonitoringBackend {
                 per_core_usage: cpu
                     .cores
                     .iter()
-                    .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                    .map(|c| c.idle.map(|i| 100.0 - i))
                     .collect(),
             });
         }

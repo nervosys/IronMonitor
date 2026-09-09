@@ -37,8 +37,13 @@ pub struct CpuState {
     pub temperature_c: Option<f32>,
     /// Current frequency (MHz) if available
     pub frequency_mhz: Option<u64>,
-    /// Per-core utilization
-    pub per_core_usage: Vec<f32>,
+    /// Per-core utilization, `None` for a core whose idle time was not read.
+    ///
+    /// Was `Vec<f32>`, filled with `100.0 - c.idle.unwrap_or(100.0)` -- so an
+    /// unread core arrived as a measured 0% busy. The type could not say
+    /// "not read", which is the fault the queued section of the handoff is
+    /// about, and it had eight copies.
+    pub per_core_usage: Vec<Option<f32>>,
 }
 
 /// Condensed memory state for agent context
@@ -194,7 +199,7 @@ impl SystemState {
                     per_core_usage: stats
                         .cores
                         .iter()
-                        .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                        .map(|c| c.idle.map(|i| 100.0 - i))
                         .collect(),
                 });
             }
@@ -223,7 +228,7 @@ impl SystemState {
                     per_core_usage: stats
                         .cores
                         .iter()
-                        .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                        .map(|c| c.idle.map(|i| 100.0 - i))
                         .collect(),
                 });
             }
@@ -336,11 +341,14 @@ impl SystemState {
             }
             if !cpu.per_core_usage.is_empty() && cpu.per_core_usage.len() <= 16 {
                 // Show per-core for reasonable core counts
+                // A core that reported no idle time is left out of the
+                // sentence rather than described as 0% busy. The index is kept
+                // so the remaining cores are still named correctly.
                 let core_str: Vec<String> = cpu
                     .per_core_usage
                     .iter()
                     .enumerate()
-                    .map(|(i, u)| format!("Core{}: {:.0}%", i, u))
+                    .filter_map(|(i, u)| u.map(|u| format!("Core{i}: {u:.0}%")))
                     .collect();
                 context.push_str(&format!("  Per-Core: {}\n", core_str.join(", ")));
             }
@@ -700,7 +708,10 @@ mod tests {
                 utilization: 45.0,
                 temperature_c: Some(55.0),
                 frequency_mhz: Some(3600),
-                per_core_usage: vec![40.0, 50.0, 45.0, 42.0, 48.0, 46.0, 44.0, 50.0],
+                per_core_usage: vec![40.0, 50.0, 45.0, 42.0, 48.0, 46.0, 44.0, 50.0]
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
             }),
             memory: Some(MemoryState {
                 total_mb: 32768,

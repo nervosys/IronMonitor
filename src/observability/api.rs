@@ -1070,10 +1070,10 @@ impl ObservabilityApi {
             use crate::platform::linux::cpu;
             if let Ok(stats) = cpu::read_cpu_stats() {
                 let utilization = 100.0 - stats.total.idle;
-                let per_core: Vec<f32> = stats
+                let per_core: Vec<Option<f32>> = stats
                     .cores
                     .iter()
-                    .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                    .map(|c| c.idle.map(|i| 100.0 - i))
                     .collect();
                 let freq = stats
                     .cores
@@ -1093,10 +1093,10 @@ impl ObservabilityApi {
             use crate::platform::windows;
             if let Ok(stats) = windows::read_cpu_stats() {
                 let utilization = 100.0 - stats.total.idle;
-                let per_core: Vec<f32> = stats
+                let per_core: Vec<Option<f32>> = stats
                     .cores
                     .iter()
-                    .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                    .map(|c| c.idle.map(|i| 100.0 - i))
                     .collect();
                 let freq = stats
                     .cores

@@ -710,7 +710,13 @@ pub struct CpuInfo {
     pub utilization: f32,
     pub temperature: Option<f32>,
     pub frequency: Option<u64>,
-    pub per_core_usage: Vec<f32>,
+    /// Per-core utilization, `None` for a core whose idle time was not read.
+    ///
+    /// Was `Vec<f32>`, filled with `100.0 - c.idle.unwrap_or(100.0)` -- so an
+    /// unread core arrived as a measured 0% busy. The type could not say
+    /// "not read", which is the fault the queued section of the handoff is
+    /// about, and it had eight copies.
+    pub per_core_usage: Vec<Option<f32>>,
 }
 
 #[derive(Clone, Default)]
@@ -1395,7 +1401,7 @@ impl App {
             per_core_usage: stats
                 .cores
                 .iter()
-                .map(|c| 100.0 - c.idle.unwrap_or(100.0))
+                .map(|c| c.idle.map(|i| 100.0 - i))
                 .collect(),
         };
 

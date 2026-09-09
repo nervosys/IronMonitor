@@ -400,6 +400,15 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .take(32)
         .map(|(i, &usage)| {
+            // `None` is a core that reported no idle time. It gets a row with
+            // no bar and no figure rather than an empty gauge, which would read
+            // as an idle core.
+            let Some(usage) = usage else {
+                return Line::from(vec![
+                    Span::styled(format!("C{i:<2} "), Style::default().fg(Color::DarkGray)),
+                    Span::styled("unread".to_string(), Style::default().fg(Color::DarkGray)),
+                ]);
+            };
             let bar_width: usize = 30;
             let filled = (usage / 100.0 * bar_width as f32) as usize;
             let bar: String = "█".repeat(filled) + &"░".repeat(bar_width.saturating_sub(filled));
@@ -995,6 +1004,11 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
         let mini_bars: String = app.cpu_info.per_core_usage[..cores_to_show]
             .iter()
             .map(|&u| {
+                // A core that reported nothing gets a distinct glyph rather
+                // than the empty block an idle core would get.
+                let Some(u) = u else {
+                    return '?';
+                };
                 // Use block characters for mini utilization bars
                 match u as u32 {
                     0..=12 => '▁',

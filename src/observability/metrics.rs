@@ -463,7 +463,13 @@ pub struct CpuMetricSnapshot {
     pub usage_percent: f32,
     pub temperature_celsius: Option<f32>,
     pub frequency_mhz: Option<u32>,
-    pub per_core_usage: Vec<f32>,
+    /// Per-core utilization, `None` for a core whose idle time was not read.
+    ///
+    /// Was `Vec<f32>`, filled with `100.0 - c.idle.unwrap_or(100.0)` -- so an
+    /// unread core arrived as a measured 0% busy. The type could not say
+    /// "not read", which is the fault the queued section of the handoff is
+    /// about, and it had eight copies.
+    pub per_core_usage: Vec<Option<f32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
