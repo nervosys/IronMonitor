@@ -186,14 +186,22 @@ pub struct DistributedConfig {
 }
 
 /// TPU configuration
+///
+/// Every field the environment may omit is an `Option`. `num_cores` used to fall
+/// back to `8` — a v2-8's core count, so a pod whose `TPU_NUM_CORES` was unset
+/// was described as a specific, entirely plausible accelerator. `tpu_type` and
+/// `topology` fell back to the string `"unknown"`, which `resolve.rs` rejects as
+/// a value precisely because it reads as one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TpuConfig {
-    /// TPU type (v2, v3, v4, v5)
-    pub tpu_type: String,
-    /// Number of TPU cores
-    pub num_cores: u32,
-    /// TPU topology (e.g., "2x2" for v2-8, "4x4" for v3-32)
-    pub topology: String,
+    /// TPU type (v2, v3, v4, v5), or `None` when `TPU_TYPE` was not set.
+    pub tpu_type: Option<String>,
+    /// Number of TPU cores, or `None` when `TPU_NUM_CORES` was not set or did
+    /// not parse.
+    pub num_cores: Option<u32>,
+    /// TPU topology (e.g., "2x2" for v2-8, "4x4" for v3-32), or `None` when
+    /// `TPU_TOPOLOGY` was not set.
+    pub topology: Option<String>,
     /// TPU zone (for cloud TPUs)
     pub zone: Option<String>,
     /// TPU project (for cloud TPUs)
@@ -815,18 +823,9 @@ impl AiWorkloadMonitor {
             .get("TPU_NAME")
             .or_else(|| env_vars.get("TPU_WORKER_NAME"))
             .map(|_tpu_name| TpuConfig {
-                tpu_type: env_vars
-                    .get("TPU_TYPE")
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                num_cores: env_vars
-                    .get("TPU_NUM_CORES")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(8),
-                topology: env_vars
-                    .get("TPU_TOPOLOGY")
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string()),
+                tpu_type: env_vars.get("TPU_TYPE").cloned(),
+                num_cores: env_vars.get("TPU_NUM_CORES").and_then(|s| s.parse().ok()),
+                topology: env_vars.get("TPU_TOPOLOGY").cloned(),
                 zone: env_vars
                     .get("TPU_ZONE")
                     .or_else(|| env_vars.get("GCP_ZONE"))
@@ -907,5 +906,59 @@ impl Default for AiWorkloadMonitor {
             update_interval: 5,
             last_update: std::time::Instant::now(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tpu_absence_tests {
+    use super::*;
+
+    fn detector() -> AiWorkloadMonitor {
+        AiWorkloadMonitor::default()
+    }
+
+    #[test]
+    fn a_tpu_with_no_core_count_in_the_environment_reports_none() {
+        // `TPU_NAME` is what makes this a TPU host; the rest may be unset.
+        let mut env = HashMap::new();
+        env.insert("TPU_NAME".to_string(), "node-1".to_string());
+
+        let cfg = detector()
+            .detect_tpu_config(&env)
+            .expect("TPU_NAME identifies a TPU host");
+        assert_eq!(
+            cfg.num_cores, None,
+            "an unset TPU_NUM_CORES must not read as a v2-8"
+        );
+        assert_eq!(cfg.tpu_type, None);
+        assert_eq!(cfg.topology, None);
+    }
+
+    #[test]
+    fn a_tpu_that_declares_itself_is_reported_as_declared() {
+        let mut env = HashMap::new();
+        env.insert("TPU_NAME".to_string(), "node-1".to_string());
+        env.insert("TPU_NUM_CORES".to_string(), "32".to_string());
+        env.insert("TPU_TYPE".to_string(), "v3".to_string());
+        env.insert("TPU_TOPOLOGY".to_string(), "4x4".to_string());
+
+        let cfg = detector().detect_tpu_config(&env).unwrap();
+        assert_eq!(cfg.num_cores, Some(32));
+        assert_eq!(cfg.tpu_type.as_deref(), Some("v3"));
+        assert_eq!(cfg.topology.as_deref(), Some("4x4"));
+    }
+
+    #[test]
+    fn an_unparseable_core_count_is_absent_rather_than_defaulted() {
+        let mut env = HashMap::new();
+        env.insert("TPU_NAME".to_string(), "node-1".to_string());
+        env.insert("TPU_NUM_CORES".to_string(), "many".to_string());
+
+        assert_eq!(detector().detect_tpu_config(&env).unwrap().num_cores, None);
+    }
+
+    #[test]
+    fn a_host_with_no_tpu_name_is_not_a_tpu_host() {
+        assert!(detector().detect_tpu_config(&HashMap::new()).is_none());
     }
 }

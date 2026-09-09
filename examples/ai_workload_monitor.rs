@@ -70,9 +70,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Show TPU configuration if applicable
                 if let Some(tpu) = &workload.tpu_config {
                     println!("\n  TPU Configuration:");
-                    println!("    Type:     {}", tpu.tpu_type);
-                    println!("    Cores:    {}", tpu.num_cores);
-                    println!("    Topology: {}", tpu.topology);
+                    // Each of these is absent when the environment did not
+                    // declare it. Printing "not reported" rather than a default
+                    // keeps the distinction the type now carries.
+                    println!(
+                        "    Type:     {}",
+                        tpu.tpu_type.as_deref().unwrap_or("not reported")
+                    );
+                    match tpu.num_cores {
+                        Some(cores) => println!("    Cores:    {}", cores),
+                        None => println!("    Cores:    not reported"),
+                    }
+                    println!(
+                        "    Topology: {}",
+                        tpu.topology.as_deref().unwrap_or("not reported")
+                    );
                     if let Some(zone) = &tpu.zone {
                         println!("    Zone:     {}", zone);
                     }
