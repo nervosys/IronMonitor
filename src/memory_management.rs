@@ -912,44 +912,35 @@ impl MemoryMonitor {
     // ==================== macOS Implementation ====================
 
     #[cfg(target_os = "macos")]
+    /// macOS memory, through `platform::macos` rather than a third `vm_stat`.
+    ///
+    /// This parsed `vm_stat` itself with `let page_size = 16384u64; // Default
+    /// page size on Apple Silicon`. **The page size is in the output's own
+    /// header** — `Mach Virtual Memory Statistics: (page size of 16384 bytes)` —
+    /// and it is 4096 on an Intel Mac, so assuming it reports every figure here
+    /// four times too large on that hardware.
+    ///
+    /// `platform::macos::parse_vm_stat` reads the header and says why in a
+    /// comment. This is the third copy of that parser to be found assuming the
+    /// constant instead: the handoff records the first two in the agent tool
+    /// surface, one fixed per function and the other left behind. **The question
+    /// that finds these is not "where else is this bug" but "where else is this
+    /// reader hand-rolled".**
     fn macos_read_memory(&mut self) -> Result<()> {
-        use std::process::Command;
+        let Some(vm) = crate::platform::macos::vm_stat() else {
+            // Nothing was read, so nothing is reported. Filling these with
+            // zeros would say the machine has no memory.
+            return Ok(());
+        };
 
-        // Use vm_stat for memory info
-        let output = Command::new("vm_stat").output();
+        // `VmStat`'s helpers are in bytes and multiply by the page size it read.
+        self.memory.free = vm.free * vm.page_size;
+        self.memory.active = vm.active * vm.page_size;
+        self.memory.inactive = vm.inactive * vm.page_size;
+        self.memory.cached = vm.cached_bytes();
 
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let page_size = 16384u64; // Default page size on Apple Silicon
-
-            let mut pages = std::collections::HashMap::new();
-            for line in stdout.lines() {
-                if let Some((key, value)) = line.split_once(':') {
-                    let value = value.trim().trim_end_matches('.');
-                    if let Ok(v) = value.parse::<u64>() {
-                        pages.insert(key.trim().to_string(), v);
-                    }
-                }
-            }
-
-            let free_pages = *pages.get("Pages free").unwrap_or(&0);
-            let active_pages = *pages.get("Pages active").unwrap_or(&0);
-            let inactive_pages = *pages.get("Pages inactive").unwrap_or(&0);
-            let _wired_pages = *pages.get("Pages wired down").unwrap_or(&0);
-            let compressed = *pages.get("Pages occupied by compressor").unwrap_or(&0);
-
-            self.memory.free = free_pages * page_size;
-            self.memory.active = active_pages * page_size;
-            self.memory.inactive = inactive_pages * page_size;
-            self.memory.cached = compressed * page_size;
-        }
-
-        // Use sysctl for total memory
-        let output = Command::new("sysctl").args(["-n", "hw.memsize"]).output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            self.memory.total = stdout.trim().parse().unwrap_or(0);
+        if let Some(total) = crate::platform::macos::sysctl_u64("hw.memsize") {
+            self.memory.total = total;
             self.memory.available = self.memory.free + self.memory.inactive;
             self.memory.used = self.memory.total.saturating_sub(self.memory.available);
         }
@@ -958,30 +949,20 @@ impl MemoryMonitor {
     }
 
     #[cfg(target_os = "macos")]
+    /// macOS swap, through `platform::macos::swap_usage`.
+    ///
+    /// This was a fourth parser for `vm.swapusage`, beside the platform layer's
+    /// `parse_swapusage`, the ontology's use of it, and the one removed from the
+    /// agent tool surface in `742427e`. All four were correct; that is the
+    /// problem, since only the ones anybody edits stay that way.
     fn macos_read_swap(&mut self) -> Result<()> {
-        use std::process::Command;
-
-        let output = Command::new("sysctl").args(["-n", "vm.swapusage"]).output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-
-            // Parse "total = 2048.00M  used = 512.00M  free = 1536.00M"
-            for part in stdout.split_whitespace() {
-                if let Some((key, value)) = part.split_once('=') {
-                    let key = key.trim();
-                    let value = value.trim().trim_end_matches('M').trim();
-                    if let Ok(mb) = value.parse::<f64>() {
-                        let bytes = (mb * 1024.0 * 1024.0) as u64;
-                        match key {
-                            "total" => self.swap.total = bytes,
-                            "used" => self.swap.used = bytes,
-                            "free" => self.swap.free = bytes,
-                            _ => {}
-                        }
-                    }
-                }
-            }
+        if let Some(usage) = crate::platform::macos::swap_usage() {
+            self.swap.total = usage.total;
+            self.swap.used = usage.used;
+            // `SwapUsage` carries total and used; `parse_swapusage` deliberately
+            // ignores the printed free, since for swap it is the difference by
+            // definition rather than an independent measurement.
+            self.swap.free = usage.total.saturating_sub(usage.used);
         }
 
         // macOS uses dynamic swap files
