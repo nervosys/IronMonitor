@@ -80,12 +80,26 @@ impl AppleSiliconMonitor {
 
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        // Get core counts
-        let e_cores = Self::get_sysctl_value("hw.perflevel1.logicalcpu").unwrap_or(4);
-        let p_cores = Self::get_sysctl_value("hw.perflevel0.logicalcpu").unwrap_or(4);
-
-        // Get GPU cores (approximate from system_profiler)
-        let gpu_cores = Self::get_gpu_cores().unwrap_or(8);
+        // Core counts, or zero where the sysctl did not answer.
+        //
+        // These fell back to `4`, `4` and `8` -- **a specific and entirely
+        // plausible machine**, which is what makes the fabrication worse than
+        // the usual one. An M1 is 4+4 with 8 GPU cores, so a failed read
+        // described the hardware as a base M1 whatever it actually was, and
+        // nothing downstream could tell the difference: `core_ids` came out as
+        // `0..4` and looked like a topology somebody had measured.
+        //
+        // A `1` is implausible enough to be noticed. A `4` is not, and that is
+        // the argument against "sensible defaults" in a reader: the more
+        // reasonable the invented value, the longer it survives.
+        //
+        // Zero here means the count was not read. `(0..0)` yields an empty
+        // `core_ids`, and the cluster still carries the frequency and
+        // utilisation `powermetrics` actually measured -- an unknown
+        // composition, not an unknown cluster.
+        let e_cores = Self::get_sysctl_value("hw.perflevel1.logicalcpu").unwrap_or(0);
+        let p_cores = Self::get_sysctl_value("hw.perflevel0.logicalcpu").unwrap_or(0);
+        let gpu_cores = Self::get_gpu_cores().unwrap_or(0);
 
         // Determine power limits based on SOC
         let (cpu_max_power, gpu_max_power, ane_max_power) = match name.as_str() {
@@ -341,7 +355,9 @@ impl SiliconMonitor for AppleSiliconMonitor {
             });
         }
 
-        // E-cluster
+        // E-cluster. An empty `core_ids` means the per-level core count was
+        // not read, not that the cluster has no cores; the figures beside it
+        // are measured either way.
         clusters.push(CpuCluster {
             cluster_type: CpuClusterType::Efficiency,
             core_ids: (0..self.soc_info.e_core_count).collect(),
