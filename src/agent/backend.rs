@@ -665,6 +665,10 @@ impl BackendDiscovery {
     /// was genuinely running, and every query went to a server that speaks no such
     /// API. Ports 1234, 8000 and 8001 are just as easily occupied by something else.
     /// Whether a response body carries the array field the real API returns.
+    ///
+    /// Only the `remote-backends` build has a body to inspect; the stub below
+    /// answers without making a request.
+    #[allow(dead_code)]
     fn body_has_array(body: &serde_json::Value, key: &str) -> bool {
         body.get(key).is_some_and(|v| v.is_array())
     }

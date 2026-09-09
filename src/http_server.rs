@@ -369,6 +369,10 @@ impl HttpServer {
     ///
     /// Takes a plain `&Snapshot`, which `Default` can construct, so a test
     /// can assert on exactly the metrics one snapshot produces.
+    ///
+    /// Called by the serving loop and by `tests/prometheus_exposition.rs`, both
+    /// of which need features this subset does not enable.
+    #[allow(dead_code)]
     pub(crate) fn record_snapshot(collector: &MetricCollector, snap: &crate::pipeline::Snapshot) {
         if let Some(ref cpu) = snap.cpu {
             collector.record("ironmon_cpu_usage_percent", (100.0 - cpu.total.idle) as f64);

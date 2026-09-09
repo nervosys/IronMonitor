@@ -329,6 +329,11 @@ fn tui_frame_selects_tabs_by_name_and_rejects_unknown_ones() {
 
 /// The GUI must be readable without a window, or it is the surface an agent cannot
 /// see at all — and the one where "rendered but invisible" already happened once.
+/// Runs the `gui --frame` surface, which only exists in a build with the `gui`
+/// feature. Ungated, it failed in every other build by asking the binary for a
+/// subcommand it does not have — the same shape as the `remote-backends` tests
+/// in `agent/local/ironworks.rs`. A test that cannot run should skip, not fail.
+#[cfg(feature = "gui")]
 #[test]
 fn the_gui_renders_a_tab_headlessly() {
     let (stdout, stderr, code) = run(&["gui", "--frame", "--tab", "profiles"]);
@@ -353,6 +358,11 @@ fn the_gui_renders_a_tab_headlessly() {
 
 /// Every GUI tab must paint something. A tab that paints nothing is blank to a user
 /// and indistinguishable from one that is broken.
+/// Runs the `gui --frame` surface, which only exists in a build with the `gui`
+/// feature. Ungated, it failed in every other build by asking the binary for a
+/// subcommand it does not have — the same shape as the `remote-backends` tests
+/// in `agent/local/ironworks.rs`. A test that cannot run should skip, not fail.
+#[cfg(feature = "gui")]
 #[test]
 fn every_gui_tab_paints_text() {
     for tab in [
@@ -406,6 +416,11 @@ fn every_gui_tab_paints_text() {
 
 /// The GUI script surface mirrors the TUI's, minus the key step it has no use for.
 /// Exit codes must match so a caller can treat both surfaces the same way.
+/// Runs the `gui --frame` surface, which only exists in a build with the `gui`
+/// feature. Ungated, it failed in every other build by asking the binary for a
+/// subcommand it does not have — the same shape as the `remote-backends` tests
+/// in `agent/local/ironworks.rs`. A test that cannot run should skip, not fail.
+#[cfg(feature = "gui")]
 #[test]
 fn the_gui_can_be_inspected_by_a_script() {
     use std::io::Write;

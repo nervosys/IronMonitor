@@ -184,6 +184,14 @@ fn documentation_carries_no_machine_identifiers() {
 /// Anyone following the quick-start hit `error: unrecognized subcommand` on their
 /// first command. Nothing caught it because documentation is not compiled — but
 /// the binary can be asked what it accepts, so the two can be compared.
+///
+/// **Gated on the features the documentation describes.** The docs describe the
+/// shipped binary, which is `default = ["full"]`; a build with a feature subset
+/// legitimately has fewer subcommands, and comparing the full documentation
+/// against a reduced binary reports the missing *features* as broken *docs*. The
+/// test that catches a wrong doc has to be run against the binary that doc is
+/// about.
+#[cfg(all(feature = "cli", feature = "gui"))]
 #[test]
 fn every_documented_command_exists() {
     let Some(files) = tracked_markdown() else {

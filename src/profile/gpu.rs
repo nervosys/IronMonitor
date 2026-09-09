@@ -19,6 +19,13 @@
 //!   registry keys (`HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}\NNNN`)
 //!   so that callers can see the driver overrides already present on the system.
 
+// `Setting`, `SettingValue` and `SettingRisk` are used only by the reader bodies
+// below, every one of which sits behind a vendor feature. A build with none of
+// them keeps the trait plumbing and drops the setting constructors, so the import
+// is genuinely unused there. Annotated rather than split with a `cfg`, because
+// the condition is the disjunction of every vendor gate in this file and getting
+// it wrong breaks a platform this machine cannot compile for.
+#[allow(unused_imports)]
 use super::{ProfileGroup, ProfileProvider, Setting, SettingRisk, SettingValue, Subsystem};
 
 pub struct GpuProfileProvider {

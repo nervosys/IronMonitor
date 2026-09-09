@@ -229,7 +229,13 @@ fn command_for(id: &str) -> Option<&'static str> {
         "tuning.classify" | "tuning.apply" | "tuning.verify" => "tune",
         "interface.cli" => "cli",
         "interface.tui" => "tui",
-        "interface.gui" => "gui",
+        // Only when this build has one. `gui` is an optional feature, and a
+        // capability that tells an agent to type `ironmon gui` into a binary
+        // built without it has sent the agent somewhere that does not exist.
+        // The whole point of this layer is to stop the catalogue claiming a
+        // feature the build does not have.
+        "interface.gui" if cfg!(feature = "gui") => "gui",
+        "interface.gui" => return None,
         "interface.ontology" => "describe",
         "interface.daemon" => "daemon",
         "interface.http" => "serve",
@@ -568,14 +574,25 @@ pub fn catalogue() -> Vec<Capability> {
         all(Support::Implemented),
         Some("tui::headless script tests render frames without a terminal"),
     ));
+    // Declared against the build, not the project. Without the `gui` feature the
+    // binary has no `gui` command at all, and reporting `Partial` there would
+    // describe a window that cannot be opened by any means.
+    let gui_support = if cfg!(feature = "gui") {
+        all(Support::Partial {
+            missing: "the window needs a display server; the headless renderer does not and is what CI exercises"
+                .into(),
+        })
+    } else {
+        all(Support::Unimplemented {
+            reason: "this build was compiled without the `gui` feature, so the binary has no `gui` command"
+                .into(),
+        })
+    };
     out.push(cap(
         "interface.gui",
         Surface::Interface,
         "a native desktop window, and a headless frame renderer for scripted inspection",
-        all(Support::Partial {
-            missing: "the window needs a display server; the headless renderer does not and is what CI exercises"
-                .into(),
-        }),
+        gui_support,
         Some("every_gui_tab_paints_text renders each tab and asserts it carries substance rather than a spinner"),
     ));
     out.push(cap(

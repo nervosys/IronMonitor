@@ -361,6 +361,14 @@ mod tests {
         assert_eq!(DEFAULT_ENDPOINT, "http://localhost:8080");
     }
 
+    /// The three tests below construct a client, which `new()` refuses without
+    /// the `remote-backends` feature. They were ungated and so failed in every
+    /// build that does not enable it — invisible to CI, which checks
+    /// `--all-features` and each feature *alone* and never the documented
+    /// cross-check subset. Same shape as `examples/cpu_monitor.rs` failing on
+    /// macOS without `apple`: a combination the cross-check can build is one CI
+    /// never tries.
+    #[cfg(feature = "remote-backends")]
     #[test]
     fn trailing_slash_is_normalized() {
         // Otherwise URLs become "http://host//v1/models", which some routers 404.
@@ -368,6 +376,7 @@ mod tests {
         assert_eq!(client.endpoint(), "http://localhost:8080");
     }
 
+    #[cfg(feature = "remote-backends")]
     #[test]
     fn client_reports_its_name() {
         let client = IronWorksClient::default_endpoint().expect("client");
@@ -377,10 +386,27 @@ mod tests {
 
     /// An unreachable server must report unavailable rather than erroring, so
     /// discovery can fall through to the next backend.
+    #[cfg(feature = "remote-backends")]
     #[tokio::test]
     async fn unreachable_server_is_reported_unavailable() {
         // Port 1 is reserved and never has a listener.
         let client = IronWorksClient::new("http://127.0.0.1:1").expect("client");
         assert!(!client.is_available().await);
+    }
+
+    /// The other side of the same contract: a build without the feature must
+    /// decline with a reason rather than silently constructing something that
+    /// cannot work. Without this, gating the three above would leave the
+    /// featureless build asserting nothing at all.
+    #[cfg(not(feature = "remote-backends"))]
+    #[test]
+    fn a_build_without_remote_backends_refuses_with_a_reason() {
+        let err = IronWorksClient::new("http://localhost:8080")
+            .expect_err("a client cannot be built without the feature");
+        let why = err.to_string();
+        assert!(
+            why.contains("remote-backends"),
+            "the refusal must name the feature that is missing: {why}"
+        );
     }
 }

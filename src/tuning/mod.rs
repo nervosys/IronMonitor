@@ -312,6 +312,10 @@ pub fn classify_from_signals(signals: &Signals) -> Classification {
 
 /// The instruction given to a model asked to classify. Kept beside the parser
 /// that reads its answer, so the two cannot drift.
+///
+/// Read only by the classification path, which needs a backend to query and so
+/// is compiled out of a build with no backend feature.
+#[allow(dead_code)]
 const CLASSIFY_SYSTEM_PROMPT: &str = "\
 You classify what a computer is being used for, from hardware telemetry.
 Answer with exactly one of these tokens and nothing else:
