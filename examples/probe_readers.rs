@@ -174,6 +174,14 @@ fn main() {
     probe!(
         "security_mitigations",
         ironmonlib::security_mitigations::SecurityMitigationsMonitor,
-        |m: &ironmonlib::security_mitigations::SecurityMitigationsMonitor| m.unmitigated().len()
+        // What this reader *enumerated*, not what it found wrong with it. This
+        // counted `unmitigated()`, so a fully patched machine reported `none 0`
+        // for a reader that had just read nineteen vulnerability files and found
+        // every one of them mitigated — putting it in the silent column, which is
+        // the column that drives the work plan. Third counter in this table to
+        // measure the wrong thing; `kernel_params` was a literal `1`.
+        |m: &ironmonlib::security_mitigations::SecurityMitigationsMonitor| {
+            m.vulnerabilities.len()
+        }
     );
 }

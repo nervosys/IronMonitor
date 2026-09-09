@@ -308,7 +308,7 @@ that has stopped monitoring, and it takes the test suite with it.
 | `io_scheduler` | none | **ok 4** | implemented; reads `/sys/block/*/queue/scheduler` |
 | `gpu_topology` | none | **ok 3** | implemented |
 | `kernel_params` | *guessed 1* | **ok 30** | implemented; the Windows count was the hardcoded literal |
-| `security_mitigations` | none | **ok 1** | implemented; the vulnerabilities directory has 19 files |
+| `security_mitigations` | none | **ok 13** | implemented; reads `/sys/devices/system/cpu/vulnerabilities` |
 | `iommu` | none | none | `/sys/class/iommu` empty on this kernel — absent, not unimplemented |
 | `dma_engine` | none | none | `/sys/class/dma` empty — absent |
 | `thermal_zone` | none | none | no `thermal_zone*`, only `cooling_device*` — absent |
@@ -321,8 +321,20 @@ over-read once already"* is already the standing warning here. **`none` on WSL2
 means the hardware is not exposed to this kernel, not that the reader is
 missing.** Confirming they read *populated* trees still wants bare metal.
 
-`security_mitigations` returning one item against nineteen vulnerability files
-is not explained, and is the obvious next thing to look at.
+**`security_mitigations` first reported `ok 1` against nineteen vulnerability
+files, and the reader was not the problem — the probe's counter was.** It
+counted `unmitigated()`, so the number shown was "how many are unfixed", while
+every other row counts "how many were enumerated". A fully patched machine would
+have reported `none 0` for a reader that had just read nineteen files and found
+every one mitigated, putting it in the silent column — the column that drives
+this plan. Counting what was enumerated gives 13.
+
+That is the **third** counter in this table to measure the wrong thing, after
+`kernel_params`' literal `1` and the two other hardcoded counts beside it. The
+table exists because guessing which readers answer "was slow and got one of them
+wrong", and it has now been wrong three times in its own right. *A measurement
+nobody checks is a constant* applies to the instrument as much as to the thing
+it measures.
 
 ### The four items marked "needs a machine this session did not have"
 
