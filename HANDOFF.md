@@ -175,6 +175,7 @@ Since the tag, on `master` and green on all three platforms:
 | `a42350d` | Two macOS arms fabricating beside the readers that refused to |
 | `742427e` | One parser for `vm.swapusage`, not two |
 | `3ad6eb9` | A fallback of 1 core, defeating the guard that tests for 0 |
+| `be68e21` | The third copy of the page size that must not be assumed |
 
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
@@ -251,11 +252,29 @@ It fires only on a failed read, so no test here reaches it without injecting the
 failure. What the fix buys is that the guard the resolver already had starts
 working.
 
-The remaining eighteen files are unexamined. `silicon/apple` (4 sites),
-`memory_management` (4) and `hardware_ai` (4) are the largest, and there are two
-questions to ask of each, not one: whether `platform::macos` already owns the
-reading, **and whether its fallback is a value the consumer's guard would
-accept.**
+**`memory_management` produced the third copy of one constant.**
+`macos_read_memory` parsed `vm_stat` itself with
+`let page_size = 16384u64; // Default page size on Apple Silicon`. The page size
+is printed in that command's own header, and it is **4096 on an Intel Mac**, so
+assuming it reports every figure four times too large there.
+
+This exact defect is recorded twice already in this file: once in
+`tool_get_memory_status`, and once in `tool_get_memory_breakdown`, which only
+came to light because the first fix had been applied per function. `be68e21` is
+the third. `macos_read_swap` beside it was a **fourth** parser for
+`vm.swapusage`.
+
+**Count the copies before fixing the one in front of you.** Four parsers for one
+sysctl, three assumptions of one constant, and every one of them correct on the
+day it was written. The grep that finds them takes a second; the alternative is
+finding them one incident at a time, which is what the last three entries in this
+file are.
+
+The remaining eighteen files are unexamined. `silicon/apple` (4 sites) and
+`hardware_ai` (4) are the largest, and there are two questions to ask of each,
+not one: whether `platform::macos` already owns the reading, **and whether its
+fallback is a value the consumer's guard would accept.** `hardware_ai`'s four
+were checked in passing and use `unwrap_or(0)`, which the guards read as unread.
 
 ### Two renderers, one machine, and a factor of 1024
 
