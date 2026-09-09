@@ -152,10 +152,20 @@ pub struct BandwidthAnalysis {
     pub measurement: Option<BandwidthMeasurement>,
     /// Latency estimate in nanoseconds.
     pub estimated_latency_ns: f64,
-    /// Score (0-100) based on bandwidth per core.
-    pub bandwidth_score: u32,
-    /// Whether memory is likely a bottleneck.
-    pub potential_bottleneck: bool,
+    /// Score (0-100) based on bandwidth per core, or `None` when the core count
+    /// could not be read.
+    ///
+    /// Both this and `potential_bottleneck` are quotients over
+    /// `available_parallelism()`, which used to fall back to `4.0`. Defined
+    /// arithmetic is not the same as a defined result: a machine whose core
+    /// count is unreadable got a score and a bottleneck verdict computed from an
+    /// invented denominator, and neither carried any sign of it. Neither field is
+    /// published to the ontology — scores are a judgement rather than a reading,
+    /// the same call made for `single_thread_score` and `acceleration_score`.
+    pub bandwidth_score: Option<u32>,
+    /// Whether memory is likely a bottleneck, or `None` when the core count could
+    /// not be read.
+    pub potential_bottleneck: Option<bool>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -235,14 +245,15 @@ impl MemoryBandwidthMonitor {
             _ => 70.0,
         };
 
-        // Score: bandwidth per core
-        let core_count = std::thread::available_parallelism()
-            .map(|n| n.get() as f64)
-            .unwrap_or(4.0);
-        let bw_per_core = achievable / core_count;
-        let score = (bw_per_core * 10.0).min(100.0) as u32;
+        // Score: bandwidth per core. Absent when the core count is, because the
+        // quotient is only meaningful over a denominator that was read.
+        let bw_per_core = std::thread::available_parallelism()
+            .ok()
+            .map(|n| achievable / n.get() as f64);
+        let score = bw_per_core.map(|b| (b * 10.0).min(100.0) as u32);
 
-        let potential_bottleneck = bw_per_core < 3.0; // < 3 GB/s per core is concerning
+        // < 3 GB/s per core is concerning
+        let potential_bottleneck = bw_per_core.map(|b| b < 3.0);
 
         let mut recommendations = Vec::new();
 
@@ -255,10 +266,11 @@ impl MemoryBandwidthMonitor {
             ));
         }
 
-        if potential_bottleneck {
+        // Only advise on a per-core figure that was actually computed.
+        if let (Some(true), Some(per_core)) = (potential_bottleneck, bw_per_core) {
             recommendations.push(format!(
                 "Low bandwidth per core ({:.1} GB/s). Consider faster memory or more channels",
-                bw_per_core
+                per_core
             ));
         }
 
@@ -587,8 +599,8 @@ impl Default for MemoryBandwidthMonitor {
                 },
                 measurement: None,
                 estimated_latency_ns: 0.0,
-                bandwidth_score: 0,
-                potential_bottleneck: false,
+                bandwidth_score: None,
+                potential_bottleneck: None,
                 recommendations: Vec::new(),
             },
         })
@@ -659,5 +671,56 @@ mod tests {
         let json = serde_json::to_string(&estimate).unwrap();
         assert!(json.contains("DDR5"));
         let _: BandwidthEstimate = serde_json::from_str(&json).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod per_core_absence_tests {
+    use super::*;
+
+    /// The per-core figures are a quotient, and a quotient over an unread
+    /// denominator is not a reading. `available_parallelism()` answers on every
+    /// platform this runs on, so the absent arm cannot be reached from a test —
+    /// what is asserted here is the invariant that ties the three fields
+    /// together, which holds whichever arm was taken.
+    #[test]
+    fn the_score_and_the_bottleneck_verdict_agree_on_whether_they_were_computed() {
+        let analysis = MemoryBandwidthMonitor::new()
+            .map(|m| m.analysis().clone())
+            .unwrap_or_else(|_| return_empty());
+
+        assert_eq!(
+            analysis.bandwidth_score.is_some(),
+            analysis.potential_bottleneck.is_some(),
+            "both derive from the same core count, so one cannot be present \
+             while the other is absent"
+        );
+
+        if let Some(score) = analysis.bandwidth_score {
+            assert!(score <= 100, "the score is a 0-100 scale, got {score}");
+        }
+    }
+
+    /// A bottleneck recommendation quotes a per-core figure, so it may only
+    /// appear when that figure exists.
+    #[test]
+    fn no_per_core_advice_is_given_without_a_per_core_figure() {
+        let analysis = MemoryBandwidthMonitor::new()
+            .map(|m| m.analysis().clone())
+            .unwrap_or_else(|_| return_empty());
+
+        if analysis.potential_bottleneck.is_none() {
+            assert!(
+                !analysis
+                    .recommendations
+                    .iter()
+                    .any(|r| r.contains("bandwidth per core")),
+                "advised on a per-core figure that was never computed"
+            );
+        }
+    }
+
+    fn return_empty() -> BandwidthAnalysis {
+        MemoryBandwidthMonitor::default().analysis().clone()
     }
 }

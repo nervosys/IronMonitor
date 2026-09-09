@@ -969,6 +969,17 @@ impl CategoryStats {
     }
 }
 
+/// The number of logical CPUs to normalise process CPU time against.
+///
+/// One place, because there were four. Every one of them was correct when it was
+/// written, which is exactly how this crate ended up with four parsers for
+/// `vm.swapusage` and three copies of one page-size constant.
+fn logical_cpu_count() -> Option<f32> {
+    std::thread::available_parallelism()
+        .ok()
+        .map(|n| n.get() as f32)
+}
+
 /// Process monitor that combines system and GPU process information
 pub struct ProcessMonitor {
     /// GPU collection for GPU process tracking
@@ -979,18 +990,34 @@ pub struct ProcessMonitor {
     /// Maps PID -> (cumulative_cpu_time_us, wall_clock_instant)
     prev_cpu_times: HashMap<u32, (u64, std::time::Instant)>,
     /// Number of logical CPUs for normalizing per-process CPU%
-    num_logical_cpus: f32,
+    /// The divisor that turns per-process CPU time into a share of total system
+    /// capacity, or `None` when the logical CPU count could not be read.
+    ///
+    /// This was an `f32` with an `unwrap_or(1.0)` written four times over. One is
+    /// not a neutral divisor — it is the count of a single-core machine, so a
+    /// process saturating one core of this 24-core desktop was published at
+    /// `100.0` instead of `4.2`. The absent case now skips normalisation instead
+    /// of performing it with an invented denominator, and
+    /// [`ProcessMonitor::cpu_percent_is_normalized`] says which happened.
+    num_logical_cpus: Option<f32>,
 }
 
 impl ProcessMonitor {
+    /// Whether [`ProcessInfo::cpu_percent`] is a share of total system capacity.
+    ///
+    /// False when the logical CPU count could not be read, in which case the
+    /// figure is per-core and will exceed 100 for a process using more than one
+    /// core. `cpu_percent` is an `f32` across 97 call sites and cannot itself say
+    /// "not normalised", so the statement lives here.
+    pub fn cpu_percent_is_normalized(&self) -> bool {
+        self.num_logical_cpus.is_some()
+    }
     /// Create a new process monitor
     ///
     /// Automatically detects available GPUs for GPU process attribution.
     pub fn new() -> Result<Self> {
         let gpu_collection = GpuCollection::auto_detect().ok();
-        let num_logical_cpus = std::thread::available_parallelism()
-            .map(|n| n.get() as f32)
-            .unwrap_or(1.0);
+        let num_logical_cpus = logical_cpu_count();
 
         Ok(Self {
             gpu_collection,
@@ -1005,9 +1032,7 @@ impl ProcessMonitor {
     /// This is useful when you already have a [`GpuCollection`] instance
     /// and want to reuse it for process monitoring.
     pub fn with_gpus(gpu_collection: GpuCollection) -> Result<Self> {
-        let num_logical_cpus = std::thread::available_parallelism()
-            .map(|n| n.get() as f32)
-            .unwrap_or(1.0);
+        let num_logical_cpus = logical_cpu_count();
 
         Ok(Self {
             gpu_collection: Some(gpu_collection),
@@ -1019,9 +1044,7 @@ impl ProcessMonitor {
 
     /// Create a process monitor without GPU tracking
     pub fn without_gpu() -> Result<Self> {
-        let num_logical_cpus = std::thread::available_parallelism()
-            .map(|n| n.get() as f32)
-            .unwrap_or(1.0);
+        let num_logical_cpus = logical_cpu_count();
 
         Ok(Self {
             gpu_collection: None,
@@ -1048,14 +1071,19 @@ impl ProcessMonitor {
                     if elapsed_us > 0.0 && proc.cpu_time_us >= prev_time_us {
                         let delta_cpu_us = (proc.cpu_time_us - prev_time_us) as f64;
                         // CPU% = (cpu_time_delta / wall_time_delta) * 100 / num_cpus
-                        // Normalized to 0-100% of total system capacity (like Task Manager)
-                        proc.cpu_percent = ((delta_cpu_us / elapsed_us) * 100.0
-                            / self.num_logical_cpus as f64)
-                            as f32;
+                        // Normalized to 0-100% of total system capacity (like Task
+                        // Manager). Without a core count there is no such share to
+                        // report, so the raw per-core figure is left as the platform
+                        // gave it rather than divided by a made-up denominator.
+                        let share = (delta_cpu_us / elapsed_us) * 100.0;
+                        proc.cpu_percent = match self.num_logical_cpus {
+                            Some(cpus) => (share / cpus as f64) as f32,
+                            None => share as f32,
+                        };
                     }
-                } else {
+                } else if let Some(cpus) = self.num_logical_cpus {
                     // First sample: normalize the lifetime-average from platform code
-                    proc.cpu_percent /= self.num_logical_cpus;
+                    proc.cpu_percent /= cpus;
                 }
                 new_cpu_times.insert(proc.pid, (proc.cpu_time_us, now));
             }
@@ -1428,9 +1456,7 @@ impl ProcessMonitor {
 
 impl Default for ProcessMonitor {
     fn default() -> Self {
-        let num_logical_cpus = std::thread::available_parallelism()
-            .map(|n| n.get() as f32)
-            .unwrap_or(1.0);
+        let num_logical_cpus = logical_cpu_count();
 
         Self::new().unwrap_or_else(|_| Self {
             gpu_collection: None,
@@ -2749,5 +2775,55 @@ mod tests {
     #[test]
     fn test_process_category_default() {
         assert_eq!(ProcessCategory::default(), ProcessCategory::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod cpu_normalisation_tests {
+    use super::*;
+
+    /// The divisor is read once, in one place. Four copies of this expression
+    /// existed; the risk a shared helper removes is that a later fix reaches
+    /// only the copy in front of whoever is looking.
+    #[test]
+    fn the_logical_cpu_count_is_read_from_one_place() {
+        // On every platform this crate builds for, the count is readable.
+        let count = logical_cpu_count().expect("available_parallelism answers here");
+        assert!(count >= 1.0, "a machine has at least one logical CPU");
+        assert_eq!(
+            count,
+            std::thread::available_parallelism().unwrap().get() as f32
+        );
+    }
+
+    /// A normalised percentage is a share of the whole machine; an
+    /// un-normalised one is a share of one core. The accessor is the only way a
+    /// consumer can tell, because `cpu_percent` is an `f32`.
+    #[test]
+    fn a_monitor_that_read_the_core_count_reports_normalised_percentages() {
+        let monitor = ProcessMonitor::new().expect("process monitor constructs here");
+        assert_eq!(
+            monitor.cpu_percent_is_normalized(),
+            monitor.num_logical_cpus.is_some(),
+            "the accessor must describe the divisor that was actually used"
+        );
+        // This machine can read its core count, so the figures are shares of it.
+        assert!(monitor.cpu_percent_is_normalized());
+    }
+
+    /// The property that a fallback of `1.0` violated: normalising by one is
+    /// indistinguishable from not normalising, so a saturated core reads as a
+    /// saturated machine.
+    #[test]
+    fn one_is_not_a_neutral_divisor() {
+        let saturated_single_core = 100.0_f32;
+        let cpus = logical_cpu_count().unwrap();
+        if cpus > 1.0 {
+            assert!(
+                saturated_single_core / cpus < saturated_single_core,
+                "dividing by the real count must change the answer, which is \
+                 why falling back to 1.0 was a fabrication rather than a no-op"
+            );
+        }
     }
 }
