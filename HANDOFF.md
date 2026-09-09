@@ -6475,14 +6475,36 @@ feature stayed broken through eight published versions.
    truth to check against before trusting the result; Windows reports this
    nowhere else.
 
-3. **The absence-reason audit is past half.** Every `unavailable` reading carries
+3. **The absence-reason audit is complete.** Every `unavailable` reading carries
    a prose reason, and those reasons are *claims about the platform — and
    sometimes about simon* — that can be checked. On this machine there are now
    **438 absences across 47 distinct reason strings**, out of 1804 readings, down
    from 465 out of 1797; four passes closed twenty-eight readings and opened six
    more that a contradiction had been hiding.
 
-   **Forty of the 47 have been checked, and seven have not.** Twenty-four checks
+   **All 47 have now been checked.** The last seven went the other way from the
+   first forty: six were true, and the seventh was true in substance with a
+   reason that did not say so.
+
+   | Reason | Rows | Verdict |
+   | --- | --- | --- |
+   | "a TPM is present but whether it is enabled could not be determined" | 1 | **True, and the tempting fix is wrong.** `Win32_Tpm` answers "Access denied" unelevated. `ACPI\MSFT0101\1` sits in the device tree reporting `Status: OK`, and the reader's own comment already rejects it: "a started driver is not the TPM's own enabled flag, and `TPM_PT_PERMANENT` is what that question asks" |
+   | "the device publishes no manufacturer string" | 2 | True. `Win32_PnPEntity.Manufacturer` is empty for both the TUSB3410 and the USB4 power coordinator |
+   | "no hub reported a negotiated speed…" | 8 | True by construction: every row is a root hub or a virtual node, which sits on no upstream port |
+   | "no driver reports a frame rate and this crate does not estimate one" | 15 | True, and a claim about this crate rather than the platform |
+   | "this source declares no entropy figure" | 2 | True: RDRAND and RDSEED publish no quality figure |
+   | "the platform enumerated no sensors on this machine" | 1 | True: board sensors need a signed kernel driver on Windows |
+   | "reader returned an empty string" — `board.tpm.manufacturer` | 1 | **The one defect.** True that it is empty, but the reason blamed the reader for a privilege boundary |
+
+   **The last one is the audit's own lesson applied to itself.** "Reader returned
+   an empty string" is not a claim about the platform at all — it describes the
+   reader's disappointment. The truth is that `Win32_Tpm.ManufacturerIdTxt` needs
+   elevation, and that the device node beside it *does* carry a `Manufacturer`
+   which reads `(Standard)`: the driver provider, not the silicon vendor.
+   Publishing that would have been the same category error as reporting a root
+   hub's PCI ids as USB ones. The reason now says both halves.
+
+   **Forty of the 47 were checked before this pass.** Twenty-four checks
    came back false, and each was a reading something already had — the first nine
    here, the rest in the sections above:
 

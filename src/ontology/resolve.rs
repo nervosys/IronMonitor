@@ -748,7 +748,24 @@ fn resolve_tpm(out: &mut Vec<Reading>) {
         )),
         v => push_id(out, "board.tpm.version", &format!("{v:?}").to_lowercase()),
     }
-    push_text(out, "board.tpm.manufacturer", &tpm.manufacturer);
+    // An empty manufacturer here is a privilege boundary, not a silent device,
+    // and `push_text` would have said "reader returned an empty string" -- a
+    // reason that names the reader's disappointment rather than the cause.
+    //
+    // The chip vendor is published by `Win32_Tpm.ManufacturerIdTxt`, which
+    // answers "Access denied" on an ordinary account. The device node beside it
+    // *does* carry a `Manufacturer`, and on this machine it reads "(Standard)":
+    // the driver provider, not the silicon vendor. Publishing that would be the
+    // same category error as reporting a root hub's PCI ids as USB ones.
+    if tpm.manufacturer.trim().is_empty() {
+        out.push(Reading::unavailable(
+            "board.tpm.manufacturer",
+            Some(Unit::Identifier),
+            "the TPM's manufacturer is published only by `Win32_Tpm`, which requires elevation; the security device node carries a driver provider rather than the chip vendor",
+        ));
+    } else {
+        push_text(out, "board.tpm.manufacturer", &tpm.manufacturer);
+    }
     match tpm.status {
         TpmStatus::Unknown => out.push(Reading::unavailable(
             "board.tpm.status",
