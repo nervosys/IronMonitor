@@ -55,10 +55,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Main application loop with unified tick-based timing
+///
+/// The `Error: 'static` bound arrived with ratatui 0.30, which gave `Backend` an
+/// associated `Error` type. `terminal.draw` now yields that type, and boxing it
+/// into `Box<dyn Error>` requires it to outlive the box. Every real backend's
+/// error is `'static`; the bound only says so.
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    <B as Backend>::Error: 'static,
+{
     // Unified tick system - base tick is 250ms (4 ticks/sec)
     // Data updates happen on tick multiples; rendering is on-demand (dirty flag).
     const TICK_MS: u64 = 250;
