@@ -240,6 +240,79 @@ The archived `release/v0.1.0/` was deliberately left alone: it is a record of
 what shipped under the old name, and rewriting it would make it a record of
 nothing.
 
+### A 12-core CPU that read 24, on five surfaces the earlier fix did not reach
+
+Found by rendering `ironmon tui --frame --tab cpu` and reading it, while
+verifying something else entirely. The line said:
+
+```
+Name: AMD Ryzen 9 9900X 12-Core Processor │ 24 cores/24 threads │ 5296 MHz
+```
+
+The name and the reading contradict each other one space apart. `CpuInfo` set
+`cores: num_cpus, threads: num_cpus` from `stats.cores.len()` — the *logical*
+count — so both fields held 24, the cores/threads distinction could never show
+anything but N/N, and SMT was invisible.
+
+**`425ff4a` fixed exactly this defect and did not reach here.** That commit
+touched `src/fetch.rs` only, naming `cpu.cores.physical` and `cpu.cores.logical`
+separately for `ironmon status`. The TUI reads a different path, and nobody
+looked at it. Sixth entry in this file with that shape, and the second found by
+looking at output rather than by a test.
+
+Five call sites printed the figure. They now go through one `cores_text`
+helper — the count-the-copies rule applied before the sixth copy exists rather
+than after. `CpuInfo::cores` is `Option<usize>` carrying the physical count, and
+with no physical count the display names the threads as threads instead of
+relabelling them.
+
+### Where a constant is read matters as much as what it says
+
+The physical count comes from `CpuMicroarchMonitor`, and **that query does not
+belong on any path the UI waits for.** Both placements tried first proved it,
+and each broke something different:
+
+- **From `App::new()`** the synchronous WMI call delayed the start of background
+  GPU enumeration enough to change what a single `--frame` render prints. The
+  header went from an intermittent `GPU:0` — 0, 3, 3 across three runs at `HEAD`
+  — to `GPU:0` on six runs out of six.
+- **From `update_cpu`** it ran inside `sync_snapshot`, and
+  `sync_snapshot_populates_display_state_from_collector` went from 5/5 passing
+  in ~2.5 s to **2/5 in 6-22 s**. The delay between the two syncs let the
+  collector publish a new generation, so the guard asserting "a second immediate
+  sync is a no-op" saw a newer one. The assertion was right and the caller was
+  wrong — worth stating because the reflex on a newly-flaky test is to suspect
+  the test.
+
+It is probed once on its own thread now and read without blocking. Until it
+lands the display says "24 threads", which is the same rule every other absent
+reading here follows: say what is known, not what is likely.
+
+**The measurement that made this visible is the pair of five-run samples.** One
+failing run looks like noise; 5/5 at `HEAD` against 2/5 with the change, at
+double the wall time, is a cause. Sample both sides before believing a test went
+bad on its own — this file has already lost time to "an intermittent failure at
+three runs in five" being dismissed.
+
+### `--frame` can render before the collector has finished
+
+**Open, not fixed.** The GPU count in the TUI header is nondeterministic across
+runs of the identical command — 0, 3, 3 at `HEAD`, and 0, 0, 0, 3, 0 after the
+work above. A single `--frame` render can complete before background GPU
+enumeration publishes, so the frame shows `GPU:0` on a machine with three.
+
+This matters more than a cosmetic race, because `--frame` is the agent-facing
+inspection surface and the thing the GUI and TUI tests assert against. A test
+that renders one frame and checks a count is sampling a race. The three GPU rows
+are *present* a moment later, so nothing is wrong with the reader — what is
+missing is a settle condition before the frame is taken, the way
+`gui::frame(Some(tab))` runs its loaders to completion.
+
+Note that the blocking version of the core-count probe accidentally *masked*
+this by giving enumeration more time. A slow path that hides a race is not a fix
+for it, and removing the slowness looks like a regression when it is the race
+becoming visible again.
+
 ### WSL2 is a Linux box, and it found a reader that never returns
 
 Every Linux item in *The plan for what is left* was written as "needs a Linux
@@ -289,9 +362,23 @@ Three things about it are worth keeping:
   the program never exits. `capture` now drains both
   pipes on their own threads (a full stdout pipe is its own deadlock, and needs
   no missing daemon), polls `try_wait` against a deadline, and kills and reaps
-  on expiry. Ten seconds, chosen against the slowest legitimate caller: a cold
-  PowerShell start plus a WMI query measures 1.1–1.3 s on this desktop, so the
-  bound has roughly 8x headroom and throttles nothing that works.
+  on expiry.
+
+**The bound is thirty seconds, and the first attempt at ten was wrong.** Ten was
+chosen against the slowest legitimate caller — a cold PowerShell start plus a
+WMI query, 1.1–1.3 s on an idle desktop, so nominally 8x headroom. It flaked:
+`audio::tests::the_master_volume_is_the_default_output_or_nothing` failed under
+the full parallel suite while another project was running a release build on this
+machine, and passed in isolation in ~2 s. The audio reader makes two `capture`
+calls whose results must agree, so one timing out while the other succeeds
+publishes an *inconsistent pair* — worse than either outcome alone.
+
+The principle worth keeping: **this bound exists to turn "never" into
+"eventually", not to enforce latency.** A timeout that fires on a slow-but-working
+reader converts a success into an absence, and an absence is the one answer this
+crate publishes as a fact about the machine. A tight bound manufactures exactly
+the lie the rest of this codebase is spent removing. **Headroom measured against
+an idle machine is not headroom.**
 
 **The generalisable rule: a reader that waits forever is worse than one that
 fails.** A failure is a reason an agent can publish. A hang is a monitoring tool

@@ -142,6 +142,22 @@ fn safe_percent(value: f32) -> u16 {
 /// The `sep` prefix is included only alongside a real reading so the separator does
 /// not dangle. Previously every one of these sites was `unwrap_or(0)`, which printed
 /// "0 MHz" — indistinguishable from a genuinely stalled core — for a value the
+/// The core count, in the one form that is true on every machine.
+///
+/// Five call sites printed `"{} cores"` from `cpu_info.cores`, which held the
+/// *logical* count — so a 12-core, 24-thread part read "24 cores" on all five.
+/// One helper rather than five edits, because five copies of one expression is
+/// how this crate acquired eight copies of `idle.unwrap_or(100.0)`.
+///
+/// With no physical count, the threads are named as threads. A machine whose
+/// physical count is unreadable is not a machine with that many cores.
+fn cores_text(cpu: &crate::tui::app::CpuInfo) -> String {
+    match cpu.cores {
+        Some(cores) => format!("{cores} cores"),
+        None => format!("{} threads", cpu.threads),
+    }
+}
+
 /// platform had simply not reported.
 fn opt_mhz(freq: Option<u64>, sep: &str) -> String {
     match freq {
@@ -384,13 +400,24 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
     let mut info_lines = vec![Line::from(vec![
         Span::styled("Name: ", Style::default().fg(glances_colors::CPU_TITLE)),
         Span::raw(&app.cpu_info.name),
-        Span::raw(format!(
-            " │ {} cores/{} threads{}{}",
-            app.cpu_info.cores,
-            app.cpu_info.threads,
-            opt_mhz(app.cpu_info.frequency, " │ "),
-            opt_celsius(app.cpu_info.temperature, " │ "),
-        )),
+        // Print the physical count only when there is one. An absent count
+        // prints the threads alone rather than repeating the logical figure
+        // under a "cores" label, which is the defect this line used to carry.
+        Span::raw(match app.cpu_info.cores {
+            Some(cores) => format!(
+                " │ {} cores/{} threads{}{}",
+                cores,
+                app.cpu_info.threads,
+                opt_mhz(app.cpu_info.frequency, " │ "),
+                opt_celsius(app.cpu_info.temperature, " │ "),
+            ),
+            None => format!(
+                " │ {} threads{}{}",
+                app.cpu_info.threads,
+                opt_mhz(app.cpu_info.frequency, " │ "),
+                opt_celsius(app.cpu_info.temperature, " │ "),
+            ),
+        }),
     ])];
 
     let per_core_lines: Vec<Line> = app
@@ -1033,10 +1060,10 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let cpu_label = format!(
-        "CPU {} {:.0}% │ {} cores{}{} {}",
+        "CPU {} {:.0}% │ {}{}{} {}",
         trend_arrow,
         app.cpu_info.utilization,
-        app.cpu_info.cores,
+        cores_text(&app.cpu_info),
         opt_mhz(app.cpu_info.frequency, " @ "),
         opt_celsius(app.cpu_info.temperature, " │ "),
         per_core_display
@@ -1317,7 +1344,7 @@ fn draw_cpu_graph(f: &mut Frame, app: &App, area: Rect) {
     // CPU info
     let mut cpu_text = vec![
         Line::from(format!("CPU: {:.0}%", app.cpu_info.utilization)),
-        Line::from(format!("{} cores", app.cpu_info.cores,)),
+        Line::from(cores_text(&app.cpu_info)),
     ];
     if let Some(mhz) = app.cpu_info.frequency {
         cpu_text.push(Line::from(format!("@ {mhz} MHz")));
@@ -2309,9 +2336,9 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         )
         .percent(safe_percent(app.cpu_info.utilization))
         .label(format!(
-            "{:.1}% | {} cores{}",
+            "{:.1}% | {}{}",
             app.cpu_info.utilization,
-            app.cpu_info.cores,
+            cores_text(&app.cpu_info),
             opt_celsius(app.cpu_info.temperature, " | ")
         ));
 
@@ -2382,10 +2409,12 @@ fn draw_cpu(f: &mut Frame, app: &App, area: Rect) {
     // CPU Info
     let mut info_text = vec![
         Line::from(format!("Name: {}", app.cpu_info.name)),
-        Line::from(format!(
-            "Cores: {} ({} threads)",
-            app.cpu_info.cores, app.cpu_info.threads
-        )),
+        // The detail pane names the absence, the way the temperature line
+        // below it does: an omitted count reads as an oversight.
+        Line::from(match app.cpu_info.cores {
+            Some(cores) => format!("Cores: {} ({} threads)", cores, app.cpu_info.threads),
+            None => format!("Cores: not reported ({} threads)", app.cpu_info.threads),
+        }),
         Line::from(format!("Utilization: {:.1}%", app.cpu_info.utilization)),
     ];
     // A detail pane is the one place worth naming the absence: "not measured" tells

@@ -48,9 +48,24 @@ pub fn capture(program: &str, args: &[&str]) -> Result<String, IronError> {
 /// pipeline was measuring a machine where the bug cannot occur. That is the
 /// same instrument this file already warns about twice.
 ///
-/// Ten seconds is chosen against the slowest legitimate caller, which is a cold
-/// PowerShell start plus a WMI query, not against the fastest.
-const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// **Generous on purpose.** This bound exists to turn "never" into "eventually",
+/// not to enforce latency. A timeout that fires on a slow-but-working reader
+/// converts a success into an *absence*, and an absence is the one answer this
+/// crate treats as a fact about the machine — so a tight bound manufactures
+/// exactly the lie the rest of the codebase is spent removing.
+///
+/// It was 10 s first, chosen against a cold PowerShell start plus a WMI query
+/// measured at 1.1-1.3 s on an idle desktop. That flaked:
+/// `audio::tests::the_master_volume_is_the_default_output_or_nothing` failed
+/// under the full parallel suite while another project was running a release
+/// build on the same machine, and passed in isolation in ~2 s. The audio reader
+/// makes two `capture` calls whose results must agree, so one timing out while
+/// the other succeeds publishes an inconsistent pair — worse than either
+/// outcome alone.
+///
+/// Thirty seconds is still a bound. `bluetoothctl devices` waits forever, and
+/// that is the case this exists for.
+const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// [`capture`], with an explicit bound on how long the program may take.
 pub fn capture_with_timeout(

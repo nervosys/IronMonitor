@@ -702,10 +702,70 @@ pub enum InitState {
     Ready,
 }
 
+/// The physical core count, from the same reader `cpu.cores.physical` resolves
+/// from.
+///
+/// `None` rather than a fallback: the resolver's own arm for this reports "the
+/// platform reported no physical core count distinct from the logical one" when
+/// the reader returns 0, and a display that filled the gap with the logical
+/// count would be reintroducing the bug this function exists to fix.
+static PHYSICAL_CORES: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+/// Start the physical-core probe on its own thread.
+///
+/// **This query does not belong on any path the UI waits for**, and both places
+/// it was tried first proved it:
+///
+/// - From `App::new()`, the synchronous WMI call delayed the start of background
+///   GPU enumeration enough to change what a single `--frame` render shows. The
+///   header went from an intermittent `GPU:0` (0, 3, 3 over three runs at
+///   `HEAD`) to `GPU:0` on six runs out of six.
+/// - From `update_cpu`, it ran inside `sync_snapshot` and pushed that test from
+///   5/5 passing in ~2.5 s to 2/5 in 6-22 s. The delay between the two syncs let
+///   the collector publish a new generation, so the guard that must see "same
+///   generation" saw a newer one. The assertion was right and the caller was
+///   wrong.
+///
+/// The count cannot change, so it is probed once, off-thread, and read without
+/// blocking. Until it lands the display says "24 threads" rather than guessing,
+/// which is the same rule every other absent reading in this crate follows.
+fn start_physical_core_probe() {
+    std::thread::spawn(|| {
+        let cores = crate::cpu_microarch::CpuMicroarchMonitor::new()
+            .ok()
+            .map(|m| m.report().physical_cores)
+            .filter(|&p| p > 0)
+            .map(|p| p as usize);
+        let _ = PHYSICAL_CORES.set(cores);
+    });
+}
+
+/// The physical core count if the probe has finished, otherwise `None`.
+///
+/// Never blocks: a not-yet-known count and an unreadable one are both absent,
+/// and the display treats them the same.
+fn physical_cores() -> Option<usize> {
+    PHYSICAL_CORES.get().copied().flatten()
+}
+
 #[derive(Clone, Default)]
 pub struct CpuInfo {
     pub name: String,
-    pub cores: usize,
+    /// Physical cores, or `None` when the platform did not report a count
+    /// distinct from the logical one.
+    ///
+    /// This was a `usize` assigned `stats.cores.len()` — the *logical* count —
+    /// beside `threads` taking the same value. So a Ryzen 9 9900X rendered as
+    /// "24 cores/24 threads" one line under a name reading "12-Core Processor",
+    /// and the cores/threads distinction could never show anything but N/N,
+    /// making SMT invisible.
+    ///
+    /// `425ff4a` fixed exactly this defect in `fetch.rs` by naming the two
+    /// entities separately. It did not reach here, because that fix was applied
+    /// to the surface in front of it rather than to the cause — the sixth time
+    /// this file records that shape. Found by rendering a frame and reading it.
+    pub cores: Option<usize>,
+    /// Logical processors: the number of per-core rows the stats reader returned.
     pub threads: usize,
     pub utilization: f32,
     pub temperature: Option<f32>,
@@ -900,6 +960,9 @@ impl App {
     /// Create app with fast startup - slow components initialize in background
     pub fn new_fast() -> Result<Self, Box<dyn std::error::Error>> {
         use std::sync::mpsc;
+
+        // Spawning is all this costs here; the query itself runs off-thread.
+        start_physical_core_probe();
 
         // Load config synchronously (fast - just file read)
         let config = crate::config::Config::load().unwrap_or_default();
@@ -1389,7 +1452,11 @@ impl App {
                 .first()
                 .map(|c| c.model.clone())
                 .unwrap_or_else(|| "CPU".to_string()),
-            cores: num_cpus,
+            // Physical cores come from the microarchitecture reader, which is
+            // the same source `cpu.cores.physical` resolves from, and is read
+            // once because the count cannot change. `threads` is the logical
+            // count, which is what `stats.cores` actually holds.
+            cores: physical_cores(),
             threads: num_cpus,
             utilization: 100.0 - stats.total.idle,
             temperature: None, // Requires admin for WMI thermal zone access
@@ -2534,9 +2601,25 @@ mod tests {
         // once. Those hold regardless of which readers a platform has.
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
+            // The physical count may legitimately be absent — a VM, or a
+            // platform with no count distinct from the logical one — so what is
+            // asserted is that when it *is* present it is a real count, and
+            // never silently the logical one standing in for it.
+            if let Some(cores) = app.cpu_info.cores {
+                assert!(cores > 0, "a reported physical core count must be real");
+                assert!(
+                    cores <= app.cpu_info.threads,
+                    concat!(
+                        "physical cores ({}) cannot exceed threads ({}) — ",
+                        "that is the logical count wearing the wrong label"
+                    ),
+                    cores,
+                    app.cpu_info.threads
+                );
+            }
             assert!(
-                app.cpu_info.cores > 0,
-                "CPU core count did not reach the display state"
+                app.cpu_info.threads > 0,
+                "logical processor count did not reach the display state"
             );
             assert!(
                 !app.cpu_info.per_core_usage.is_empty(),
