@@ -1,0 +1,161 @@
+{
+  "ironstack": "1",
+  "id": "ironmonitor",
+  "product": "IronMonitor",
+  "layer": "substrates",
+  "role": "Hardware monitoring for CPUs, GPUs, NPUs, memory, I/O and network silicon on Linux, Windows and macOS, with an entity ontology an agent reads before it queries anything: every value the tool can report, with its unit and its provenance. Reports what it cannot read as well as what it can, so an absent reading is a stated gap rather than a zero.",
+  "surfaces": [
+    "cli",
+    "tui",
+    "gui",
+    "rest",
+    "mcp"
+  ],
+  "capabilities": [
+    {
+      "name": "monitor.describe",
+      "description": "Print the entity ontology: every value this can report, with its unit and provenance. Pure — touches no hardware, so the answer is identical on every machine and can be fetched before the machine is.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.get",
+      "description": "Read one ontology entity by id.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.snapshot",
+      "description": "Read every resolvable entity at once, with provenance for each, and name the ones that did not resolve.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.profile",
+      "description": "Inspect hardware profiles and tunable driver settings, and list which of them this build can write.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.profile_set",
+      "description": "Write a tunable driver or hardware setting. Refuses without --confirm, and refuses any id with no registered handler.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "closed_by_deployment",
+      "reversible": "unknown",
+      "consequence": "data"
+    },
+    {
+      "name": "monitor.tune",
+      "description": "Detect what the machine is being used for and recommend a hardware profile. Recommends; does not apply.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.record",
+      "description": "Record system metrics to a time-series database for later analysis.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "unknown",
+      "consequence": "data"
+    },
+    {
+      "name": "monitor.ids",
+      "description": "Intrusion detection over listening sockets and watched files.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    },
+    {
+      "name": "monitor.serve",
+      "description": "Serve the REST API and Prometheus metrics over HTTP.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "cli",
+        "rest"
+      ],
+      "authority": "closed_by_deployment",
+      "reversible": "reversible",
+      "consequence": "data"
+    },
+    {
+      "name": "monitor.privacy",
+      "description": "Manage data-collection consent. IronMonitor collects and transmits nothing today, so a denial records a decision rather than stopping anything.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "cli"
+      ],
+      "authority": "public",
+      "reversible": "reversible",
+      "consequence": "informational"
+    }
+  ],
+  "ontology": {
+    "command": "ironmon describe --format json",
+    "document": "AI_INTEGRATION.md"
+  },
+  "unmapped": [
+    {
+      "area": "what a reading means",
+      "why": "This reports values with their units and provenance. Whether a temperature is too high for this machine, or a queue depth indicates a problem, is a judgement nothing here makes."
+    },
+    {
+      "area": "acting on what it finds",
+      "why": "`tune` recommends a profile and does not apply one, and `profile set` writes only an id with a registered handler. Nothing here schedules, throttles, migrates or restarts anything; that is the host's business and IronWarden's."
+    },
+    {
+      "area": "most tunable settings",
+      "why": "Exactly one setting id has a registered write handler on this build. Every other setting the profile subsystem can read is read-only here, so an agent that finds a setting cannot assume it can change it — `profile writable` is the list that answers that, and it is short."
+    },
+    {
+      "area": "the machine it cannot see",
+      "why": "Readings come from what the OS and the vendor drivers expose. A subsystem with no driver, no permission or no sensor is reported as unresolved rather than as zero, which is the distinction this component is built around — but it means absence here is absence of access, not absence of hardware."
+    }
+  ],
+  "note": "Written 2026-09-14, this component's first manifest, after it was renamed from Silicon Monitor and moved to ai/IronMonitor. Capabilities are the binary's own subcommands, read off `--help`; `gui`, `tui` and `cli` are surfaces rather than capabilities, because they are ways in rather than things done. `monitor.profile_set` was first declared `physical` here, on the reasoning that the subsystem is tunable driver settings in the style of XTU and Ryzen Master and those can damage equipment. IronStack refused it: a `physical` consequence from the `substrates` layer is a category error, because only `embodiment` actuates. That is the better argument and the declaration follows it. It is `data` instead, which is the nearest honest value rather than an exact one -- the only writable id on this build is `active_scheme_guid`, a Windows power scheme, and what it changes is persistent machine configuration, which the vocabulary has no class for. If a clock or voltage handler is ever registered, this declaration has to be revisited and the layer question with it. `requires_grant` is true for `profile_set` and for `serve`, which opens a port. Neither is budgeted, and that is deliberate rather than unconsidered: a budget meters a resource that runs out, and neither writing one setting nor binding one socket consumes anything a caller could exhaust. Everything else reads what the OS already exposes to the user running it.",
+  "grounding": "judged"
+}
