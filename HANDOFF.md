@@ -338,8 +338,8 @@ predicates, and the first is the one that is easy to write.
 
 ### One target directory, every project
 
-`~/.cargo/config.toml` sets `target-dir = "C:/Users/adamm/.cargo-target"`
-globally, so every repo on this machine builds into one directory. With another
+`~/.cargo/config.toml` sets a global `target-dir` under the user profile,
+so every repo on this machine builds into one directory. With another
 project building concurrently this produced, in one afternoon: builds blocking
 minutes on the target lock with no output, runs truncated part-way through the
 suite, `error: crate 'zip' required to be available in rlib format, but was not
