@@ -294,24 +294,64 @@ double the wall time, is a cause. Sample both sides before believing a test went
 bad on its own — this file has already lost time to "an intermittent failure at
 three runs in five" being dismissed.
 
-### `--frame` can render before the collector has finished
+### `--frame` rendered the warm-up pass, and two things had to be true to fix it
 
-**Open, not fixed.** The GPU count in the TUI header is nondeterministic across
-runs of the identical command — 0, 3, 3 at `HEAD`, and 0, 0, 0, 3, 0 after the
-work above. A single `--frame` render can complete before background GPU
-enumeration publishes, so the frame shows `GPU:0` on a machine with three.
+`ironmon tui --frame` printed `GPU:0` on a three-GPU machine, nondeterministically
+— 0, 3, 3 over three runs of the identical command. It is now 3 on eight runs out
+of eight. **The diagnosis was wrong twice before it was right**, and both wrong
+turns are the interesting part.
 
-This matters more than a cosmetic race, because `--frame` is the agent-facing
-inspection surface and the thing the GUI and TUI tests assert against. A test
-that renders one frame and checks a count is sampling a race. The three GPU rows
-are *present* a moment later, so nothing is wrong with the reader — what is
-missing is a settle condition before the frame is taken, the way
-`gui::frame(Some(tab))` runs its loaders to completion.
+**It was never a thread race.** The collector *deliberately* publishes a warm-up
+snapshot built from an empty `Sources`, so CPU and memory — available in under a
+millisecond — reach the UI without waiting on GPU enumeration. That snapshot
+reports no GPUs by construction. `--frame` already had a settle loop, but it
+waited for *a* snapshot, and the warm-up is a snapshot. It was sampling a
+designed-in incompleteness, not a scheduling accident.
 
-Note that the blocking version of the core-count probe accidentally *masked*
-this by giving enumeration more time. A slow path that hides a race is not a fix
-for it, and removing the slowness looks like a regression when it is the race
-becoming visible again.
+**Nothing in the snapshot said it was incomplete**, which is the deeper defect.
+An empty `gpu_static` is exactly what a machine with no GPU produces, so a
+consumer reading the first generation could not tell "none here" from "not looked
+at yet" — the distinction this entire crate exists to preserve, missing from its
+own pipeline. `Snapshot::warmup` says so now, and the one-shot renderers wait for
+`!warmup`.
+
+**That alone did not fix it, and the intermediate state is worth recording:**
+with the settle loop corrected, the count went from intermittently-right to
+`GPU:0` on eight runs out of eight — *deterministically wrong*, which looked like
+a regression and was actually the first honest measurement. The remaining fault
+was that **`sync_snapshot` refreshed CPU, memory, network and disks, but not
+GPUs.** `update_gpu` ran only from `update_fast`, so any caller that settled
+through `sync_snapshot` alone — which both one-shot renderers do — kept whatever
+GPU state construction had left. The intermittent `GPU:3` had been coming from an
+unrelated `app.update()` happening to land after enumeration finished.
+
+So the symptom had two independent causes, and fixing either alone left it
+broken. The guard is
+`a_snapshot_with_gpus_reaches_the_display_state`, asserted as an implication —
+*if the snapshot describes GPUs, the display state must too* — so it holds on a
+GPU-less CI runner as well as here, and it was checked against a deliberate break
+before being kept.
+
+**The generalisable one: a settle condition has to name what it is waiting for.**
+"A snapshot arrived" and "the snapshot describes the machine" are different
+predicates, and the first is the one that is easy to write.
+
+### One target directory, every project
+
+`~/.cargo/config.toml` sets `target-dir = "C:/Users/adamm/.cargo-target"`
+globally, so every repo on this machine builds into one directory. With another
+project building concurrently this produced, in one afternoon: builds blocking
+minutes on the target lock with no output, runs truncated part-way through the
+suite, `error: crate 'zip' required to be available in rlib format, but was not
+found in this form`, and a doctest pass that reported a dozen unrelated modules
+failing to compile.
+
+**Every one of those looked like a defect in this crate and none of them was.**
+`CARGO_TARGET_DIR=…-ironmon cargo test --all-features` in a private directory
+returned 20 suites green and 73 doctests passing from the same working tree. When
+a failure is broad, systemic and touches modules the change never went near,
+check whether something else is writing to the same target directory before
+reading the error at face value.
 
 ### WSL2 is a Linux box, and it found a reader that never returns
 

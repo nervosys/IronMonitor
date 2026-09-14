@@ -4476,9 +4476,11 @@ fn handle_tui_script_command(
     app.update()?;
     // Same wait as `--frame`: assertions against a frame rendered before the
     // collector published would be testing the zeroed defaults.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Skipping the warm-up generation too: a script asserting on GPU rows against
+    // it would be asserting on a snapshot built from no GPU source at all.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        if app.sync_snapshot() {
+        if app.sync_snapshot() && !app.snapshot_is_warmup() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -4520,20 +4522,28 @@ fn handle_tui_frame_command(
     // during it shows "CPU:0% MEM:0%" — zeros indistinguishable from an idle
     // machine. Wait for real data, bounded, and say plainly if it never arrives
     // rather than printing the defaults as though they were a reading.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    //
+    // Waiting for *a* snapshot is not enough, and that is what this used to do.
+    // The collector publishes a warm-up generation from an empty source set so
+    // CPU and memory reach the UI without waiting on GPU enumeration, so the
+    // first snapshot to arrive reports **no GPUs by construction**. A one-shot
+    // frame that accepted it printed `GPU:0` on a three-GPU machine, and did so
+    // nondeterministically - whichever generation happened to land first.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut have_snapshot = false;
     while std::time::Instant::now() < deadline {
-        if app.sync_snapshot() {
+        if app.sync_snapshot() && !app.snapshot_is_warmup() {
             have_snapshot = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     if !have_snapshot {
-        eprintln!(
-            "warning: no snapshot arrived within 5s. The frame below shows zeroed \
-             defaults, not readings — do not interpret them as an idle machine."
-        );
+        eprintln!(concat!(
+            "warning: no complete snapshot arrived within 10s. The frame below ",
+            "may show the collector's warm-up pass, which carries no GPUs, ",
+            "processes or connections - do not read those as absent hardware."
+        ));
     }
 
     if let Some(requested) = tab {

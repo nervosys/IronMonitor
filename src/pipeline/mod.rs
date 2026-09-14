@@ -259,6 +259,19 @@ pub struct Snapshot {
     pub cpu: Option<CpuStats>,
     /// Memory statistics, if the platform collector succeeded.
     pub memory: Option<MemoryStats>,
+    /// Whether this is the warm-up pass, published before the slow sources exist.
+    ///
+    /// The collector publishes one snapshot from an empty [`Sources`] so that CPU
+    /// and memory — available in under a millisecond — reach the UI without
+    /// waiting on GPU enumeration. **That snapshot reports no GPUs, no processes
+    /// and no connections, and nothing in it said so.** An empty `gpu_static` is
+    /// what a machine with no GPU also produces, so a consumer reading the first
+    /// generation could not tell "none here" from "not looked at yet" — the
+    /// distinction this whole crate exists to preserve.
+    ///
+    /// A one-shot consumer should wait for `!warmup`; a continuously repainting
+    /// one can ignore it, because the next generation supersedes it.
+    pub warmup: bool,
     /// Static GPU descriptors, captured once at startup.
     pub gpu_static: Vec<GpuStaticInfo>,
     /// Per-tick GPU telemetry, index-aligned with [`Snapshot::gpu_static`].
@@ -557,7 +570,7 @@ fn collector_loop(
         connections: None,
     };
     generation += 1;
-    slot.store(Arc::new(collect_once(
+    let mut warmup = collect_once(
         &mut warmup_sources,
         &config,
         &mut histories,
@@ -567,7 +580,11 @@ fn collector_loop(
         &mut cached_connections,
         &[],
         generation,
-    )));
+    );
+    // Say so in the snapshot itself. Every later generation leaves this false
+    // through `Default`.
+    warmup.warmup = true;
+    slot.store(Arc::new(warmup));
     if let Some(ref hook) = config.on_publish {
         hook();
     }
@@ -809,6 +826,9 @@ fn collect_once(
 
     Snapshot {
         generation,
+        // `collect_once` does not know whether its sources are the warm-up set;
+        // the one caller that passes an empty `Sources` marks its own result.
+        warmup: false,
         collected_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())

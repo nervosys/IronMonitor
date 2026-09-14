@@ -1220,6 +1220,16 @@ impl App {
     ///
     /// This never blocks: it is an atomic load plus a pure in-memory mapping. All
     /// hardware access happens on the collector thread.
+    /// Whether the applied snapshot is the collector's warm-up pass.
+    ///
+    /// The warm-up carries CPU and memory but no GPUs, processes or connections,
+    /// by design — see [`crate::pipeline::Snapshot::warmup`]. A one-shot renderer
+    /// must not treat it as the machine's state; a repainting one may, because
+    /// the next generation replaces it.
+    pub fn snapshot_is_warmup(&self) -> bool {
+        self.snapshot.warmup
+    }
+
     pub fn sync_snapshot(&mut self) -> bool {
         let Some(ref collector) = self.collector else {
             return false;
@@ -1239,6 +1249,14 @@ impl App {
         let _ = self.update_memory();
         let _ = self.update_network();
         let _ = self.update_disks();
+        // GPUs were the one display domain this did not refresh, and the
+        // omission is what made `--frame` print `GPU:0` on a three-GPU machine.
+        // `update_gpu` only ran from `update_fast`, so any caller that settled on
+        // a snapshot through `sync_snapshot` alone — which both one-shot
+        // renderers do — kept whatever GPU state happened to be there from
+        // construction. It reads the snapshot already applied above and performs
+        // no hardware I/O, exactly like the four beside it.
+        let _ = self.update_gpu();
 
         true
     }
@@ -1402,8 +1420,8 @@ impl App {
     /// Performs no hardware I/O: this is an atomic snapshot load plus an in-memory
     /// mapping, so it cannot stall a frame regardless of how slow a driver is.
     pub fn update_fast(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // `sync_snapshot` refreshes every display domain, GPUs included.
         self.sync_snapshot();
-        self.update_gpu()?;
         self.last_update = Instant::now();
         Ok(())
     }
@@ -2562,6 +2580,50 @@ mod tests {
     /// This covers the refactor that moved every `update_*` method off blocking
     /// platform calls and onto the published snapshot. A regression here means the
     /// TUI renders stale or empty panels.
+    /// Every display domain the snapshot carries is refreshed by one call.
+    ///
+    /// GPUs were the exception, and nothing caught it: `update_gpu` ran only from
+    /// `update_fast`, so a caller that settled on a snapshot through
+    /// `sync_snapshot` alone kept whatever GPU state construction had left. Both
+    /// one-shot renderers do exactly that, which is why `ironmon tui --frame`
+    /// printed `GPU:0` on a three-GPU machine.
+    ///
+    /// Asserted as an implication rather than a count, because a runner with no
+    /// GPU is a legitimate machine: **if the snapshot describes GPUs, the display
+    /// state must too.** That survives both a GPU-less CI runner and this
+    /// desktop.
+    #[test]
+    fn a_snapshot_with_gpus_reaches_the_display_state() {
+        let Ok(mut app) = App::new() else {
+            return;
+        };
+
+        // Settle past the collector's warm-up pass, which carries no GPUs by
+        // construction; asserting against it would assert the defect.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if app.sync_snapshot() && !app.snapshot_is_warmup() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        if app.snapshot_is_warmup() {
+            // Never got a complete snapshot; there is nothing to assert about.
+            return;
+        }
+
+        assert!(
+            app.snapshot.gpu_static.len() <= app.accelerators.len(),
+            concat!(
+                "the snapshot describes {} GPUs but the display state has {} ",
+                "accelerators - sync_snapshot did not refresh them"
+            ),
+            app.snapshot.gpu_static.len(),
+            app.accelerators.len()
+        );
+    }
+
     #[test]
     fn sync_snapshot_populates_display_state_from_collector() {
         let mut app = match App::new() {
