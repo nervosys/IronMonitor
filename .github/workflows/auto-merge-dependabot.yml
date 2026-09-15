@@ -1,5 +1,25 @@
 name: Auto-approve and merge Dependabot PRs
 
+# Two faults were fixed here on 2026-09-14, both found when an unrelated PR
+# opened by a human triggered this workflow and it tried to merge somebody
+# else's.
+#
+# 1. **`auto-merge` had no actor guard.** Only `auto-approve` checked
+#    `github.actor`, so the merge job ran on *every* `pull_request_target`
+#    event — including a PR from an outside contributor's fork.
+#
+# 2. **It acted on a different PR than the one that triggered it.** The job
+#    queried `gh pr list --author dependabot[bot]` and took `.[0]`, so opening
+#    any PR armed a squash-merge on whichever dependabot PR happened to be
+#    oldest. In the observed case that was a stale crossterm bump already
+#    superseded on master; had the setting allowed it, the next candidate was an
+#    eframe bump that could not compile. It now merges
+#    `github.event.pull_request.number` — the PR this event is actually about.
+#
+# Nothing stopped it but a repository setting: every run failed with
+# `GraphQL: Auto merge is not allowed for this repository`. Turning that setting
+# on would have made the bug live, which is the wrong order for a safety net.
+
 on:
   pull_request_target:
     types:
@@ -7,39 +27,39 @@ on:
       - synchronize
       - reopened
 
+# Least privilege: this workflow approves and merges, and does nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   auto-approve:
+    # Guarded on the PR's author rather than `github.actor`, because on a
+    # `synchronize` event the actor is whoever pushed, which need not be the
+    # author.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:
-      # Step to auto-approve Dependabot PRs
       - name: Auto-approve Dependabot PR
-        if: github.actor == 'dependabot[bot]'
         uses: hmarr/auto-approve-action@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   auto-merge:
     needs: auto-approve
+    # Repeated deliberately. `needs` orders the jobs; it does not inherit the
+    # condition, and a skipped dependency would otherwise let this run.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:
-      # Step to checkout the repository
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # Step to find the PR number of the open Dependabot PR
-      - name: Find PR number
-        id: find_pr
-        run: |
-          PR_NUMBER=$(gh pr list --state open --author "dependabot[bot]" --json number --jq '.[0].number')
-          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Step to enable auto-merge for the found PR number
+      # Enable auto-merge on *this* pull request. No checkout: nothing here
+      # reads the repository, and `pull_request_target` runs with write
+      # permissions, so not fetching the PR's own code is the point.
       - name: Enable auto-merge
-        if: ${{ steps.find_pr.outputs.PR_NUMBER != '' }}
-        run: gh pr merge --auto --squash "${{ steps.find_pr.outputs.PR_NUMBER }}"
+        run: gh pr merge --auto --squash "$PR_NUMBER"
         env:
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
