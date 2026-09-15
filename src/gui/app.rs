@@ -1900,12 +1900,12 @@ impl eframe::App for IronMonitorApp {
                     // Export buttons
                     if ui.small_button("CSV").clicked() {
                         let csv = self.export_to_csv();
-                        ui.output_mut(|o| o.copied_text = csv);
+                        ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(csv)));
                     }
                     ui.add_space(4.0);
                     if ui.small_button("JSON").clicked() {
                         if let Ok(json) = self.export_to_json() {
-                            ui.output_mut(|o| o.copied_text = json);
+                            ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(json)));
                         }
                     }
                     ui.add_space(8.0);
@@ -2146,10 +2146,10 @@ impl IronMonitorApp {
         let can_answer = self.agent_can_answer();
         let mut submit = false;
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CyberColors::SURFACE)
-            .rounding(6.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Ask").color(CyberColors::CYAN).strong());
@@ -2929,10 +2929,10 @@ impl IronMonitorApp {
                 let accel_color = DeviceTitleColors::ACCEL;
 
                 // Device pane frame - compact
-                let frame = egui::Frame::none()
+                let frame = egui::Frame::NONE
                     .fill(CyberColors::SURFACE)
                     .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
-                    .rounding(4.0)
+                    .corner_radius(4)
                     .inner_margin(8.0);
 
                 frame.show(ui, |ui| {
@@ -3974,10 +3974,10 @@ impl IronMonitorApp {
             .map(|io| format_bytes(io.write_bytes))
             .unwrap_or_else(|| "N/A".to_string());
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CyberColors::SURFACE)
             .stroke(egui::Stroke::new(1.0_f32, disk_color.gamma_multiply(0.4)))
-            .rounding(6.0)
+            .corner_radius(6)
             .inner_margin(12.0)
             .show(ui, |ui| {
                 // Use fixed column positions via exact sizing
@@ -4107,9 +4107,9 @@ impl IronMonitorApp {
                                     ("Unknown", CyberColors::TEXT_MUTED)
                                 }
                             };
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(color.gamma_multiply(0.15))
-                                .rounding(4.0)
+                                .corner_radius(4)
                                 .inner_margin(egui::vec2(10.0, 4.0))
                                 .show(ui, |ui| {
                                     ui.label(RichText::new(text).color(color).size(14.0));
@@ -6331,10 +6331,10 @@ impl IronMonitorApp {
             } else {
                 CyberColors::NEON_YELLOW
             };
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(CyberColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0_f32, accent))
-                .rounding(6.0)
+                .corner_radius(6)
                 .inner_margin(10.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -6370,10 +6370,10 @@ impl IronMonitorApp {
         // Chat history area - fills available space
         let chat_height = ui.available_height() - 80.0; // Leave room for input area
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CyberColors::BACKGROUND)
             .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
-            .rounding(6.0)
+            .corner_radius(6)
             .inner_margin(12.0)
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(ui.available_width(), chat_height.max(300.0)));
@@ -6395,9 +6395,9 @@ impl IronMonitorApp {
                         ui.add_space(24.0);
 
                         // Example questions
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(CyberColors::SURFACE)
-                            .rounding(6.0)
+                            .corner_radius(6)
                             .inner_margin(12.0)
                             .show(ui, |ui| {
                                 ui.label(RichText::new("💡 Try asking:").color(CyberColors::TEXT_PRIMARY).size(13.0));
@@ -6437,11 +6437,11 @@ impl IronMonitorApp {
                             ui.add_space(40.0); // Indent user messages
                         }
 
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(bg_color)
                             .stroke(egui::Stroke::new(1.0_f32, border_color))
                             .inner_margin(10.0)
-                            .rounding(8.0)
+                            .corner_radius(8)
                             .show(ui, |ui| {
                                 ui.set_max_width(max_bubble_width);
 
@@ -6491,10 +6491,10 @@ impl IronMonitorApp {
         ui.add_space(8.0);
 
         // Input area with improved styling
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CyberColors::SURFACE)
             .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
-            .rounding(6.0)
+            .corner_radius(6)
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -6640,9 +6640,9 @@ impl IronMonitorApp {
         // Detected backends section
         let available = crate::agent::AgentConfig::list_available_backends();
         if !available.is_empty() {
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(CyberColors::SURFACE)
-                .rounding(8.0)
+                .corner_radius(8)
                 .inner_margin(15.0)
                 .show(ui, |ui| {
                     ui.label(
@@ -6668,9 +6668,9 @@ impl IronMonitorApp {
         }
 
         // Setup options
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CyberColors::SURFACE)
-            .rounding(8.0)
+            .corner_radius(8)
             .inner_margin(15.0)
             .show(ui, |ui| {
                 ui.label(
