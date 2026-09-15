@@ -215,8 +215,8 @@ pub fn apply_cyber_theme(ctx: &egui::Context) {
     visuals.window_shadow.color = Color32::from_black_alpha(120);
     visuals.popup_shadow.color = Color32::from_black_alpha(100);
 
-    visuals.window_rounding = egui::Rounding::same(8.0);
-    visuals.menu_rounding = egui::Rounding::same(6.0);
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(6);
 
     style.visuals = visuals;
 
@@ -242,7 +242,7 @@ pub fn apply_cyber_theme(ctx: &egui::Context) {
     .into();
 
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.window_margin = egui::Margin::same(12.0);
+    style.spacing.window_margin = egui::Margin::same(12);
     style.spacing.button_padding = egui::vec2(10.0, 4.0);
 
     ctx.set_style(style);
@@ -351,8 +351,8 @@ pub fn apply_light_theme(ctx: &egui::Context) {
     visuals.hyperlink_color = LightColors::ACCENT;
     visuals.window_shadow.color = Color32::from_black_alpha(30);
     visuals.popup_shadow.color = Color32::from_black_alpha(20);
-    visuals.window_rounding = egui::Rounding::same(8.0);
-    visuals.menu_rounding = egui::Rounding::same(6.0);
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(6);
     style.visuals = visuals;
     style.text_styles = [
         (
@@ -375,7 +375,7 @@ pub fn apply_light_theme(ctx: &egui::Context) {
     ]
     .into();
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.window_margin = egui::Margin::same(12.0);
+    style.spacing.window_margin = egui::Margin::same(12);
     style.spacing.button_padding = egui::vec2(10.0, 4.0);
     ctx.set_style(style);
 }

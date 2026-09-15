@@ -192,7 +192,12 @@ impl Widget for CyberProgressBar {
             }
 
             // Outer border with subtle glow
-            painter.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, CyberColors::BORDER));
+            painter.rect_stroke(
+                rect,
+                4.0,
+                Stroke::new(1.0_f32, CyberColors::BORDER),
+                egui::StrokeKind::Middle,
+            );
 
             // Label and percentage with trend indicator
             let text_color = CyberColors::TEXT_PRIMARY;
@@ -311,11 +316,11 @@ impl Widget for MetricCard<'_> {
             let accent_rect = Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
             painter.rect_filled(
                 accent_rect,
-                egui::Rounding {
-                    nw: 6.0,
-                    sw: 6.0,
-                    ne: 0.0,
-                    se: 0.0,
+                egui::CornerRadius {
+                    nw: 6,
+                    sw: 6,
+                    ne: 0,
+                    se: 0,
                 },
                 self.color,
             );
@@ -769,6 +774,7 @@ impl Widget for SparklineChart {
                 rect,
                 4.0,
                 Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(60, 70, 80, 80)),
+                egui::StrokeKind::Middle,
             );
         }
 
@@ -1000,7 +1006,12 @@ impl Widget for QuickLookPanel {
             }
 
             // Border
-            painter.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, CyberColors::BORDER));
+            painter.rect_stroke(
+                rect,
+                4.0,
+                Stroke::new(1.0_f32, CyberColors::BORDER),
+                egui::StrokeKind::Middle,
+            );
         }
 
         response
