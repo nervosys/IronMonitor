@@ -151,7 +151,7 @@ open = { version = "5.3", optional = true }
 # optional and off by default for exactly that reason — the same arrangement
 # `deweygui` had in 3.10.0, and the same trap that made 4.0.0 breaking when a
 # GUI dependency's MSRV became the whole crate's.
-ironvault = { version = "7", optional = true, default-features = false }
+ironvault = { version = "8", optional = true, default-features = false }
 # Used to locate an existing IronVault installation *without* creating one —
 # IronVault's own resolver, so the probe and the tool agree on where to look.
 directories = { version = "5", optional = true }
