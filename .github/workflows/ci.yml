@@ -26,6 +26,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job here only reads the repository and reports its own result, so the
+# token they get should be able to do exactly that. Without this, jobs inherit
+# the repository default, which is `write` — `default_workflow_permissions` on
+# this repo is set to `write`, so each of these five jobs was running with a
+# token that could push to master to run `cargo test`.
+#
+# Flagged by CodeQL as `actions/missing-workflow-permissions`, five times, the
+# first time it ever ran here.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check
