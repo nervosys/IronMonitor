@@ -184,6 +184,171 @@ Since the tag, on `master` and green on all three platforms:
 **None of these were found by grepping.** The method, and why the greps missed
 them, is below under *Run it and read the output*.
 
+### The ruleset required a scan nobody was running
+
+**Every merge to master in this repository has been going in on
+organization-admin bypass**, and the reason was invisible because the bypass
+absorbed it. The `Default` ruleset requires CodeQL code scanning results;
+`code-scanning/analyses` returned *"no analysis found"*. So every push printed
+
+```
+Waiting for Code Scanning results. Code Scanning may not be configured for the
+target branch.
+```
+
+and every merge quietly took the admin route instead. A required check nobody
+can satisfy is not a safety net — it is a permanent bypass with extra steps, and
+it had been that way long enough that the bypass looked like the normal route.
+
+CodeQL is configured now (`e4f3127`), and `gh pr view` went from two
+unsatisfiable gates to `REVIEW_REQUIRED` alone. **Merges no longer need admin
+bypass, just a human approval.**
+
+**Advanced setup, because default setup cannot scan this crate**, and the way
+that was established is worth keeping:
+
+- `PATCH code-scanning/default-setup` rejects `rust` outright — the accepted set
+  is `actions, c-cpp, csharp, go, java-kotlin, javascript-typescript, python,
+  ruby, swift`.
+- `GET` on that *same endpoint* reports `languages: ["actions","rust"]`.
+
+The read reports what it **detected**; the write reports what it **supports**.
+The read agrees with what you want and was nearly taken at face value. *When an
+API has both, trust the write.* CodeQL does support Rust in advanced setup:
+`Analyze rust` passes in about eight minutes with `build-mode: none`, which
+reads the sources rather than paying for an eighth full compile of this crate
+per run.
+
+### What the first scan found, in twenty minutes
+
+Twelve alerts, and the split is instructive because only some were real.
+
+**Five mediums, all real, all one fix.** `actions/missing-workflow-permissions`,
+once per job in `ci.yml`, none of which declared any `permissions`. Without a
+declaration a job inherits the repository default, and this repository's
+`default_workflow_permissions` is `write` — so `Check`, `Feature combinations`,
+`Test`, `Format` and `Clippy` each ran with a token that could **push to
+master**, in order to run `cargo check`. One `permissions: contents: read` at
+the top of the file covers all five (`bedcdc1`).
+
+**Four highs that are false positives, dismissed with the reason on each.** Two
+are `log_privileged_operation` in `utils/security.rs`, an audit log whose
+documented purpose is recording who performed a privileged operation — removing
+the actor would destroy the trail the alert exists to protect. Two print an
+environment variable's *name* beside a `configured ✓` flag derived from
+`is_ok()`; the value never reaches the format string. CodeQL matches the literal
+`API Key` beside an env read.
+
+**Three highs that were real, and they land on a rule this file already has.**
+`motherboard_monitor`, `nvidia_monitor` and `network_monitor` printed a board
+UUID, a GPU UUID and an interface MAC in full. The ontology withholds exactly
+these — *serial numbers and Bluetooth MACs are readable and are not published;
+they identify a unit rather than describe it* — and
+`documentation_carries_no_machine_identifiers` guards the docs against the same
+thing. The examples were the gap, and a fourth value CodeQL never flagged, the
+board serial one line above the UUID, was masked with them.
+
+Not a leak: a user running an example on their own machine sees their own
+hardware. It is a *default*, and the default should match the rule the rest of
+the crate keeps, because example output is what gets pasted into issues.
+
+**The MAC is the one worth copying.** An address is two things at once: the
+first three octets are the vendor, a fact *about the hardware*, and the last
+three name the individual card. So the OUI stays and the rest goes —
+`00:15:5D:**:**:**` still reads "Hyper-V virtual adapter". That split is exactly
+the describes-versus-identifies line the ontology draws, applied to a single
+value.
+
+### An attribute belongs to the item that comes next, and this crate has now been bitten twice
+
+`--features cli,vault` did not build, and had not for some time:
+
+```
+error[E0425]: cannot find function `handle_vault_models` in this scope
+note: found an item that was configured out
+      the item is gated behind the `gui` feature
+```
+
+An entire GUI function's doc comment **and** its `#[cfg(feature = "gui")]` had
+come adrift and landed on top of `handle_vault_models`, stacking with that
+function's own `#[cfg(feature = "vault")]`. Two stacked gates mean both must
+hold, so a vault command required the GUI, while its call site required only
+`vault`. The prose describing how the GUI renders a tab headlessly was sitting
+above a function that reads a model vault; it belonged to
+`handle_gui_frame_command` 280 lines down, which had been left with only its
+gating rationale.
+
+**Nothing could have caught it.** CI builds `--all-features`, where `gui` is
+present and both gates hold, and each feature *alone*, where `vault` without
+`cli` compiles no call site. The defect lives only in the pair — and the pair is
+what `cargo install --features cli,vault` gives you. Same shape as the `cli`
+feature that stayed broken through eight published versions.
+
+**Then the same defect was committed again, by hand, within hours.** A masking
+helper inserted into `examples/nvidia_monitor.rs` landed between
+`#[cfg(not(feature = "nvidia"))]` and the `fn main` it was gating, because that
+file has two `main`s and a script anchored on the first. The attribute
+re-pointed at the helper, leaving two ungated `main`s and the helper in the
+build that does not call it. CI caught it; the local run had not, because two of
+the three changed examples were built and the third was inferred.
+
+**`--all-targets` is the check that would have caught it**, which this file
+already says about a different signature change. Building some of what you
+changed and inferring the rest is how both halves of this entry happened.
+
+### The dependency stream is not trustworthy unattended
+
+Twelve Dependabot PRs across two days, and **not one was mergeable as written**:
+
+| Why | Which |
+| --- | --- |
+| Could not compile | #6 bumped `eframe` alone against 305 `egui::` references |
+| Conflicted, described a tree from January | #2 claimed checkout 5→6 while master was on v4 |
+| Superseded by a later version | #7, #9, #10, #11, #17, #18, #19, #21 |
+| Correct but needing manual verification | #20 `ironvault` 7→8, #22 `sha2` 0.10→0.11 |
+
+Both majors turned out to need **no source edits at all** — `ironvault`'s three
+call sites in `model_vault.rs` and `sha2`'s single `Digest` usage in
+`ids/file.rs` were unchanged across their major boundaries. The work was in
+finding that out, not in the change.
+
+That record is the argument against adding Dependabot as a ruleset bypass actor.
+CI would have caught the one that could not compile. It would not have caught
+the other eleven being redundant, stale or wrong about the tree they described.
+
+### Repository settings, and the one that is above this repo
+
+- **`Allow auto-merge` is now on.** It was off, which is why the Dependabot
+  workflow's merge step failed with `Auto merge is not allowed for this
+  repository` on every run it ever made.
+- **`Allow GitHub Actions to create and approve pull requests` could not be
+  enabled.** It is a `nervosys` *organization* policy, not a repository setting:
+  `PATCH` returns `409 Conflict`, and reading it needs `admin:org`. Changing it
+  would apply to every repository in the org.
+
+The consequence is that the approval half of the Dependabot workflow can never
+work, so it was deleted rather than left failing forever (`ea24790`). What
+remains queues auto-merge on the triggering PR, and a queued PR will sit until a
+person approves it. That is the honest state, and the workflow says so in its
+own header.
+
+### Two more measurement traps, on top of the ones already here
+
+**Contention on this machine will produce a clean and false story.**
+`bandwidth::tests::test_loopback` failed two runs in three at 36–134 s against a
+baseline of 1.05 s, which read as a dependency regression. It was not: the test
+uses only `std::net::TcpListener` and touches none of the bumped crates, and an
+**A/B/A over just the lockfile** — branch, master, branch, twice each — passed
+all six at 1.05 s. The failing numbers were taken while another project ran 21
+concurrent cargo processes here. Running the two sides in sequence told a clean
+lie; interleaving them settled it in minutes.
+
+**That is the third time in two sessions that local evidence was real,
+reproducible, and wrong about its cause** — after the `--all-features` rlib
+errors that CI could not reproduce, and the `GET`/`PATCH` disagreement on
+default-setup languages. The pattern is worth naming: reproducibility is
+evidence that something is happening, not evidence about *what*.
+
 ### The rename to IronMonitor
 
 `simon` became **IronMonitor**, in `dev/nervosys/ai/IronMonitor` against
