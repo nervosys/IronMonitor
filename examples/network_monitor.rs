@@ -7,6 +7,22 @@ use ironmonlib::{NetworkMonitor, Result};
 use std::thread;
 use std::time::Duration;
 
+/// Keep the OUI, mask the rest.
+///
+/// A MAC address is two things at once: the first three octets are the vendor
+/// (descriptive — "this is an Intel NIC"), and the last three identify the
+/// individual card. The ontology publishes neither, on the rule that an
+/// identifier names a unit rather than describes it. Splitting the address keeps
+/// the half that is a fact about the hardware and drops the half that is a name
+/// for this one.
+fn mask_mac(mac: &str) -> String {
+    let parts: Vec<&str> = mac.split(':').collect();
+    if parts.len() != 6 {
+        return "**".to_string();
+    }
+    format!("{}:{}:{}:**:**:**", parts[0], parts[1], parts[2])
+}
+
 fn main() -> Result<()> {
     println!("=== IronMonitor - Network Monitoring ===\n");
 
@@ -124,7 +140,7 @@ fn main() -> Result<()> {
                 };
 
                 let mac = if let Some(ref m) = iface.mac_address {
-                    truncate_string(m, 17)
+                    truncate_string(&mask_mac(m), 17)
                 } else {
                     "N/A".to_string()
                 };

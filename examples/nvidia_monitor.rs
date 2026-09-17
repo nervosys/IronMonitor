@@ -9,6 +9,15 @@ use ironmonlib::gpu::traits::*;
 use ironmonlib::gpu::nvidia_new;
 
 #[cfg(not(feature = "nvidia"))]
+/// See `motherboard_monitor.rs`: a GPU UUID identifies this card, not the model.
+fn mask_identifier(id: &str) -> String {
+    let visible: String = id.chars().take(4).collect();
+    if id.chars().count() <= 4 {
+        return "*".repeat(id.chars().count());
+    }
+    format!("{visible}… ({} chars, withheld)", id.chars().count())
+}
+
 fn main() {
     eprintln!("This example requires the 'nvidia' feature");
     eprintln!("Run with: cargo run --example nvidia_monitor --features nvidia");
@@ -54,7 +63,7 @@ fn print_device_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Erro
 
     // Basic Info
     println!("[MB] Device Information:");
-    println!("  UUID:           {}", device.uuid()?);
+    println!("  UUID:           {}", mask_identifier(&device.uuid()?));
     println!("  Driver Version: {}", device.driver_version()?);
 
     let pci = device.pci_info()?;
