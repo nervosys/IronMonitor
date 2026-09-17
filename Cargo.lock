@@ -3003,6 +3003,7 @@ dependencies = [
  "num_cpus",
  "nvml-wrapper",
  "open",
+ "parquet",
  "plist",
  "ratatui",
  "reqwest",

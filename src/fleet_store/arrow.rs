@@ -32,13 +32,24 @@ pub fn arrow_schema() -> Result<ArrowSchema, iceberg::Error> {
     iceberg::arrow::schema_to_arrow_schema(&iceberg_schema)
 }
 
-/// Build one `RecordBatch` from a batch of rows.
+/// Build one `RecordBatch` from a batch of rows, against a given Arrow schema.
+///
+/// **The schema is a parameter, and it must be the table's.** Iceberg reassigns
+/// field ids when a table is created — `TableMetadataBuilder::reassign_ids`
+/// renumbers them densely from 1 — so the ids in [`super::schema`] describe the
+/// *request*, not the table that results. Building a batch against the local
+/// schema and writing it to a created table fails with `Field id 4 not found in
+/// struct array`, which names an id this crate never assigns and does not
+/// mention schemas at all.
 ///
 /// An empty slice produces an empty batch rather than an error: a tick that
 /// contributed no rows is not a failure, and callers should not have to special
 /// case it.
-pub fn rows_to_record_batch(rows: &[MetricRow]) -> Result<RecordBatch, iceberg::Error> {
-    let schema = Arc::new(arrow_schema()?);
+pub fn rows_to_record_batch(
+    rows: &[MetricRow],
+    schema: &ArrowSchema,
+) -> Result<RecordBatch, iceberg::Error> {
+    let schema = Arc::new(schema.clone());
 
     // The timezone is taken from the schema rather than assumed, because
     // `RecordBatch::try_new` compares data types exactly and a mismatched
@@ -168,10 +179,17 @@ mod tests {
         }
     }
 
+    /// Build against the crate's own schema, which is what an unattached test
+    /// has. A real append uses the table's; see `rows_to_record_batch`.
+    fn batch(rows: &[MetricRow]) -> RecordBatch {
+        let schema = arrow_schema().expect("schema");
+        rows_to_record_batch(rows, &schema).expect("batch")
+    }
+
     /// The column count and order must match the schema, or columns alias.
     #[test]
     fn the_batch_matches_the_table_schema() {
-        let batch = rows_to_record_batch(&[row(Some(1.0), Some("card"))]).expect("batch");
+        let batch = batch(&[row(Some(1.0), Some("card"))]);
         let schema = arrow_schema().expect("schema");
         assert_eq!(batch.num_columns(), schema.fields().len());
         assert_eq!(batch.num_rows(), 1);
@@ -181,7 +199,7 @@ mod tests {
     /// Arrow as a null, not as a zero.
     #[test]
     fn an_unread_metric_is_null_in_the_batch_rather_than_zero() {
-        let batch = rows_to_record_batch(&[row(None, Some("card"))]).expect("batch");
+        let batch = batch(&[row(None, Some("card"))]);
 
         let column = batch
             .column_by_name("gpu_utilization")
@@ -198,7 +216,7 @@ mod tests {
     /// same rule and the easier one to break while fixing the first.
     #[test]
     fn a_measured_zero_is_not_turned_into_a_null() {
-        let batch = rows_to_record_batch(&[row(Some(0.0), Some("card"))]).expect("batch");
+        let batch = batch(&[row(Some(0.0), Some("card"))]);
 
         let column = batch
             .column_by_name("gpu_utilization")
@@ -215,7 +233,7 @@ mod tests {
     /// A GPU-less host writes a row whose GPU columns are all null.
     #[test]
     fn a_gpu_less_row_nulls_every_gpu_column() {
-        let batch = rows_to_record_batch(&[row(None, None)]).expect("batch");
+        let batch = batch(&[row(None, None)]);
         for name in ["gpu_index", "gpu_name", "gpu_utilization", "gpu_power_mw"] {
             let column = batch
                 .column_by_name(name)
@@ -231,7 +249,7 @@ mod tests {
     /// A tick that produced no rows is not an error.
     #[test]
     fn an_empty_batch_is_allowed() {
-        let batch = rows_to_record_batch(&[]).expect("an empty tick is not a failure");
+        let batch = batch(&[]);
         assert_eq!(batch.num_rows(), 0);
     }
 
@@ -239,12 +257,11 @@ mod tests {
     /// deciding the column.
     #[test]
     fn nulls_are_per_row_not_per_column() {
-        let batch = rows_to_record_batch(&[
+        let batch = batch(&[
             row(Some(50.0), Some("read")),
             row(None, Some("unread")),
             row(Some(0.0), Some("idle")),
-        ])
-        .expect("batch");
+        ]);
 
         let column = batch
             .column_by_name("gpu_utilization")

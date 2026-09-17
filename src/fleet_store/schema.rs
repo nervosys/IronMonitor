@@ -21,10 +21,25 @@
 
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 
-/// Field ids are part of the table's identity in Iceberg, not an implementation
-/// detail: renaming a column keeps its id, and a reader resolves by id rather
-/// than by name. They are assigned explicitly and must never be reused for a
-/// different meaning.
+/// Field ids as *requested*. The table will not keep these numbers.
+///
+/// **Iceberg reassigns field ids when the table is created.**
+/// `TableMetadataBuilder::reassign_ids` renumbers them densely from 1, in
+/// declaration order, so the sparse scheme below survives only as far as
+/// `create_table`. This was learned the hard way: a `RecordBatch` built against
+/// these ids and written to a created table fails with `Field id 4 not found in
+/// struct array` — naming an id this module never assigns, and not mentioning
+/// schemas at all. [`super::arrow::rows_to_record_batch`] takes the table's
+/// schema as a parameter for that reason.
+///
+/// So what are they for? Grouping and review. The gaps keep related columns
+/// visibly together and leave room to add a sibling without reordering the
+/// declaration — and *declaration order* is what the table's own ids follow, so
+/// order here still matters even though these numbers do not.
+///
+/// Field ids are genuinely part of a table's identity once Iceberg has assigned
+/// them: a reader resolves by id, and renaming a column keeps it. That is a fact
+/// about the created table, not about this list.
 mod field_id {
     pub const HOST_ID: i32 = 1;
     pub const COLLECTED_AT: i32 = 2;
@@ -35,9 +50,13 @@ mod field_id {
     // 12 was `cpu_frequency_mhz`, removed before it ever shipped: the per-core
     // frequencies would have had to be aggregated into one number, and every
     // available aggregation (first core, mean, max) asserts something the
-    // reading does not say. The id is retired rather than reused — a reader
-    // resolves by id, so giving 12 a new meaning would silently reinterpret any
-    // table that ever carried the old one.
+    // reading does not say. The gap is left rather than closed up, so the next
+    // reader of this list sees that something was here.
+    //
+    // It was removed from the *declaration* too, which is the part that matters:
+    // an existing table keeps whatever ids Iceberg gave it, so removing a column
+    // from an already-created table is a schema evolution against that table and
+    // not an edit here.
 
     pub const MEMORY_USED_BYTES: i32 = 20;
     pub const MEMORY_TOTAL_BYTES: i32 = 21;
@@ -260,8 +279,12 @@ mod tests {
         );
     }
 
-    /// Field ids are the table's identity across renames, so a duplicate is a
-    /// corruption rather than a style problem.
+    /// No duplicate ids in the *request*.
+    ///
+    /// Weaker than it looks, and worth saying so: Iceberg renumbers these at
+    /// `create_table`, so a duplicate here would most likely be silently
+    /// repaired rather than corrupt a table. It is kept as hygiene on a
+    /// hand-maintained list, not as a guarantee about stored data.
     #[test]
     fn no_field_id_is_used_twice() {
         let schema = host_metrics_schema().expect("schema must build");

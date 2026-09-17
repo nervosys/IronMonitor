@@ -8335,9 +8335,58 @@ merging two machines into one series.
 
 **A column was deleted rather than filled dishonestly.** The schema briefly had
 `cpu_frequency_mhz`. Frequency is per-core, and every aggregation available —
-first core, mean, max — asserts something the reading does not say. Field id 12
-is **retired, not reused**: Iceberg readers resolve by id, so giving 12 a new
-meaning would silently reinterpret any table that had carried the old column.
+first core, mean, max — asserts something the reading does not say.
+
+*Correction to this paragraph as first written.* It claimed field id 12 was
+"retired, not reused, because Iceberg readers resolve by id". The conclusion is
+right and the reason was wrong. **Iceberg reassigns field ids at table
+creation** — `TableMetadataBuilder::reassign_ids` renumbers them densely from 1
+in declaration order — so the sparse ids in `schema.rs` describe the *request*
+and are discarded by `create_table`. Retiring 12 in that list protects nothing,
+because no table ever sees 12.
+
+This surfaced as a failure, not a review: the first real append died with `Field
+id 4 not found in struct array`, naming an id this crate never assigns and not
+mentioning schemas at all. The cause was building the `RecordBatch` against the
+crate's schema while the Parquet writer resolved against the table's.
+`rows_to_record_batch` takes the table's schema as a parameter now.
+
+What survives: field ids *are* a table's identity once Iceberg has assigned
+them, and **declaration order still matters**, because the ids the table assigns
+follow it. What does not: the idea that the numbers in this crate are those ids.
+
+### A file name generator that counts from zero, once per writer
+
+`DefaultFileNameGenerator` restarts its counter for every writer it is handed,
+and the append path builds a fresh writer per tick — so every tick wrote
+`ironmon-00000.parquet`, and the second commit failed with *"Cannot add files
+that are already referenced by table"*.
+
+**The failure is the good outcome.** The bad one is a store that overwrites
+yesterday's data and reports success, and which of the two you get depends on
+whether the catalog happens to check. Each append now carries a token of host,
+store-open time and a counter — three parts because they cover three different
+collisions: two machines writing one table, a restarted process resuming at the
+same names, and appends arriving faster than the clock ticks.
+
+**Both were found by running it, not by reading it.** The schema, the projection
+and the Arrow conversion all had passing tests while the append path was broken
+in two independent ways, because those tests stopped at the `RecordBatch` and
+both defects lived past it. A test that stops one layer short of the boundary is
+a test of everything except the boundary.
+
+### The publish hook cannot carry the append
+
+`CollectorConfig::on_publish` is `Arc<dyn Fn() + Send + Sync>`: it takes **no
+snapshot**, and its doc says it "must not block: it runs inline on the collector
+between the store and the next tick's sleep."
+
+An Iceberg append writes a Parquet file and commits to a catalog. Doing that
+inline would stall collection on every tick, on the thread whose timing the whole
+pipeline's cadence depends on. So the hook is a *wake signal* and nothing more;
+the append belongs to a task that reads `SnapshotHandle::latest` when woken. The
+hook's signature was already telling us this — it passes no data because it was
+never meant to deliver any.
 
 ### The nullability rule, carried into a column store
 

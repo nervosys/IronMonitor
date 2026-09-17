@@ -63,8 +63,12 @@ pub mod arrow;
 pub mod host_id;
 pub mod rows;
 pub mod schema;
+pub mod sink;
+pub mod store;
 
 pub use arrow::{arrow_schema, rows_to_record_batch};
 pub use host_id::HostId;
 pub use rows::{rows_from_snapshot, MetricRow};
 pub use schema::{host_metrics_schema, TABLE_NAME};
+pub use sink::{FleetSink, SinkStats};
+pub use store::FleetStore;
