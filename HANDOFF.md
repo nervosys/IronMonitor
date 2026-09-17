@@ -8444,3 +8444,32 @@ say what it means: no vendor endpoint, no collection the operator did not
 configure.** It has deliberately not been edited here — it is a user-facing
 guarantee, and quietly rewording one to accommodate new code is how a guarantee
 becomes folklore.
+
+
+### The same error, a different cause: one target directory, alternating features
+
+`cargo test --all-features` came back with dozens of `can't find crate for
+ironmonlib` and `crate egui required to be available in rlib format, but was not
+found in this form`, across `glow`, `ratatui_core`, `h2`, `windows_registry`,
+and in examples like `fan_control` and `consent_demo` that the change never went
+near.
+
+This file already has an entry for that error text, blaming a **shared** target
+directory. That was not this. The target directory was private to this project;
+what it had been given was an afternoon of alternating `--no-default-features
+--features fleet-store` and `--all-features` builds, which leave artifacts from
+incompatible feature unifications side by side.
+
+**A clean target directory returned 961 lib tests, 73 doctests and 21 suites,
+all green.** So the diagnosis is the same as before even though the cause is
+not: when a failure is broad, systemic, and names crates the change never
+touched, the target directory is the first thing to rule out — whether the
+contention came from another project or from your own last twenty commands.
+
+That is the fifth time in these sessions that local evidence was real,
+reproducible, and not about what it appeared to be. The previous four are above:
+the original rlib errors, the `GET`/`PATCH` disagreement on default-setup
+languages, the loopback timings under contention, and a green local suite run
+against a branch CI had been failing for two commits. The cost of checking is
+one clean rebuild; the cost of not checking, this time, would have been hunting
+an `egui` link error through an Iceberg change.
