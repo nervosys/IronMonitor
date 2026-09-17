@@ -14,6 +14,7 @@
 //! different bugs with different fixes.
 
 use egui::Context;
+use std::time::Duration;
 
 /// Every string painted by `body`, in paint order.
 ///
@@ -197,37 +198,62 @@ pub fn horizontal_overflow(
         .collect()
 }
 
-/// The size `body` occupies when laid out at `canvas`.
+/// Bring an app to the state a user actually sees before measuring it.
 ///
-/// Note what this can and cannot answer. Every widget in this GUI sizes itself to
-/// `available_width()`, so the layout is fully elastic: measured against a canvas
-/// far larger than any window, all thirteen tabs report wanting exactly the
-/// canvas they were handed — 6000x6000 for a 6000x6000 canvas. There is no
-/// intrinsic content width to discover, and asking for one gets the question
-/// back.
+/// Two things arrive late and both change what a tab paints, so a measurement
+/// taken before them is of a different screen:
 ///
-/// What it does answer is "laid out this wide, how much did it use?", which is a
-/// real question with a useful answer: slack on the right is returned, and
-/// content taller than the canvas reports the height it wanted.
-pub fn content_size(
+/// - **Background loaders.** Four tabs fetch their contents off-thread and paint
+///   a spinner until the data lands.
+/// - **The collector's first real snapshot.** The pipeline publishes a warm-up
+///   generation built from an empty source set, so GPUs, processes and
+///   connections are absent from it *by construction*. On this three-GPU machine
+///   the Overview's accelerator cards simply are not there yet, and the tab is
+///   shorter than it will be a moment later.
+///
+/// Returns false if either is still outstanding when the budget runs out, so a
+/// caller can decline to measure rather than measure the wrong thing.
+pub fn settle(app: &mut crate::gui::app::IronMonitorApp, ctx: &Context, budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+
+    while std::time::Instant::now() < deadline {
+        app.pump_background_loaders(ctx);
+        app.sync_snapshot();
+        if app.has_real_snapshot() && !app.has_pending_load() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// The bottom-right corner of everything `body` actually paints.
+///
+/// The measurement that works on this GUI, where the other two do not.
+/// `Context::used_size` reports *allocated* space — `1400x4000` for a 1400x4000
+/// canvas, and `-inf` in the live app, where tabs paint through panels rather
+/// than the measured `Ui`. Asking a tab how wide it wants to be is circular too:
+/// every widget sizes to `available_width()`, so all thirteen report wanting
+/// exactly whatever canvas they are handed.
+///
+/// Where text lands is not circular. Rendered at 1400 wide the Overview paints
+/// out to 1382x918; at 1100 wide, 1082x918. The width follows the canvas because
+/// the layout is elastic, and **the height does not** — 918 px is a real
+/// property of the tab, and the number a window can be fitted to.
+pub fn painted_extent(
     ctx: &Context,
     canvas: egui::Vec2,
-    mut body: impl FnMut(&mut egui::Ui),
+    body: impl FnMut(&mut egui::Ui),
 ) -> egui::Vec2 {
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, canvas)),
-        ..Default::default()
-    };
-    let mut run_frame = || {
-        ctx.run(input.clone(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| body(ui));
-        })
-    };
-    // Two frames, for the reason `painted_text_sized` needs two: a `ScrollArea`
-    // does not know its content size until it has laid it out once.
-    let _warmup = run_frame();
-    let _settled = run_frame();
-    ctx.used_size()
+    let mut extent = egui::Vec2::ZERO;
+    for (text, rect) in painted_text_rects_sized(ctx, canvas, body) {
+        if text.trim().is_empty() {
+            continue;
+        }
+        extent.x = extent.x.max(rect.max.x);
+        extent.y = extent.y.max(rect.max.y);
+    }
+    extent
 }
 
 fn collect_shape_text_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
@@ -897,6 +923,123 @@ mod overflow_tests {
         assert!(
             unexpectedly_clean.is_empty(),
             "pinned as overflowing but no longer overflowing: {unexpectedly_clean:?}. Remove them from KNOWN_OVERFLOWING so the guard covers them."
+        );
+    }
+}
+
+#[cfg(test)]
+mod overview_extent {
+    use super::*;
+
+    /// The fit must wait for the Overview to finish loading.
+    ///
+    /// **This is the whole defect.** Two things arrive after the first frame and
+    /// both change how tall the tab is: the background loaders, and the
+    /// collector's first real snapshot. The pipeline publishes a warm-up
+    /// generation built from an empty `Sources`, so it describes no GPUs *by
+    /// construction* — fit against it and a three-card desktop is measured as a
+    /// machine with no accelerators at all. A freshly constructed app has applied
+    /// no snapshot yet, so it is in exactly that state, and the fit must decline.
+    ///
+    /// Worth recording, because it is the opposite of what was expected: the
+    /// loaded Overview measures **shorter** than the unloaded one, 899.5 px
+    /// against 918.5. Waiting was still right — the unloaded number is not a
+    /// smaller version of the real answer, it is a different tab — but the reason
+    /// it is shorter has not been established. The likeliest explanation is that
+    /// a placeholder is taller than the content that replaces it, and that is a
+    /// guess.
+    #[test]
+    fn the_fit_waits_for_the_overview_to_finish_loading() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+
+        assert!(
+            !app.has_real_snapshot(),
+            "a freshly constructed app has applied no snapshot, warm-up or otherwise"
+        );
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "the window must not be fitted to an Overview that has not loaded its data"
+        );
+
+        assert!(
+            settle(&mut app, &ctx, Duration::from_secs(30)),
+            "the Overview did not finish loading, so there is nothing trustworthy to measure"
+        );
+
+        // The fit measures what the tab drew, so a loaded app that has not drawn
+        // yet still has nothing to go on.
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "loaded but never drawn: there is no shortfall recorded to fit to"
+        );
+        let _ = painted_extent(&ctx, egui::Vec2::new(1400.0, 900.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+
+        assert!(
+            app.autofit_to_overview_once(&ctx),
+            "once everything has loaded and been drawn, the fit must run"
+        );
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "and it must run only once, or every frame resizes the user's window"
+        );
+    }
+
+    /// What the fit measures is the height of the painted content, not the
+    /// canvas it was given.
+    ///
+    /// `Context::used_size` cannot answer this: it reports *allocated* space,
+    /// which headlessly is the whole 4000 px canvas, and in the live app is
+    /// `-inf`, because tabs paint through panels rather than the measured `Ui`.
+    /// An earlier version of this fit used it and silently never ran.
+    #[test]
+    fn the_fit_measures_paint_rather_than_canvas() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+
+        let extent = painted_extent(&ctx, egui::Vec2::new(1400.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+        assert!(
+            extent.y > 300.0 && extent.y < 3000.0,
+            "the Overview should paint a windowful, not nothing and not the whole              4000 px canvas; got {:.1}",
+            extent.y
+        );
+    }
+
+    /// Width is not fittable, asserted with numbers rather than a comment.
+    #[test]
+    fn the_overview_takes_whatever_width_it_is_given() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+
+        let wide = painted_extent(&ctx, egui::Vec2::new(1400.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+        let narrow = painted_extent(&ctx, egui::Vec2::new(1100.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+
+        assert!(
+            wide.x > narrow.x + 200.0,
+            "elastic layout: a 300 px wider canvas should paint wider, got {:.0} vs {:.0}",
+            wide.x,
+            narrow.x
+        );
+        assert!(
+            (wide.y - narrow.y).abs() < 2.0,
+            "height must not depend on width: {:.1} at 1400 vs {:.1} at 1100",
+            wide.y,
+            narrow.y
         );
     }
 }

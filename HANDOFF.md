@@ -8115,3 +8115,60 @@ against `ironmon describe --commands` found them all, including a `CLI.md` at th
 repo root nobody had thought to include. The same lesson produced the feature
 sweep above: the `cli` breakage was found by running every combination, not by
 reading the manifest.
+
+### Fitting a window to content, and three wrong answers on the way
+
+The Overview opened at a hardcoded `[1400, 900]` and the tab did not fit in it.
+Fitting it took four attempts, and each failure was a different category of
+mistake about *measurement* rather than about layout.
+
+**1. `Context::used_size` does not answer the question.** It reports *allocated*
+space. Against a 6000x6000 canvas all thirteen tabs "want" 6000x6000 — the
+question comes straight back. Worse, in the live app it returns `-inf`, because
+the tabs paint through panels rather than the measured `Ui`, so the fit built on
+it silently never ran at all. **The window was still opening at the hardcoded
+size while the code that was supposed to resize it ran every frame and did
+nothing.** A measurement that returns a sentinel and a fit that declines to fire
+look identical from outside: a window at its default size.
+
+**2. It cannot be measured before the window opens.** Laying the tab out at
+startup means constructing the app first, which initialises COM as
+multi-threaded on the main thread; winit then fails `OleInitialize` with
+`RPC_E_CHANGED_MODE` and **no window opens at all**. That is the constraint that
+puts the fit inside `update` rather than in `gui::run`, and it is why a constant
+looked attractive for a while.
+
+**3. A constant cannot be right, because the height is not a property of the
+program.** The Overview grows a panel per accelerator card. It paints 899.5 px
+on this three-GPU desktop and less on a machine with none — so a measured
+constant is correct on exactly one machine, and the test guarding it fails on
+every CI runner. *Fitting to content means fitting at runtime; there is no way
+to round that off.*
+
+**4. The fit must wait for the data, and this was the user's diagnosis rather
+than mine.** The collector deliberately publishes a warm-up snapshot built from
+an empty `Sources`, so it describes **no GPUs by construction**. Fitted against
+it, a three-card machine is measured as a machine with no accelerators. This is
+the same warm-up that made `--frame` print `GPU:0`, arriving a second time in a
+different disguise — the entry above records it as "a settle condition has to
+name what it is waiting for", and this needed *two* conditions: the background
+loaders **and** `!warmup`.
+
+**Then the fit worked and was still 50 px short**, which is the part worth
+keeping. Measuring the tab and setting the window to that height fits the *tab*
+exactly and leaves nothing for the title bar, the tab strip and the status bar —
+the bottom of Network I/O sat under the status bar, and the screenshot showed it
+where the passing test did not.
+
+**The correction is to grow by the shortfall rather than set to the content.**
+`draw_overview` reports how much taller its content is than the room its
+`ScrollArea` gave it; adding that to the current window height carries every
+piece of chrome across **without naming any of it**. 900 → 986 here. The fix is
+smaller than the arithmetic it replaces and cannot drift when a panel is added.
+
+The general shape: *a delta against something the system already measured
+correctly beats an absolute assembled from parts you have to enumerate.*
+
+**And the screenshot is not optional.** Attempt 3 passed its test, resized the
+window, and clipped a panel. The test measured what the tab painted, which was
+true, and said nothing about whether the user could see it.
