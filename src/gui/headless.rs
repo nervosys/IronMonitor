@@ -832,18 +832,23 @@ mod overflow_tests {
     /// one to make silently.
     /// Tabs known to paint past the right edge, pinned rather than fixed.
     ///
-    /// All four are one construct — `Layout::right_to_left` nested inside an
-    /// advanced `horizontal`, where the inner layout is not bounded by the outer
-    /// one. The remedy that works is inlining, which turns right-aligned into
-    /// inline: a visual decision rather than a bug fix, so it is not made here.
+    /// **Down from four to one.** `accelerators`, `memory` and `disk` shared a
+    /// single cause: `Layout::right_to_left` right-aligns against the parent's
+    /// max rect, and inside a `ScrollArea` that is the *content box*, which is as
+    /// wide as its widest child rather than as wide as the window. Bounding the
+    /// layout does not move it — the offset was identical to the pixel with an
+    /// `allocate_ui_with_layout` around it — because the content was never inside
+    /// the bound. Measuring the text and padding to right-align it, with no
+    /// right-to-left layout at all, does fix it.
     ///
-    /// **`disk` was invisible until this test settled the snapshot.** The
-    /// collector's warm-up generation is built from an empty `Sources`, so it
-    /// describes no disks, and the tab had been measured with nothing in it. The
-    /// guard was not wrong about what it saw; it was looking at a machine with no
-    /// drives. Waiting for the real snapshot found a fourth offender in the first
-    /// run after the change.
-    const KNOWN_OVERFLOWING: [&str; 4] = ["accelerators", "memory", "ai", "disk"];
+    /// `ai` is **not** the same defect and is not fixed. At an 800 px window its
+    /// welcome sentence is centred in a container roughly 1369 px wide, so the
+    /// sentence is already narrower than its box: wrapping it changes nothing,
+    /// and was tried. Some sibling widens the content box, and this guard cannot
+    /// name it — the guard reads *text* rectangles, and a chart or frame that
+    /// paints no text is invisible to it. Finding it needs an instrument that
+    /// measures widgets rather than glyphs.
+    const KNOWN_OVERFLOWING: [&str; 1] = ["ai"];
 
     /// No tab may paint text past the right edge of a default window.
     ///

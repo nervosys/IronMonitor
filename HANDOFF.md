@@ -8229,3 +8229,74 @@ the `GET`/`PATCH` disagreement, and the loopback contention. The rule those
 produced — *reproducibility is evidence that something is happening, not
 evidence about what* — has a companion: **a green local suite is evidence about
 this machine.**
+
+### Three tabs, one wrong anchor, and why bounding it changed nothing
+
+Four tabs were pinned as painting text past the right edge. Three of them were
+the same defect, and the shape of the evidence is what identified it:
+
+```
+accelerators @ 1400px: "210 MHz" runs 44px past the edge
+accelerators @  800px: "210 MHz" runs 44px past the edge
+disk         @ 1400px: "✓ Healthy" runs 35px past the edge
+disk         @  800px: "✓ Healthy" runs 35px past the edge
+```
+
+**Identical at both widths.** A layout that overflows by the same number in a
+1400 px window and an 800 px one is not running out of room — it is anchored to
+something that is not the window. Printing the rectangles said where:
+`1369..1435` at 1400 and `769..835` at 800. Both start 31 px short of the
+window's right edge and run outward. The card they belong to ends at 1379.
+
+`Layout::right_to_left` right-aligns against the **parent's max rect**, and
+inside a `ScrollArea` that is the content box — which is as wide as its widest
+child rather than as wide as the window. The badge was anchoring to a box the
+user cannot see the right-hand edge of.
+
+**Bounding it does not help, and this is the part that had stalled it before.**
+Wrapping the layout in an `allocate_ui_with_layout` sized to the column left the
+offset *identical to the pixel*, which reads as "the fix didn't work" and is
+actually "the content was never inside the bound". On Disk there was a second
+layer: **an `egui::Frame` nested in a right-to-left layout lays its child out
+left-to-right from the right-to-left cursor**, so the badge began at the cursor
+and grew the wrong way.
+
+What works is not using a right-to-left layout at all — measure the text with
+`layout_no_wrap`, `add_space` the difference, and emit left to right. Three tabs
+fixed, and the same technique the Overview chat bar already needed for its Send
+button.
+
+**Disk had a second, unrelated defect the same probe found.** Its six columns
+were fixed pixel widths — 420 + 110 + 90 + 110 + 110, plus 30 px between each —
+990 px of columns in a window whose advertised minimum inner width is **800**.
+Below about 1050 px the right-hand columns simply left the window. They are
+proportions of the available width now, taken from the constants measured at the
+width they were tuned to, so 1400 px lays out identically to before, to the
+pixel, and narrower windows scale instead of overflowing.
+
+**`ai` is still pinned, and it is not this defect.** At 800 px its welcome
+sentence is centred in a container roughly 1369 px wide — already narrower than
+its box, so wrapping it changes nothing, which was tried and reverted rather
+than left in as a fix that fixes nothing. Some sibling widens the content box,
+and *this guard cannot name it*: it reads text rectangles, so a chart or frame
+that paints no text is invisible to it. Finding that one needs an instrument
+that measures widgets rather than glyphs.
+
+### A pin list is a claim about the machine that wrote it
+
+The guard fails when a pinned tab *stops* overflowing, so the pin cannot rot
+into a lie. That check then failed on CI for a reason worth keeping:
+
+```
+pinned as overflowing but no longer overflowing: ["accelerators"]
+```
+
+The runners have no accelerator cards, so the Accelerators tab has nothing to
+overflow with. **`KNOWN_OVERFLOWING` had quietly become a statement about this
+desktop's hardware**, exactly like the fitted window height that had to stop
+being a constant for the same reason. Two different mechanisms, one lesson: a
+constant checked into this repository must be true on a machine with no GPUs, no
+NVMe drives and no sensors, or it is a local note wearing a test's clothes.
+
+Fixing the three tabs removed the problem rather than papering over it — there
+is nothing left in the list that depends on what hardware is present.
