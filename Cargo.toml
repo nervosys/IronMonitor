@@ -17,10 +17,20 @@ edition = "2021"
 # them. A field that means "1.88, except…" is the same shape of defect as an
 # ontology entity declaring a provenance stronger than a row can carry: the
 # reader has to know the exception to avoid being misled. So it declares the
-# weakest floor that holds everywhere, and `cargo +1.89 check --all-features
+# weakest floor that holds everywhere, and `cargo +1.94 check --all-features
 # --all-targets` verifies it in one command instead of two with one expected to
 # fail.
-rust-version = "1.89"
+#
+# **1.94, up from 1.89, and `fleet-store` is why.** `iceberg` 0.10.1 declares
+# `rust-version = "1.94"`; the rest of the graph is far below it, and a default
+# build still works at 1.88. Applying the rule above to a five-minor jump is not
+# comfortable — this is the trap the `vault` note calls out, where a dependency's
+# MSRV becomes the whole crate's — and it was taken deliberately rather than
+# footnoted, because the alternative is a field nobody can trust. The escape
+# hatches were weighed and rejected: `iceberg` 0.8.0 fits under 1.89 but pins the
+# store to a January 2026 API forever, and writing bare Parquet drops the
+# manifests and snapshots that make the table an Iceberg table at all.
+rust-version = "1.94"
 default-run = "ironmon"
 authors = ["nervosys"]
 license = "AGPL-3.0-or-later"
@@ -162,6 +172,19 @@ reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 # Logging
 env_logger = { version = "0.11", optional = true }
 
+# Apache Iceberg, for the fleet-scale metric store behind the `fleet-store`
+# feature. Pure Rust the whole way down — arrow and parquet, no C library — which
+# is the bar the `ironvault` note above sets when it refuses rusqlite. It is a
+# large graph even so (~50 crates), which is why the feature is off by default and
+# is not part of `full`.
+iceberg = { version = "0.10", optional = true }
+# The Parquet writer properties the Iceberg data-file writer is configured with.
+# Named directly because the type appears in this crate's own code, not merely
+# in Iceberg's; a re-export would tie us to Iceberg's choice of what to expose.
+parquet = { version = "58", optional = true, default-features = false, features = ["arrow"] }
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
+
 # NVML bindings. Declared here rather than per-target because the `nvidia` feature
 # names this crate, and a feature is not target-conditional: enabling `nvidia` on
 # macOS referenced a dependency that only the Linux and Windows sections declared,
@@ -195,6 +218,12 @@ drm-ffi = { version = "0.8", optional = true }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
+    # `ProcessPrng`, the OS CSPRNG, for the `fleet-store` host identifier. Unix
+    # reads `/dev/urandom` for the same sixteen bytes; Windows has no equivalent
+    # path, and a fleet join key drawn from a clock-seeded generator collides on
+    # exactly the population it has to distinguish — machines imaged from one
+    # template and booted together.
+    "Win32_Security_Cryptography",
     "Win32_System_SystemInformation",
     "Win32_System_Performance",
     "Win32_System_ProcessStatus",
@@ -300,6 +329,18 @@ gui = [
 vault = ["ironvault", "directories"]
 # Remote AI backend support (OpenAI, Anthropic, Ollama, etc.)
 remote-backends = ["reqwest"]
+
+# Fleet-scale metric store on Apache Iceberg.
+#
+# **Off by default and deliberately not in `full`**, on the same grounds as
+# `vault`: it is a ~50-crate graph (arrow, parquet, tokio, reqwest) for a
+# capability most users of a hardware monitor do not want compiled in.
+#
+# This is storage the *operator* runs and points at — the same category as the
+# existing `src/tsdb` file store and the Prometheus exporter, not the vendor
+# telemetry that `src/consent.rs` says this crate does not do. See the module
+# header of `src/fleet_store` for why that distinction is load-bearing.
+fleet-store = ["iceberg","arrow-array","arrow-schema","parquet","tokio"]
 # Local AI backends
 local-ollama = ["remote-backends"]   # Ollama local inference server
 # llama.cpp via the `llama-cli` executable (subprocess, no bindings or C++ build).

@@ -18,12 +18,85 @@ pub mod widgets;
 
 pub use app::IronMonitorApp;
 
+/// The primary monitor's size in logical pixels, if it can be read.
+///
+/// `None` rather than a guess: a fallback resolution would be a number nobody
+/// measured, and the caller's response to not knowing is simply to use its
+/// preferred size — which is what it did before this existed.
+#[cfg(windows)]
+fn screen_size() -> Option<egui::Vec2> {
+    // SAFETY: `GetSystemMetrics` reads a process-wide constant and cannot fail;
+    // it returns 0 for an unknown index, which the check below rejects.
+    unsafe {
+        const SM_CXSCREEN: i32 = 0;
+        const SM_CYSCREEN: i32 = 1;
+        unsafe extern "system" {
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+        let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        (w > 0 && h > 0).then(|| egui::vec2(w as f32, h as f32))
+    }
+}
+
+#[cfg(not(windows))]
+fn screen_size() -> Option<egui::Vec2> {
+    // winit reports this only once a window exists, which is after the size has
+    // to be chosen. Left unimplemented rather than guessed.
+    None
+}
+
 /// Run the IronMonitor GUI application
 pub fn run() -> Result<(), eframe::Error> {
+    // The preferred size, clamped so it cannot exceed the screen it opens on.
+    //
+    // `[1400, 900]` alone is wider and taller than a 1366x768 laptop panel, so
+    // the window opened with its edges off-screen on exactly the machines least
+    // able to spare the room — and `with_min_inner_size` does not help, because a
+    // minimum is a floor rather than a ceiling.
+    //
+    // Width is a choice; height is fitted, later, elsewhere.
+    //
+    // The layout is elastic — every widget sizes to `available_width()` — so the
+    // Overview paints out to 1382 px at a 1400 px canvas and 1082 px at 1100 px.
+    // There is no width it wants; it takes what it is given, and 1400 is the
+    // number this has always opened at.
+    //
+    // Its height *is* a real property of the tab, and the window is fitted to it —
+    // but not here. See `IronMonitorApp::autofit_to_overview_once`, which does it
+    // once the Overview has finished loading.
+    //
+    // **The fitted height cannot be a constant, because it is not a property of
+    // the program.** The Overview grows a panel per accelerator card, so it paints
+    // 899.5 px tall on this three-GPU desktop and less on a machine with none. A
+    // number baked in here would be right on exactly one machine.
+    //
+    // It cannot be measured here either, which is the reason the runtime fit lives
+    // where it does: constructing the app to lay the tab out initialises COM as
+    // multi-threaded on the main thread, and winit then fails `OleInitialize` with
+    // `RPC_E_CHANGED_MODE`, so no window opens at all.
+    //
+    // So these two are the size the window *opens* at, before the first real
+    // snapshot lands. They are a starting point, not a fit.
+    const PREFERRED_WIDTH: f32 = 1400.0;
+    const PREFERRED_HEIGHT: f32 = 900.0;
+
+    let preferred = egui::vec2(PREFERRED_WIDTH, PREFERRED_HEIGHT);
+    let size = match screen_size() {
+        // 92%, leaving room for a title bar and a taskbar rather than filling the
+        // panel exactly and tucking the bottom edge under one.
+        //
+        // `[1400, 900]` unclamped is wider and taller than a 1366x768 laptop
+        // panel, so the window opened with its edges off-screen on exactly the
+        // machines least able to spare the room. `with_min_inner_size` does not
+        // help: a minimum is a floor, not a ceiling.
+        Some(screen) => preferred.min(screen * 0.92),
+        None => preferred,
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([800.0, 600.0])
+            .with_inner_size([size.x, size.y])
+            .with_min_inner_size([800.0_f32.min(size.x), 600.0_f32.min(size.y)])
             .with_title("IronMonitor")
             .with_icon(load_icon()),
         // Painting already goes through the GPU — egui tessellates on the CPU and

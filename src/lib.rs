@@ -246,6 +246,13 @@ pub mod watchdog; // Hardware/software watchdog timer monitoring
 pub mod daemon; // Monitoring daemon for headless/remote operation
 pub mod datacenter; // Datacenter chassis, IPMI, rack topology
 pub mod fleet; // Fleet-level multi-host monitoring and aggregation
+
+// Fleet-scale metric storage on Apache Iceberg. Off by default and absent from
+// `full`: it is a ~50-crate graph and raises the Rust floor to 1.94. See the
+// module header for why this is operator-run storage rather than the telemetry
+// `consent` says this crate does not do.
+#[cfg(feature = "fleet-store")]
+pub mod fleet_store;
 pub mod http_server; // HTTP server for REST API and Prometheus
 pub mod pcie; // PCIe device monitoring
 pub mod predictive; // Predictive maintenance and failure analysis

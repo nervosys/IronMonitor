@@ -8115,3 +8115,361 @@ against `ironmon describe --commands` found them all, including a `CLI.md` at th
 repo root nobody had thought to include. The same lesson produced the feature
 sweep above: the `cli` breakage was found by running every combination, not by
 reading the manifest.
+
+### Fitting a window to content, and three wrong answers on the way
+
+The Overview opened at a hardcoded `[1400, 900]` and the tab did not fit in it.
+Fitting it took four attempts, and each failure was a different category of
+mistake about *measurement* rather than about layout.
+
+**1. `Context::used_size` does not answer the question.** It reports *allocated*
+space. Against a 6000x6000 canvas all thirteen tabs "want" 6000x6000 — the
+question comes straight back. Worse, in the live app it returns `-inf`, because
+the tabs paint through panels rather than the measured `Ui`, so the fit built on
+it silently never ran at all. **The window was still opening at the hardcoded
+size while the code that was supposed to resize it ran every frame and did
+nothing.** A measurement that returns a sentinel and a fit that declines to fire
+look identical from outside: a window at its default size.
+
+**2. It cannot be measured before the window opens.** Laying the tab out at
+startup means constructing the app first, which initialises COM as
+multi-threaded on the main thread; winit then fails `OleInitialize` with
+`RPC_E_CHANGED_MODE` and **no window opens at all**. That is the constraint that
+puts the fit inside `update` rather than in `gui::run`, and it is why a constant
+looked attractive for a while.
+
+**3. A constant cannot be right, because the height is not a property of the
+program.** The Overview grows a panel per accelerator card. It paints 899.5 px
+on this three-GPU desktop and less on a machine with none — so a measured
+constant is correct on exactly one machine, and the test guarding it fails on
+every CI runner. *Fitting to content means fitting at runtime; there is no way
+to round that off.*
+
+**4. The fit must wait for the data, and this was the user's diagnosis rather
+than mine.** The collector deliberately publishes a warm-up snapshot built from
+an empty `Sources`, so it describes **no GPUs by construction**. Fitted against
+it, a three-card machine is measured as a machine with no accelerators. This is
+the same warm-up that made `--frame` print `GPU:0`, arriving a second time in a
+different disguise — the entry above records it as "a settle condition has to
+name what it is waiting for", and this needed *two* conditions: the background
+loaders **and** `!warmup`.
+
+**Then the fit worked and was still 50 px short**, which is the part worth
+keeping. Measuring the tab and setting the window to that height fits the *tab*
+exactly and leaves nothing for the title bar, the tab strip and the status bar —
+the bottom of Network I/O sat under the status bar, and the screenshot showed it
+where the passing test did not.
+
+**The correction is to grow by the shortfall rather than set to the content.**
+`draw_overview` reports how much taller its content is than the room its
+`ScrollArea` gave it; adding that to the current window height carries every
+piece of chrome across **without naming any of it**. 900 → 986 here. The fix is
+smaller than the arithmetic it replaces and cannot drift when a panel is added.
+
+The general shape: *a delta against something the system already measured
+correctly beats an absolute assembled from parts you have to enumerate.*
+
+**And the screenshot is not optional.** Attempt 3 passed its test, resized the
+window, and clipped a panel. The test measured what the tab painted, which was
+true, and said nothing about whether the user could see it.
+
+### The settle condition that was still too narrow, and the tab it was hiding
+
+The overflow guard waited for the background loaders before measuring each tab.
+That was the fix for a real flake — it had failed once and passed on rerun,
+which is the same instrument as no guard at all — and it was **still the wrong
+predicate**, for the third time in this codebase.
+
+It did not wait for the collector's first real snapshot. The warm-up generation
+is built from an empty `Sources`, so it describes no disks; the Disk tab was
+being measured **on a machine with no drives**, and painted nothing that could
+run past an edge. Waiting for both conditions found a fourth overflowing tab in
+the first run after the change:
+
+```
+disk @ 1400px wide: "Health" runs 17px past the edge
+disk @ 1400px wide: "✓ Healthy" runs 35px past the edge
+disk @ 800px wide: "183.3 GB" runs 18px past the edge
+```
+
+Same construct as the other three — `Layout::right_to_left` nested inside an
+advanced `horizontal`, inner layout unbounded by the outer one — so four tabs
+now share one root cause and one remedy, and the remedy is inlining, which is a
+visual decision rather than a bug fix.
+
+**The guard was never wrong about what it saw.** It reported truthfully on the
+screen it was given, and the screen it was given was of a machine this is not.
+That is the warm-up snapshot arriving for the third time: as `GPU:0` in
+`--frame`, as a window fitted to a GPU-less Overview, and now as a Disk tab with
+no disks.
+
+*A settle condition is a claim about what the screen contains. "Something
+arrived" is not that claim.*
+
+**Correction, and it is the more useful half.** The paragraph above was written
+believing the snapshot settle *found* the Disk overflow. It did not. CI had been
+failing on exactly these four lines since `3cacf54`, on **all three platforms**,
+two commits before the settle change — and the local suite was green throughout,
+929 tests, every time it was run. The settle only made this machine agree with
+what CI had been saying all along.
+
+So the finding is not "a narrow settle condition hid a defect". It is:
+
+- **A local pass is not a result until CI has one too.** Two commits were
+  pushed, and the work reported as verified, on the strength of a green local
+  run against a branch that was already red. The suite was run; CI was not read.
+- The warm-up snapshot hid Disk *on this Windows box specifically*. The runners
+  enumerate drives fast enough that the tab had content either way, and their
+  drives report `Unknown` health where these report `✓ Healthy` — different
+  strings, different widths, same overflow.
+
+That is the fourth time in these sessions that local evidence was real,
+reproducible, and wrong about its scope, after the `--all-features` rlib errors,
+the `GET`/`PATCH` disagreement, and the loopback contention. The rule those
+produced — *reproducibility is evidence that something is happening, not
+evidence about what* — has a companion: **a green local suite is evidence about
+this machine.**
+
+### Three tabs, one wrong anchor, and why bounding it changed nothing
+
+Four tabs were pinned as painting text past the right edge. Three of them were
+the same defect, and the shape of the evidence is what identified it:
+
+```
+accelerators @ 1400px: "210 MHz" runs 44px past the edge
+accelerators @  800px: "210 MHz" runs 44px past the edge
+disk         @ 1400px: "✓ Healthy" runs 35px past the edge
+disk         @  800px: "✓ Healthy" runs 35px past the edge
+```
+
+**Identical at both widths.** A layout that overflows by the same number in a
+1400 px window and an 800 px one is not running out of room — it is anchored to
+something that is not the window. Printing the rectangles said where:
+`1369..1435` at 1400 and `769..835` at 800. Both start 31 px short of the
+window's right edge and run outward. The card they belong to ends at 1379.
+
+`Layout::right_to_left` right-aligns against the **parent's max rect**, and
+inside a `ScrollArea` that is the content box — which is as wide as its widest
+child rather than as wide as the window. The badge was anchoring to a box the
+user cannot see the right-hand edge of.
+
+**Bounding it does not help, and this is the part that had stalled it before.**
+Wrapping the layout in an `allocate_ui_with_layout` sized to the column left the
+offset *identical to the pixel*, which reads as "the fix didn't work" and is
+actually "the content was never inside the bound". On Disk there was a second
+layer: **an `egui::Frame` nested in a right-to-left layout lays its child out
+left-to-right from the right-to-left cursor**, so the badge began at the cursor
+and grew the wrong way.
+
+What works is not using a right-to-left layout at all — measure the text with
+`layout_no_wrap`, `add_space` the difference, and emit left to right. Three tabs
+fixed, and the same technique the Overview chat bar already needed for its Send
+button.
+
+**Disk had a second, unrelated defect the same probe found.** Its six columns
+were fixed pixel widths — 420 + 110 + 90 + 110 + 110, plus 30 px between each —
+990 px of columns in a window whose advertised minimum inner width is **800**.
+Below about 1050 px the right-hand columns simply left the window. They are
+proportions of the available width now, taken from the constants measured at the
+width they were tuned to, so 1400 px lays out identically to before, to the
+pixel, and narrower windows scale instead of overflowing.
+
+**`ai` is still pinned, and it is not this defect.** At 800 px its welcome
+sentence is centred in a container roughly 1369 px wide — already narrower than
+its box, so wrapping it changes nothing, which was tried and reverted rather
+than left in as a fix that fixes nothing. Some sibling widens the content box,
+and *this guard cannot name it*: it reads text rectangles, so a chart or frame
+that paints no text is invisible to it. Finding that one needs an instrument
+that measures widgets rather than glyphs.
+
+### A pin list is a claim about the machine that wrote it
+
+The guard fails when a pinned tab *stops* overflowing, so the pin cannot rot
+into a lie. That check then failed on CI for a reason worth keeping:
+
+```
+pinned as overflowing but no longer overflowing: ["accelerators"]
+```
+
+The runners have no accelerator cards, so the Accelerators tab has nothing to
+overflow with. **`KNOWN_OVERFLOWING` had quietly become a statement about this
+desktop's hardware**, exactly like the fitted window height that had to stop
+being a constant for the same reason. Two different mechanisms, one lesson: a
+constant checked into this repository must be true on a machine with no GPUs, no
+NVMe drives and no sensors, or it is a local note wearing a test's clothes.
+
+Fixing the three tabs removed the problem rather than papering over it — there
+is nothing left in the list that depends on what hardware is present.
+
+### A fleet store on Iceberg, and the three things it cost to say yes to
+
+`fleet-store` is a new optional feature carrying an Apache Iceberg table of
+per-host, per-tick metrics. It is off by default and **not** in `full`. Three
+decisions in it are worth more than the code.
+
+**It raised the Rust floor from 1.89 to 1.94, deliberately.** `iceberg` 0.10.1
+declares `rust-version = "1.94"`. The manifest's own rule is that one value has
+to cover every feature combination, because a field meaning *"1.88, except…"* is
+the same defect as an entity declaring a provenance stronger than its row can
+carry. Applying that rule to a five-minor jump is exactly the trap the `vault`
+note warns about — a dependency's MSRV becoming the whole crate's — and it was
+taken rather than footnoted. The two escape hatches were real and were weighed:
+`iceberg` 0.8.0 has an MSRV of 1.88 and fits under the old floor, but pins the
+store to a January 2026 API; bare `parquet` needs only 1.85, but drops the
+manifests and snapshots that make an Iceberg table an Iceberg table. Neither
+was worth a version field nobody can trust.
+
+**The join key is not a hardware identifier, and that took thought.** Fleet
+analytics needs something stable to group a machine's rows by, and the board
+UUID, disk serial and NIC MAC are all right there. Every one of them is what the
+ontology calls an identifier rather than a description, and this session had
+already masked exactly those values in three examples. *Using one as a fleet key
+would undo that in the one place it matters most, because the rows are the thing
+that leaves the machine.* So `HostId` is 128 bits from the OS CSPRNG, generated
+once, and it is **rotatable** — which is the property a serial can never have
+and the reason a serial is an identifier. The costs are stated rather than
+hidden: reimaging loses the history, and a cloned disk image gives many machines
+one key. The second is the dangerous one, so the file records the hostname it
+was created under and `looks_cloned` reports the mismatch instead of silently
+merging two machines into one series.
+
+**A column was deleted rather than filled dishonestly.** The schema briefly had
+`cpu_frequency_mhz`. Frequency is per-core, and every aggregation available —
+first core, mean, max — asserts something the reading does not say.
+
+*Correction to this paragraph as first written.* It claimed field id 12 was
+"retired, not reused, because Iceberg readers resolve by id". The conclusion is
+right and the reason was wrong. **Iceberg reassigns field ids at table
+creation** — `TableMetadataBuilder::reassign_ids` renumbers them densely from 1
+in declaration order — so the sparse ids in `schema.rs` describe the *request*
+and are discarded by `create_table`. Retiring 12 in that list protects nothing,
+because no table ever sees 12.
+
+This surfaced as a failure, not a review: the first real append died with `Field
+id 4 not found in struct array`, naming an id this crate never assigns and not
+mentioning schemas at all. The cause was building the `RecordBatch` against the
+crate's schema while the Parquet writer resolved against the table's.
+`rows_to_record_batch` takes the table's schema as a parameter now.
+
+What survives: field ids *are* a table's identity once Iceberg has assigned
+them, and **declaration order still matters**, because the ids the table assigns
+follow it. What does not: the idea that the numbers in this crate are those ids.
+
+### A file name generator that counts from zero, once per writer
+
+`DefaultFileNameGenerator` restarts its counter for every writer it is handed,
+and the append path builds a fresh writer per tick — so every tick wrote
+`ironmon-00000.parquet`, and the second commit failed with *"Cannot add files
+that are already referenced by table"*.
+
+**The failure is the good outcome.** The bad one is a store that overwrites
+yesterday's data and reports success, and which of the two you get depends on
+whether the catalog happens to check. Each append now carries a token of host,
+store-open time and a counter — three parts because they cover three different
+collisions: two machines writing one table, a restarted process resuming at the
+same names, and appends arriving faster than the clock ticks.
+
+**Both were found by running it, not by reading it.** The schema, the projection
+and the Arrow conversion all had passing tests while the append path was broken
+in two independent ways, because those tests stopped at the `RecordBatch` and
+both defects lived past it. A test that stops one layer short of the boundary is
+a test of everything except the boundary.
+
+### The publish hook cannot carry the append
+
+`CollectorConfig::on_publish` is `Arc<dyn Fn() + Send + Sync>`: it takes **no
+snapshot**, and its doc says it "must not block: it runs inline on the collector
+between the store and the next tick's sleep."
+
+An Iceberg append writes a Parquet file and commits to a catalog. Doing that
+inline would stall collection on every tick, on the thread whose timing the whole
+pipeline's cadence depends on. So the hook is a *wake signal* and nothing more;
+the append belongs to a task that reads `SnapshotHandle::latest` when woken. The
+hook's signature was already telling us this — it passes no data because it was
+never meant to deliver any.
+
+### The nullability rule, carried into a column store
+
+Everything the collector *reads* is nullable; only `host_id`, `collected_at` and
+`generation` are required, and those three are produced rather than read. This
+is the crate's oldest rule arriving somewhere new, and a columnar store is where
+it is easiest to lose: zero-filling a column is the path of least resistance and
+the resulting table looks perfectly healthy while an absent GPU averages in as
+an idle one.
+
+Four distinctions are asserted, not commented:
+
+| Guard | What it stops |
+| --- | --- |
+| `every_measured_column_is_nullable` | a reading column declared required |
+| `an_idle_card_and_an_unread_card_are_different_rows` | `Some(0.0)` and `None` collapsing |
+| `an_unread_metric_is_null_in_the_batch_rather_than_zero` | `unwrap_or(0.0)` on the Arrow edge |
+| `a_measured_zero_is_not_turned_into_a_null` | over-correcting the line above |
+
+The last pair is the point: they fail in opposite directions, so fixing one by
+breaking the other does not pass. Checked against a deliberate break — making
+`gpu_utilization` required fails two guards by name.
+
+`no_hardware_identifier_reaches_a_row` gives every test card a UUID containing
+`deadbeef` and asserts no rendered row contains it. A guard that can only pass
+because the fixture is empty is not a guard.
+
+### Why not extend the existing store
+
+`src/tsdb` is a single-machine append-only bincode file, and **its rows have no
+host column at all** — every file is implicitly one machine. Answering "which
+card in which host ran hottest last week" means opening every file and decoding
+every record to reach four columns. That is the gap, and it is structural rather
+than a matter of tuning.
+
+### The policy question, which is not settled by code
+
+`src/consent.rs` says *"IronMonitor collects and transmits nothing"* on three
+`ironmon privacy` screens, guarded by `granting_every_scope_still_collects_nothing`
+— a tripwire built to force those screens to be rewritten alongside any real
+collector.
+
+**This module does not trip it, on the reading that the direction of the data is
+what the policy is about.** What `consent` forbids is IronMonitor gathering facts
+and sending them somewhere the *vendor* chose; it says so plainly — "There is no
+endpoint." This writes a machine's own metrics to a table the *operator*
+configured, which is the category `src/tsdb` and `src/prometheus` already occupy
+without tripping anything.
+
+That reading is defensible and it is not airtight. The sentence *"no code in
+this crate collects, aggregates or transmits telemetry"* is broader than the
+endpoint claim beneath it, and a reader who meets this module first is entitled
+to feel misled. **If `fleet-store` ships, that paragraph should be narrowed to
+say what it means: no vendor endpoint, no collection the operator did not
+configure.** It has deliberately not been edited here — it is a user-facing
+guarantee, and quietly rewording one to accommodate new code is how a guarantee
+becomes folklore.
+
+
+### The same error, a different cause: one target directory, alternating features
+
+`cargo test --all-features` came back with dozens of `can't find crate for
+ironmonlib` and `crate egui required to be available in rlib format, but was not
+found in this form`, across `glow`, `ratatui_core`, `h2`, `windows_registry`,
+and in examples like `fan_control` and `consent_demo` that the change never went
+near.
+
+This file already has an entry for that error text, blaming a **shared** target
+directory. That was not this. The target directory was private to this project;
+what it had been given was an afternoon of alternating `--no-default-features
+--features fleet-store` and `--all-features` builds, which leave artifacts from
+incompatible feature unifications side by side.
+
+**A clean target directory returned 961 lib tests, 73 doctests and 21 suites,
+all green.** So the diagnosis is the same as before even though the cause is
+not: when a failure is broad, systemic, and names crates the change never
+touched, the target directory is the first thing to rule out — whether the
+contention came from another project or from your own last twenty commands.
+
+That is the fifth time in these sessions that local evidence was real,
+reproducible, and not about what it appeared to be. The previous four are above:
+the original rlib errors, the `GET`/`PATCH` disagreement on default-setup
+languages, the loopback timings under contention, and a green local suite run
+against a branch CI had been failing for two commits. The cost of checking is
+one clean rebuild; the cost of not checking, this time, would have been hunting
+an `egui` link error through an Iceberg change.

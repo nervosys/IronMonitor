@@ -255,6 +255,13 @@ pub struct IronMonitorApp {
     // has changed since last frame.
     applied_color_theme: Option<ColorTheme>,
 
+    /// Whether the one-shot fit to the Overview has happened.
+    autofit_done: bool,
+
+    /// How much taller the Overview's content is than the room it was given,
+    /// recorded by `draw_overview` on the frame it was last drawn.
+    overview_shortfall: Option<f32>,
+
     // Cache for the Processes tab — avoid cloning + sorting the whole
     // process_list on every paint (10 FPS × hundreds of processes is enough
     // to feel laggy).
@@ -657,6 +664,58 @@ impl Default for AppSettings {
     }
 }
 
+/// The Disk tab's six column widths, proportioned to the width they are given.
+///
+/// **These were fixed pixel widths, and they did not fit.** The five sized
+/// columns came to 840 px, and 30 px of spacing between each added 150 more —
+/// 990 px before the card's own margins, in a window whose advertised minimum
+/// inner width is 800. Below roughly 1050 px the later columns simply ran off
+/// the right edge, and the guard saw it as `"📥 Read"` and `"183.3 GB"` painted
+/// past the window.
+///
+/// The fractions are the old constants measured against the width they were
+/// tuned at, so a 1400 px window lays out **exactly** as it did before: 420, 110,
+/// 90, 110, 110 and 370 px, to the pixel. Narrower windows scale down instead of
+/// overflowing.
+///
+/// Header and data rows must agree or the columns visibly misalign, so both take
+/// their widths from here and both pass the *card's inner width* — the header
+/// after subtracting the card border and margin it offsets itself by.
+#[derive(Clone, Copy)]
+struct DiskColumns {
+    model: f32,
+    interface: f32,
+    capacity: f32,
+    read: f32,
+    write: f32,
+    health: f32,
+}
+
+impl DiskColumns {
+    /// Spacing between columns, five gaps across six columns.
+    const SPACING: f32 = 30.0;
+
+    /// The width the fixed columns were proportioned against: 1360 px of card
+    /// interior at a 1400 px window, less the five 30 px gaps.
+    const TUNED_AT: f32 = 1210.0;
+
+    fn for_width(inner_width: f32) -> Self {
+        // Never negative, however narrow the window is dragged.
+        let usable = (inner_width - Self::SPACING * 5.0).max(1.0);
+        let share = |tuned: f32| usable * (tuned / Self::TUNED_AT);
+        Self {
+            model: share(420.0),
+            interface: share(110.0),
+            capacity: share(90.0),
+            read: share(110.0),
+            write: share(110.0),
+            // The remainder of the 1210, which the health badge used to take by
+            // right-aligning into whatever was left.
+            health: share(370.0),
+        }
+    }
+}
+
 impl IronMonitorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::with_context(&cc.egui_ctx)
@@ -903,6 +962,8 @@ impl IronMonitorApp {
             profile_load_attempted: false,
             profile_sync_attempted: false,
             applied_color_theme: None,
+            autofit_done: false,
+            overview_shortfall: None,
             process_list_version: 0,
             processes_view_cache: Vec::new(),
             processes_view_key: None,
@@ -959,7 +1020,19 @@ impl IronMonitorApp {
     /// `GpuCollection::auto_detect()` on every one of them, and still performed
     /// blocking `NetworkMonitor::interfaces()` calls on the UI thread while
     /// "applying" results.
-    fn sync_snapshot(&mut self) -> bool {
+    /// Whether a snapshot past the collector's warm-up has been applied.
+    ///
+    /// The pipeline publishes a warm-up generation built from an empty source
+    /// set, so GPUs, processes and connections are absent from it by
+    /// construction. A caller measuring this tab before a later generation
+    /// arrives measures a machine with no accelerators — which on a three-GPU
+    /// desktop is several cards' worth of height short.
+    pub fn has_real_snapshot(&self) -> bool {
+        self.applied_generation > 0 && !self.snapshot.warmup
+    }
+
+    /// Apply the newest snapshot, returning whether anything changed.
+    pub(crate) fn sync_snapshot(&mut self) -> bool {
         let Some(ref collector) = self.collector else {
             return false;
         };
@@ -1686,6 +1759,81 @@ impl IronMonitorApp {
     }
 }
 
+impl IronMonitorApp {
+    /// Fit the window to the Overview, once, after the Overview has finished
+    /// loading.
+    ///
+    /// **The waiting is the whole point.** Two things arrive after the first
+    /// frame and both change how tall this tab is: the background loaders, and
+    /// the collector's first real snapshot. The pipeline publishes a warm-up
+    /// generation built from an empty `Sources`, so GPUs are absent from it *by
+    /// construction* — fit before it lands and a three-card desktop is measured
+    /// as a machine with no accelerators at all. The Overview grows a panel per
+    /// card, so that is not a small error.
+    ///
+    /// **The window is grown by the tab's shortfall rather than set to the tab's
+    /// height**, which is what makes this correct without knowing anything about
+    /// the window. `draw_overview` reports how much taller its content is than
+    /// the room its scroll area gave it; the difference between that room and the
+    /// window is the title bar, the tab strip and the status bar, and adding the
+    /// shortfall to the current height carries all of it across without naming
+    /// any of it. The first attempt measured the tab alone and set the window to
+    /// that, which came out 50 px short — the tab fitted the window exactly and
+    /// the chrome pushed the bottom of Network I/O under the status bar.
+    ///
+    /// Height only. The layout is elastic — every widget sizes to
+    /// `available_width()` — so the Overview paints out to 1382 px at a 1400 px
+    /// window and 1082 px at 1100 px. It has no width of its own to fit to, and
+    /// the window's width is left exactly as the user has it.
+    ///
+    /// This cannot run before the window exists, which is why it is here rather
+    /// than in `gui::run`: constructing the app to lay a tab out initialises COM
+    /// as multi-threaded on the main thread, and winit then fails
+    /// `OleInitialize` with `RPC_E_CHANGED_MODE`, so no window opens at all.
+    pub(crate) fn autofit_to_overview_once(&mut self, ctx: &egui::Context) -> bool {
+        if self.autofit_done || self.current_tab != Tab::Overview {
+            return false;
+        }
+        // Wait for everything the tab is going to show.
+        if !self.has_real_snapshot() || self.has_pending_load() {
+            return false;
+        }
+        // And for a frame drawn with it, which is what carries the measurement.
+        let Some(shortfall) = self.overview_shortfall else {
+            return false;
+        };
+        self.autofit_done = true;
+
+        // Under a pixel is a rounding artefact, not a clipped panel.
+        if shortfall <= 1.0 {
+            return true;
+        }
+
+        // `viewport_rect`, not the deprecated `screen_rect` and not
+        // `content_rect`: this is being added to and handed back as the window's
+        // inner size, so it has to be the whole viewport rather than the part of
+        // it left over for content.
+        let window = ctx.viewport_rect().size();
+        if window.x < 1.0 || window.y < 1.0 {
+            return true;
+        }
+
+        // Leave room for a title bar and a taskbar rather than filling the panel
+        // and tucking the bottom edge under one.
+        const SCREEN_FRACTION: f32 = 0.92;
+        let ceiling = ctx
+            .input(|i| i.viewport().monitor_size)
+            .map(|monitor| monitor.y * SCREEN_FRACTION)
+            .unwrap_or(f32::INFINITY);
+
+        let height = (window.y + shortfall).min(ceiling);
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            window.x, height,
+        )));
+        true
+    }
+}
+
 impl eframe::App for IronMonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply theme only when it actually changes. `apply_*_theme` calls
@@ -1922,6 +2070,9 @@ impl eframe::App for IronMonitorApp {
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| self.draw_current_tab(ui));
 
+        // After the panel, because the fit measures what that panel just drew.
+        let _ = self.autofit_to_overview_once(ctx);
+
         // Settings window (floating)
         self.draw_settings_window(ctx);
     }
@@ -2154,8 +2305,24 @@ impl IronMonitorApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Ask").color(CyberColors::CYAN).strong());
 
-                    // Leave room for the button and status text on the right.
-                    let field_width = (ui.available_width() - 190.0).max(160.0);
+                    // Measure the button instead of reserving a guess for it.
+                    //
+                    // This reserved a hardcoded 190 px for the button *and* a
+                    // status label, and the label alone is 172 px, so the row ran
+                    // past the window at every width — the field absorbed the
+                    // slack, so a wider window moved the overrun rather than
+                    // removing it, and everything else in the tab's `ScrollArea`
+                    // inherited the wider content box. egui already knows how wide
+                    // "Send" is; ask it.
+                    let send_galley = ui.painter().layout_no_wrap(
+                        "Send".to_owned(),
+                        egui::TextStyle::Button.resolve(ui.style()),
+                        egui::Color32::PLACEHOLDER,
+                    );
+                    let send_width = send_galley.size().x + ui.spacing().button_padding.x * 2.0;
+                    let field_width =
+                        (ui.available_width() - send_width - ui.spacing().item_spacing.x).max(80.0);
+
                     let response = ui.add_sized(
                         [field_width, 22.0],
                         egui::TextEdit::singleline(&mut self.agent_query)
@@ -2175,20 +2342,32 @@ impl IronMonitorApp {
                     {
                         submit = true;
                     }
+                });
 
-                    if self.agent_is_processing {
+                // The status goes on its own line rather than competing with the
+                // input for the same row. It is a hint about the backend, not part
+                // of the control, and a row that has to fit a variable-length
+                // sentence beside a text field is a row that overflows the first
+                // time the sentence changes.
+                if self.agent_is_processing {
+                    ui.horizontal(|ui| {
                         ui.spinner();
-                    } else if !can_answer {
-                        // Say which condition is unmet rather than "unavailable":
-                        // the backend may be perfectly reachable and simply have no
-                        // model chosen yet.
                         ui.label(
-                            RichText::new("no model selected — see the AI tab")
+                            RichText::new("thinking…")
                                 .small()
                                 .color(CyberColors::TEXT_SECONDARY),
                         );
-                    }
-                });
+                    });
+                } else if !can_answer {
+                    // Say which condition is unmet rather than "unavailable": the
+                    // backend may be perfectly reachable and simply have no model
+                    // chosen yet.
+                    ui.label(
+                        RichText::new("no model selected — see the AI tab")
+                            .small()
+                            .color(CyberColors::TEXT_SECONDARY),
+                    );
+                }
 
                 // Most recent exchange, so an answer is visible without leaving the
                 // tab. The full transcript stays in the AI tab.
@@ -2232,7 +2411,7 @@ impl IronMonitorApp {
     }
 
     fn draw_overview(&mut self, ui: &mut egui::Ui) {
-        ScrollArea::vertical().show(ui, |ui| {
+        let scrolled = ScrollArea::vertical().show(ui, |ui| {
             self.draw_overview_chat_bar(ui);
             ui.add_space(6.0);
 
@@ -2757,6 +2936,11 @@ impl IronMonitorApp {
                 );
             });
         });
+
+        // What the tab needs against what it was given. `autofit_to_overview_once`
+        // resizes the window by the difference; see there for why it is measured
+        // rather than computed.
+        self.overview_shortfall = Some(scrolled.content_size.y - scrolled.inner_rect.height());
     }
 
     fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {
@@ -2948,30 +3132,55 @@ impl IronMonitorApp {
                                 .size(18.0),
                         );
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Live metrics on the right
-                            if let Some(clock) = dynamic_info.clocks.graphics {
-                                ui.label(
-                                    RichText::new(format!("{} MHz", clock))
-                                        .color(CyberColors::NEON_BLUE)
-                                        .size(15.0),
-                                );
+                        // Live metrics on the right, right-aligned by measuring
+                        // and padding rather than by `Layout::right_to_left`.
+                        //
+                        // **A right-to-left layout here anchored 44 px past the
+                        // window, at every width**, because it right-aligns
+                        // against the parent's max rect — and inside a
+                        // `ScrollArea` that is the content box, which is as wide
+                        // as its widest child rather than as wide as the window.
+                        // Bounding the layout does not move it: the offset was
+                        // identical to the pixel with an `allocate_ui_with_layout`
+                        // around it.
+                        //
+                        // Emitted in reverse, because right-to-left placed the
+                        // first label rightmost and this reads left to right.
+                        const METRIC_SIZE: f32 = 15.0;
+                        let mut metrics: Vec<(String, egui::Color32)> = Vec::new();
+                        if let Some(temp) = dynamic_info.thermal.temperature {
+                            metrics.push((
+                                format!("{}°C", temp),
+                                theme::temperature_color(temp as u32),
+                            ));
+                        }
+                        if let Some(power) = dynamic_info.power.draw {
+                            metrics.push((
+                                format!("{:.0}W", power as f64 / 1000.0),
+                                CyberColors::NEON_ORANGE,
+                            ));
+                        }
+                        if let Some(clock) = dynamic_info.clocks.graphics {
+                            metrics.push((format!("{} MHz", clock), CyberColors::NEON_BLUE));
+                        }
+
+                        if !metrics.is_empty() {
+                            let font = egui::FontId::proportional(METRIC_SIZE);
+                            let width: f32 = metrics
+                                .iter()
+                                .map(|(text, colour)| {
+                                    ui.painter()
+                                        .layout_no_wrap(text.clone(), font.clone(), *colour)
+                                        .size()
+                                        .x
+                                })
+                                .sum::<f32>()
+                                + ui.spacing().item_spacing.x * (metrics.len() - 1) as f32;
+                            ui.add_space((ui.available_width() - width).max(0.0));
+                            for (text, colour) in metrics {
+                                ui.label(RichText::new(text).color(colour).size(METRIC_SIZE));
                             }
-                            if let Some(power) = dynamic_info.power.draw {
-                                ui.label(
-                                    RichText::new(format!("{:.0}W", power as f64 / 1000.0))
-                                        .color(CyberColors::NEON_ORANGE)
-                                        .size(15.0),
-                                );
-                            }
-                            if let Some(temp) = dynamic_info.thermal.temperature {
-                                ui.label(
-                                    RichText::new(format!("{}°C", temp))
-                                        .color(theme::temperature_color(temp as u32))
-                                        .size(15.0),
-                                );
-                            }
-                        });
+                        }
                     });
 
                     ui.add_space(4.0);
@@ -3224,14 +3433,16 @@ impl IronMonitorApp {
                                 .small(),
                         );
 
-                        // Legend
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new("(used/buffers/cache/free)")
-                                    .color(CyberColors::TEXT_MUTED)
-                                    .small(),
-                            );
-                        });
+                        // Legend, bounded for the same reason as the
+                        // accelerator metrics above.
+                        const LEGEND: &str = "(used/buffers/cache/free)";
+                        let galley = ui.painter().layout_no_wrap(
+                            LEGEND.to_owned(),
+                            egui::TextStyle::Small.resolve(ui.style()),
+                            CyberColors::TEXT_MUTED,
+                        );
+                        ui.add_space((ui.available_width() - galley.size().x).max(0.0));
+                        ui.label(RichText::new(LEGEND).color(CyberColors::TEXT_MUTED).small());
                     }
                 });
 
@@ -3804,25 +4015,24 @@ impl IronMonitorApp {
         ui.add_space(8.0);
 
         // Column widths - must match draw_disk_row exactly
-        const COL_MODEL: f32 = 420.0;
-        const COL_INTERFACE: f32 = 110.0;
-        const COL_CAPACITY: f32 = 90.0;
-        const COL_READ: f32 = 110.0;
-        const COL_WRITE: f32 = 110.0;
-        const COL_SPACING: f32 = 30.0;
         const HEADER_HEIGHT: f32 = 20.0;
 
         // Header row - use exact same allocation method as data rows for perfect alignment
         // Must account for: 1px stroke + 12px inner_margin from each card's Frame
         const CARD_LEFT_OFFSET: f32 = 13.0;
 
+        // The same widths the cards below will compute, from the same number:
+        // each card's interior is the available width less its border and margin
+        // on both sides. Anything else and the header sits off its columns.
+        let cols = DiskColumns::for_width(ui.available_width() - CARD_LEFT_OFFSET * 2.0);
+
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = COL_SPACING;
+            ui.spacing_mut().item_spacing.x = DiskColumns::SPACING;
             ui.add_space(CARD_LEFT_OFFSET);
 
             // Column 1: Device (left-aligned to match data)
             let (model_rect, _) =
-                ui.allocate_exact_size(egui::vec2(COL_MODEL, HEADER_HEIGHT), egui::Sense::hover());
+                ui.allocate_exact_size(egui::vec2(cols.model, HEADER_HEIGHT), egui::Sense::hover());
             if ui.is_rect_visible(model_rect) {
                 ui.painter().text(
                     model_rect.left_center(),
@@ -3835,7 +4045,7 @@ impl IronMonitorApp {
 
             // Column 2: Interface (centered to match data)
             let (iface_rect, _) = ui.allocate_exact_size(
-                egui::vec2(COL_INTERFACE, HEADER_HEIGHT),
+                egui::vec2(cols.interface, HEADER_HEIGHT),
                 egui::Sense::hover(),
             );
             if ui.is_rect_visible(iface_rect) {
@@ -3850,7 +4060,7 @@ impl IronMonitorApp {
 
             // Column 3: Capacity (centered to match data)
             let (cap_rect, _) = ui.allocate_exact_size(
-                egui::vec2(COL_CAPACITY, HEADER_HEIGHT),
+                egui::vec2(cols.capacity, HEADER_HEIGHT),
                 egui::Sense::hover(),
             );
             if ui.is_rect_visible(cap_rect) {
@@ -3865,7 +4075,7 @@ impl IronMonitorApp {
 
             // Column 4: Read (centered to match data)
             let (read_rect, _) =
-                ui.allocate_exact_size(egui::vec2(COL_READ, HEADER_HEIGHT), egui::Sense::hover());
+                ui.allocate_exact_size(egui::vec2(cols.read, HEADER_HEIGHT), egui::Sense::hover());
             if ui.is_rect_visible(read_rect) {
                 ui.painter().text(
                     read_rect.center(),
@@ -3878,7 +4088,7 @@ impl IronMonitorApp {
 
             // Column 5: Write (centered to match data)
             let (write_rect, _) =
-                ui.allocate_exact_size(egui::vec2(COL_WRITE, HEADER_HEIGHT), egui::Sense::hover());
+                ui.allocate_exact_size(egui::vec2(cols.write, HEADER_HEIGHT), egui::Sense::hover());
             if ui.is_rect_visible(write_rect) {
                 ui.painter().text(
                     write_rect.center(),
@@ -3889,15 +4099,27 @@ impl IronMonitorApp {
                 );
             }
 
-            // Health column (right side)
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(CARD_LEFT_OFFSET);
-                ui.label(
-                    RichText::new("Health")
-                        .color(CyberColors::TEXT_MUTED)
-                        .size(13.0),
-                );
-            });
+            // Health column (right side), bounded like the data rows below it.
+            ui.allocate_ui_with_layout(
+                egui::vec2(cols.health, HEADER_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    // Right-aligned by measuring and padding, for the same reason
+                    // as the badges below: see the data row.
+                    const LABEL: &str = "Health";
+                    let galley = ui.painter().layout_no_wrap(
+                        LABEL.to_owned(),
+                        egui::FontId::proportional(13.0),
+                        CyberColors::TEXT_MUTED,
+                    );
+                    ui.add_space((cols.health - galley.size().x - CARD_LEFT_OFFSET).max(0.0));
+                    ui.label(
+                        RichText::new(LABEL)
+                            .color(CyberColors::TEXT_MUTED)
+                            .size(13.0),
+                    );
+                },
+            );
         });
         ui.add_space(4.0);
 
@@ -3980,21 +4202,19 @@ impl IronMonitorApp {
             .corner_radius(6)
             .inner_margin(12.0)
             .show(ui, |ui| {
-                // Use fixed column positions via exact sizing
-                const COL_MODEL: f32 = 420.0;
-                const COL_INTERFACE: f32 = 110.0;
-                const COL_CAPACITY: f32 = 90.0;
-                const COL_READ: f32 = 110.0;
-                const COL_WRITE: f32 = 110.0;
                 const ROW_HEIGHT: f32 = 45.0;
+
+                // Proportioned to this card's interior rather than fixed, so the
+                // right-hand columns stay inside the window at any width.
+                let cols = DiskColumns::for_width(ui.available_width());
 
                 // Row 1: Use exact size allocation to guarantee column widths
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 30.0;
+                    ui.spacing_mut().item_spacing.x = DiskColumns::SPACING;
 
                     // Column 1: Icon + Model - use exact size
                     let (model_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(COL_MODEL, ROW_HEIGHT),
+                        egui::vec2(cols.model, ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
                     if ui.is_rect_visible(model_rect) {
@@ -4031,7 +4251,7 @@ impl IronMonitorApp {
 
                     // Column 2: Interface - exact size, centered
                     let (iface_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(COL_INTERFACE, ROW_HEIGHT),
+                        egui::vec2(cols.interface, ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
                     if ui.is_rect_visible(iface_rect) {
@@ -4046,7 +4266,7 @@ impl IronMonitorApp {
 
                     // Column 3: Capacity - exact size, centered
                     let (cap_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(COL_CAPACITY, ROW_HEIGHT),
+                        egui::vec2(cols.capacity, ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
                     if ui.is_rect_visible(cap_rect) {
@@ -4061,7 +4281,7 @@ impl IronMonitorApp {
 
                     // Column 4: Read - exact size, centered
                     let (read_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(COL_READ, ROW_HEIGHT),
+                        egui::vec2(cols.read, ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
                     if ui.is_rect_visible(read_rect) {
@@ -4076,7 +4296,7 @@ impl IronMonitorApp {
 
                     // Column 5: Write - exact size, centered
                     let (write_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(COL_WRITE, ROW_HEIGHT),
+                        egui::vec2(cols.write, ROW_HEIGHT),
                         egui::Sense::hover(),
                     );
                     if ui.is_rect_visible(write_rect) {
@@ -4089,33 +4309,65 @@ impl IronMonitorApp {
                         );
                     }
 
-                    // Column 6: Health - right aligned, use remaining space
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(h) = &health {
-                            let (text, color) = match h {
-                                crate::disk::DiskHealth::Healthy => {
-                                    ("✓ Healthy", CyberColors::NEON_GREEN)
-                                }
-                                crate::disk::DiskHealth::Warning => {
-                                    ("⚠ Warning", CyberColors::NEON_ORANGE)
-                                }
-                                crate::disk::DiskHealth::Critical
-                                | crate::disk::DiskHealth::Failed => {
-                                    ("✗ Critical", CyberColors::NEON_RED)
-                                }
-                                crate::disk::DiskHealth::Unknown => {
-                                    ("Unknown", CyberColors::TEXT_MUTED)
-                                }
-                            };
-                            egui::Frame::NONE
-                                .fill(color.gamma_multiply(0.15))
-                                .corner_radius(4)
-                                .inner_margin(egui::vec2(10.0, 4.0))
-                                .show(ui, |ui| {
-                                    ui.label(RichText::new(text).color(color).size(14.0));
-                                });
-                        }
-                    });
+                    // Column 6: Health - right aligned within its own column.
+                    //
+                    // `with_layout` here took the remaining space, and "remaining"
+                    // in an advanced `horizontal` is not bounded by the window —
+                    // the badge anchored itself 17 to 35 px past the right edge
+                    // whatever the width. Allocating the column first gives the
+                    // right-to-left layout an edge that exists.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(cols.health, ROW_HEIGHT),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if let Some(h) = &health {
+                                let (text, color) = match h {
+                                    crate::disk::DiskHealth::Healthy => {
+                                        ("✓ Healthy", CyberColors::NEON_GREEN)
+                                    }
+                                    crate::disk::DiskHealth::Warning => {
+                                        ("⚠ Warning", CyberColors::NEON_ORANGE)
+                                    }
+                                    crate::disk::DiskHealth::Critical
+                                    | crate::disk::DiskHealth::Failed => {
+                                        ("✗ Critical", CyberColors::NEON_RED)
+                                    }
+                                    crate::disk::DiskHealth::Unknown => {
+                                        ("Unknown", CyberColors::TEXT_MUTED)
+                                    }
+                                };
+                                // Right-aligned by measuring and padding, not by
+                                // a right-to-left layout.
+                                //
+                                // **An `egui::Frame` nested in
+                                // `Layout::right_to_left` lays its child out
+                                // left-to-right from the right-to-left cursor**,
+                                // so this badge started at the clip rect's right
+                                // edge less its own margin and grew outward from
+                                // there — painting 35 px past the window at
+                                // *every* width: 1369..1435 at a 1400 px window
+                                // and 769..835 at 800, while the card it belongs
+                                // to ends at 1379. Bounding the layout does not
+                                // help, because the badge was never inside the
+                                // bound.
+                                const BADGE_MARGIN: egui::Vec2 = egui::vec2(10.0, 4.0);
+                                let galley = ui.painter().layout_no_wrap(
+                                    text.to_owned(),
+                                    egui::FontId::proportional(14.0),
+                                    color,
+                                );
+                                let badge_width = galley.size().x + BADGE_MARGIN.x * 2.0;
+                                ui.add_space((cols.health - badge_width).max(0.0));
+                                egui::Frame::NONE
+                                    .fill(color.gamma_multiply(0.15))
+                                    .corner_radius(4)
+                                    .inner_margin(BADGE_MARGIN)
+                                    .show(ui, |ui| {
+                                        ui.label(RichText::new(text).color(color).size(14.0));
+                                    });
+                            }
+                        },
+                    );
                 });
 
                 // Row 2: Partitions with aligned columns (use cached filesystem data)

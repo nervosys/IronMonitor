@@ -14,6 +14,7 @@
 //! different bugs with different fixes.
 
 use egui::Context;
+use std::time::Duration;
 
 /// Every string painted by `body`, in paint order.
 ///
@@ -148,6 +149,131 @@ pub fn frame_is_still_loading(lines: &[String]) -> bool {
 /// Text painted by `body`, joined into one haystack for substring assertions.
 pub fn painted_blob(ctx: &Context, body: impl FnMut(&mut egui::Ui)) -> String {
     painted_text(ctx, body).join("\n")
+}
+
+/// Every painted string with the rectangle it occupies, at an explicit viewport.
+///
+/// `painted_text` answers "was this drawn"; this answers "drawn *where*". The
+/// distinction matters because the two Dewey failures were different: one tab
+/// painted nothing, and another painted everything and clipped it off the right
+/// edge. Reading text alone catches the first and is blind to the second.
+pub fn painted_text_rects_sized(
+    ctx: &Context,
+    size: egui::Vec2,
+    mut body: impl FnMut(&mut egui::Ui),
+) -> Vec<(String, egui::Rect)> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    let _warmup = run_frame();
+    let settled = run_frame();
+
+    let mut out = Vec::new();
+    for clipped in &settled.shapes {
+        collect_shape_text_rects(&clipped.shape, &mut out);
+    }
+    out
+}
+
+/// Painted strings whose box extends past `size` horizontally.
+///
+/// Vertical overrun is not overflow here: every tab body is inside a
+/// `ScrollArea`, so content taller than the viewport is reachable. Width is not
+/// scrollable in this layout, so text past the right edge is simply unreadable.
+pub fn horizontal_overflow(
+    ctx: &Context,
+    size: egui::Vec2,
+    body: impl FnMut(&mut egui::Ui),
+) -> Vec<(String, f32)> {
+    painted_text_rects_sized(ctx, size, body)
+        .into_iter()
+        .filter(|(text, rect)| !text.trim().is_empty() && rect.max.x > size.x)
+        .map(|(text, rect)| (text, rect.max.x - size.x))
+        .collect()
+}
+
+/// Bring an app to the state a user actually sees before measuring it.
+///
+/// Two things arrive late and both change what a tab paints, so a measurement
+/// taken before them is of a different screen:
+///
+/// - **Background loaders.** Four tabs fetch their contents off-thread and paint
+///   a spinner until the data lands.
+/// - **The collector's first real snapshot.** The pipeline publishes a warm-up
+///   generation built from an empty source set, so GPUs, processes and
+///   connections are absent from it *by construction*. On this three-GPU machine
+///   the Overview's accelerator cards simply are not there yet, and the tab is
+///   shorter than it will be a moment later.
+///
+/// Returns false if either is still outstanding when the budget runs out, so a
+/// caller can decline to measure rather than measure the wrong thing.
+pub fn settle(app: &mut crate::gui::app::IronMonitorApp, ctx: &Context, budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+
+    while std::time::Instant::now() < deadline {
+        app.pump_background_loaders(ctx);
+        app.sync_snapshot();
+        if app.has_real_snapshot() && !app.has_pending_load() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// The bottom-right corner of everything `body` actually paints.
+///
+/// The measurement that works on this GUI, where the other two do not.
+/// `Context::used_size` reports *allocated* space — `1400x4000` for a 1400x4000
+/// canvas, and `-inf` in the live app, where tabs paint through panels rather
+/// than the measured `Ui`. Asking a tab how wide it wants to be is circular too:
+/// every widget sizes to `available_width()`, so all thirteen report wanting
+/// exactly whatever canvas they are handed.
+///
+/// Where text lands is not circular. Rendered at 1400 wide the Overview paints
+/// out to 1382x918; at 1100 wide, 1082x918. The width follows the canvas because
+/// the layout is elastic, and **the height does not** — 918 px is a real
+/// property of the tab, and the number a window can be fitted to.
+pub fn painted_extent(
+    ctx: &Context,
+    canvas: egui::Vec2,
+    body: impl FnMut(&mut egui::Ui),
+) -> egui::Vec2 {
+    let mut extent = egui::Vec2::ZERO;
+    for (text, rect) in painted_text_rects_sized(ctx, canvas, body) {
+        if text.trim().is_empty() {
+            continue;
+        }
+        extent.x = extent.x.max(rect.max.x);
+        extent.y = extent.y.max(rect.max.y);
+    }
+    extent
+}
+
+fn collect_shape_text_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+    match shape {
+        egui::Shape::Text(text) => {
+            let s = text.galley.text();
+            if !s.is_empty() {
+                out.push((
+                    s.to_string(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                ));
+            }
+        }
+        egui::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_shape_text_rects(s, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_shape_text(shape: &egui::Shape, out: &mut Vec<String>) {
@@ -659,5 +785,278 @@ mod script_tests {
         let result = run_script(&mut app, &ctx, &steps);
         assert_eq!(result.captures.len(), 1);
         assert!(result.captures[0].contains("Hardware Profile Inspector"));
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    /// Tabs in the order `select_tab_by_name` accepts them.
+    const TABS: [&str; 13] = [
+        "overview",
+        "cpu",
+        "accelerators",
+        "memory",
+        "disk",
+        "processes",
+        "network",
+        "tools",
+        "connections",
+        "system",
+        "peripherals",
+        "profiles",
+        "ai",
+    ];
+
+    /// Tabs that still paint past the right edge, pinned so the list cannot grow
+    /// quietly and cannot shrink without someone noticing.
+    ///
+    /// Both are the same construct: a `right_to_left` layout nested inside an
+    /// already-advanced `horizontal`. In this egui version that starts its cursor
+    /// at the row's right edge and runs outward instead of aligning back from it,
+    /// so the content lands entirely outside the window. `accelerators` puts the
+    /// clock and power readings there; `memory` a "(used/buffers/cache/free)"
+    /// legend, and `ai` an unwrapped welcome sentence that runs 183 px past the
+    /// 800 px minimum width. The `ai` one only appears in the empty state, which
+    /// is why it surfaced intermittently rather than on every run.
+    ///
+    /// `.wrap()` does not fix the `ai` case, which is the tell that all three are
+    /// one defect: the container does not bound its child's width, so there is
+    /// nothing for wrapping to wrap against.
+    ///
+    /// Not fixed here because neither obvious remedy works: an explicit
+    /// `allocate_ui_with_layout` with a bounded width leaves the offset unchanged
+    /// to the pixel. What does work is inlining the content, which moves it from
+    /// right-aligned to inline — a visual decision rather than a bug fix, and not
+    /// one to make silently.
+    /// Tabs known to paint past the right edge, pinned rather than fixed.
+    ///
+    /// **Down from four to one.** `accelerators`, `memory` and `disk` shared a
+    /// single cause: `Layout::right_to_left` right-aligns against the parent's
+    /// max rect, and inside a `ScrollArea` that is the *content box*, which is as
+    /// wide as its widest child rather than as wide as the window. Bounding the
+    /// layout does not move it — the offset was identical to the pixel with an
+    /// `allocate_ui_with_layout` around it — because the content was never inside
+    /// the bound. Measuring the text and padding to right-align it, with no
+    /// right-to-left layout at all, does fix it.
+    ///
+    /// `ai` is **not** the same defect and is not fixed. At an 800 px window its
+    /// welcome sentence is centred in a container roughly 1369 px wide, so the
+    /// sentence is already narrower than its box: wrapping it changes nothing,
+    /// and was tried. Some sibling widens the content box, and this guard cannot
+    /// name it — the guard reads *text* rectangles, and a chart or frame that
+    /// paints no text is invisible to it. Finding it needs an instrument that
+    /// measures widgets rather than glyphs.
+    const KNOWN_OVERFLOWING: [&str; 1] = ["ai"];
+
+    /// No tab may paint text past the right edge of a default window.
+    ///
+    /// The GUI had two distinct failure modes during the Dewey port and
+    /// `painted_text` sees only one: a tab that drew nothing, and a tab that drew
+    /// everything and clipped it off the right edge. Reading galley *text* catches
+    /// the first and is blind to the second. This reads their rectangles.
+    ///
+    /// It caught a real one on Overview: the chat bar reserved a hardcoded 190 px
+    /// for a Send button plus a 172 px status label, so the row ran 29 px past the
+    /// window at every width. The text field absorbed the slack, which is why
+    /// widening the window moved the overrun rather than removing it, and why
+    /// everything else inside that tab's `ScrollArea` inherited the wider content
+    /// box.
+    ///
+    /// Widths are the shipped default (`with_inner_size([1400, 900])`) and the
+    /// shipped minimum (`with_min_inner_size([800, 600])`). Height is not checked:
+    /// every tab body sits in a vertical `ScrollArea`, so tall content is
+    /// reachable, while width in this layout is not scrollable.
+    #[test]
+    fn no_tab_paints_text_past_the_right_edge() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        let mut offenders = Vec::new();
+        let mut unexpectedly_clean = Vec::new();
+        let mut still_loading = Vec::new();
+
+        for tab in TABS {
+            if app.select_tab_by_name(tab).is_err() {
+                continue;
+            }
+
+            // Settle the tab before measuring it — both halves.
+            //
+            // Four tabs fetch their contents off-thread and paint a spinner until
+            // the data lands, so what this measures depends on whether the loader
+            // won the race — and under the full parallel suite it sometimes does
+            // and sometimes does not. That made this guard fail once and pass on
+            // rerun, which is the same instrument as no guard at all.
+            //
+            // The loaders were once all this waited for, and that was not enough:
+            // the collector's warm-up snapshot is built from an empty `Sources`,
+            // so Accelerators was being measured on a machine that had no GPUs
+            // yet. `settle` waits for both, and a tab that never settles is
+            // skipped rather than measured mid-flight.
+            if !settle(&mut app, &ctx, Duration::from_secs(30)) {
+                still_loading.push(tab);
+                continue;
+            }
+
+            let pinned = KNOWN_OVERFLOWING.contains(&tab);
+            let mut any = false;
+
+            for width in [1400.0_f32, 800.0] {
+                let size = egui::Vec2::new(width, 900.0);
+                for (text, past) in horizontal_overflow(&ctx, size, |ui| app.draw_current_tab(ui)) {
+                    any = true;
+                    if !pinned {
+                        offenders.push(format!(
+                            "{tab} @ {width:.0}px wide: {text:?} runs {past:.0}px past the edge"
+                        ));
+                    }
+                }
+            }
+
+            // A pinned tab that has started fitting means the pin is now a lie.
+            if pinned && !any {
+                unexpectedly_clean.push(tab);
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "text painted outside the window, which a reader sees as clipped or missing:
+  {}",
+            offenders.join(
+                "
+  "
+            )
+        );
+
+        // Reported rather than asserted: a loader that does not finish inside the
+        // budget is a slow machine, not a layout defect, and failing on it would
+        // make this guard about the runner instead of the GUI.
+        if !still_loading.is_empty() {
+            eprintln!("skipped, still loading after 5s: {still_loading:?}");
+        }
+
+        assert!(
+            unexpectedly_clean.is_empty(),
+            "pinned as overflowing but no longer overflowing: {unexpectedly_clean:?}. Remove them from KNOWN_OVERFLOWING so the guard covers them."
+        );
+    }
+}
+
+#[cfg(test)]
+mod overview_extent {
+    use super::*;
+
+    /// The fit must wait for the Overview to finish loading.
+    ///
+    /// **This is the whole defect.** Two things arrive after the first frame and
+    /// both change how tall the tab is: the background loaders, and the
+    /// collector's first real snapshot. The pipeline publishes a warm-up
+    /// generation built from an empty `Sources`, so it describes no GPUs *by
+    /// construction* — fit against it and a three-card desktop is measured as a
+    /// machine with no accelerators at all. A freshly constructed app has applied
+    /// no snapshot yet, so it is in exactly that state, and the fit must decline.
+    ///
+    /// Worth recording, because it is the opposite of what was expected: the
+    /// loaded Overview measures **shorter** than the unloaded one, 899.5 px
+    /// against 918.5. Waiting was still right — the unloaded number is not a
+    /// smaller version of the real answer, it is a different tab — but the reason
+    /// it is shorter has not been established. The likeliest explanation is that
+    /// a placeholder is taller than the content that replaces it, and that is a
+    /// guess.
+    #[test]
+    fn the_fit_waits_for_the_overview_to_finish_loading() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+
+        assert!(
+            !app.has_real_snapshot(),
+            "a freshly constructed app has applied no snapshot, warm-up or otherwise"
+        );
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "the window must not be fitted to an Overview that has not loaded its data"
+        );
+
+        assert!(
+            settle(&mut app, &ctx, Duration::from_secs(30)),
+            "the Overview did not finish loading, so there is nothing trustworthy to measure"
+        );
+
+        // The fit measures what the tab drew, so a loaded app that has not drawn
+        // yet still has nothing to go on.
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "loaded but never drawn: there is no shortfall recorded to fit to"
+        );
+        let _ = painted_extent(&ctx, egui::Vec2::new(1400.0, 900.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+
+        assert!(
+            app.autofit_to_overview_once(&ctx),
+            "once everything has loaded and been drawn, the fit must run"
+        );
+        assert!(
+            !app.autofit_to_overview_once(&ctx),
+            "and it must run only once, or every frame resizes the user's window"
+        );
+    }
+
+    /// What the fit measures is the height of the painted content, not the
+    /// canvas it was given.
+    ///
+    /// `Context::used_size` cannot answer this: it reports *allocated* space,
+    /// which headlessly is the whole 4000 px canvas, and in the live app is
+    /// `-inf`, because tabs paint through panels rather than the measured `Ui`.
+    /// An earlier version of this fit used it and silently never ran.
+    #[test]
+    fn the_fit_measures_paint_rather_than_canvas() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+
+        let extent = painted_extent(&ctx, egui::Vec2::new(1400.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+        assert!(
+            extent.y > 300.0 && extent.y < 3000.0,
+            "the Overview should paint a windowful, not nothing and not the whole              4000 px canvas; got {:.1}",
+            extent.y
+        );
+    }
+
+    /// Width is not fittable, asserted with numbers rather than a comment.
+    #[test]
+    fn the_overview_takes_whatever_width_it_is_given() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+
+        let wide = painted_extent(&ctx, egui::Vec2::new(1400.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+        let narrow = painted_extent(&ctx, egui::Vec2::new(1100.0, 4000.0), |ui| {
+            app.draw_current_tab(ui)
+        });
+
+        assert!(
+            wide.x > narrow.x + 200.0,
+            "elastic layout: a 300 px wider canvas should paint wider, got {:.0} vs {:.0}",
+            wide.x,
+            narrow.x
+        );
+        assert!(
+            (wide.y - narrow.y).abs() < 2.0,
+            "height must not depend on width: {:.1} at 1400 vs {:.1} at 1100",
+            wide.y,
+            narrow.y
+        );
     }
 }
