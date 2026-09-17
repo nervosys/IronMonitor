@@ -830,7 +830,20 @@ mod overflow_tests {
     /// to the pixel. What does work is inlining the content, which moves it from
     /// right-aligned to inline — a visual decision rather than a bug fix, and not
     /// one to make silently.
-    const KNOWN_OVERFLOWING: [&str; 3] = ["accelerators", "memory", "ai"];
+    /// Tabs known to paint past the right edge, pinned rather than fixed.
+    ///
+    /// All four are one construct — `Layout::right_to_left` nested inside an
+    /// advanced `horizontal`, where the inner layout is not bounded by the outer
+    /// one. The remedy that works is inlining, which turns right-aligned into
+    /// inline: a visual decision rather than a bug fix, so it is not made here.
+    ///
+    /// **`disk` was invisible until this test settled the snapshot.** The
+    /// collector's warm-up generation is built from an empty `Sources`, so it
+    /// describes no disks, and the tab had been measured with nothing in it. The
+    /// guard was not wrong about what it saw; it was looking at a machine with no
+    /// drives. Waiting for the real snapshot found a fourth offender in the first
+    /// run after the change.
+    const KNOWN_OVERFLOWING: [&str; 4] = ["accelerators", "memory", "ai", "disk"];
 
     /// No tab may paint text past the right edge of a default window.
     ///
@@ -863,21 +876,20 @@ mod overflow_tests {
                 continue;
             }
 
-            // Settle the tab's background loaders before measuring it.
+            // Settle the tab before measuring it — both halves.
             //
             // Four tabs fetch their contents off-thread and paint a spinner until
             // the data lands, so what this measures depends on whether the loader
             // won the race — and under the full parallel suite it sometimes does
             // and sometimes does not. That made this guard fail once and pass on
-            // rerun, which is the same instrument as no guard at all. Settling
-            // first makes the content deterministic; a tab that never settles is
+            // rerun, which is the same instrument as no guard at all.
+            //
+            // The loaders were once all this waited for, and that was not enough:
+            // the collector's warm-up snapshot is built from an empty `Sources`,
+            // so Accelerators was being measured on a machine that had no GPUs
+            // yet. `settle` waits for both, and a tab that never settles is
             // skipped rather than measured mid-flight.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while app.has_pending_load() && std::time::Instant::now() < deadline {
-                app.pump_background_loaders(&ctx);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            if app.has_pending_load() {
+            if !settle(&mut app, &ctx, Duration::from_secs(30)) {
                 still_loading.push(tab);
                 continue;
             }

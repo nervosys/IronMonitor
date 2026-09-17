@@ -8172,3 +8172,37 @@ correctly beats an absolute assembled from parts you have to enumerate.*
 **And the screenshot is not optional.** Attempt 3 passed its test, resized the
 window, and clipped a panel. The test measured what the tab painted, which was
 true, and said nothing about whether the user could see it.
+
+### The settle condition that was still too narrow, and the tab it was hiding
+
+The overflow guard waited for the background loaders before measuring each tab.
+That was the fix for a real flake — it had failed once and passed on rerun,
+which is the same instrument as no guard at all — and it was **still the wrong
+predicate**, for the third time in this codebase.
+
+It did not wait for the collector's first real snapshot. The warm-up generation
+is built from an empty `Sources`, so it describes no disks; the Disk tab was
+being measured **on a machine with no drives**, and painted nothing that could
+run past an edge. Waiting for both conditions found a fourth overflowing tab in
+the first run after the change:
+
+```
+disk @ 1400px wide: "Health" runs 17px past the edge
+disk @ 1400px wide: "✓ Healthy" runs 35px past the edge
+disk @ 800px wide: "183.3 GB" runs 18px past the edge
+```
+
+Same construct as the other three — `Layout::right_to_left` nested inside an
+advanced `horizontal`, inner layout unbounded by the outer one — so four tabs
+now share one root cause and one remedy, and the remedy is inlining, which is a
+visual decision rather than a bug fix.
+
+**The guard was never wrong about what it saw.** It reported truthfully on the
+screen it was given, and the screen it was given was of a machine this is not.
+That is the warm-up snapshot arriving for the third time: as `GPU:0` in
+`--frame`, as a window fitted to a GPU-less Overview, and now as a Disk tab with
+no disks. Each time it was caught by asking *what is this measurement of*, and
+each time the previous fix had named only the condition that had just bitten.
+
+*A settle condition is a claim about what the screen contains. "Something
+arrived" is not that claim.*
