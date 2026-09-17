@@ -8300,3 +8300,98 @@ NVMe drives and no sensors, or it is a local note wearing a test's clothes.
 
 Fixing the three tabs removed the problem rather than papering over it — there
 is nothing left in the list that depends on what hardware is present.
+
+### A fleet store on Iceberg, and the three things it cost to say yes to
+
+`fleet-store` is a new optional feature carrying an Apache Iceberg table of
+per-host, per-tick metrics. It is off by default and **not** in `full`. Three
+decisions in it are worth more than the code.
+
+**It raised the Rust floor from 1.89 to 1.94, deliberately.** `iceberg` 0.10.1
+declares `rust-version = "1.94"`. The manifest's own rule is that one value has
+to cover every feature combination, because a field meaning *"1.88, except…"* is
+the same defect as an entity declaring a provenance stronger than its row can
+carry. Applying that rule to a five-minor jump is exactly the trap the `vault`
+note warns about — a dependency's MSRV becoming the whole crate's — and it was
+taken rather than footnoted. The two escape hatches were real and were weighed:
+`iceberg` 0.8.0 has an MSRV of 1.88 and fits under the old floor, but pins the
+store to a January 2026 API; bare `parquet` needs only 1.85, but drops the
+manifests and snapshots that make an Iceberg table an Iceberg table. Neither
+was worth a version field nobody can trust.
+
+**The join key is not a hardware identifier, and that took thought.** Fleet
+analytics needs something stable to group a machine's rows by, and the board
+UUID, disk serial and NIC MAC are all right there. Every one of them is what the
+ontology calls an identifier rather than a description, and this session had
+already masked exactly those values in three examples. *Using one as a fleet key
+would undo that in the one place it matters most, because the rows are the thing
+that leaves the machine.* So `HostId` is 128 bits from the OS CSPRNG, generated
+once, and it is **rotatable** — which is the property a serial can never have
+and the reason a serial is an identifier. The costs are stated rather than
+hidden: reimaging loses the history, and a cloned disk image gives many machines
+one key. The second is the dangerous one, so the file records the hostname it
+was created under and `looks_cloned` reports the mismatch instead of silently
+merging two machines into one series.
+
+**A column was deleted rather than filled dishonestly.** The schema briefly had
+`cpu_frequency_mhz`. Frequency is per-core, and every aggregation available —
+first core, mean, max — asserts something the reading does not say. Field id 12
+is **retired, not reused**: Iceberg readers resolve by id, so giving 12 a new
+meaning would silently reinterpret any table that had carried the old column.
+
+### The nullability rule, carried into a column store
+
+Everything the collector *reads* is nullable; only `host_id`, `collected_at` and
+`generation` are required, and those three are produced rather than read. This
+is the crate's oldest rule arriving somewhere new, and a columnar store is where
+it is easiest to lose: zero-filling a column is the path of least resistance and
+the resulting table looks perfectly healthy while an absent GPU averages in as
+an idle one.
+
+Four distinctions are asserted, not commented:
+
+| Guard | What it stops |
+| --- | --- |
+| `every_measured_column_is_nullable` | a reading column declared required |
+| `an_idle_card_and_an_unread_card_are_different_rows` | `Some(0.0)` and `None` collapsing |
+| `an_unread_metric_is_null_in_the_batch_rather_than_zero` | `unwrap_or(0.0)` on the Arrow edge |
+| `a_measured_zero_is_not_turned_into_a_null` | over-correcting the line above |
+
+The last pair is the point: they fail in opposite directions, so fixing one by
+breaking the other does not pass. Checked against a deliberate break — making
+`gpu_utilization` required fails two guards by name.
+
+`no_hardware_identifier_reaches_a_row` gives every test card a UUID containing
+`deadbeef` and asserts no rendered row contains it. A guard that can only pass
+because the fixture is empty is not a guard.
+
+### Why not extend the existing store
+
+`src/tsdb` is a single-machine append-only bincode file, and **its rows have no
+host column at all** — every file is implicitly one machine. Answering "which
+card in which host ran hottest last week" means opening every file and decoding
+every record to reach four columns. That is the gap, and it is structural rather
+than a matter of tuning.
+
+### The policy question, which is not settled by code
+
+`src/consent.rs` says *"IronMonitor collects and transmits nothing"* on three
+`ironmon privacy` screens, guarded by `granting_every_scope_still_collects_nothing`
+— a tripwire built to force those screens to be rewritten alongside any real
+collector.
+
+**This module does not trip it, on the reading that the direction of the data is
+what the policy is about.** What `consent` forbids is IronMonitor gathering facts
+and sending them somewhere the *vendor* chose; it says so plainly — "There is no
+endpoint." This writes a machine's own metrics to a table the *operator*
+configured, which is the category `src/tsdb` and `src/prometheus` already occupy
+without tripping anything.
+
+That reading is defensible and it is not airtight. The sentence *"no code in
+this crate collects, aggregates or transmits telemetry"* is broader than the
+endpoint claim beneath it, and a reader who meets this module first is entitled
+to feel misled. **If `fleet-store` ships, that paragraph should be narrowed to
+say what it means: no vendor endpoint, no collection the operator did not
+configure.** It has deliberately not been edited here — it is a user-facing
+guarantee, and quietly rewording one to accommodate new code is how a guarantee
+becomes folklore.
