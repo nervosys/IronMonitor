@@ -1,0 +1,69 @@
+name: CodeQL
+
+# The `Default` ruleset on master requires CodeQL code scanning results, and
+# nothing produced any: `code-scanning/analyses` returned "no analysis found".
+# Every push therefore printed *"Waiting for Code Scanning results. Code Scanning
+# may not be configured for the target branch"*, and every merge to master landed
+# on organization-admin bypass rather than through the rules. A required check
+# that nobody can satisfy is not a safety net; it is a permanent bypass with
+# extra steps.
+#
+# **This is advanced setup rather than GitHub's default setup, because default
+# setup cannot scan this repository.** `PATCH code-scanning/default-setup`
+# rejects `rust`:
+#
+#   Invalid property /languages/1: `rust` is not a possible value. Must be one
+#   of: actions, c-cpp, csharp, go, java-kotlin, javascript-typescript, python,
+#   ruby, swift
+#
+# Note that `GET` on the same endpoint *reports* `languages: ["actions","rust"]`,
+# which is the set it detected rather than the set it supports. The read agrees
+# with what you want and the write tells the truth, so trust the write.
+#
+# `build-mode: none` for Rust: CodeQL analyses the sources directly rather than
+# observing a build, which avoids paying for a second full compile of this crate
+# on every push. `actions` is included because this repository has already had
+# one workflow defect worth catching — an unguarded `pull_request_target` job
+# that merged whichever pull request happened to be oldest.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly, so a newly published query finds this code without waiting for
+    # someone to push.
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
