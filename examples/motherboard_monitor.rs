@@ -4,6 +4,21 @@
 
 use ironmonlib::motherboard;
 
+/// Show that an identifier was read without printing the identifier.
+///
+/// A serial number or a board UUID names *this unit*; it does not describe the
+/// hardware. The ontology withholds both for that reason — "they identify a unit
+/// rather than describe it" — and an example that prints them in full undoes
+/// that the moment somebody pastes the output into an issue. Enough of the head
+/// is kept to confirm the field was populated and well-formed.
+fn mask_identifier(id: &str) -> String {
+    let visible: String = id.chars().take(4).collect();
+    if id.chars().count() <= 4 {
+        return "*".repeat(id.chars().count());
+    }
+    format!("{visible}… ({} chars, withheld)", id.chars().count())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== IronMonitor: Motherboard & System Information ===\n");
 
@@ -51,10 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Model:        {}", product);
             }
             if let Some(serial) = &info.serial_number {
-                println!("  Serial:       {}", serial);
+                println!("  Serial:       {}", mask_identifier(serial));
             }
             if let Some(uuid) = &info.uuid {
-                println!("  UUID:         {}", uuid);
+                println!("  UUID:         {}", mask_identifier(uuid));
             }
 
             println!("\n[MB] Motherboard:");
