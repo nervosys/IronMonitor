@@ -8201,8 +8201,31 @@ visual decision rather than a bug fix.
 screen it was given, and the screen it was given was of a machine this is not.
 That is the warm-up snapshot arriving for the third time: as `GPU:0` in
 `--frame`, as a window fitted to a GPU-less Overview, and now as a Disk tab with
-no disks. Each time it was caught by asking *what is this measurement of*, and
-each time the previous fix had named only the condition that had just bitten.
+no disks.
 
 *A settle condition is a claim about what the screen contains. "Something
 arrived" is not that claim.*
+
+**Correction, and it is the more useful half.** The paragraph above was written
+believing the snapshot settle *found* the Disk overflow. It did not. CI had been
+failing on exactly these four lines since `3cacf54`, on **all three platforms**,
+two commits before the settle change — and the local suite was green throughout,
+929 tests, every time it was run. The settle only made this machine agree with
+what CI had been saying all along.
+
+So the finding is not "a narrow settle condition hid a defect". It is:
+
+- **A local pass is not a result until CI has one too.** Two commits were
+  pushed, and the work reported as verified, on the strength of a green local
+  run against a branch that was already red. The suite was run; CI was not read.
+- The warm-up snapshot hid Disk *on this Windows box specifically*. The runners
+  enumerate drives fast enough that the tab had content either way, and their
+  drives report `Unknown` health where these report `✓ Healthy` — different
+  strings, different widths, same overflow.
+
+That is the fourth time in these sessions that local evidence was real,
+reproducible, and wrong about its scope, after the `--all-features` rlib errors,
+the `GET`/`PATCH` disagreement, and the loopback contention. The rule those
+produced — *reproducibility is evidence that something is happening, not
+evidence about what* — has a companion: **a green local suite is evidence about
+this machine.**
