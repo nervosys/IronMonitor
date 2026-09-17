@@ -1,24 +1,39 @@
-name: Auto-approve and merge Dependabot PRs
+name: Queue Dependabot PRs for auto-merge
 
-# Two faults were fixed here on 2026-09-14, both found when an unrelated PR
-# opened by a human triggered this workflow and it tried to merge somebody
-# else's.
+# This workflow used to approve Dependabot's pull requests and then merge them.
+# It never once succeeded — every run in the history failed — and the approval
+# half failed for a reason no amount of workflow editing can fix.
 #
-# 1. **`auto-merge` had no actor guard.** Only `auto-approve` checked
-#    `github.actor`, so the merge job ran on *every* `pull_request_target`
-#    event — including a PR from an outside contributor's fork.
+# **The approval step was impossible.** `hmarr/auto-approve-action` died with
+# `GitHub Actions is not permitted to approve pull requests`, which is an
+# *organization* policy rather than a repository setting. It cannot be changed
+# from here, and changing it would apply to every repository in the org. The step
+# is deleted rather than left to fail forever: a job that always returns the same
+# answer carries no information, which is the argument this project already
+# applies to a permanently red pipeline.
 #
-# 2. **It acted on a different PR than the one that triggered it.** The job
-#    queried `gh pr list --author dependabot[bot]` and took `.[0]`, so opening
-#    any PR armed a squash-merge on whichever dependabot PR happened to be
-#    oldest. In the observed case that was a stale crossterm bump already
-#    superseded on master; had the setting allowed it, the next candidate was an
-#    eframe bump that could not compile. It now merges
-#    `github.event.pull_request.number` — the PR this event is actually about.
+# What remains is the half that works: turn on auto-merge for the Dependabot PR
+# that triggered this run, so it merges itself once its requirements are met
+# instead of waiting for someone to come back and press the button.
 #
-# Nothing stopped it but a repository setting: every run failed with
-# `GraphQL: Auto merge is not allowed for this repository`. Turning that setting
-# on would have made the bug live, which is the wrong order for a safety net.
+# **Two of those requirements are currently unsatisfiable**, so expect a queued
+# PR to sit rather than merge. Both are repository configuration, not code:
+#
+#  1. The `Default` ruleset requires one approving review. With Actions barred
+#     from approving, that has to come from a person.
+#  2. The same ruleset requires CodeQL code scanning results, and this repository
+#     has no CodeQL workflow — `code-scanning/analyses` returns "no analysis
+#     found". That is why every push prints *"Waiting for Code Scanning results.
+#     Code Scanning may not be configured for the target branch"*, and why merges
+#     to master have been landing on organization-admin bypass rather than
+#     through the rules.
+#
+# Deliberately not done here: adding Dependabot as a ruleset bypass actor. That
+# would make these merges unattended, and the evidence is against it — of the six
+# Dependabot PRs opened on 2026-09-16, not one was mergeable as written. One
+# could not compile, one conflicted and described a tree from January, and four
+# were superseded by later versions. CI would have caught the first. It would not
+# have caught the other five being pointless.
 
 on:
   pull_request_target:
@@ -27,36 +42,28 @@ on:
       - synchronize
       - reopened
 
-# Least privilege: this workflow approves and merges, and does nothing else.
+# Least privilege: this workflow queues a merge and does nothing else.
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  auto-approve:
-    # Guarded on the PR's author rather than `github.actor`, because on a
-    # `synchronize` event the actor is whoever pushed, which need not be the
-    # author.
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Auto-approve Dependabot PR
-        uses: hmarr/auto-approve-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
   auto-merge:
-    needs: auto-approve
-    # Repeated deliberately. `needs` orders the jobs; it does not inherit the
-    # condition, and a skipped dependency would otherwise let this run.
+    # Guarded on the PR's author, not `github.actor`: on a `synchronize` event
+    # the actor is whoever pushed, which need not be the author.
+    #
+    # An earlier version had no guard on the merge job at all, and queried
+    # `gh pr list --author dependabot[bot]` for `.[0]` as its target — so any
+    # pull request, from anyone including an outside fork, armed a squash-merge
+    # on whichever Dependabot PR happened to be oldest. This merges the PR the
+    # event is actually about, and only when Dependabot opened it.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:
-      # Enable auto-merge on *this* pull request. No checkout: nothing here
-      # reads the repository, and `pull_request_target` runs with write
-      # permissions, so not fetching the PR's own code is the point.
+      # No checkout: nothing here reads the repository, and `pull_request_target`
+      # runs with write permissions against the base branch, so not fetching the
+      # pull request's own code is the point rather than an omission.
       - name: Enable auto-merge
         run: gh pr merge --auto --squash "$PR_NUMBER"
         env:
