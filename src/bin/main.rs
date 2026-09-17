@@ -4088,14 +4088,6 @@ fn handle_gui_script_command(source: &str) -> Result<(), Box<dyn std::error::Err
     std::process::exit(1);
 }
 
-/// Render one GUI tab headlessly and print the text it painted.
-///
-/// The GUI was the last surface with no non-visual representation. Reading the
-/// painted galleys rather than capturing pixels also preserves the distinction a
-/// screenshot destroys: text that was never emitted looks different here from text
-/// that was emitted in the panel colour, which is the bug that made the Profiles
-/// tab appear dead while it rendered all nineteen of its groups.
-#[cfg(feature = "gui")]
 /// `ironmon ai models` — what the local IronVault vault holds.
 ///
 /// Read-only by construction: IronMonitor never unlocks a vault and never asks for a
@@ -4368,6 +4360,14 @@ fn print_tune_cycle(cycle: &ironmonlib::tuning::serve::Cycle) {
     println!();
 }
 
+/// Render one GUI tab headlessly and print the text it painted.
+///
+/// The GUI was the last surface with no non-visual representation. Reading the
+/// painted galleys rather than capturing pixels also preserves the distinction a
+/// screenshot destroys: text that was never emitted looks different here from text
+/// that was emitted in the panel colour, which is the bug that made the Profiles
+/// tab appear dead while it rendered all nineteen of its groups.
+///
 /// Gated for the same reason its sibling `handle_gui_script_command` is: it
 /// names `ironmonlib::gui`, which does not exist without the `gui` feature. Its
 /// only caller is already behind `#[cfg(feature = "gui")]`, so the omission
