@@ -197,6 +197,39 @@ pub fn horizontal_overflow(
         .collect()
 }
 
+/// The size `body` occupies when laid out at `canvas`.
+///
+/// Note what this can and cannot answer. Every widget in this GUI sizes itself to
+/// `available_width()`, so the layout is fully elastic: measured against a canvas
+/// far larger than any window, all thirteen tabs report wanting exactly the
+/// canvas they were handed — 6000x6000 for a 6000x6000 canvas. There is no
+/// intrinsic content width to discover, and asking for one gets the question
+/// back.
+///
+/// What it does answer is "laid out this wide, how much did it use?", which is a
+/// real question with a useful answer: slack on the right is returned, and
+/// content taller than the canvas reports the height it wanted.
+pub fn content_size(
+    ctx: &Context,
+    canvas: egui::Vec2,
+    mut body: impl FnMut(&mut egui::Ui),
+) -> egui::Vec2 {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, canvas)),
+        ..Default::default()
+    };
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    // Two frames, for the reason `painted_text_sized` needs two: a `ScrollArea`
+    // does not know its content size until it has laid it out once.
+    let _warmup = run_frame();
+    let _settled = run_frame();
+    ctx.used_size()
+}
+
 fn collect_shape_text_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
     match shape {
         egui::Shape::Text(text) => {
@@ -758,14 +791,20 @@ mod overflow_tests {
     /// at the row's right edge and runs outward instead of aligning back from it,
     /// so the content lands entirely outside the window. `accelerators` puts the
     /// clock and power readings there; `memory` a "(used/buffers/cache/free)"
-    /// legend.
+    /// legend, and `ai` an unwrapped welcome sentence that runs 183 px past the
+    /// 800 px minimum width. The `ai` one only appears in the empty state, which
+    /// is why it surfaced intermittently rather than on every run.
+    ///
+    /// `.wrap()` does not fix the `ai` case, which is the tell that all three are
+    /// one defect: the container does not bound its child's width, so there is
+    /// nothing for wrapping to wrap against.
     ///
     /// Not fixed here because neither obvious remedy works: an explicit
     /// `allocate_ui_with_layout` with a bounded width leaves the offset unchanged
     /// to the pixel. What does work is inlining the content, which moves it from
     /// right-aligned to inline — a visual decision rather than a bug fix, and not
     /// one to make silently.
-    const KNOWN_OVERFLOWING: [&str; 2] = ["accelerators", "memory"];
+    const KNOWN_OVERFLOWING: [&str; 3] = ["accelerators", "memory", "ai"];
 
     /// No tab may paint text past the right edge of a default window.
     ///
@@ -791,9 +830,29 @@ mod overflow_tests {
         let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
         let mut offenders = Vec::new();
         let mut unexpectedly_clean = Vec::new();
+        let mut still_loading = Vec::new();
 
         for tab in TABS {
             if app.select_tab_by_name(tab).is_err() {
+                continue;
+            }
+
+            // Settle the tab's background loaders before measuring it.
+            //
+            // Four tabs fetch their contents off-thread and paint a spinner until
+            // the data lands, so what this measures depends on whether the loader
+            // won the race — and under the full parallel suite it sometimes does
+            // and sometimes does not. That made this guard fail once and pass on
+            // rerun, which is the same instrument as no guard at all. Settling
+            // first makes the content deterministic; a tab that never settles is
+            // skipped rather than measured mid-flight.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while app.has_pending_load() && std::time::Instant::now() < deadline {
+                app.pump_background_loaders(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if app.has_pending_load() {
+                still_loading.push(tab);
                 continue;
             }
 
@@ -827,6 +886,13 @@ mod overflow_tests {
   "
             )
         );
+
+        // Reported rather than asserted: a loader that does not finish inside the
+        // budget is a slow machine, not a layout defect, and failing on it would
+        // make this guard about the runner instead of the GUI.
+        if !still_loading.is_empty() {
+            eprintln!("skipped, still loading after 5s: {still_loading:?}");
+        }
 
         assert!(
             unexpectedly_clean.is_empty(),

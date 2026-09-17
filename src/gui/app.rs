@@ -255,6 +255,12 @@ pub struct IronMonitorApp {
     // has changed since last frame.
     applied_color_theme: Option<ColorTheme>,
 
+    /// Whether the one-shot window autofit has run.
+    ///
+    /// Once, not every frame: the window belongs to whoever is using it, and a
+    /// resize on each tick would fight them the moment they dragged an edge.
+    autofit_done: bool,
+
     // Cache for the Processes tab — avoid cloning + sorting the whole
     // process_list on every paint (10 FPS × hundreds of processes is enough
     // to feel laggy).
@@ -903,6 +909,7 @@ impl IronMonitorApp {
             profile_load_attempted: false,
             profile_sync_attempted: false,
             applied_color_theme: None,
+            autofit_done: false,
             process_list_version: 0,
             processes_view_cache: Vec::new(),
             processes_view_key: None,
@@ -1686,8 +1693,88 @@ impl IronMonitorApp {
     }
 }
 
+impl IronMonitorApp {
+    /// Size the window once to fit the Overview tab, bounded by the monitor.
+    ///
+    /// The startup size was a hardcoded `[1400, 900]` — wider and taller than a
+    /// 1366x768 laptop panel, so the window opened with its edges off-screen on
+    /// exactly the machines least able to spare the room. A `[800, 600]` minimum
+    /// does not help: a minimum is a floor, not a ceiling.
+    ///
+    /// **Overview by name, not "whichever tab is open".** It is the tab that
+    /// opens, so reading the first laid-out frame gives the same answer today —
+    /// and would quietly stop doing so the moment startup restored the last-used
+    /// tab instead. Naming it costs one `select_tab_by_name` and removes the
+    /// coincidence.
+    ///
+    /// **Fitting all thirteen tabs was tried and does not mean anything.** Every
+    /// widget here sizes to `available_width()`, so the layout is fully elastic:
+    /// measured against a 6000x6000 canvas, all thirteen report wanting exactly
+    /// 6000x6000. There is no intrinsic content width to fit to, and taking that
+    /// answer literally opens the window at 92% of the monitor — 3164x1324 on the
+    /// display this was written against. The useful question is not "how wide do
+    /// you want to be" but "laid out this wide, how much did you use", which is
+    /// what this asks.
+    ///
+    /// Once, and then never again: the window belongs to whoever is using it, and
+    /// resizing on a tab change or on a value getting wider would move it under
+    /// them.
+    ///
+    /// **This does not fix text painted outside the window, and cannot.** The two
+    /// tabs pinned in `headless::overflow_tests` overrun by a *constant* amount —
+    /// 44 px on `accelerators`, 117 px on `memory` — measured identically at 800,
+    /// 1400, 2000, 2600 and 3200 px wide. Those widgets paint outside their own
+    /// allocated rectangle rather than wanting more room, so no window size
+    /// contains them. Growing the window looks like the right instrument and is
+    /// not.
+    fn autofit_window_once(&mut self, ctx: &egui::Context) {
+        if self.autofit_done {
+            return;
+        }
+        self.autofit_done = true;
+
+        const MIN: egui::Vec2 = egui::Vec2::new(800.0, 600.0);
+        // Leave room for a title bar and a taskbar rather than filling the panel
+        // exactly, which would tuck the bottom edge under one.
+        const SCREEN_FRACTION: f32 = 0.92;
+        // The width the layout is measured against. Elastic content gives an
+        // answer relative to what it is offered, so the anchor has to be a stated
+        // number rather than whatever the window happens to be — otherwise the
+        // result depends on the size it is trying to replace. This is the size
+        // `ViewportBuilder` asks for, so the fit is deterministic.
+        const MEASURE_AT: egui::Vec2 = egui::Vec2::new(1400.0, 4000.0);
+
+        let probe = crate::gui::headless::themed_context();
+        let restore = self.current_tab;
+        if self.select_tab_by_name("overview").is_err() {
+            return;
+        }
+        let wanted =
+            crate::gui::headless::content_size(&probe, MEASURE_AT, |ui| self.draw_current_tab(ui));
+        self.current_tab = restore;
+
+        if wanted.x < 1.0 || wanted.y < 1.0 {
+            return;
+        }
+
+        let ceiling = ctx
+            .input(|i| i.viewport().monitor_size)
+            .map(|m| m * SCREEN_FRACTION)
+            .unwrap_or(egui::Vec2::splat(f32::INFINITY));
+
+        let target = egui::Vec2::new(
+            wanted.x.clamp(MIN.x.min(ceiling.x), ceiling.x),
+            wanted.y.clamp(MIN.y.min(ceiling.y), ceiling.y),
+        );
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target));
+    }
+}
+
 impl eframe::App for IronMonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.autofit_window_once(ctx);
+
         // Apply theme only when it actually changes. `apply_*_theme` calls
         // `ctx.set_fonts()` which rebuilds the font atlas — doing that every
         // frame causes ~100ms paint stalls and ruins tab-switch latency.
