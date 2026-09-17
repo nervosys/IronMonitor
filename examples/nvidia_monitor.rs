@@ -9,19 +9,27 @@ use ironmonlib::gpu::traits::*;
 use ironmonlib::gpu::nvidia_new;
 
 #[cfg(not(feature = "nvidia"))]
+fn main() {
+    eprintln!("This example requires the 'nvidia' feature");
+    eprintln!("Run with: cargo run --example nvidia_monitor --features nvidia");
+    std::process::exit(1);
+}
+
 /// See `motherboard_monitor.rs`: a GPU UUID identifies this card, not the model.
+///
+/// Gated with the `main` that calls it. Inserted between the
+/// `#[cfg(not(feature = "nvidia"))]` attribute and its own `fn main` the first
+/// time, which silently re-pointed that attribute at this function and left two
+/// ungated `main`s — the same shape as the orphaned `#[cfg(feature = "gui")]`
+/// fixed in `src/bin/main.rs` earlier. An attribute belongs to whatever item
+/// comes next, and "next" is easy to get wrong from a script.
+#[cfg(feature = "nvidia")]
 fn mask_identifier(id: &str) -> String {
     let visible: String = id.chars().take(4).collect();
     if id.chars().count() <= 4 {
         return "*".repeat(id.chars().count());
     }
     format!("{visible}… ({} chars, withheld)", id.chars().count())
-}
-
-fn main() {
-    eprintln!("This example requires the 'nvidia' feature");
-    eprintln!("Run with: cargo run --example nvidia_monitor --features nvidia");
-    std::process::exit(1);
 }
 
 #[cfg(feature = "nvidia")]
