@@ -150,6 +150,73 @@ pub fn painted_blob(ctx: &Context, body: impl FnMut(&mut egui::Ui)) -> String {
     painted_text(ctx, body).join("\n")
 }
 
+/// Every painted string with the rectangle it occupies, at an explicit viewport.
+///
+/// `painted_text` answers "was this drawn"; this answers "drawn *where*". The
+/// distinction matters because the two Dewey failures were different: one tab
+/// painted nothing, and another painted everything and clipped it off the right
+/// edge. Reading text alone catches the first and is blind to the second.
+pub fn painted_text_rects_sized(
+    ctx: &Context,
+    size: egui::Vec2,
+    mut body: impl FnMut(&mut egui::Ui),
+) -> Vec<(String, egui::Rect)> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    let _warmup = run_frame();
+    let settled = run_frame();
+
+    let mut out = Vec::new();
+    for clipped in &settled.shapes {
+        collect_shape_text_rects(&clipped.shape, &mut out);
+    }
+    out
+}
+
+/// Painted strings whose box extends past `size` horizontally.
+///
+/// Vertical overrun is not overflow here: every tab body is inside a
+/// `ScrollArea`, so content taller than the viewport is reachable. Width is not
+/// scrollable in this layout, so text past the right edge is simply unreadable.
+pub fn horizontal_overflow(
+    ctx: &Context,
+    size: egui::Vec2,
+    body: impl FnMut(&mut egui::Ui),
+) -> Vec<(String, f32)> {
+    painted_text_rects_sized(ctx, size, body)
+        .into_iter()
+        .filter(|(text, rect)| !text.trim().is_empty() && rect.max.x > size.x)
+        .map(|(text, rect)| (text, rect.max.x - size.x))
+        .collect()
+}
+
+fn collect_shape_text_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+    match shape {
+        egui::Shape::Text(text) => {
+            let s = text.galley.text();
+            if !s.is_empty() {
+                out.push((
+                    s.to_string(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                ));
+            }
+        }
+        egui::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_shape_text_rects(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_shape_text(shape: &egui::Shape, out: &mut Vec<String>) {
     match shape {
         egui::Shape::Text(text) => {
@@ -659,5 +726,111 @@ mod script_tests {
         let result = run_script(&mut app, &ctx, &steps);
         assert_eq!(result.captures.len(), 1);
         assert!(result.captures[0].contains("Hardware Profile Inspector"));
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    /// Tabs in the order `select_tab_by_name` accepts them.
+    const TABS: [&str; 13] = [
+        "overview",
+        "cpu",
+        "accelerators",
+        "memory",
+        "disk",
+        "processes",
+        "network",
+        "tools",
+        "connections",
+        "system",
+        "peripherals",
+        "profiles",
+        "ai",
+    ];
+
+    /// Tabs that still paint past the right edge, pinned so the list cannot grow
+    /// quietly and cannot shrink without someone noticing.
+    ///
+    /// Both are the same construct: a `right_to_left` layout nested inside an
+    /// already-advanced `horizontal`. In this egui version that starts its cursor
+    /// at the row's right edge and runs outward instead of aligning back from it,
+    /// so the content lands entirely outside the window. `accelerators` puts the
+    /// clock and power readings there; `memory` a "(used/buffers/cache/free)"
+    /// legend.
+    ///
+    /// Not fixed here because neither obvious remedy works: an explicit
+    /// `allocate_ui_with_layout` with a bounded width leaves the offset unchanged
+    /// to the pixel. What does work is inlining the content, which moves it from
+    /// right-aligned to inline — a visual decision rather than a bug fix, and not
+    /// one to make silently.
+    const KNOWN_OVERFLOWING: [&str; 2] = ["accelerators", "memory"];
+
+    /// No tab may paint text past the right edge of a default window.
+    ///
+    /// The GUI had two distinct failure modes during the Dewey port and
+    /// `painted_text` sees only one: a tab that drew nothing, and a tab that drew
+    /// everything and clipped it off the right edge. Reading galley *text* catches
+    /// the first and is blind to the second. This reads their rectangles.
+    ///
+    /// It caught a real one on Overview: the chat bar reserved a hardcoded 190 px
+    /// for a Send button plus a 172 px status label, so the row ran 29 px past the
+    /// window at every width. The text field absorbed the slack, which is why
+    /// widening the window moved the overrun rather than removing it, and why
+    /// everything else inside that tab's `ScrollArea` inherited the wider content
+    /// box.
+    ///
+    /// Widths are the shipped default (`with_inner_size([1400, 900])`) and the
+    /// shipped minimum (`with_min_inner_size([800, 600])`). Height is not checked:
+    /// every tab body sits in a vertical `ScrollArea`, so tall content is
+    /// reachable, while width in this layout is not scrollable.
+    #[test]
+    fn no_tab_paints_text_past_the_right_edge() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        let mut offenders = Vec::new();
+        let mut unexpectedly_clean = Vec::new();
+
+        for tab in TABS {
+            if app.select_tab_by_name(tab).is_err() {
+                continue;
+            }
+
+            let pinned = KNOWN_OVERFLOWING.contains(&tab);
+            let mut any = false;
+
+            for width in [1400.0_f32, 800.0] {
+                let size = egui::Vec2::new(width, 900.0);
+                for (text, past) in horizontal_overflow(&ctx, size, |ui| app.draw_current_tab(ui)) {
+                    any = true;
+                    if !pinned {
+                        offenders.push(format!(
+                            "{tab} @ {width:.0}px wide: {text:?} runs {past:.0}px past the edge"
+                        ));
+                    }
+                }
+            }
+
+            // A pinned tab that has started fitting means the pin is now a lie.
+            if pinned && !any {
+                unexpectedly_clean.push(tab);
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "text painted outside the window, which a reader sees as clipped or missing:
+  {}",
+            offenders.join(
+                "
+  "
+            )
+        );
+
+        assert!(
+            unexpectedly_clean.is_empty(),
+            "pinned as overflowing but no longer overflowing: {unexpectedly_clean:?}. Remove them from KNOWN_OVERFLOWING so the guard covers them."
+        );
     }
 }

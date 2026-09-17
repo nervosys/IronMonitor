@@ -2154,8 +2154,24 @@ impl IronMonitorApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Ask").color(CyberColors::CYAN).strong());
 
-                    // Leave room for the button and status text on the right.
-                    let field_width = (ui.available_width() - 190.0).max(160.0);
+                    // Measure the button instead of reserving a guess for it.
+                    //
+                    // This reserved a hardcoded 190 px for the button *and* a
+                    // status label, and the label alone is 172 px, so the row ran
+                    // past the window at every width — the field absorbed the
+                    // slack, so a wider window moved the overrun rather than
+                    // removing it, and everything else in the tab's `ScrollArea`
+                    // inherited the wider content box. egui already knows how wide
+                    // "Send" is; ask it.
+                    let send_galley = ui.painter().layout_no_wrap(
+                        "Send".to_owned(),
+                        egui::TextStyle::Button.resolve(ui.style()),
+                        egui::Color32::PLACEHOLDER,
+                    );
+                    let send_width = send_galley.size().x + ui.spacing().button_padding.x * 2.0;
+                    let field_width =
+                        (ui.available_width() - send_width - ui.spacing().item_spacing.x).max(80.0);
+
                     let response = ui.add_sized(
                         [field_width, 22.0],
                         egui::TextEdit::singleline(&mut self.agent_query)
@@ -2175,20 +2191,32 @@ impl IronMonitorApp {
                     {
                         submit = true;
                     }
+                });
 
-                    if self.agent_is_processing {
+                // The status goes on its own line rather than competing with the
+                // input for the same row. It is a hint about the backend, not part
+                // of the control, and a row that has to fit a variable-length
+                // sentence beside a text field is a row that overflows the first
+                // time the sentence changes.
+                if self.agent_is_processing {
+                    ui.horizontal(|ui| {
                         ui.spinner();
-                    } else if !can_answer {
-                        // Say which condition is unmet rather than "unavailable":
-                        // the backend may be perfectly reachable and simply have no
-                        // model chosen yet.
                         ui.label(
-                            RichText::new("no model selected — see the AI tab")
+                            RichText::new("thinking…")
                                 .small()
                                 .color(CyberColors::TEXT_SECONDARY),
                         );
-                    }
-                });
+                    });
+                } else if !can_answer {
+                    // Say which condition is unmet rather than "unavailable": the
+                    // backend may be perfectly reachable and simply have no model
+                    // chosen yet.
+                    ui.label(
+                        RichText::new("no model selected — see the AI tab")
+                            .small()
+                            .color(CyberColors::TEXT_SECONDARY),
+                    );
+                }
 
                 // Most recent exchange, so an answer is visible without leaving the
                 // tab. The full transcript stays in the AI tab.
