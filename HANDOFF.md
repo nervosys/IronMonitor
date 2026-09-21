@@ -8139,7 +8139,7 @@ puts the fit inside `update` rather than in `gui::run`, and it is why a constant
 looked attractive for a while.
 
 **3. A constant cannot be right, because the height is not a property of the
-program.** The Overview grows a panel per accelerator card. It paints 899.5 px
+program.** The Overview grows a panel per accelerator card. It paints 917.5 px
 on this three-GPU desktop and less on a machine with none — so a measured
 constant is correct on exactly one machine, and the test guarding it fails on
 every CI runner. *Fitting to content means fitting at runtime; there is no way

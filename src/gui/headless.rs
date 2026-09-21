@@ -1071,13 +1071,17 @@ mod overview_extent {
     /// machine with no accelerators at all. A freshly constructed app has applied
     /// no snapshot yet, so it is in exactly that state, and the fit must decline.
     ///
-    /// Worth recording, because it is the opposite of what was expected: the
-    /// loaded Overview measures **shorter** than the unloaded one, 899.5 px
-    /// against 918.5. Waiting was still right — the unloaded number is not a
-    /// smaller version of the real answer, it is a different tab — but the reason
-    /// it is shorter has not been established. The likeliest explanation is that
-    /// a placeholder is taller than the content that replaces it, and that is a
-    /// guess.
+    /// **An earlier note here has been withdrawn.** It recorded, as an
+    /// unexplained curiosity, that the loaded Overview measured *shorter* than
+    /// the unloaded one — 899.5 px against 918.5 — and guessed at a placeholder
+    /// taller than its content. Both numbers came from the galley reader this
+    /// harness used before it was corrected to measure painted ink. Measured
+    /// properly the settled Overview is 917.5 px, which is the unloaded figure
+    /// to within a pixel, and there is no curiosity to explain.
+    ///
+    /// Waiting is still right, for the reason it always was: the warm-up
+    /// snapshot describes no GPUs by construction, so a tab measured before it
+    /// lands is a different tab. That argument never depended on the numbers.
     #[test]
     fn the_fit_waits_for_the_overview_to_finish_loading() {
         let ctx = themed_context();

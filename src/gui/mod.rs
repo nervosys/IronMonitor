@@ -67,7 +67,7 @@ pub fn run() -> Result<(), eframe::Error> {
     //
     // **The fitted height cannot be a constant, because it is not a property of
     // the program.** The Overview grows a panel per accelerator card, so it paints
-    // 899.5 px tall on this three-GPU desktop and less on a machine with none. A
+    // 917.5 px tall on this three-GPU desktop and less on a machine with none. A
     // number baked in here would be right on exactly one machine.
     //
     // It cannot be measured here either, which is the reason the runtime fit lives
