@@ -117,8 +117,16 @@ fn print_device_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Erro
     // Clocks
     println!("\n🔄 Clock Frequencies:");
     let clocks = device.clocks()?;
-    println!("  Graphics Clock: {} MHz", clocks.graphics);
-    println!("  Memory Clock:   {} MHz", clocks.memory);
+    // These print a reason rather than a number when the driver did not
+    // report one. They used to print `0 MHz`, which reads as a measurement.
+    match clocks.graphics {
+        Some(mhz) => println!("  Graphics Clock: {} MHz", mhz),
+        None => println!("  Graphics Clock: unavailable — not reported by the driver"),
+    }
+    match clocks.memory {
+        Some(mhz) => println!("  Memory Clock:   {} MHz", mhz),
+        None => println!("  Memory Clock:   unavailable — not reported by the driver"),
+    }
     if let Some(sm) = clocks.sm {
         println!("  SM Clock:       {} MHz", sm);
     }
@@ -129,8 +137,14 @@ fn print_device_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Erro
     // Utilization
     println!("\n[INFO] Utilization:");
     let util = device.utilization()?;
-    println!("  GPU:            {:.1}%", util.gpu);
-    println!("  Memory:         {:.1}%", util.memory);
+    match util.gpu {
+        Some(pct) => println!("  GPU:            {:.1}%", pct),
+        None => println!("  GPU:            unavailable — not reported by the driver"),
+    }
+    match util.memory {
+        Some(pct) => println!("  Memory:         {:.1}%", pct),
+        None => println!("  Memory:         unavailable — not reported by the driver"),
+    }
     if let Some(enc) = util.encoder {
         println!("  Encoder:        {:.1}%", enc);
     }
@@ -141,19 +155,26 @@ fn print_device_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Erro
     // Memory
     println!("\n💾 Memory:");
     let mem = device.memory()?;
-    println!(
-        "  Total:          {} GB",
-        mem.total as f64 / 1024.0 / 1024.0 / 1024.0
-    );
-    println!(
-        "  Used:           {} GB ({:.1}%)",
-        mem.used as f64 / 1024.0 / 1024.0 / 1024.0,
-        mem.utilization_percent()
-    );
-    println!(
-        "  Free:           {} GB",
-        mem.free as f64 / 1024.0 / 1024.0 / 1024.0
-    );
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    match mem.total {
+        Some(bytes) => println!("  Total:          {:.2} GB", bytes as f64 / GIB),
+        None => println!("  Total:          unavailable — not reported by the driver"),
+    }
+    match (mem.used, mem.utilization_percent()) {
+        (Some(bytes), Some(pct)) => {
+            println!(
+                "  Used:           {:.2} GB ({:.1}%)",
+                bytes as f64 / GIB,
+                pct
+            )
+        }
+        (Some(bytes), None) => println!("  Used:           {:.2} GB", bytes as f64 / GIB),
+        (None, _) => println!("  Used:           unavailable — not reported by the driver"),
+    }
+    match mem.free {
+        Some(bytes) => println!("  Free:           {:.2} GB", bytes as f64 / GIB),
+        None => println!("  Free:           unavailable — not reported by the driver"),
+    }
     if let Some(bar1_total) = mem.bar1_total {
         println!(
             "  BAR1 Total:     {} MB",

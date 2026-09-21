@@ -38,15 +38,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Ok(util) = device.utilization() {
-            println!("  GPU Utilization: {:.1}%", util.gpu);
+            // Printed `0.0%` on a machine where the sysfs read failed, which is
+            // the reading a capacity planner acts on and nobody took.
+            match util.gpu {
+                Some(pct) => println!("  GPU Utilization: {:.1}%", pct),
+                None => println!("  GPU Utilization: unavailable - gpu_busy_percent not readable"),
+            }
         }
 
         if let Ok(mem) = device.memory() {
-            println!(
-                "  VRAM: {} MB / {} MB",
-                mem.used / (1024 * 1024),
-                mem.total / (1024 * 1024)
-            );
+            match (mem.used, mem.total) {
+                (Some(used), Some(total)) => println!(
+                    "  VRAM: {} MB / {} MB",
+                    used / (1024 * 1024),
+                    total / (1024 * 1024)
+                ),
+                _ => println!("  VRAM: unavailable - mem_info_vram_* not readable"),
+            }
         }
 
         println!();

@@ -67,17 +67,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Ok(clocks) = device.clocks() {
-            if clocks.graphics > 0 {
-                println!("  Clock: {} MHz", clocks.graphics);
+            // `if clocks.graphics > 0` until the type could say "not read".
+            // That guard was treating a fabricated zero as a sentinel, which
+            // worked and also silently hid a genuinely idle card.
+            if let Some(mhz) = clocks.graphics {
+                println!("  Clock: {} MHz", mhz);
             }
         }
 
         if let Ok(mem) = device.memory() {
-            if mem.total > 0 {
+            if let (Some(used), Some(total)) = (mem.used, mem.total) {
                 println!(
                     "  Memory: {} MB / {} MB",
-                    mem.used / (1024 * 1024),
-                    mem.total / (1024 * 1024)
+                    used / (1024 * 1024),
+                    total / (1024 * 1024)
                 );
             }
         }

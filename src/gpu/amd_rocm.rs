@@ -271,8 +271,10 @@ impl Device for AmdGpu {
     fn clocks(&self) -> Result<Clocks, Error> {
         // Read clock frequencies from sysfs
         // AMD exposes current frequencies via pp_dpm_sclk (graphics) and pp_dpm_mclk (memory)
-        let graphics = self.read_current_clock("pp_dpm_sclk").unwrap_or(0);
-        let memory = self.read_current_clock("pp_dpm_mclk").unwrap_or(0);
+        // A failed sysfs read is carried as absence. It used to become `0`,
+        // which reports a running card as clocked at nothing.
+        let graphics = self.read_current_clock("pp_dpm_sclk");
+        let memory = self.read_current_clock("pp_dpm_mclk");
 
         Ok(Clocks {
             graphics,
@@ -285,12 +287,12 @@ impl Device for AmdGpu {
         // Read GPU utilization from gpu_busy_percent
         let gpu = self
             .read_sysfs_string("gpu_busy_percent")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0);
+            .and_then(|s| s.parse::<f32>().ok());
 
-        // Memory utilization not directly available via sysfs
-        // Would need to calculate from memory bandwidth counters
-        let memory = 0.0;
+        // Memory utilization is not exposed by sysfs; it would have to be
+        // derived from bandwidth counters. `0.0` claimed the memory controller
+        // was idle, which is a measurement nobody took.
+        let memory = None;
 
         Ok(Utilization {
             gpu,
@@ -303,9 +305,14 @@ impl Device for AmdGpu {
     }
     fn memory(&self) -> Result<Memory, Error> {
         // Read VRAM info from mem_info_vram_* files
-        let total = self.read_sysfs_u64("mem_info_vram_total").unwrap_or(0);
-        let used = self.read_sysfs_u64("mem_info_vram_used").unwrap_or(0);
-        let free = total.saturating_sub(used);
+        let total = self.read_sysfs_u64("mem_info_vram_total");
+        let used = self.read_sysfs_u64("mem_info_vram_used");
+        // Derived only when both operands exist. A GPU reporting 0 bytes of
+        // memory is not a plausible reading; it is the absence of one.
+        let free = match (total, used) {
+            (Some(t), Some(u)) => Some(t.saturating_sub(u)),
+            _ => None,
+        };
 
         Ok(Memory {
             total,

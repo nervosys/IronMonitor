@@ -191,44 +191,50 @@ fn print_gpu_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Error>>
     }
 
     // Clocks
+    //
+    // These sections were guarded by `> 0` because the reader could not say a
+    // value was unread and wrote zeros instead. The guard worked as a sentinel
+    // and cost something real: a card genuinely idling at 0 MHz, or a GPU
+    // genuinely at 0% utilisation, was hidden from this output entirely. With
+    // absence expressible, the check is `is_some` and a true zero prints.
     if let Ok(clocks) = device.clocks() {
-        if clocks.graphics > 0 || clocks.memory > 0 {
+        if clocks.graphics.is_some() || clocks.memory.is_some() {
             println!("\n🔄 Clocks:");
-            if clocks.graphics > 0 {
-                println!("  GPU:     {} MHz", clocks.graphics);
+            if let Some(mhz) = clocks.graphics {
+                println!("  GPU:     {} MHz", mhz);
             }
-            if clocks.memory > 0 {
-                println!("  Memory:  {} MHz", clocks.memory);
+            if let Some(mhz) = clocks.memory {
+                println!("  Memory:  {} MHz", mhz);
             }
         }
     }
 
     // Utilization
     if let Ok(util) = device.utilization() {
-        if util.gpu > 0.0 || util.memory > 0.0 {
+        if util.gpu.is_some() || util.memory.is_some() {
             println!("\n📈 Utilization:");
-            if util.gpu > 0.0 {
-                println!("  GPU:     {:.1}%", util.gpu);
+            if let Some(pct) = util.gpu {
+                println!("  GPU:     {:.1}%", pct);
             }
-            if util.memory > 0.0 {
-                println!("  Memory:  {:.1}%", util.memory);
+            if let Some(pct) = util.memory {
+                println!("  Memory:  {:.1}%", pct);
             }
         }
     }
 
     // Memory
     if let Ok(mem) = device.memory() {
-        if mem.total > 0 {
+        if let Some(total) = mem.total {
             println!("\n💾 Memory:");
-            let total_gb = mem.total as f64 / (1024.0 * 1024.0 * 1024.0);
-            let used_gb = mem.used as f64 / (1024.0 * 1024.0 * 1024.0);
-            let percent = if mem.total > 0 {
-                (mem.used as f64 / mem.total as f64) * 100.0
-            } else {
-                0.0
-            };
-            println!("  Total:   {:.2} GB", total_gb);
-            println!("  Used:    {:.2} GB ({:.0}%)", used_gb, percent);
+            const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+            println!("  Total:   {:.2} GB", total as f64 / GIB);
+            match (mem.used, mem.utilization_percent()) {
+                (Some(used), Some(pct)) => {
+                    println!("  Used:    {:.2} GB ({:.0}%)", used as f64 / GIB, pct)
+                }
+                (Some(used), None) => println!("  Used:    {:.2} GB", used as f64 / GIB),
+                (None, _) => println!("  Used:    unavailable - not reported by the driver"),
+            }
         }
     }
 

@@ -577,16 +577,30 @@ impl Gpu for TraitGpuAdapter {
         // that could be zero -- which is to say the total could be absent, and
         // the guard turned that into "0% of one byte" rather than into an
         // absence. A device whose memory query failed now reports nothing.
+        // Both operands must be present to build a total/used pair; a partial
+        // read is carried through as the absence it is, rather than being
+        // completed with a zero.
         let memory = match mem {
-            Some(m) => GpuMemory::from_total_used(m.total, m.used),
+            Some(m) => match (m.total, m.used) {
+                (Some(total), Some(used)) => GpuMemory::from_total_used(total, used),
+                (total, used) => GpuMemory {
+                    total,
+                    used,
+                    free: m.free,
+                    // Derivable only from both operands. See `from_total_used`.
+                    utilization: None,
+                },
+            },
             None => GpuMemory::unreported(),
         };
 
         let clocks_info = if let Some(c) = clocks {
             GpuClocks {
-                graphics: Some(c.graphics),
+                // Already optional at the source now; wrapping in `Some` here
+                // would re-introduce the zero this change removed.
+                graphics: c.graphics,
                 graphics_max: None,
-                memory: Some(c.memory),
+                memory: c.memory,
                 memory_max: None,
                 sm: c.sm,
                 video: c.video,
@@ -683,14 +697,14 @@ impl Gpu for TraitGpuAdapter {
         Ok(GpuDynamicInfo {
             // A failed utilization query reports nothing, matching the
             // memory beside it rather than claiming an idle device.
-            utilization: util.as_ref().map(|u| u.gpu as u8),
+            utilization: util.as_ref().and_then(|u| u.gpu).map(|g| g as u8),
             memory,
             clocks: clocks_info,
             power: power_info,
             thermal: thermal_info,
             pcie: pcie_info,
             engines: GpuEngines {
-                graphics: util.as_ref().map(|u| u.gpu as u8),
+                graphics: util.as_ref().and_then(|u| u.gpu).map(|g| g as u8),
                 compute: None,
                 encoder: util.as_ref().and_then(|u| u.encoder.map(|e| e as u8)),
                 decoder: util.as_ref().and_then(|u| u.decoder.map(|d| d as u8)),

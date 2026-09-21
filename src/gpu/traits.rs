@@ -373,12 +373,20 @@ pub struct Power {
 }
 
 /// Clock frequencies
+///
+/// **Every field is optional, including the two that were not.** `graphics` and
+/// `memory` were bare `u32`, so a backend whose sysfs read or NVML query failed
+/// had no way to say so and wrote `0` — a GPU idling at 0 MHz and a GPU that
+/// could not be asked became the same number. `GpuClocks` in the parent module
+/// was corrected for exactly this; these types were a second family that missed
+/// the change, and the backends behind them are the *preferred* path for AMD and
+/// Intel on Linux.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clocks {
-    /// Graphics/shader clock in MHz
-    pub graphics: u32,
-    /// Memory clock in MHz
-    pub memory: u32,
+    /// Graphics/shader clock in MHz, or `None` where it could not be read.
+    pub graphics: Option<u32>,
+    /// Memory clock in MHz, or `None` where it could not be read.
+    pub memory: Option<u32>,
     /// SM (Streaming Multiprocessor) clock in MHz (NVIDIA)
     pub sm: Option<u32>,
     /// Video clock in MHz (NVIDIA)
@@ -386,12 +394,16 @@ pub struct Clocks {
 }
 
 /// Utilization percentages
+///
+/// `gpu` and `memory` are optional for the reason given on [`Clocks`]: an idle
+/// card and an unreadable one are different facts, and `0%` is the one a
+/// capacity planner acts on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Utilization {
-    /// GPU utilization (0-100%)
-    pub gpu: f32,
-    /// Memory controller utilization (0-100%)
-    pub memory: f32,
+    /// GPU utilization (0-100%), or `None` where it could not be read.
+    pub gpu: Option<f32>,
+    /// Memory controller utilization (0-100%), or `None` where unreadable.
+    pub memory: Option<f32>,
     /// Video encoder utilization (0-100%)
     pub encoder: Option<f32>,
     /// Video decoder utilization (0-100%)
@@ -403,14 +415,17 @@ pub struct Utilization {
 }
 
 /// Memory usage
+///
+/// Optional for the reason given on [`Clocks`]. A GPU reporting 0 bytes of
+/// memory is not a plausible reading; it is the absence of one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
-    /// Total memory in bytes
-    pub total: u64,
-    /// Used memory in bytes
-    pub used: u64,
-    /// Free memory in bytes
-    pub free: u64,
+    /// Total memory in bytes, or `None` where it could not be read.
+    pub total: Option<u64>,
+    /// Used memory in bytes, or `None` where it could not be read.
+    pub used: Option<u64>,
+    /// Free memory in bytes, or `None` where it could not be read or derived.
+    pub free: Option<u64>,
     /// BAR1 total memory (NVIDIA)
     pub bar1_total: Option<u64>,
     /// BAR1 used memory (NVIDIA)
@@ -418,13 +433,17 @@ pub struct Memory {
 }
 
 impl Memory {
-    /// Get memory utilization percentage
-    pub fn utilization_percent(&self) -> f32 {
-        if self.total == 0 {
-            0.0
-        } else {
-            (self.used as f64 / self.total as f64 * 100.0) as f32
+    /// Memory utilization percentage.
+    ///
+    /// `None` whenever either operand is absent, and whenever the total is
+    /// zero: a percentage of nothing is not a measurement, and returning `0.0`
+    /// for it is the same fabrication this type was changed to prevent.
+    pub fn utilization_percent(&self) -> Option<f32> {
+        let (total, used) = (self.total?, self.used?);
+        if total == 0 {
+            return None;
         }
+        Some((used as f64 / total as f64 * 100.0) as f32)
     }
 }
 
@@ -778,37 +797,59 @@ mod tests {
     #[test]
     fn test_memory_utilization_percent() {
         let mem = Memory {
-            total: 8 * 1024 * 1024 * 1024, // 8GB
-            used: 4 * 1024 * 1024 * 1024,  // 4GB
-            free: 4 * 1024 * 1024 * 1024,
+            total: Some(8 * 1024 * 1024 * 1024), // 8GB
+            used: Some(4 * 1024 * 1024 * 1024),  // 4GB
+            free: Some(4 * 1024 * 1024 * 1024),
             bar1_total: None,
             bar1_used: None,
         };
-        assert!((mem.utilization_percent() - 50.0).abs() < 0.01);
+        assert!((mem.utilization_percent().expect("both operands present") - 50.0).abs() < 0.01);
     }
 
+    /// A zero total is the absence of a reading, not a card with no memory.
+    ///
+    /// This asserted `0.0` and therefore asserted the defect: a percentage
+    /// computed against a total nobody read is not a measurement, and reporting
+    /// it as 0% puts a fabricated figure where a real one belongs.
     #[test]
     fn test_memory_utilization_zero_total() {
         let mem = Memory {
-            total: 0,
-            used: 0,
-            free: 0,
+            total: Some(0),
+            used: Some(0),
+            free: Some(0),
             bar1_total: None,
             bar1_used: None,
         };
-        assert_eq!(mem.utilization_percent(), 0.0);
+        assert_eq!(mem.utilization_percent(), None);
+    }
+
+    /// An absent operand yields no percentage at all.
+    #[test]
+    fn an_unread_total_yields_no_utilization() {
+        let mem = Memory {
+            total: None,
+            used: Some(1024),
+            free: None,
+            bar1_total: None,
+            bar1_used: None,
+        };
+        assert_eq!(
+            mem.utilization_percent(),
+            None,
+            "a percentage needs both operands; inventing one is how a failed              read becomes a plausible-looking number"
+        );
     }
 
     #[test]
     fn test_memory_utilization_full() {
         let mem = Memory {
-            total: 1024,
-            used: 1024,
-            free: 0,
+            total: Some(1024),
+            used: Some(1024),
+            free: Some(0),
             bar1_total: None,
             bar1_used: None,
         };
-        assert!((mem.utilization_percent() - 100.0).abs() < 0.01);
+        assert!((mem.utilization_percent().expect("both present") - 100.0).abs() < 0.01);
     }
 
     // === Vendor tests ===

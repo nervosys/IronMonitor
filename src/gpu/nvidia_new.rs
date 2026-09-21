@@ -183,8 +183,11 @@ impl Device for NvidiaGpu {
     }
 
     fn clocks(&self) -> Result<Clocks, Error> {
-        let graphics = self.device.clock_info(Clock::Graphics).ok().unwrap_or(0);
-        let memory = self.device.clock_info(Clock::Memory).ok().unwrap_or(0);
+        // `.ok()` already turned a failed query into `None`; the `unwrap_or(0)`
+        // that used to follow threw that away and reported a card clocked at
+        // 0 MHz. The absence is carried now.
+        let graphics = self.device.clock_info(Clock::Graphics).ok();
+        let memory = self.device.clock_info(Clock::Memory).ok();
         let sm = self.device.clock_info(Clock::SM).ok();
         let video = self.device.clock_info(Clock::Video).ok();
 
@@ -215,8 +218,10 @@ impl Device for NvidiaGpu {
             .ok();
 
         Ok(Utilization {
-            gpu: util.gpu as f32,
-            memory: util.memory as f32,
+            // NVML answered, so these are measurements. The whole query
+            // failing is handled by the `?` above.
+            gpu: Some(util.gpu as f32),
+            memory: Some(util.memory as f32),
             encoder,
             decoder,
             jpeg: None, // Not exposed by NVML
@@ -233,9 +238,11 @@ impl Device for NvidiaGpu {
         let bar1 = self.device.bar1_memory_info().ok();
 
         Ok(Memory {
-            total: mem.total,
-            used: mem.used,
-            free: mem.free,
+            // NVML answered, so these are measurements; the `?` above handles
+            // the query failing.
+            total: Some(mem.total),
+            used: Some(mem.used),
+            free: Some(mem.free),
             bar1_total: bar1.as_ref().map(|b| b.total),
             bar1_used: bar1.as_ref().map(|b| b.used),
         })

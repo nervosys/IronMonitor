@@ -369,8 +369,10 @@ impl Device for IntelGpu {
         // Try xe driver interface first
         if let Some(freq) = self.read_gt_u64("freq0/act_freq") {
             return Ok(Clocks {
-                graphics: (freq / 1_000_000) as u32, // Convert Hz to MHz
-                memory: 0,
+                graphics: Some((freq / 1_000_000) as u32), // Convert Hz to MHz
+                // Not exposed by the xe driver. `0` said "this card's memory is
+                // clocked at zero", which no running card is.
+                memory: None,
                 sm: None,
                 video: None,
             });
@@ -380,28 +382,36 @@ impl Device for IntelGpu {
         if let Some(freq_str) = self.read_sysfs_string("gt_cur_freq_mhz") {
             if let Ok(freq) = freq_str.parse::<u32>() {
                 return Ok(Clocks {
-                    graphics: freq,
-                    memory: 0,
+                    graphics: Some(freq),
+                    // Not exposed by i915 either. See above.
+                    memory: None,
                     sm: None,
                     video: None,
                 });
             }
         }
 
+        // Neither driver interface answered. This used to return `Ok` with
+        // every field zero -- a success carrying a fabricated reading, which a
+        // caller cannot tell from an idle card.
         Ok(Clocks {
-            graphics: 0,
-            memory: 0,
+            graphics: None,
+            memory: None,
             sm: None,
             video: None,
         })
     }
 
     fn utilization(&self) -> Result<Utilization, Error> {
-        // Intel doesn't expose simple utilization via sysfs
-        // Would need to read from i915_engine_info debugfs or use performance counters
+        // Intel does not expose utilization via sysfs; it would require
+        // i915_engine_info debugfs or performance counters.
+        //
+        // This returned `0.0` for both, which reported every Intel GPU as
+        // permanently idle rather than as unmeasured — a reading no code here
+        // ever took, in the field a capacity planner acts on.
         Ok(Utilization {
-            gpu: 0.0,
-            memory: 0.0,
+            gpu: None,
+            memory: None,
             encoder: None,
             decoder: None,
             jpeg: None,
@@ -413,11 +423,13 @@ impl Device for IntelGpu {
         // For discrete GPUs, try to read LMEM (Local Memory)
         // This is available on Arc GPUs with xe driver
         if let Some(total) = self.read_gt_u64("mem_info/total") {
-            let used = self.read_gt_u64("mem_info/used").unwrap_or(0);
-            let free = total.saturating_sub(used);
+            let used = self.read_gt_u64("mem_info/used");
+            // Derived only when both operands exist: a free figure computed
+            // against an absent `used` is arithmetic on a guess.
+            let free = used.map(|u| total.saturating_sub(u));
 
             return Ok(Memory {
-                total,
+                total: Some(total),
                 used,
                 free,
                 bar1_total: None,
@@ -425,12 +437,14 @@ impl Device for IntelGpu {
             });
         }
 
-        // For integrated GPUs, memory is shared with system
-        // Try to read from debugfs (requires root)
+        // For integrated GPUs memory is shared with the system and is not
+        // readable here (debugfs, needing root). This returned zeros, which
+        // reported an integrated GPU as having no memory at all rather than as
+        // having memory nobody asked.
         Ok(Memory {
-            total: 0,
-            used: 0,
-            free: 0,
+            total: None,
+            used: None,
+            free: None,
             bar1_total: None,
             bar1_used: None,
         })

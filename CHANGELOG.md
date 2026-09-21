@@ -42,6 +42,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **GPU readings that could not be taken are now absent rather than zero, and
+  this changes a public API.** `gpu::traits::Clocks`, `Utilization` and `Memory`
+  had core fields typed as bare numbers — `graphics: u32`, `gpu: f32`,
+  `total: u64` — while the vendor-specific fields beside them were `Option`.
+  Absence was inexpressible, so every backend wrote `0` for a read that failed.
+
+  A GPU reporting 0 MHz, 0% or 0 bytes of VRAM is not a plausible reading; it is
+  the absence of one. Those fields are `Option` now, and
+  `Memory::utilization_percent` returns `Option<f32>` rather than `0.0` for a
+  percentage of a total nobody read.
+
+  **If you read these fields, you will get a compile error.** That is the point:
+  the old signature promised a number it could not always supply, and the error
+  is how you find out which of your readings were fabricated.
+
+  Affected readers, all on the preferred Linux path for their vendor:
+  `amd_rocm` clocks, utilization and VRAM; `intel_levelzero` clocks, utilization
+  and memory — including two fallbacks that returned `Ok` with every field zero;
+  and `nvidia_new` clocks, which called `.ok()` and then discarded the `None` it
+  had just produced.
+
+  The bundled examples printed or filtered those zeros. `amd_monitor` printed
+  `0.0%` and `0 MB / 0 MB` as measurements; `all_gpus` and `intel_monitor`
+  guarded with `> 0`, which worked as a sentinel and also hid a GPU genuinely
+  idling at 0%. All four now print the reading or say why there is not one.
+
 ### Added
 
 - **`fleet-store`** — an optional feature storing per-host, per-tick metrics in
