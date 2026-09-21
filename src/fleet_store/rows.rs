@@ -167,19 +167,19 @@ pub fn rows_from_snapshot(snapshot: &Snapshot, host: &HostId) -> Vec<MetricRow> 
         .collect()
 }
 
+/// GPU fixtures shared with [`super::store`]'s round-trip tests.
+///
+/// Shared rather than duplicated because the round trip asserts on the same
+/// distinction this module's tests do — an idle card against an unread one —
+/// and two copies of a fixture drift into testing two different things.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod fixtures {
     use crate::gpu::{
         GpuClocks, GpuDynamicInfo, GpuEngines, GpuMemory, GpuPower, GpuStaticInfo, GpuThermal,
         GpuVendor, PcieLinkInfo,
     };
 
-    fn host() -> HostId {
-        HostId::rotate(Some("test-host"))
-    }
-
-    fn card(index: usize, name: &str) -> GpuStaticInfo {
+    pub fn card(index: usize, name: &str) -> GpuStaticInfo {
         GpuStaticInfo {
             index,
             vendor: GpuVendor::Nvidia,
@@ -196,7 +196,7 @@ mod tests {
         }
     }
 
-    fn reading(utilization: Option<u8>, temperature: Option<i32>) -> GpuDynamicInfo {
+    pub fn reading(utilization: Option<u8>, temperature: Option<i32>) -> GpuDynamicInfo {
         GpuDynamicInfo {
             utilization,
             memory: GpuMemory {
@@ -246,6 +246,16 @@ mod tests {
             },
             processes: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{card, reading};
+    use super::*;
+
+    fn host() -> HostId {
+        HostId::rotate(Some("test-host"))
     }
 
     /// A machine with no accelerators must still appear in the table.

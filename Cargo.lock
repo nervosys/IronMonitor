@@ -2992,6 +2992,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "futures",
  "hex",
  "hostname",
  "iceberg",

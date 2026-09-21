@@ -347,6 +347,120 @@ mod tests {
         );
     }
 
+    /// Read every row back out of the table.
+    ///
+    /// The tests below assert on stored data rather than on what `append`
+    /// returned, because a write path can report success and still have put the
+    /// wrong thing on disk — which is precisely the failure this schema exists
+    /// to prevent.
+    async fn read_back(store: &FleetStore) -> Vec<arrow_array::RecordBatch> {
+        use futures::TryStreamExt;
+
+        let table = store.catalog.load_table(&store.ident).await.expect("load");
+        let scan = table.scan().build().expect("scan");
+        scan.to_arrow()
+            .await
+            .expect("arrow stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("collect")
+    }
+
+    /// **The round trip that matters.** An unread metric must still be null
+    /// after Parquet, and a measured zero must still be zero.
+    ///
+    /// Everything else in this module checks that a write was accepted. This
+    /// checks what came back, which is the only version of the guarantee a
+    /// query will ever see.
+    #[tokio::test]
+    async fn a_null_survives_the_round_trip_and_a_zero_stays_a_zero() {
+        use arrow_array::{Array, Float64Array};
+
+        let (_warehouse, store) = in_memory_store("roundtrip").await;
+
+        // One card reporting 0% and one reporting nothing, in the same tick.
+        let snapshot = Snapshot {
+            generation: 1,
+            collected_at: 1_700_000_000,
+            gpu_static: vec![
+                super::super::rows::fixtures::card(0, "idle"),
+                super::super::rows::fixtures::card(1, "unread"),
+            ],
+            gpu_dynamic: vec![
+                Some(super::super::rows::fixtures::reading(Some(0), Some(40))),
+                Some(super::super::rows::fixtures::reading(None, None)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(store.append(&snapshot).await.expect("append"), 2);
+
+        let batches = read_back(&store).await;
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "both cards must be on disk");
+
+        let mut seen_zero = false;
+        let mut seen_null = false;
+        for batch in &batches {
+            let col = batch
+                .column_by_name("gpu_utilization")
+                .expect("gpu_utilization column");
+            let values = col
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("f64 column");
+            for row in 0..batch.num_rows() {
+                if values.is_null(row) {
+                    seen_null = true;
+                } else if values.value(row) == 0.0 {
+                    seen_zero = true;
+                }
+            }
+        }
+
+        assert!(
+            seen_zero,
+            "the card that reported 0% must read back as 0, not as null"
+        );
+        assert!(
+            seen_null,
+            "the card that reported nothing must read back as null, not as 0 —              a zero here averages like an idle card forever after"
+        );
+    }
+
+    /// A host with no accelerators must be readable as such, rather than
+    /// absent from the table.
+    #[tokio::test]
+    async fn a_gpu_less_host_reads_back_with_null_gpu_columns() {
+        use arrow_array::Array;
+
+        let (_warehouse, store) = in_memory_store("gpuless-rt").await;
+        let snapshot = Snapshot {
+            generation: 1,
+            collected_at: 1_700_000_000,
+            ..Default::default()
+        };
+        assert_eq!(store.append(&snapshot).await.expect("append"), 1);
+
+        let batches = read_back(&store).await;
+        let batch = batches.first().expect("one batch");
+        assert_eq!(batch.num_rows(), 1);
+
+        for name in ["gpu_index", "gpu_name", "gpu_utilization"] {
+            let col = batch
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{name} column"));
+            assert_eq!(
+                col.null_count(),
+                1,
+                "{name} must be null for a host with no accelerators"
+            );
+        }
+
+        // And the host-level readings it did take are present.
+        let host = batch.column_by_name("host_id").expect("host_id");
+        assert_eq!(host.null_count(), 0, "every row must name its host");
+    }
+
     /// Several ticks accumulate rather than replacing one another.
     #[tokio::test]
     async fn successive_ticks_accumulate() {
