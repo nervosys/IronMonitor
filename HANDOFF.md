@@ -8524,3 +8524,67 @@ rounds of inference.
 
 That makes six times in these sessions that local evidence was real,
 reproducible, and not about what it appeared to be.
+
+
+### The guard was measuring the wrong rectangle, and three of its four findings were not defects
+
+`no_tab_paints_text_past_the_right_edge` composed each text's rectangle as
+`Rect::from_min_size(shape.pos, galley.size())`. **`TextShape::pos` is an anchor,
+not a left edge.** For a galley with a centred or right horizontal alignment the
+text extends *away* from `pos`, so the rect comes out the right size in the wrong
+place. Both measurements, taken from the same shape in the same frame:
+
+```
+galley = [404.0 .. 983.4]     what the guard reported
+ink    = [114.0 .. 693.0]     where the pixels are
+```
+
+Identical width, displaced 290 px. In an 800 px window the text was comfortably
+inside while the guard called it a 183 px overrun.
+
+**Running the corrected reader against the pre-fix code, only `disk` overflowed**
+— 8 to 18 px at 800 px, from 990 px of fixed columns in a window whose advertised
+minimum is 800. That one is real and provable without any instrument: the
+arithmetic does not fit. `accelerators` (44 px), `memory` (117 px) and `ai`
+(183 px) never overflowed at all. `KNOWN_OVERFLOWING` is now empty, and not
+because everything was fixed.
+
+The two unnecessary changes were left in place with corrected comments rather
+than reverted. Two attempts at the revert broke the braces; further surgery on
+working code to undo a harmless change is the worse trade, and the comments now
+say the overrun they cite did not exist.
+
+### Why this took four wrong diagnoses
+
+Each was disproved by the next measurement, and each was reasonable when made:
+
+1. **A sibling widens the `ScrollArea` content box.** Disproved by building a
+   shape-bounds reader: no non-text shape paints past 808 px.
+2. **Render order — a wide pass leaves scroll state that a narrow pass inherits.**
+   Disproved by A/B: both orders vary.
+3. **It converges across frames; the early frames overflow.** Disproved by
+   measuring five passes in one instance: the answer never changes within an
+   instance.
+4. **The container is wrong.** Disproved by instrumenting the draw: available
+   width is 766 and the max rect ends at 787, both inside the window.
+
+Only after all four did the instrument itself become the suspect.
+
+**The reason it survived four rounds is that the false positive was ~70%
+reproducible rather than 100%.** Whether the AI tab's empty state rendered at all
+varied between process runs; when it rendered, the bad measurement followed
+deterministically. *An instrument that is intermittently wrong is indistinguishable
+from an intermittent defect*, and every attempt to explain the intermittency
+assumed the reading was true.
+
+There is a cheaper move that was available the whole time: **ask the instrument
+to report both of its candidate measurements for one object.** One line printing
+`galley` beside `ink` ended it. The same shape as getting the filename out of the
+linker two entries above — the answer came from making the tool say what it saw,
+not from reasoning about what it must have seen.
+
+That makes seven times in these sessions that local evidence was real,
+reproducible, and not about what it appeared to be. Six of those were the
+environment or the measurement. **A tool this repository wrote to catch defects
+produced three false ones and was believed, because it was green on the tabs
+where it was right.**

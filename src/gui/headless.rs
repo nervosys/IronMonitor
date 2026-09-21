@@ -256,15 +256,123 @@ pub fn painted_extent(
     extent
 }
 
+/// Every painted shape's rectangle and what kind of shape it was.
+///
+/// **`painted_text_rects_sized` reads galleys, so it can only see glyphs.** That
+/// is the right instrument for "is this text off the edge" and the wrong one for
+/// "what made the container this wide", because a chart, a frame or a progress
+/// bar paints no text and is therefore invisible to it. The `ai` tab was pinned
+/// as overflowing for exactly that reason: its welcome sentence was centred in a
+/// box roughly 1369 px wide at an 800 px window, so the sentence was a symptom
+/// and the thing that widened the box could not be named.
+///
+/// `Shape::visual_bounding_rect` covers every variant — rects, circles, paths,
+/// meshes — so this can answer the question the text reader cannot.
+///
+/// The kind is carried as a string because the caller wants to *report* it. A
+/// bare rectangle that is 300 px too wide tells you where to look and not what
+/// to look for.
+pub fn painted_shape_rects(
+    ctx: &Context,
+    size: egui::Vec2,
+    mut body: impl FnMut(&mut egui::Ui),
+) -> Vec<(&'static str, egui::Rect)> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    // Two frames, for the same reason the text reader needs two: a `ScrollArea`
+    // does not know its content size until it has laid it out once.
+    let _warmup = run_frame();
+    let settled = run_frame();
+
+    let mut out = Vec::new();
+    for clipped in &settled.shapes {
+        collect_shape_rects(&clipped.shape, &mut out);
+    }
+    out
+}
+
+fn shape_kind(shape: &egui::Shape) -> &'static str {
+    match shape {
+        egui::Shape::Noop => "noop",
+        egui::Shape::Vec(_) => "vec",
+        egui::Shape::Circle(_) => "circle",
+        egui::Shape::Ellipse(_) => "ellipse",
+        egui::Shape::LineSegment { .. } => "line",
+        egui::Shape::Path(_) => "path",
+        egui::Shape::Rect(_) => "rect",
+        egui::Shape::Text(_) => "text",
+        egui::Shape::Mesh(_) => "mesh",
+        egui::Shape::QuadraticBezier(_) => "quadratic",
+        egui::Shape::CubicBezier(_) => "cubic",
+        egui::Shape::Callback(_) => "callback",
+    }
+}
+
+fn collect_shape_rects(shape: &egui::Shape, out: &mut Vec<(&'static str, egui::Rect)>) {
+    // A `Vec` is a container rather than a mark: recording its own bounds would
+    // report the union of its children as though it were one wide widget, which
+    // is the opposite of naming the culprit.
+    if let egui::Shape::Vec(shapes) = shape {
+        for s in shapes {
+            collect_shape_rects(s, out);
+        }
+        return;
+    }
+
+    let rect = shape.visual_bounding_rect();
+    // egui returns `NOTHING` — an inverted infinite rect — for shapes that paint
+    // no pixels. Unioning one of those poisons every maximum downstream.
+    if rect.is_finite() && rect.is_positive() {
+        out.push((shape_kind(shape), rect));
+    }
+}
+
+/// What paints furthest past the right edge, widest first.
+///
+/// Reports *any* shape, so the answer can be a chart or a frame rather than a
+/// label. Use this when a tab overflows and the text reader has nothing to say
+/// about why.
+pub fn widest_overflowing_shapes(
+    ctx: &Context,
+    size: egui::Vec2,
+    body: impl FnMut(&mut egui::Ui),
+) -> Vec<(&'static str, egui::Rect, f32)> {
+    let mut over: Vec<(&'static str, egui::Rect, f32)> = painted_shape_rects(ctx, size, body)
+        .into_iter()
+        .filter(|(_, rect)| rect.max.x > size.x)
+        .map(|(kind, rect)| (kind, rect, rect.max.x - size.x))
+        .collect();
+    over.sort_by(|a, b| b.2.total_cmp(&a.2));
+    over
+}
+
 fn collect_shape_text_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
     match shape {
         egui::Shape::Text(text) => {
             let s = text.galley.text();
             if !s.is_empty() {
-                out.push((
-                    s.to_string(),
-                    egui::Rect::from_min_size(text.pos, text.galley.size()),
-                ));
+                // `shape.visual_bounding_rect()`, not `from_min_size(pos, size)`.
+                //
+                // **`TextShape::pos` is an anchor, not a left edge.** For a
+                // galley with a centred or right horizontal alignment the text
+                // extends away from `pos`, so composing a rect from it reports a
+                // box the right size in the wrong place. The AI tab's welcome
+                // sentence painted its pixels at 114..693 inside an 800 px
+                // window while this reader claimed 404..983 — a 183 px overrun
+                // that was not on the screen, and which this guard pinned as a
+                // defect for weeks.
+                //
+                // The bounding rect is computed by egui from the galley's own
+                // mesh, so it is where the glyphs actually are. That is the only
+                // thing a reader can see, and the only thing worth asserting.
+                out.push((s.to_string(), shape.visual_bounding_rect()));
             }
         }
         egui::Shape::Vec(shapes) => {
@@ -830,25 +938,30 @@ mod overflow_tests {
     /// to the pixel. What does work is inlining the content, which moves it from
     /// right-aligned to inline — a visual decision rather than a bug fix, and not
     /// one to make silently.
-    /// Tabs known to paint past the right edge, pinned rather than fixed.
+    /// Tabs known to paint past the right edge. **Empty, and that is the
+    /// finding.**
     ///
-    /// **Down from four to one.** `accelerators`, `memory` and `disk` shared a
-    /// single cause: `Layout::right_to_left` right-aligns against the parent's
-    /// max rect, and inside a `ScrollArea` that is the *content box*, which is as
-    /// wide as its widest child rather than as wide as the window. Bounding the
-    /// layout does not move it — the offset was identical to the pixel with an
-    /// `allocate_ui_with_layout` around it — because the content was never inside
-    /// the bound. Measuring the text and padding to right-align it, with no
-    /// right-to-left layout at all, does fix it.
+    /// This list held four entries. Three were fixed. The fourth, `ai`, was
+    /// never a defect at all: it was this guard measuring the wrong rectangle.
     ///
-    /// `ai` is **not** the same defect and is not fixed. At an 800 px window its
-    /// welcome sentence is centred in a container roughly 1369 px wide, so the
-    /// sentence is already narrower than its box: wrapping it changes nothing,
-    /// and was tried. Some sibling widens the content box, and this guard cannot
-    /// name it — the guard reads *text* rectangles, and a chart or frame that
-    /// paints no text is invisible to it. Finding it needs an instrument that
-    /// measures widgets rather than glyphs.
-    const KNOWN_OVERFLOWING: [&str; 1] = ["ai"];
+    /// `painted_text_rects_sized` used to build a text's rect as
+    /// `Rect::from_min_size(shape.pos, galley.size())`, which assumes `pos` is
+    /// the top-left corner. **For a galley with a centred or right horizontal
+    /// alignment it is an anchor and the text extends away from it**, so the
+    /// rect came out the right size in the wrong place. The AI tab's welcome
+    /// sentence painted at `114..693` inside an 800 px window while this guard
+    /// reported `404..983` and pinned a 183 px overrun that was never on screen.
+    ///
+    /// It reads `Shape::visual_bounding_rect` now, which egui computes from the
+    /// galley's mesh — where the glyphs actually are, which is the only thing a
+    /// reader can see.
+    ///
+    /// **The false positive was ~70% reproducible, not 100%**, which is what
+    /// made it look like a real intermittent defect rather than a broken
+    /// instrument. Whether the empty state rendered at all varied between
+    /// process runs; when it rendered, the bad measurement followed
+    /// deterministically.
+    const KNOWN_OVERFLOWING: [&str; 0] = [];
 
     /// No tab may paint text past the right edge of a default window.
     ///

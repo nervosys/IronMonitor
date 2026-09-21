@@ -666,6 +666,11 @@ impl Default for AppSettings {
 
 /// The Disk tab's six column widths, proportioned to the width they are given.
 ///
+/// **This one was a real defect**, unlike the right-alignment changes made
+/// alongside it: 990 px of fixed columns cannot fit an 800 px window whatever
+/// the measuring instrument says, and the corrected ink-measuring guard still
+/// reports the pre-change layout overflowing by 8 to 18 px at that width.
+///
 /// **These were fixed pixel widths, and they did not fit.** The five sized
 /// columns came to 840 px, and 30 px of spacing between each added 150 more —
 /// 990 px before the card's own margins, in a window whose advertised minimum
@@ -3135,14 +3140,21 @@ impl IronMonitorApp {
                         // Live metrics on the right, right-aligned by measuring
                         // and padding rather than by `Layout::right_to_left`.
                         //
-                        // **A right-to-left layout here anchored 44 px past the
-                        // window, at every width**, because it right-aligns
-                        // against the parent's max rect — and inside a
-                        // `ScrollArea` that is the content box, which is as wide
-                        // as its widest child rather than as wide as the window.
-                        // Bounding the layout does not move it: the offset was
-                        // identical to the pixel with an `allocate_ui_with_layout`
-                        // around it.
+                        // **Correction to why this was written.** It was changed
+                        // to fix a reported 44 px overrun that did not exist: the
+                        // headless guard was composing a text's rectangle from
+                        // `TextShape::pos`, which is an *anchor* rather than a
+                        // left edge for a right-aligned galley, so it reported
+                        // the right-hand labels outside a window they were inside.
+                        // The guard measures painted ink now, and the pre-change
+                        // layout does not overflow at any width.
+                        //
+                        // Kept rather than reverted, on narrow grounds: the
+                        // arithmetic here is explicit and does not depend on how
+                        // a nested layout resolves its anchor, which is the thing
+                        // that took four wrong diagnoses to pin down. It is more
+                        // code than `with_layout` for no defect, and a reviewer
+                        // who prefers the idiom should feel free.
                         //
                         // Emitted in reverse, because right-to-left placed the
                         // first label rightmost and this reads left to right.
@@ -3433,8 +3445,10 @@ impl IronMonitorApp {
                                 .small(),
                         );
 
-                        // Legend, bounded for the same reason as the
-                        // accelerator metrics above.
+                        // Legend, right-aligned by measuring. See the note on
+                        // the accelerator metrics: the 117 px overrun this was
+                        // written to fix was the guard measuring a right-aligned
+                        // galley from its anchor, not a defect on screen.
                         const LEGEND: &str = "(used/buffers/cache/free)";
                         let galley = ui.painter().layout_no_wrap(
                             LEGEND.to_owned(),
@@ -4339,17 +4353,20 @@ impl IronMonitorApp {
                                 // Right-aligned by measuring and padding, not by
                                 // a right-to-left layout.
                                 //
-                                // **An `egui::Frame` nested in
-                                // `Layout::right_to_left` lays its child out
-                                // left-to-right from the right-to-left cursor**,
-                                // so this badge started at the clip rect's right
-                                // edge less its own margin and grew outward from
-                                // there — painting 35 px past the window at
-                                // *every* width: 1369..1435 at a 1400 px window
-                                // and 769..835 at 800, while the card it belongs
-                                // to ends at 1379. Bounding the layout does not
-                                // help, because the badge was never inside the
-                                // bound.
+                                // **Correction.** This was written to fix a 35 px
+                                // overrun the headless guard reported at every
+                                // width. That overrun was the guard composing a
+                                // text's rectangle from `TextShape::pos`, which
+                                // for a right-aligned galley is an anchor rather
+                                // than a left edge — the badge's pixels were
+                                // inside the card throughout. The guard measures
+                                // painted ink now.
+                                //
+                                // The *columns* on this tab did overflow, and
+                                // that was real: see `DiskColumns`. This badge is
+                                // measured rather than anchored because the
+                                // column widths are now computed anyway, so it
+                                // costs nothing to place it explicitly.
                                 const BADGE_MARGIN: egui::Vec2 = egui::vec2(10.0, 4.0);
                                 let galley = ui.painter().layout_no_wrap(
                                     text.to_owned(),
