@@ -8634,3 +8634,62 @@ reproducible, and not about what it appeared to be. Six of those were the
 environment or the measurement. **A tool this repository wrote to catch defects
 produced three false ones and was believed, because it was green on the tabs
 where it was right.**
+
+
+### A type that could not say "unread", and the three layers of damage it caused
+
+`src/gpu/traits.rs` typed the core fields of `Clocks`, `Utilization` and
+`Memory` as bare numbers — `graphics: u32`, `gpu: f32`, `total: u64` — while the
+vendor-specific fields sitting immediately beside them (`sm`, `video`,
+`bar1_total`) were `Option`. Absence was inexpressible in exactly the fields
+that matter.
+
+**This crate had already fixed this once.** `GpuMemory` and `GpuClocks` in
+`src/gpu/mod.rs` carry the correction and the reasoning: *a GPU reporting 0 bytes
+of memory is not a plausible reading; it is the absence of one.* The change never
+reached the second type family — and the backends behind that family are the
+**preferred** path for AMD and Intel on Linux, tried before the legacy readers
+and only falling back if they fail.
+
+**Layer one: the readers were forced to invent.** Five sites, three backends.
+
+| Reader | Fabrication |
+| --- | --- |
+| `amd_rocm` clocks | failed sysfs read → `0 MHz` |
+| `amd_rocm` utilization | failed read → `0%`; memory util a literal `let memory = 0.0;` |
+| `amd_rocm` VRAM | failed read → `0 bytes` |
+| `intel_levelzero` clocks | `memory: 0` never read; fallback `Ok` with every field zero |
+| `intel_levelzero` memory | integrated GPU → `Ok` with `total: 0` |
+| `intel_levelzero` utilization | every Intel GPU reported permanently idle |
+| `nvidia_new` clocks | `.ok().unwrap_or(0)` — discarded the `None` it had just produced |
+
+Two of them said so in a comment while doing it, which is the same signature the
+GPU entry elsewhere in this file records.
+
+**Layer two: consumers learned not to trust the numbers.** `examples/all_gpus.rs`
+and `examples/intel_monitor.rs` guarded their output with `> 0` and `> 0.0`.
+Nobody coordinated that; each had independently concluded the zeros were
+untrustworthy and filtered them.
+
+**Layer three: the filters threw away real readings.** `if util.gpu > 0.0` hides
+a GPU *genuinely* idling at 0%. A true measurement, invisible, because nothing
+could distinguish it from an invented one. `examples/amd_monitor.rs` had no guard
+at all and simply printed `0.0%` and `0 MB / 0 MB` as measurements — and example
+output is what people paste into issues.
+
+**And a test asserted the defect was correct.**
+`test_memory_utilization_zero_total` built a `Memory` with `total: 0` and
+demanded `utilization_percent() == 0.0`. Anyone fixing the underlying bug would
+have seen that test fail and could reasonably have concluded they had broken
+something. It asserts `None` now.
+
+*The generalisable shape: when a type cannot express absence, the absence does
+not disappear — it gets encoded as a plausible value, and every layer above
+compensates in a way that loses information.* Fixing the type fixed all three
+layers at once, and the compile errors were the inventory of what needed
+changing.
+
+**Found by grepping for `unwrap_or(0)` in the sensor readers**, which took about
+a minute and is worth repeating whenever this file gains another entry about a
+fabricated reading. Most hits are JSON formatting fallbacks and range-check
+bounds; the ones that matter are on a path from hardware to a reported value.
