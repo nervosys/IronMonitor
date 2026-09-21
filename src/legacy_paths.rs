@@ -131,16 +131,23 @@ mod tests {
     /// `ERROR_ACCESS_DENIED`. The unique name removes both the collision and the
     /// need to delete anything first.
     ///
-    /// **That was not why the tests were failing.** Six of them failed with
-    /// `PermissionDenied`, this was written as the cause, and it was wrong: the
-    /// real cause was a `%TEMP%` holding 32,471 entries — almost all of it from
-    /// other projects sharing the machine — in which creating *any* file
-    /// intermittently fails. The linker was failing the same way at the same
-    /// time, on `lnk{GUID}.tmp`, which is what finally named it.
+    /// **Why the six tests were failing took two wrong answers to reach.** They
+    /// failed with `PermissionDenied`; the first explanation was the collision
+    /// above, the second was a `%TEMP%` holding 32,471 entries in which creating
+    /// any file intermittently fails. The second was reached by noting the
+    /// linker failing at the same time on its own `lnk{GUID}.tmp`.
     ///
-    /// The tests passing after this change was the intermittency, not the fix.
-    /// Recorded because a plausible mechanism that arrives with a green test run
-    /// is the easiest kind of wrong explanation to keep.
+    /// The nearer truth is narrower: on the sandboxed shell this was developed
+    /// under, **`%TEMP%` permits creating a directory and refuses to delete
+    /// one** — demonstrated by creating a directory there and failing to remove
+    /// it seconds later. So the old helper's `remove_dir_all` could not succeed,
+    /// and the `create_dir_all` that followed it on the same path failed. The
+    /// unique name is what fixes that, by removing the need to delete anything
+    /// before creating it.
+    ///
+    /// The guard's `Drop` cannot delete either, under that sandbox. It is kept
+    /// because it costs nothing and works everywhere else, including CI. It is
+    /// not why these tests pass.
     struct TempDir(PathBuf);
 
     impl Drop for TempDir {
