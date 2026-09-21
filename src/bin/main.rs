@@ -3514,9 +3514,9 @@ fn print_collects_nothing_notice() {
         "  {}",
         concat!(
             "There is no telemetry endpoint in this program and no code that ",
-            "gathers any of these categories. The settings here record a ",
-            "preference that a future collector would have to honour; they do ",
-            "not switch anything on or off today."
+            "reports any of these categories to its authors. The settings here ",
+            "record a preference that a future collector would have to honour; ",
+            "they do not switch anything on or off today."
         )
         .dimmed()
     );
@@ -3525,6 +3525,21 @@ fn print_collects_nothing_notice() {
         concat!(
             "The only network requests IronMonitor makes are to AI backends you ",
             "configure and point at yourself."
+        )
+        .dimmed()
+    );
+    // Said plainly, because a user who finds `ironmon record` or the Prometheus
+    // exporter after reading "collects nothing" is entitled to think this screen
+    // misled them. It did not -- those write where the user pointed them -- but
+    // the distinction has to be on the screen, not only in the source.
+    println!(
+        "  {}",
+        concat!(
+            "Storage you set up yourself is not telemetry: `ironmon record` ",
+            "writes a local metrics file, `ironmon serve` publishes metrics for ",
+            "your own scraper, and the optional fleet store appends to a table ",
+            "you configure. You choose those destinations; nothing goes anywhere ",
+            "you did not name."
         )
         .dimmed()
     );

@@ -119,15 +119,61 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn temp() -> PathBuf {
+    /// A directory this test owns, removed when it goes out of scope.
+    ///
+    /// **The leak is what this fixes, and it is worth being precise about what
+    /// it does not.** The name was `pid + ThreadId` and nothing ever deleted the
+    /// directory, so runs accumulated — 200 were on the development machine when
+    /// this was written. Since the operating system reuses both process ids and
+    /// thread ids, a later run can build a name a previous run already used, and
+    /// the helper's `remove_dir_all` then `create_dir_all` is racy on Windows,
+    /// where a directory pending deletion answers a create with
+    /// `ERROR_ACCESS_DENIED`. The unique name removes both the collision and the
+    /// need to delete anything first.
+    ///
+    /// **That was not why the tests were failing.** Six of them failed with
+    /// `PermissionDenied`, this was written as the cause, and it was wrong: the
+    /// real cause was a `%TEMP%` holding 32,471 entries — almost all of it from
+    /// other projects sharing the machine — in which creating *any* file
+    /// intermittently fails. The linker was failing the same way at the same
+    /// time, on `lnk{GUID}.tmp`, which is what finally named it.
+    ///
+    /// The tests passing after this change was the intermittency, not the fix.
+    /// Recorded because a plausible mechanism that arrives with a green test run
+    /// is the easiest kind of wrong explanation to keep.
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    fn temp() -> TempDir {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "ironmon-legacy-{}-{:?}",
+            "ironmon-legacy-{}-{:x}-{}",
             std::process::id(),
-            std::thread::current().id()
+            nanos,
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&dir);
+        // No `remove_dir_all` first: the name is unique, so there is nothing to
+        // remove, and asking would reintroduce the race this comment is about.
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 
     #[test]

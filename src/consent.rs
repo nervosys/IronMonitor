@@ -5,12 +5,31 @@
 //! Read this before anything else in the module, because the rest of it
 //! describes machinery that does not currently drive anything.
 //!
-//! No code in this crate collects, aggregates or transmits telemetry,
-//! analytics, hardware inventory or diagnostics. There is no endpoint. The
-//! only outbound HTTP in the crate goes to LLM backends the user configures
-//! and points at themselves. [`ConsentScope::is_collected`] returns `false`
-//! for every scope, and it is the single place that changes if that ever
+//! No code in this crate reports anything about a user's machine to the people
+//! who wrote it. **There is no endpoint.** No vendor receives telemetry,
+//! analytics, hardware inventory or diagnostics from this program, and there is
+//! nowhere for such a thing to go. [`ConsentScope::is_collected`] returns
+//! `false` for every scope, and it is the single place that changes if that ever
 //! stops being true.
+//!
+//! The only outbound HTTP in the crate goes to LLM backends the user configures
+//! and points at themselves.
+//!
+//! **"Collects nothing" means nothing leaves for us, not that nothing is ever
+//! written down.** This paragraph used to say "no code in this crate collects,
+//! aggregates or transmits telemetry", which was broader than the guarantee
+//! beneath it and was already untrue of the program as shipped: [`crate::tsdb`]
+//! records metrics to a local file, [`crate::prometheus`] publishes them for a
+//! scraper the operator runs, and the optional `fleet-store` feature appends
+//! them to an Apache Iceberg table the operator configures. Every one of those
+//! is storage the *user* asked for and controls the destination of, which is the
+//! opposite of telemetry, and none of them existed to serve anyone but them.
+//!
+//! The line is **who chose the destination**. If the answer is the person
+//! running the program, it is their data going where they told it to. If the
+//! answer were us, it would be telemetry, and this crate would have to say so
+//! here, on the three `ironmon privacy` screens, and in
+//! [`ConsentScope::is_collected`] — in the same change.
 //!
 //! What this module provides is the consent *record* — a persisted preference,
 //! with a timestamp, that a future collector would have to honour. Presenting

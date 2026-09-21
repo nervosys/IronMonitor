@@ -8473,3 +8473,54 @@ languages, the loopback timings under contention, and a green local suite run
 against a branch CI had been failing for two commits. The cost of checking is
 one clean rebuild; the cost of not checking, this time, would have been hunting
 an `egui` link error through an Iceberg change.
+
+
+### A full temp directory, wearing two disguises
+
+Six `legacy_paths` tests failed with `PermissionDenied` while creating
+directories, and `cargo test` failed to link with
+
+```
+LINK : fatal error LNK1104: cannot open file 'C:\...\Temp\lnk{GUID}.tmp'
+```
+
+These read as two unrelated problems — a filesystem permission fault in one
+test module, and a linker or build-contention fault everywhere else. **They were
+one problem.** `%TEMP%` held **32,471 entries**, with 102 GB free on the volume,
+and creating *any* file in it fails intermittently. The tests and the linker were
+both simply trying to create a file.
+
+The proof is a single-variable change: pointing `TMP` and `TEMP` at a private
+directory, with the same code, the same target directory and the same machine,
+returned 961 lib tests, 73 doctests and 21 suites green. No deletions, nothing of
+another project's touched.
+
+Almost none of it is this project's: `harness-resolv` 1264, `ironstack-conformance`
+986, `fortress-hls-test` 736, and about 3,000 `agentq-*`. IronMonitor's own 207
+are a rounding error, and they are now cleaned up by the guard described below.
+
+**Two wrong explanations were held on the way, and both felt solid.**
+
+The first was contention: nine concurrent `cargo` processes were visible, this
+file already documents a case where another project's 21 processes produced
+failures that looked like defects here, and the first `LNK1104` cleared on retry.
+Every piece of that was true and none of it was the cause.
+
+The second is worse, because it was written into the source as fact. The
+`legacy_paths` temp helper really did leak directories — 200 had accumulated —
+and really did use a `pid + ThreadId` name that the operating system can reuse,
+followed by `remove_dir_all` then `create_dir_all`, which is racy on Windows
+where a directory pending deletion answers a create with `ERROR_ACCESS_DENIED`.
+A complete, plausible mechanism. It was fixed, the tests went green, and the fix
+was credited. **The tests went green because the failure is intermittent.** The
+leak was real and worth fixing; it was never why they failed.
+
+*A plausible mechanism that arrives together with a passing test is the hardest
+kind of wrong explanation to dislodge*, because the passing test looks like
+confirmation and is only coincidence. The thing that actually settled it was
+asking the linker which file it could not open, rather than reasoning about which
+file it probably was. One error message, printed on demand, outranked three
+rounds of inference.
+
+That makes six times in these sessions that local evidence was real,
+reproducible, and not about what it appeared to be.

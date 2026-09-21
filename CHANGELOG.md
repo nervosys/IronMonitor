@@ -5,6 +5,82 @@ All notable changes to IronMonitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The minimum supported Rust version is now 1.94, up from 1.89.** This is a
+  breaking change for anyone building on 1.89 through 1.93, and it is declared
+  unconditionally even though only one optional feature needs it.
+
+  `iceberg` 0.10.1 requires 1.94, and the `fleet-store` feature below depends on
+  it. `Cargo.toml` has always held that one `rust-version` must cover every
+  feature combination, on the grounds that a field meaning *"1.88, except…"*
+  misleads anyone who does not already know the exception — the same defect as
+  an ontology entity claiming a provenance stronger than its row can carry. A
+  five-minor jump is an uncomfortable place to keep that rule and it was kept
+  anyway.
+
+  Both alternatives were weighed and are recorded in the manifest: `iceberg`
+  0.8.0 builds on 1.88 but pins the store to a January 2026 API, and writing
+  bare Parquet needs only 1.85 but produces files without the manifests and
+  snapshots that make an Iceberg table an Iceberg table.
+
+  A default build still compiles on 1.88. If you are pinned below 1.94, build
+  without `fleet-store` and the floor does not bind in practice — but the
+  manifest will refuse, so pin IronMonitor to 6.0.0 instead.
+
+- **The privacy screens say what they mean.** `ironmon privacy` previously said
+  "no code in this crate collects, aggregates or transmits telemetry", which was
+  broader than the guarantee underneath it and was already untrue of the program
+  as shipped: `ironmon record` writes a local metrics file and `ironmon serve`
+  publishes metrics for a scraper.
+
+  The guarantee has not changed and has not weakened: **there is no telemetry
+  endpoint, and nothing is reported to the authors of this program.** The wording
+  now draws the line where it actually falls — who chose the destination. Storage
+  you set up yourself is not telemetry; it is your data going where you told it
+  to.
+
+### Added
+
+- **`fleet-store`** — an optional feature storing per-host, per-tick metrics in
+  an Apache Iceberg table, for fleets too large for the single-machine file that
+  `ironmon record` writes. Off by default and not part of `full`: it is a
+  ~50-crate dependency graph, and it is what raises the Rust floor above.
+
+  Rows keep the distinction the rest of IronMonitor keeps. Every measured column
+  is nullable, so a card that reported nothing stays separable from a card that
+  reported zero — `AVG(gpu_utilization)` over the table already does the right
+  thing, because SQL aggregates skip nulls. A machine with no accelerators still
+  writes a row rather than vanishing from the fleet.
+
+  **The join key is not a hardware identifier.** Grouping by a board UUID, a disk
+  serial or a MAC would put exactly the values this project withholds into the
+  one artefact that leaves the machine. The key is generated locally from the
+  operating system's random source, discloses nothing about the host, and can be
+  rotated — which a serial cannot, and which is precisely what makes a serial an
+  identifier.
+
+### Fixed
+
+- **The Overview tab no longer paints past the right edge of the window.** A row
+  reserved 190 px for a Send button and a 172 px status label, so the text field
+  absorbed the difference and the row overran at every window size. Widening the
+  window moved the overrun instead of removing it.
+
+- **The window fits the Overview, after the Overview has loaded.** It opened at a
+  fixed 1400x900 and the tab did not fit. It is now measured at runtime and only
+  once the collector has published a real snapshot — measured before that, a
+  three-GPU machine looks like a machine with no accelerator cards, because the
+  warm-up generation describes none by construction.
+
+- **Three tabs right-aligned their contents outside the window.** `Accelerators`,
+  `Memory` and `Disk` used a right-to-left layout, which aligns against the
+  scroll area's content box rather than the window — so they overran by the same
+  number of pixels at every width. The Disk tab additionally laid out 990 px of
+  fixed-width columns in a window whose advertised minimum is 800.
+
 ## [6.0.0] - 2026-08-19
 
 ### Added
