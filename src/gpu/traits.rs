@@ -836,7 +836,10 @@ mod tests {
         assert_eq!(
             mem.utilization_percent(),
             None,
-            "a percentage needs both operands; inventing one is how a failed              read becomes a plausible-looking number"
+            concat!(
+                "a percentage needs both operands; inventing one is how a ",
+                "failed read becomes a plausible-looking number"
+            )
         );
     }
 
