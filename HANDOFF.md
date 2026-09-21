@@ -8475,6 +8475,52 @@ one clean rebuild; the cost of not checking, this time, would have been hunting
 an `egui` link error through an Iceberg change.
 
 
+### A temp directory nobody could delete from, and five explanations for it
+
+**Read this before the section below it, which is wrong.** That section blamed a
+`%TEMP%` holding 32,471 entries. The real cause was an access-control entry:
+
+```
+C:\Users\<user>\AppData\Local\Temp
+    <domain>\CodexSandboxUsers:(OI)(CI)(M)     inheritable
+    S-1-5-21-...-1122872522:(OI)(CI)(M)        inheritable
+    <domain>\<user>:(F)                         NOT inheritable
+```
+
+The owning user's full control was **non-inheritable**, so every directory
+created under `%TEMP%` inherited rights for two sandbox principals and none for
+the user who made it. The result is a directory you can create in and cannot
+delete from — `Remove-Item`, `rmdir` and even *rename* all refused a directory
+created one second earlier, while the same operations worked in
+`$env:USERPROFILE`. One added ACE fixed it:
+
+```
+icacls "%TEMP%" /grant "DOMAIN\user:(OI)(CI)F" /T /C
+```
+
+Confirmed by outcome rather than argument: the identical cleanup that had removed
+**0 of 30,925** entries removed **28,108** afterwards, with nothing else changed.
+The 2,795 that still failed are files held open by running processes, which
+should refuse deletion. `%TEMP%` went from 35,569 entries to 7,446.
+
+**Five explanations were offered before that one, and four were wrong:**
+
+1. Concurrent `cargo` processes contending — the processes were real, the cause
+   was not.
+2. Load-dependent link failures — described the pattern, not the mechanism.
+3. A temp directory too full to create files in — plausible, false, and written
+   into this file as fact.
+4. The agent harness sandbox blocking deletion — disproved by disabling it and
+   seeing the same denial.
+5. The non-inheritable ACE — confirmed by fixing it.
+
+*`icacls` on the directory answers this in seconds and was available from the
+first failure.* Four rounds of inference from failure modes went by first. It is
+the same lesson as asking the linker which file it could not open, and as
+printing a galley rect beside an ink rect: **ask the system what it knows before
+reasoning about what it must be doing.** Three times in one session the cheap
+direct question beat the clever inference, and it was cheap every time.
+
 ### A full temp directory, wearing two disguises
 
 Six `legacy_paths` tests failed with `PermissionDenied` while creating
