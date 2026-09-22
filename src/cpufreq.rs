@@ -1191,7 +1191,14 @@ impl CpuFreqMonitor {
             if let Ok(freq_str) = String::from_utf8(output.stdout) {
                 if let Ok(freq) = freq_str.trim().parse::<u64>() {
                     for cpu in &mut self.cpus {
-                        cpu.max_freq_khz = freq / 1000;
+                        // A real reading: `hw.cpufrequency_max` answered.
+                        cpu.max_freq_khz = Some(freq / 1000);
+                        // Still an approximation, and still marked as one: this
+                        // assigns the *maximum* to the current frequency because
+                        // macOS exposes no per-core current frequency here.
+                        // `current_freq_khz` is a bare `u64` and cannot say
+                        // "not read", so the substitution stays for now. It is
+                        // the same shape as the defects fixed around it.
                         cpu.current_freq_khz = freq / 1000; // Approximation
                         cpu.current_freq_mhz = (freq / 1_000_000) as u32;
                     }
