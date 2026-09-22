@@ -174,8 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cpu.id,
                     cpu.current_freq_mhz,
                     turbo_marker,
-                    cpu.min_freq_khz / 1000,
-                    cpu.max_freq_khz / 1000,
+                    cpu.min_freq_khz
+                        .map_or("?".to_string(), |k| (k / 1000).to_string()),
+                    cpu.max_freq_khz
+                        .map_or("?".to_string(), |k| (k / 1000).to_string()),
                     freq_bar,
                     gov_short
                 );
@@ -194,11 +196,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\n📊 CPU Frequency Distribution");
                 println!("{}", "-".repeat(70));
 
-                let max_freq = online.iter().map(|c| c.max_freq_khz).max().unwrap_or(1);
+                // Scale the chart against the highest maximum any core
+                // reported. With none reported there is nothing to scale to, so
+                // the distribution section is skipped rather than drawn against
+                // an invented ceiling of 1 kHz.
+                let max_freq = online.iter().filter_map(|c| c.max_freq_khz).max();
 
                 for cpu in online.iter().take(16) {
                     // Limit to 16 CPUs for display
-                    let bar_len = ((cpu.current_freq_khz as f64 / max_freq as f64) * 40.0) as usize;
+                    let Some(ceiling) = max_freq else { break };
+                    let bar_len = ((cpu.current_freq_khz as f64 / ceiling as f64) * 40.0) as usize;
                     let bar = "█".repeat(bar_len);
                     let turbo = match cpu.is_turbo() {
                         Some(true) => "🔥",
@@ -317,7 +324,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Create a visual frequency bar
-fn create_freq_bar(percent: f32, width: usize) -> String {
+fn create_freq_bar(percent: Option<f32>, width: usize) -> String {
+    // No maximum frequency means no percentage of one. An empty track is drawn
+    // rather than a full bar at 0%, which would read as a core sitting idle.
+    let Some(percent) = percent else {
+        return "·".repeat(width);
+    };
     let filled = ((percent / 100.0) * width as f32) as usize;
     let empty = width.saturating_sub(filled);
 

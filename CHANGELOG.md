@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **`CpuFreqInfo::is_max_freq` no longer answers "yes" for every core, and
+  frequency fields are now `Option`.** `min_freq_khz` and `max_freq_khz` were
+  bare `u64` beside a `base_freq_khz` that was already `Option`. With an unread
+  maximum stored as `0`, `is_max_freq` compared `current >= 0` and returned true
+  unconditionally; `freq_percent` returned `0.0`, reading as an idle core.
+
+  Both, plus `freq_percent`, `is_max_freq` and `is_min_freq`, are `Option` now.
+  Two Windows substitutions went with them: the current frequency was used as
+  the maximum when WMI reported none (making any core look pinned at 100%), and
+  a registry *base* frequency was assigned to `max_freq_khz` — it goes to
+  `base_freq_khz`, which exists for it.
+
 - **Motherboard sensor readings that could not be taken are absent rather than
   zero, and this changes public API.** `TemperatureSensor.temperature`,
   `VoltageRail.voltage` and `SensorReading.value` were bare `f32` while the

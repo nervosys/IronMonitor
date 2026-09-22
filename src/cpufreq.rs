@@ -166,10 +166,15 @@ pub struct CpuFreqInfo {
     pub current_freq_khz: u64,
     /// Current frequency (MHz) for convenience
     pub current_freq_mhz: u32,
-    /// Minimum allowed frequency (kHz)
-    pub min_freq_khz: u64,
-    /// Maximum allowed frequency (kHz)
-    pub max_freq_khz: u64,
+    /// Minimum allowed frequency (kHz), or `None` where it was not read.
+    ///
+    /// **Optional because `0` was answering a question nobody asked.** With a
+    /// fabricated maximum of zero, [`Self::is_max_freq`] compared
+    /// `current >= 0` and reported every core as running flat out. The
+    /// `base_freq_khz` beside this was already `Option` for the same reason.
+    pub min_freq_khz: Option<u64>,
+    /// Maximum allowed frequency (kHz), or `None` where it was not read.
+    pub max_freq_khz: Option<u64>,
     /// Hardware minimum frequency (kHz)
     pub cpuinfo_min_freq_khz: Option<u64>,
     /// Hardware maximum frequency (kHz)
@@ -205,8 +210,8 @@ impl CpuFreqInfo {
             online: true,
             current_freq_khz: 0,
             current_freq_mhz: 0,
-            min_freq_khz: 0,
-            max_freq_khz: 0,
+            min_freq_khz: None,
+            max_freq_khz: None,
             cpuinfo_min_freq_khz: None,
             cpuinfo_max_freq_khz: None,
             base_freq_khz: None,
@@ -222,22 +227,29 @@ impl CpuFreqInfo {
         }
     }
 
-    /// Get frequency as percentage of maximum
-    pub fn freq_percent(&self) -> f32 {
-        if self.max_freq_khz == 0 {
-            return 0.0;
+    /// Frequency as a percentage of maximum, or `None` without a maximum.
+    ///
+    /// Returned `0.0` when the maximum was unknown — a core at 0% of an unread
+    /// ceiling, which reads as an idle processor.
+    pub fn freq_percent(&self) -> Option<f32> {
+        let max = self.max_freq_khz?;
+        if max == 0 {
+            return None;
         }
-        (self.current_freq_khz as f32 / self.max_freq_khz as f32) * 100.0
+        Some((self.current_freq_khz as f32 / max as f32) * 100.0)
     }
 
-    /// Check if CPU is at maximum frequency
-    pub fn is_max_freq(&self) -> bool {
-        self.current_freq_khz >= self.max_freq_khz
+    /// Whether the CPU is at its maximum frequency, or `None` without one.
+    ///
+    /// **This returned `true` for every core when the maximum was unread**,
+    /// because a fabricated `0` made `current >= 0` trivially true.
+    pub fn is_max_freq(&self) -> Option<bool> {
+        Some(self.current_freq_khz >= self.max_freq_khz?)
     }
 
-    /// Check if CPU is at minimum frequency
-    pub fn is_min_freq(&self) -> bool {
-        self.current_freq_khz <= self.min_freq_khz
+    /// Whether the CPU is at its minimum frequency, or `None` without one.
+    pub fn is_min_freq(&self) -> Option<bool> {
+        Some(self.current_freq_khz <= self.min_freq_khz?)
     }
 
     /// Whether the core is above its base frequency, or `None` when the base
@@ -276,10 +288,10 @@ pub struct CpuFreqPolicy {
     pub related_cpus: Vec<u32>,
     /// Current governor
     pub governor: Governor,
-    /// Minimum frequency (kHz)
-    pub min_freq_khz: u64,
-    /// Maximum frequency (kHz)
-    pub max_freq_khz: u64,
+    /// Minimum frequency (kHz), or `None` where it was not read.
+    pub min_freq_khz: Option<u64>,
+    /// Maximum frequency (kHz), or `None` where it was not read.
+    pub max_freq_khz: Option<u64>,
     /// Scaling driver
     pub scaling_driver: Option<String>,
 }
@@ -637,10 +649,10 @@ impl CpuFreqMonitor {
 
             // Read min/max scaling frequencies
             if let Ok(freq_str) = fs::read_to_string(cpufreq_dir.join("scaling_min_freq")) {
-                cpu.min_freq_khz = freq_str.trim().parse().unwrap_or(0);
+                cpu.min_freq_khz = freq_str.trim().parse().ok();
             }
             if let Ok(freq_str) = fs::read_to_string(cpufreq_dir.join("scaling_max_freq")) {
-                cpu.max_freq_khz = freq_str.trim().parse().unwrap_or(0);
+                cpu.max_freq_khz = freq_str.trim().parse().ok();
             }
 
             // Read hardware min/max frequencies
@@ -1072,20 +1084,29 @@ impl CpuFreqMonitor {
             if let Some(current) = current_mhz {
                 cpu.model = name.clone();
                 cpu.current_freq_mhz = current;
-                cpu.max_freq_khz = (max_mhz.unwrap_or(current) as u64) * 1000;
+                // `max_mhz.unwrap_or(current)` reported the current frequency
+                // as the maximum whenever WMI gave no maximum — which makes
+                // `freq_percent` read 100% and `is_max_freq` read true, for a
+                // ceiling nobody reported.
+                cpu.max_freq_khz = max_mhz.map(|m| (m as u64) * 1000);
                 cpu.current_freq_khz = (cpu.current_freq_mhz as u64) * 1000;
                 // Windows exposes no minimum core frequency here. This was
-                // `max_freq_khz / 4`, which is not a property of any CPU — it just
-                // produced a plausible-looking number. Zero means "not read".
-                cpu.min_freq_khz = 0;
+                // `max_freq_khz / 4`, which is not a property of any CPU — it
+                // just produced a plausible-looking number, then `0` standing in
+                // for "not read" because the field could not say so. It can now.
+                cpu.min_freq_khz = None;
                 cpu.scaling_driver = Some("windows-wmi".to_string());
                 cpu.available_governors.push(governor.clone());
             } else if base_freq_mhz > 0 {
                 // Fallback to base frequency from registry
                 cpu.current_freq_mhz = base_freq_mhz;
                 cpu.current_freq_khz = (base_freq_mhz as u64) * 1000;
-                cpu.max_freq_khz = cpu.current_freq_khz;
-                cpu.min_freq_khz = 0; // Not read — see above
+                // The registry gives a *base* frequency, which is not a maximum.
+                // Assigning it to `max_freq_khz` claimed a ceiling this path
+                // never read; it belongs in the field that means base.
+                cpu.base_freq_khz = Some(cpu.current_freq_khz);
+                cpu.max_freq_khz = None;
+                cpu.min_freq_khz = None;
             }
 
             self.cpus.push(cpu);
@@ -1098,8 +1119,8 @@ impl CpuFreqMonitor {
                 affected_cpus: (0..num_cpus).collect(),
                 related_cpus: (0..num_cpus).collect(),
                 governor: governor.clone(),
-                min_freq_khz: self.cpus.first().map(|c| c.min_freq_khz).unwrap_or(0),
-                max_freq_khz: self.cpus.first().map(|c| c.max_freq_khz).unwrap_or(0),
+                min_freq_khz: self.cpus.first().and_then(|c| c.min_freq_khz),
+                max_freq_khz: self.cpus.first().and_then(|c| c.max_freq_khz),
                 scaling_driver: Some(plan_name),
             });
         }
