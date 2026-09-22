@@ -16,8 +16,14 @@
 //!
 //! let monitor = NumaMonitor::new().unwrap();
 //! for node in monitor.nodes() {
-//!     println!("Node {}: {} CPUs, {:.1} GB total memory",
-//!         node.id, node.cpus.len(), node.memory_total_bytes as f64 / 1e9);
+//!     // `memory_total_bytes` is `Option`: a node whose `meminfo` could not be
+//!     // read reports no size rather than a size of zero.
+//!     match node.memory_total_bytes {
+//!         Some(bytes) => println!("Node {}: {} CPUs, {:.1} GB total memory",
+//!             node.id, node.cpus.len(), bytes as f64 / 1e9),
+//!         None => println!("Node {}: {} CPUs, memory size not readable",
+//!             node.id, node.cpus.len()),
+//!     }
 //! }
 //! if let Some(dist) = monitor.distance_matrix() {
 //!     println!("NUMA distance matrix: {:?}", dist);
