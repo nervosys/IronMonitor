@@ -976,16 +976,38 @@ fn resolve_ecc(out: &mut Vec<Reading>) {
         serde_json::json!(overview.ecc_active),
         None,
     ));
-    out.push(Reading::measured(
-        "memory.ecc.correctable_errors",
-        serde_json::json!(overview.total_ce),
-        Some(Unit::Count),
-    ));
-    out.push(Reading::measured(
-        "memory.ecc.uncorrectable_errors",
-        serde_json::json!(overview.total_ue),
-        Some(Unit::Count),
-    ));
+    // `measured` only when there is something measured.
+    //
+    // **The compiler cannot catch this one.** `serde_json::json!` accepts an
+    // `Option` and renders `None` as `null`, so writing the totals straight
+    // through would produce a reading with `provenance: measured` and a null
+    // value — a claimed observation of nothing, through the very field that
+    // exists to keep claims honest. The totals are `None` whenever any
+    // controller's counter could not be read.
+    match overview.total_ce {
+        Some(count) => out.push(Reading::measured(
+            "memory.ecc.correctable_errors",
+            serde_json::json!(count),
+            Some(Unit::Count),
+        )),
+        None => out.push(Reading::unavailable(
+            "memory.ecc.correctable_errors",
+            Some(Unit::Count),
+            "a memory controller's correctable-error counter could not be read;              a total over partly-unknown inputs would understate it",
+        )),
+    }
+    match overview.total_ue {
+        Some(count) => out.push(Reading::measured(
+            "memory.ecc.uncorrectable_errors",
+            serde_json::json!(count),
+            Some(Unit::Count),
+        )),
+        None => out.push(Reading::unavailable(
+            "memory.ecc.uncorrectable_errors",
+            Some(Unit::Count),
+            "a memory controller's uncorrectable-error counter could not be read;              a total over partly-unknown inputs would understate it",
+        )),
+    }
 }
 
 fn resolve_pci(out: &mut Vec<Reading>) {

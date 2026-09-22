@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **ECC memory error counts that could not be read are no longer reported as
+  zero, and this changes a public API.** `EdacCsRow`, `EdacMemoryController` and
+  `EdacOverview` typed their counters as bare integers, so an unreadable sysfs
+  counter became `0`.
+
+  It did not stop there. The ontology resolver published that zero as
+  `provenance: measured` — the one provenance that satisfies `is_observation()`
+  — so an agent asking `memory.ecc.correctable_errors` was told, as a confirmed
+  observation, that the machine had recorded no memory errors. "Zero errors" and
+  "the counter could not be read" are opposite conclusions, and the first one
+  says the RAM is healthy.
+
+  Counters are `Option` now. A total is `None` if *any* controller's counter was
+  unreadable, rather than summing the readable ones into a number that looks
+  complete and is silently low — an undercount is the dangerous direction here.
+  The resolver emits `unavailable` with a reason, which is what its own
+  early-return paths already did.
+
 - **GPU readings that could not be taken are now absent rather than zero, and
   this changes a public API.** `gpu::traits::Clocks`, `Utilization` and `Memory`
   had core fields typed as bare numbers — `graphics: u32`, `gpu: f32`,

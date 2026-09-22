@@ -65,16 +65,21 @@ pub struct EdacCsRow {
     pub label: String,
     /// Memory type.
     pub mem_type: EdacMemType,
-    /// Size in MB.
-    pub size_mb: u64,
-    /// Correctable errors count.
-    pub ce_count: u64,
-    /// Uncorrectable errors count.
-    pub ue_count: u64,
+    /// Size in MB, or `None` where sysfs did not report it.
+    pub size_mb: Option<u64>,
+    /// Correctable errors count, or `None` where the counter was not readable.
+    ///
+    /// **Not the same as zero.** A counter that could not be read and a DIMM
+    /// that has recorded no errors are opposite facts, and the second one tells
+    /// an operator their memory is healthy.
+    pub ce_count: Option<u64>,
+    /// Uncorrectable errors count, or `None` where unreadable. See
+    /// [`Self::ce_count`].
+    pub ue_count: Option<u64>,
     /// Location (channel/slot).
     pub location: String,
-    /// Grain size (error resolution in bytes).
-    pub grain: u32,
+    /// Grain size (error resolution in bytes), or `None` where unreadable.
+    pub grain: Option<u32>,
 }
 
 /// EDAC memory controller.
@@ -84,18 +89,20 @@ pub struct EdacMemoryController {
     pub index: u32,
     /// MC name/driver.
     pub mc_name: String,
-    /// Total correctable errors on this controller.
-    pub ce_count: u64,
-    /// Total uncorrectable errors on this controller.
-    pub ue_count: u64,
-    /// Whether CE errors generate a noinfo count (unattributed CE).
-    pub ce_noinfo_count: u64,
-    /// Whether UE errors generate a noinfo count.
-    pub ue_noinfo_count: u64,
+    /// Total correctable errors on this controller, or `None` where the
+    /// counter was not readable. See [`EdacCsRow::ce_count`].
+    pub ce_count: Option<u64>,
+    /// Total uncorrectable errors on this controller, or `None` where
+    /// unreadable.
+    pub ue_count: Option<u64>,
+    /// Unattributed correctable errors, or `None` where unreadable.
+    pub ce_noinfo_count: Option<u64>,
+    /// Unattributed uncorrectable errors, or `None` where unreadable.
+    pub ue_noinfo_count: Option<u64>,
     /// CSROW / DIMM entries.
     pub csrows: Vec<EdacCsRow>,
-    /// Seconds since reset.
-    pub seconds_since_reset: u64,
+    /// Seconds since reset, or `None` where unreadable.
+    pub seconds_since_reset: Option<u64>,
 }
 
 /// EDAC overview.
@@ -106,9 +113,14 @@ pub struct EdacOverview {
     /// Total MC count.
     pub total_controllers: u32,
     /// Total correctable errors across all controllers.
-    pub total_ce: u64,
-    /// Total uncorrectable errors across all controllers.
-    pub total_ue: u64,
+    ///
+    /// `None` when any controller's counter was unreadable: a total computed
+    /// over partly-unknown inputs is not a total, and this one is the number an
+    /// operator reads as "is my memory failing".
+    pub total_ce: Option<u64>,
+    /// Total uncorrectable errors across all controllers. `None` on the same
+    /// terms as [`Self::total_ce`].
+    pub total_ue: Option<u64>,
     /// Whether ECC is active.
     pub ecc_active: bool,
     /// Recommendations.
@@ -143,13 +155,14 @@ impl EdacMonitor {
         &self.overview.controllers
     }
 
-    /// Total CE count.
-    pub fn total_correctable_errors(&self) -> u64 {
+    /// Total CE count, or `None` when any controller's counter was unreadable.
+    pub fn total_correctable_errors(&self) -> Option<u64> {
         self.overview.total_ce
     }
 
-    /// Total UE count.
-    pub fn total_uncorrectable_errors(&self) -> u64 {
+    /// Total UE count, or `None` on the same terms as
+    /// [`Self::total_correctable_errors`].
+    pub fn total_uncorrectable_errors(&self) -> Option<u64> {
         self.overview.total_ue
     }
 
@@ -159,7 +172,10 @@ impl EdacMonitor {
             .controllers
             .iter()
             .flat_map(|mc| mc.csrows.iter())
-            .filter(|cs| cs.ce_count > 0 || cs.ue_count > 0)
+            // A DIMM whose counters were unreadable is not a DIMM with
+            // errors; it is a DIMM nobody could ask. It stays out of this list
+            // rather than being counted either way.
+            .filter(|cs| cs.ce_count.is_some_and(|c| c > 0) || cs.ue_count.is_some_and(|c| c > 0))
             .collect()
     }
 
@@ -190,11 +206,14 @@ impl EdacMonitor {
 
             let mc_name =
                 Self::read_sysfs(&mc_path.join("mc_name")).unwrap_or_else(|| format!("mc{}", i));
-            let ce_count = Self::read_sysfs_u64(&mc_path.join("ce_count")).unwrap_or(0);
-            let ue_count = Self::read_sysfs_u64(&mc_path.join("ue_count")).unwrap_or(0);
-            let ce_noinfo = Self::read_sysfs_u64(&mc_path.join("ce_noinfo_count")).unwrap_or(0);
-            let ue_noinfo = Self::read_sysfs_u64(&mc_path.join("ue_noinfo_count")).unwrap_or(0);
-            let seconds = Self::read_sysfs_u64(&mc_path.join("seconds_since_reset")).unwrap_or(0);
+            // `read_sysfs_u64` already answers `None` for a file that is
+            // missing or unreadable. These used to discard that and report `0`,
+            // which is an ECC error count an operator acts on.
+            let ce_count = Self::read_sysfs_u64(&mc_path.join("ce_count"));
+            let ue_count = Self::read_sysfs_u64(&mc_path.join("ue_count"));
+            let ce_noinfo = Self::read_sysfs_u64(&mc_path.join("ce_noinfo_count"));
+            let ue_noinfo = Self::read_sysfs_u64(&mc_path.join("ue_noinfo_count"));
+            let seconds = Self::read_sysfs_u64(&mc_path.join("seconds_since_reset"));
 
             let mut csrows = Vec::new();
 
@@ -213,10 +232,10 @@ impl EdacMonitor {
                     Self::read_sysfs(&csrow_path.join("mem_type")).unwrap_or_default();
                 let mem_type = Self::parse_mem_type(&mem_type_str);
 
-                let size_mb = Self::read_sysfs_u64(&csrow_path.join("size_mb")).unwrap_or(0);
-                let cs_ce = Self::read_sysfs_u64(&csrow_path.join("ce_count")).unwrap_or(0);
-                let cs_ue = Self::read_sysfs_u64(&csrow_path.join("ue_count")).unwrap_or(0);
-                let grain = Self::read_sysfs_u32(&csrow_path.join("grain")).unwrap_or(0);
+                let size_mb = Self::read_sysfs_u64(&csrow_path.join("size_mb"));
+                let cs_ce = Self::read_sysfs_u64(&csrow_path.join("ce_count"));
+                let cs_ue = Self::read_sysfs_u64(&csrow_path.join("ue_count"));
+                let grain = Self::read_sysfs_u32(&csrow_path.join("grain"));
 
                 let location = Self::read_sysfs(&csrow_path.join("location")).unwrap_or_default();
 
@@ -278,8 +297,17 @@ impl EdacMonitor {
         }
 
         let total = controllers.len() as u32;
-        let total_ce: u64 = controllers.iter().map(|mc| mc.ce_count).sum();
-        let total_ue: u64 = controllers.iter().map(|mc| mc.ue_count).sum();
+        // Summed only when every contributing counter was read. One unreadable
+        // controller used to reduce the fleet-visible error count silently,
+        // which is the failure mode a total exists to avoid.
+        let total_ce: Option<u64> = controllers
+            .iter()
+            .map(|mc| mc.ce_count)
+            .try_fold(0u64, |acc, c| c.map(|c| acc + c));
+        let total_ue: Option<u64> = controllers
+            .iter()
+            .map(|mc| mc.ue_count)
+            .try_fold(0u64, |acc, c| c.map(|c| acc + c));
         let ecc_active = total > 0;
 
         let mut recs = Vec::new();
@@ -381,8 +409,10 @@ impl EdacMonitor {
         EdacOverview {
             controllers: Vec::new(),
             total_controllers: 0,
-            total_ce: 0,
-            total_ue: 0,
+            // Nothing was read, so there is no total. `0` here claimed a clean
+            // bill of health for a machine nobody examined.
+            total_ce: None,
+            total_ue: None,
             ecc_active: false,
             recommendations: Vec::new(),
         }
@@ -414,37 +444,37 @@ mod tests {
             controllers: vec![EdacMemoryController {
                 index: 0,
                 mc_name: "test_mc".into(),
-                ce_count: 5,
-                ue_count: 0,
-                ce_noinfo_count: 0,
-                ue_noinfo_count: 0,
+                ce_count: Some(5),
+                ue_count: Some(0),
+                ce_noinfo_count: Some(0),
+                ue_noinfo_count: Some(0),
                 csrows: vec![
                     EdacCsRow {
                         index: 0,
                         label: "DIMM_A1".into(),
                         mem_type: EdacMemType::Ddr4,
-                        size_mb: 16384,
-                        ce_count: 5,
-                        ue_count: 0,
+                        size_mb: Some(16384),
+                        ce_count: Some(5),
+                        ue_count: Some(0),
                         location: "ch0/slot0".into(),
-                        grain: 8,
+                        grain: Some(8),
                     },
                     EdacCsRow {
                         index: 1,
                         label: "DIMM_A2".into(),
                         mem_type: EdacMemType::Ddr4,
-                        size_mb: 16384,
-                        ce_count: 0,
-                        ue_count: 0,
+                        size_mb: Some(16384),
+                        ce_count: Some(0),
+                        ue_count: Some(0),
                         location: "ch0/slot1".into(),
-                        grain: 8,
+                        grain: Some(8),
                     },
                 ],
-                seconds_since_reset: 86400,
+                seconds_since_reset: Some(86400),
             }],
             total_controllers: 1,
-            total_ce: 5,
-            total_ue: 0,
+            total_ce: Some(5),
+            total_ue: Some(0),
             ecc_active: true,
             recommendations: Vec::new(),
         };
@@ -466,11 +496,11 @@ mod tests {
             index: 0,
             label: "DIMM0".into(),
             mem_type: EdacMemType::Ddr5,
-            size_mb: 32768,
-            ce_count: 3,
-            ue_count: 0,
+            size_mb: Some(32768),
+            ce_count: Some(3),
+            ue_count: Some(0),
             location: "mc0/ch0/dimm0".into(),
-            grain: 8,
+            grain: Some(8),
         };
         let json = serde_json::to_string(&cs).unwrap();
         assert!(json.contains("DIMM0"));
