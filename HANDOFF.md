@@ -8962,7 +8962,7 @@ The clearest few, to start from:
 | --- | --- | --- |
 | `hwmon/mod.rs` `HwSensor` | `value: f32` beside `min`/`max: Option` | **checked -- not a defect** |
 | `smart/mod.rs` `SmartDiskInfo` | `capacity_bytes: u64` beside 13 `Option`s | **checked -- fixed** |
-| `io_scheduler/mod.rs` `BlockDeviceIo` | `size_bytes: u64` | no |
+| `io_scheduler/mod.rs` `BlockDeviceIo` | `size_bytes: u64` | **checked -- fixed, and larger than the flag** |
 | `observability/context.rs` `CpuMetrics` | `utilization_percent: f32` | no |
 | `observability/metrics.rs` `CpuMetricSnapshot` | `usage_percent: f32` | no |
 | `gpu/windows_helpers.rs` `EngineUtilization` | `overall: u8` beside per-engine `Option`s | **checked -- fixed** |
@@ -9129,3 +9129,47 @@ The structural scan does not catch this either -- `overall: u8` did flag,
 but only because it happened to sit beside `Option` siblings in its own struct.
 A `Some(fabricated)` at a call site has no shape to match on. That is a gap in
 the method, recorded here rather than papered over.
+
+### The flagged field was the small part
+
+Instance twelve. `BlockDeviceIo::size_bytes` is what the structural scan
+flagged, and fixing it took one line. The struct beside it, `IoStats`, had
+twelve bare counters and no `Option` sibling at all -- so **the scan did not
+flag `IoStats`**, and would not have. It was found only because `size_bytes`
+sat two fields away and something had to be read to fix it.
+
+Two things worth carrying forward from that:
+
+- **A candidate is a place to look, not a thing to fix.** Four of the six
+  checked so far were larger, smaller or entirely different from what the scan
+  said. Treating the flagged field as the work would have left twelve counters
+  in place.
+- **A struct where *every* field is bare cannot be detected by a rule that
+  looks for inconsistency.** The scan's whole premise is that somebody already
+  made one field `Option` and stopped. A reader that fabricates uniformly
+  leaves no seam. That is a permanent hole in the method, not a tuning problem.
+
+#### The diagnosis was already in the file
+
+`read_iops_from_stats` carried this, before any of this session's work:
+
+> `read_time_ms == 0` has two meanings and neither is "this device does zero
+> reads per second": either it has genuinely never served a read, or the
+> counters were never populated -- which is every platform but Linux, where
+> `IoStats` is constructed with zeros.
+
+That is the defect, named precisely, by someone who then guarded with `== 0`
+and moved on. The guard was the best available at the time: the type could not
+express the difference, so the only lever was a sentinel, and the sentinel
+discarded the real zero along with the fake one.
+
+This is now the **fourth** instance in this sweep where the correct analysis
+was already written down next to the uncorrected code -- `macos.rs` current
+frequency, `PowerStats::empty`, `NvmeInfo`, and here.
+
+> **A comment is where a fix goes to wait for a type that can hold it.** In all
+> four cases the author understood the problem completely and had nowhere to
+> put the understanding except prose. Prose does not travel with the value, and
+> nothing downstream can branch on it.
+
+The practical form of this: `grep -rn "not the same as\|neither is\|two meanings\|cannot say\|would not tell" src/` finds places where somebody has already done the hard part. It is a better lead than the structural scan on a per-hit basis, because every hit comes with its own diagnosis.

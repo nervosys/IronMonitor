@@ -42,6 +42,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **`io_scheduler::IoStats` is `Option` throughout, and a device with no stat
+  file no longer reports twelve zeroes.** The field that flagged this was
+  `BlockDeviceIo::size_bytes` — the *third* struct in this crate holding a
+  disk's size from the same sysfs `size` attribute, and the third to flatten it
+  with `.unwrap_or(0)`. What the flag led to was larger.
+
+  `read_stats` read the file with `unwrap_or_default()`, so a device with **no
+  `stat` file at all** produced an empty string, no fields, and twelve counters
+  of zero — a device reporting it had served no I/O since boot. All twelve are
+  now taken positionally with `.copied()`, so a missing file leaves them all
+  absent and a short line leaves only its tail absent. That second case is real:
+  the `stat` line gained discard counters in Linux 4.18.
+
+  **The ambiguity was already documented at the point that suffered from it.**
+  `read_iops_from_stats` carried this, verbatim:
+
+  > `None` rather than the `0.0` this returned before, because `read_time_ms ==
+  > 0` has two meanings and neither is "this device does zero reads per second":
+  > either it has genuinely never served a read, or the counters were never
+  > populated — which is every platform but Linux, where `IoStats` is
+  > constructed with zeros.
+
+  The author diagnosed it exactly and guarded with `== 0`, which also discarded
+  the genuine zero they were trying to preserve — the same sentinel trap as the
+  disk `> 0` guards. The three derived helpers now ask both questions
+  separately: `None` if the counters were not read, and `None` again if the
+  device spent no time reading, the latter now a division guard rather than a
+  proxy for the former.
+
 - **A GPU whose performance counters never answered no longer reports a
   measured 0% utilisation.** `windows_helpers::EngineUtilization::overall` was
   bare `u8` beside five `Option` per-engine fields, and fell back to `0` when no

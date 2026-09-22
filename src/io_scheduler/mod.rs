@@ -49,32 +49,44 @@ impl std::fmt::Display for IoSchedulerType {
 }
 
 /// Block device I/O statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// **Every field is `Option` because this struct is built on platforms that
+/// cannot populate it at all.** `read_iops_from_stats` below already said so:
+/// a `read_time_ms` of zero means "never served a read" *or* "the counters
+/// were never populated -- which is every platform but Linux", and it guarded
+/// with `== 0` because the type gave it no way to ask which. That guard also
+/// discarded the genuine zero it was trying to preserve.
+///
+/// On Linux the whole set comes from one `/sys/block/*/stat` line, so they
+/// succeed or fail together; they are individually optional because the line
+/// gained fields over time (discards arrived in 4.18) and a short line should
+/// leave the later ones absent rather than zero.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IoStats {
     /// Reads completed.
-    pub reads_completed: u64,
+    pub reads_completed: Option<u64>,
     /// Reads merged.
-    pub reads_merged: u64,
+    pub reads_merged: Option<u64>,
     /// Sectors read.
-    pub sectors_read: u64,
+    pub sectors_read: Option<u64>,
     /// Time reading (ms).
-    pub read_time_ms: u64,
+    pub read_time_ms: Option<u64>,
     /// Writes completed.
-    pub writes_completed: u64,
+    pub writes_completed: Option<u64>,
     /// Writes merged.
-    pub writes_merged: u64,
+    pub writes_merged: Option<u64>,
     /// Sectors written.
-    pub sectors_written: u64,
+    pub sectors_written: Option<u64>,
     /// Time writing (ms).
-    pub write_time_ms: u64,
+    pub write_time_ms: Option<u64>,
     /// Current I/O in flight.
-    pub in_flight: u64,
+    pub in_flight: Option<u64>,
     /// Time doing I/O (ms).
-    pub io_time_ms: u64,
+    pub io_time_ms: Option<u64>,
     /// Weighted time doing I/O (ms).
-    pub weighted_io_time_ms: u64,
+    pub weighted_io_time_ms: Option<u64>,
     /// Discards completed (TRIM).
-    pub discards_completed: u64,
+    pub discards_completed: Option<u64>,
 }
 
 /// Block device I/O scheduler info.
@@ -101,8 +113,13 @@ pub struct BlockDeviceIo {
     pub discard_support: Option<bool>,
     /// I/O statistics.
     pub stats: IoStats,
-    /// Device size in bytes.
-    pub size_bytes: u64,
+    /// Device size in bytes, or `None` where `size` was not readable.
+    ///
+    /// The third struct in this crate to hold a disk's size from the same
+    /// sysfs `size` attribute, and the third to have flattened it with
+    /// `.unwrap_or(0)`. See `disk::DiskInfo::capacity` and
+    /// `smart::SmartDiskInfo::capacity_bytes`.
+    pub size_bytes: Option<u64>,
     /// Model / product name.
     pub model: String,
 }
@@ -119,37 +136,41 @@ impl BlockDeviceIo {
     /// while busy, which on a mostly-idle device is far above its IOPS.
     ///
     /// `None` rather than the `0.0` this returned before, because
-    /// `read_time_ms == 0` has two meanings and neither is "this device does
+    /// `read_time_ms == 0` had two meanings and neither is "this device does
     /// zero reads per second": either it has genuinely never served a read, or
     /// the counters were never populated -- which is every platform but Linux,
-    /// where [`IoStats`] is constructed with zeros.
+    /// where [`IoStats`] was constructed with zeros.
+    ///
+    /// **Those two are now distinguishable**, and this asks the right question
+    /// of each: `None` if the counters were not read, and `None` again if the
+    /// device has spent no time reading -- but the second is now a division
+    /// guard rather than a proxy for the first.
     pub fn read_iops_from_stats(&self) -> Option<f64> {
-        if self.stats.read_time_ms == 0 {
+        let (reads, time_ms) = (self.stats.reads_completed?, self.stats.read_time_ms?);
+        if time_ms == 0 {
             return None;
         }
-        Some(self.stats.reads_completed as f64 / (self.stats.read_time_ms as f64 / 1000.0))
+        Some(reads as f64 / (time_ms as f64 / 1000.0))
     }
 
     /// Write operations per second of time spent writing. See
     /// [`Self::read_iops_from_stats`] for what this figure is and is not.
     pub fn write_iops_from_stats(&self) -> Option<f64> {
-        if self.stats.write_time_ms == 0 {
+        let (writes, time_ms) = (self.stats.writes_completed?, self.stats.write_time_ms?);
+        if time_ms == 0 {
             return None;
         }
-        Some(self.stats.writes_completed as f64 / (self.stats.write_time_ms as f64 / 1000.0))
+        Some(writes as f64 / (time_ms as f64 / 1000.0))
     }
 
     /// Read throughput in MB/s over time spent reading. See
     /// [`Self::read_iops_from_stats`] for what this figure is and is not.
     pub fn read_throughput_mbs(&self) -> Option<f64> {
-        if self.stats.read_time_ms == 0 {
+        let (sectors, time_ms) = (self.stats.sectors_read?, self.stats.read_time_ms?);
+        if time_ms == 0 {
             return None;
         }
-        Some(
-            (self.stats.sectors_read as f64 * 512.0)
-                / (self.stats.read_time_ms as f64 / 1000.0)
-                / 1_000_000.0,
-        )
+        Some((sectors as f64 * 512.0) / (time_ms as f64 / 1000.0) / 1_000_000.0)
     }
 
     /// Whether the scheduler is optimal for this device type, or `None` when
@@ -271,8 +292,7 @@ impl IoSchedulerMonitor {
             let stats = Self::read_stats(&dev_path);
 
             // Size (in 512-byte sectors)
-            let size_sectors = Self::read_sysfs_u64(&dev_path.join("size")).unwrap_or(0);
-            let size_bytes = size_sectors * 512;
+            let size_bytes = Self::read_sysfs_u64(&dev_path.join("size")).map(|s| s * 512);
 
             // Model
             let model = std::fs::read_to_string(dev_path.join("device/model"))
@@ -361,26 +381,37 @@ impl IoSchedulerMonitor {
     }
 
     #[cfg(target_os = "linux")]
+    /// Parse `/sys/block/<dev>/stat`.
+    ///
+    /// `unwrap_or_default()` on the file read meant a device with **no stat
+    /// file at all** produced an empty string, no fields, and twelve counters
+    /// of zero -- a device reporting it had served no I/O since boot. Every
+    /// field is now taken positionally with `.copied()`, so a missing file
+    /// leaves all twelve absent and a short line leaves only its tail absent.
+    /// The `stat` line gained discard counters in 4.18 and that is exactly the
+    /// short-line case.
     fn read_stats(dev_path: &std::path::Path) -> IoStats {
-        let content = std::fs::read_to_string(dev_path.join("stat")).unwrap_or_default();
+        let Ok(content) = std::fs::read_to_string(dev_path.join("stat")) else {
+            return IoStats::default();
+        };
         let parts: Vec<u64> = content
             .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
 
         IoStats {
-            reads_completed: *parts.first().unwrap_or(&0),
-            reads_merged: *parts.get(1).unwrap_or(&0),
-            sectors_read: *parts.get(2).unwrap_or(&0),
-            read_time_ms: *parts.get(3).unwrap_or(&0),
-            writes_completed: *parts.get(4).unwrap_or(&0),
-            writes_merged: *parts.get(5).unwrap_or(&0),
-            sectors_written: *parts.get(6).unwrap_or(&0),
-            write_time_ms: *parts.get(7).unwrap_or(&0),
-            in_flight: *parts.get(8).unwrap_or(&0),
-            io_time_ms: *parts.get(9).unwrap_or(&0),
-            weighted_io_time_ms: *parts.get(10).unwrap_or(&0),
-            discards_completed: *parts.get(11).unwrap_or(&0),
+            reads_completed: parts.first().copied(),
+            reads_merged: parts.get(1).copied(),
+            sectors_read: parts.get(2).copied(),
+            read_time_ms: parts.get(3).copied(),
+            writes_completed: parts.get(4).copied(),
+            writes_merged: parts.get(5).copied(),
+            sectors_written: parts.get(6).copied(),
+            write_time_ms: parts.get(7).copied(),
+            in_flight: parts.get(8).copied(),
+            io_time_ms: parts.get(9).copied(),
+            weighted_io_time_ms: parts.get(10).copied(),
+            discards_completed: parts.get(11).copied(),
         }
     }
 
@@ -471,20 +502,20 @@ mod tests {
             physical_block_size: Some(4096),
             discard_support: Some(true),
             stats: IoStats {
-                reads_completed: 0,
-                reads_merged: 0,
-                sectors_read: 0,
-                read_time_ms: 0,
-                writes_completed: 0,
-                writes_merged: 0,
-                sectors_written: 0,
-                write_time_ms: 0,
-                in_flight: 0,
-                io_time_ms: 0,
-                weighted_io_time_ms: 0,
-                discards_completed: 0,
+                reads_completed: Some(0),
+                reads_merged: Some(0),
+                sectors_read: Some(0),
+                read_time_ms: Some(0),
+                writes_completed: Some(0),
+                writes_merged: Some(0),
+                sectors_written: Some(0),
+                write_time_ms: Some(0),
+                in_flight: Some(0),
+                io_time_ms: Some(0),
+                weighted_io_time_ms: Some(0),
+                discards_completed: Some(0),
             },
-            size_bytes: 1_000_000_000_000,
+            size_bytes: Some(1_000_000_000_000),
             model: "Samsung 990 Pro".into(),
         };
         assert_eq!(dev.scheduler_optimal(), Some(true));
@@ -502,20 +533,20 @@ mod tests {
             physical_block_size: Some(512),
             discard_support: Some(false),
             stats: IoStats {
-                reads_completed: 0,
-                reads_merged: 0,
-                sectors_read: 0,
-                read_time_ms: 0,
-                writes_completed: 0,
-                writes_merged: 0,
-                sectors_written: 0,
-                write_time_ms: 0,
-                in_flight: 0,
-                io_time_ms: 0,
-                weighted_io_time_ms: 0,
-                discards_completed: 0,
+                reads_completed: Some(0),
+                reads_merged: Some(0),
+                sectors_read: Some(0),
+                read_time_ms: Some(0),
+                writes_completed: Some(0),
+                writes_merged: Some(0),
+                sectors_written: Some(0),
+                write_time_ms: Some(0),
+                in_flight: Some(0),
+                io_time_ms: Some(0),
+                weighted_io_time_ms: Some(0),
+                discards_completed: Some(0),
             },
-            size_bytes: 2_000_000_000_000,
+            size_bytes: Some(2_000_000_000_000),
             model: "WDC WD20EARS".into(),
         };
         assert_eq!(dev.scheduler_optimal(), Some(false));
@@ -530,18 +561,18 @@ mod tests {
     #[test]
     fn test_serialization() {
         let stats = IoStats {
-            reads_completed: 1000,
-            reads_merged: 50,
-            sectors_read: 80000,
-            read_time_ms: 500,
-            writes_completed: 2000,
-            writes_merged: 100,
-            sectors_written: 160000,
-            write_time_ms: 800,
-            in_flight: 2,
-            io_time_ms: 1000,
-            weighted_io_time_ms: 1200,
-            discards_completed: 10,
+            reads_completed: Some(1000),
+            reads_merged: Some(50),
+            sectors_read: Some(80000),
+            read_time_ms: Some(500),
+            writes_completed: Some(2000),
+            writes_merged: Some(100),
+            sectors_written: Some(160000),
+            write_time_ms: Some(800),
+            in_flight: Some(2),
+            io_time_ms: Some(1000),
+            weighted_io_time_ms: Some(1200),
+            discards_completed: Some(10),
         };
         let json = serde_json::to_string(&stats).unwrap();
         assert!(json.contains("1000"));
@@ -563,20 +594,20 @@ mod tests {
             physical_block_size: None,
             discard_support: None,
             stats: IoStats {
-                reads_completed: 0,
-                reads_merged: 0,
-                sectors_read: 0,
-                read_time_ms: 0,
-                writes_completed: 0,
-                writes_merged: 0,
-                sectors_written: 0,
-                write_time_ms: 0,
-                in_flight: 0,
-                io_time_ms: 0,
-                weighted_io_time_ms: 0,
-                discards_completed: 0,
+                reads_completed: Some(0),
+                reads_merged: Some(0),
+                sectors_read: Some(0),
+                read_time_ms: Some(0),
+                writes_completed: Some(0),
+                writes_merged: Some(0),
+                sectors_written: Some(0),
+                write_time_ms: Some(0),
+                in_flight: Some(0),
+                io_time_ms: Some(0),
+                weighted_io_time_ms: Some(0),
+                discards_completed: Some(0),
             },
-            size_bytes: 0,
+            size_bytes: Some(0),
             model: String::new(),
         };
         assert_eq!(dev.scheduler_optimal(), None);
