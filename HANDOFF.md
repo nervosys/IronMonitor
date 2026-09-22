@@ -9173,3 +9173,63 @@ frequency, `PowerStats::empty`, `NvmeInfo`, and here.
 > nothing downstream can branch on it.
 
 The practical form of this: `grep -rn "not the same as\|neither is\|two meanings\|cannot say\|would not tell" src/` finds places where somebody has already done the hard part. It is a better lead than the structural scan on a per-hit basis, because every hit comes with its own diagnosis.
+
+### The third instrument, and what it cost to aim
+
+The previous section proposed grepping for a *written diagnosis* on the grounds
+that four instances had one sitting beside the uncorrected code. Tried, and it
+works -- but not in the form proposed, and the correction is the useful part.
+
+Grepping `"two meanings|neither is|indistinguishable from|no way to say"` over
+`src/` returns **82 hits, and most are descriptions of things already fixed.**
+This codebase documents its corrections heavily, in the same vocabulary it uses
+to describe the defects, so the raw grep cannot tell a postmortem from a live
+bug. On its own it is worse than the structural scan.
+
+What works is the **intersection**: files that contain a written diagnosis *and*
+a still-bare numeric field from the structural scan. That is 14 files, and the
+first one opened -- `numa/mod.rs` -- was instance thirteen.
+
+> **Two weak signals with unrelated failure modes beat either alone.** The
+> structural scan cannot see a struct where every field is bare. The diagnosis
+> grep cannot tell a fix from a defect. A file that trips both has an
+> inconsistency *and* somebody's note about an ambiguity, and those coincide
+> mostly when the note is about the inconsistency.
+
+The 14-file intersection is the current best lead, and it is a much shorter list
+than the 87. Remaining, unchecked:
+
+`core/memory.rs`, `cpu_cache/mod.rs`, `disk/traits.rs`, `fan_control.rs`,
+`firmware/mod.rs`, `fleet_store/rows.rs`, `gpu/traits.rs`, `gpu_topology/mod.rs`,
+`observability/context.rs`, `process_monitor.rs`, `tsdb/mod.rs`, `tui/app.rs`,
+`watchdog/mod.rs`.
+
+Two of those (`disk/traits.rs`, `gpu/traits.rs`) were already fixed this sweep
+and are expected to be postmortems, which is itself a check on the method: if
+they come back clean, the intersection is discriminating rather than just
+flagging busy files.
+
+#### A fallback inside the valid range, twice in one struct
+
+`NumaSummary::max_distance` was fixed earlier with this reasoning, in its own
+doc comment:
+
+> This was a bare `u32` falling back to `10`, which is ACPI SLIT's code for
+> *local* -- so a machine whose distance matrix could not be read asserted
+> uniform memory access, the one conclusion the absence cannot support. **The
+> fallback was inside the valid range, so no consumer's bounds check could tell
+> it from a reading.**
+
+Three lines below it, `memory_imbalance_ratio: f64` fell back to `1.0`. A ratio
+of 1.0 means perfectly balanced. It is inside the valid range. No bounds check
+can tell it from a reading.
+
+The paragraph explaining the defect and the next instance of the defect were
+visible in a single screenful, and the fix for the first did not reach the
+second. That is now the **fifth** time this has happened in this sweep. It is no
+longer worth treating as a coincidence:
+
+> **When a fix lands, re-read the whole struct, not the field.** Every partial
+> correction in this codebase was made by someone who understood the principle
+> -- they wrote it down -- and applied it to the field in front of them. The
+> understanding was never the missing part.

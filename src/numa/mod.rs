@@ -34,16 +34,28 @@ pub struct NumaNode {
     pub id: u32,
     /// CPUs (logical processor IDs) belonging to this node
     pub cpus: Vec<u32>,
-    /// Total memory in bytes
-    pub memory_total_bytes: u64,
-    /// Free memory in bytes
-    pub memory_free_bytes: u64,
-    /// Used memory in bytes
-    pub memory_used_bytes: u64,
-    /// Number of huge pages (Linux)
-    pub hugepages_total: u64,
-    /// Free huge pages (Linux)
-    pub hugepages_free: u64,
+    /// Total memory in bytes, or `None` where the node's `meminfo` was not
+    /// read.
+    ///
+    /// **These five are what the `max_distance` correction left behind.** That
+    /// field's doc, a few lines down in [`NumaSummary`], explains at length why
+    /// a fallback inside the valid range is undetectable -- and these sat bare
+    /// beside it. The single-node fallback carried the comment *"Neither is
+    /// read"* directly above `memory_free_bytes: 0, memory_used_bytes: 0`,
+    /// which is the diagnosis written down with nowhere to put it.
+    pub memory_total_bytes: Option<u64>,
+    /// Free memory in bytes, or `None` where not read.
+    pub memory_free_bytes: Option<u64>,
+    /// Used memory in bytes, or `None` where not read.
+    pub memory_used_bytes: Option<u64>,
+    /// Number of huge pages (Linux), or `None` where not read.
+    ///
+    /// Absent rather than `0` on Windows, where hugepages are not the same
+    /// concept: "this platform does not report it" and "this node has none
+    /// configured" are different answers.
+    pub hugepages_total: Option<u64>,
+    /// Free huge pages (Linux), or `None` where not read.
+    pub hugepages_free: Option<u64>,
     /// PCI devices attached to this node (BDF addresses)
     pub pci_devices: Vec<String>,
 }
@@ -82,8 +94,12 @@ pub struct NumaSummary {
     pub node_count: usize,
     /// Total CPUs across all nodes
     pub total_cpus: usize,
-    /// Total memory across all nodes (bytes)
-    pub total_memory_bytes: u64,
+    /// Total memory across all nodes (bytes), or `None` if any node's total
+    /// was unread.
+    ///
+    /// A sum that silently omits a node understates the machine while still
+    /// looking like a measurement.
+    pub total_memory_bytes: Option<u64>,
     /// Whether the system is truly NUMA (vs UMA)
     pub is_numa: bool,
     /// Maximum inter-node distance, or `None` when the SLIT was not readable.
@@ -94,10 +110,17 @@ pub struct NumaSummary {
     /// fallback was inside the valid range, so no consumer's bounds check could
     /// tell it from a reading.
     pub max_distance: Option<u32>,
-    /// Memory imbalance ratio (max_node_mem / min_node_mem)
-    pub memory_imbalance_ratio: f64,
-    /// CPU imbalance ratio
-    pub cpu_imbalance_ratio: f64,
+    /// Memory imbalance ratio (max_node_mem / min_node_mem), or `None` where
+    /// fewer than two nodes reported a size.
+    ///
+    /// **`1.0` was the fallback, and `1.0` means perfectly balanced** -- the
+    /// same defect as `max_distance`'s `10`, a fallback sitting inside the
+    /// valid range where no bounds check can catch it. A machine whose node
+    /// sizes could not be read asserted even memory distribution, which is a
+    /// conclusion the absence cannot support.
+    pub memory_imbalance_ratio: Option<f64>,
+    /// CPU imbalance ratio, or `None` where fewer than two nodes reported CPUs.
+    pub cpu_imbalance_ratio: Option<f64>,
 }
 
 /// NUMA topology monitor.
@@ -158,7 +181,9 @@ impl NumaMonitor {
     /// Get a summary of the NUMA topology.
     pub fn summary(&self) -> NumaSummary {
         let total_cpus: usize = self.nodes.iter().map(|n| n.cpus.len()).sum();
-        let total_memory: u64 = self.nodes.iter().map(|n| n.memory_total_bytes).sum();
+        // `Option` sum: one node with no reading makes the machine total
+        // unknown rather than quietly short by that node.
+        let total_memory: Option<u64> = self.nodes.iter().map(|n| n.memory_total_bytes).sum();
 
         let is_numa =
             self.nodes.len() > 1 || self.distance_matrix.as_ref().is_some_and(|d| d.is_numa());
@@ -168,22 +193,22 @@ impl NumaMonitor {
             .as_ref()
             .and_then(|d| d.distances.iter().copied().max());
 
+        // `filter_map` over the reading rather than `filter(|&m| m > 0)`: the
+        // `> 0` test was skipping unread nodes and genuinely empty ones alike,
+        // the same sentinel conflation this module's `max_distance` doc warns
+        // about.
         let mem_vals: Vec<u64> = self
             .nodes
             .iter()
-            .map(|n| n.memory_total_bytes)
-            .filter(|&m| m > 0)
+            .filter_map(|n| n.memory_total_bytes)
             .collect();
-        let memory_imbalance = if mem_vals.len() >= 2 {
-            let max = *mem_vals.iter().max().unwrap() as f64;
-            let min = *mem_vals.iter().min().unwrap() as f64;
-            if min > 0.0 {
-                max / min
-            } else {
-                1.0
+        let memory_imbalance = match (mem_vals.iter().max(), mem_vals.iter().min()) {
+            (Some(&max), Some(&min)) if mem_vals.len() >= 2 && min > 0 => {
+                Some(max as f64 / min as f64)
             }
-        } else {
-            1.0
+            // Fewer than two nodes reported a size, so there is no ratio
+            // between them. This returned `1.0`, which asserts balance.
+            _ => None,
         };
 
         let cpu_vals: Vec<usize> = self
@@ -192,16 +217,11 @@ impl NumaMonitor {
             .map(|n| n.cpus.len())
             .filter(|&c| c > 0)
             .collect();
-        let cpu_imbalance = if cpu_vals.len() >= 2 {
-            let max = *cpu_vals.iter().max().unwrap() as f64;
-            let min = *cpu_vals.iter().min().unwrap() as f64;
-            if min > 0.0 {
-                max / min
-            } else {
-                1.0
+        let cpu_imbalance = match (cpu_vals.iter().max(), cpu_vals.iter().min()) {
+            (Some(&max), Some(&min)) if cpu_vals.len() >= 2 && min > 0 => {
+                Some(max as f64 / min as f64)
             }
-        } else {
-            1.0
+            _ => None,
         };
 
         NumaSummary {
@@ -261,24 +281,25 @@ impl NumaMonitor {
                 .map(|s| Self::parse_cpu_list(s.trim()))
                 .unwrap_or_default();
 
-            // Parse meminfo
+            // Parse meminfo. `unwrap_or((0, 0, 0))` made an unreadable node
+            // look like a node with no memory at all.
             let (total, free, used) = std::fs::read_to_string(node_path.join("meminfo"))
                 .map(|s| Self::parse_node_meminfo(&s))
-                .unwrap_or((0, 0, 0));
+                .unwrap_or((None, None, None));
 
             // Hugepages
+            // A kernel built without hugepage support exposes no such file.
+            // That is not a node with zero hugepages configured.
             let hp_total =
                 std::fs::read_to_string(node_path.join("hugepages/hugepages-2048kB/nr_hugepages"))
                     .ok()
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
+                    .and_then(|s| s.trim().parse().ok());
 
             let hp_free = std::fs::read_to_string(
                 node_path.join("hugepages/hugepages-2048kB/free_hugepages"),
             )
             .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+            .and_then(|s| s.trim().parse().ok());
 
             // PCI devices on this node
             let mut pci_devs = Vec::new();
@@ -351,25 +372,32 @@ impl NumaMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn parse_node_meminfo(text: &str) -> (u64, u64, u64) {
-        let mut total = 0u64;
-        let mut free = 0u64;
+    /// `(total, free, used)`, each absent if its line was missing or
+    /// unparseable.
+    ///
+    /// `used` is derived, so it needs both: a total with no free figure gives
+    /// no usage. It was `total.saturating_sub(free)` over two zeros, which
+    /// reported a node using none of the nothing it had.
+    fn parse_node_meminfo(text: &str) -> (Option<u64>, Option<u64>, Option<u64>) {
+        let mut total = None;
+        let mut free = None;
         for line in text.lines() {
             if line.contains("MemTotal:") {
-                total = Self::extract_kb(line) * 1024;
+                total = Self::extract_kb(line).map(|kb| kb * 1024);
             } else if line.contains("MemFree:") {
-                free = Self::extract_kb(line) * 1024;
+                free = Self::extract_kb(line).map(|kb| kb * 1024);
             }
         }
-        (total, free, total.saturating_sub(free))
+        let used = match (total, free) {
+            (Some(t), Some(f)) => Some(t.saturating_sub(f)),
+            _ => None,
+        };
+        (total, free, used)
     }
 
     #[cfg(target_os = "linux")]
-    fn extract_kb(line: &str) -> u64 {
-        line.split_whitespace()
-            .filter_map(|w| w.parse::<u64>().ok())
-            .next()
-            .unwrap_or(0)
+    fn extract_kb(line: &str) -> Option<u64> {
+        line.split_whitespace().find_map(|w| w.parse::<u64>().ok())
     }
 
     #[cfg(target_os = "windows")]
@@ -409,20 +437,19 @@ impl NumaMonitor {
             // with exactly one node it is not an approximation at all: all the
             // memory is attached to the only node there is.
             let mut available: u64 = 0;
-            let free = if unsafe { GetNumaAvailableMemoryNodeEx(id as u16, &mut available) }.is_ok()
-            {
-                available
-            } else {
-                0
-            };
+            // A failed call is not a node with no memory available.
+            let mut free = None;
+            if unsafe { GetNumaAvailableMemoryNodeEx(id as u16, &mut available) }.is_ok() {
+                free = Some(available);
+            }
 
             let (memory_total_bytes, cpus) = if node_count == 1 {
-                (total_bytes.unwrap_or(0), (0..logical).collect::<Vec<u32>>())
+                (total_bytes, (0..logical).collect::<Vec<u32>>())
             } else {
                 // Which processors belong to which node needs
                 // `GetLogicalProcessorInformationEx(RelationNumaNode)`, which
                 // this reader does not call yet.
-                (0, Vec::new())
+                (None, Vec::new())
             };
 
             self.nodes.push(NumaNode {
@@ -430,9 +457,14 @@ impl NumaMonitor {
                 cpus,
                 memory_total_bytes,
                 memory_free_bytes: free,
-                memory_used_bytes: memory_total_bytes.saturating_sub(free),
-                hugepages_total: 0,
-                hugepages_free: 0,
+                // Derived, so it needs both sides.
+                memory_used_bytes: match (memory_total_bytes, free) {
+                    (Some(total), Some(free)) => Some(total.saturating_sub(free)),
+                    _ => None,
+                },
+                // Windows does not report per-node hugepages through this API.
+                hugepages_total: None,
+                hugepages_free: None,
                 pci_devices: Vec::new(),
             });
         }
@@ -476,12 +508,13 @@ impl NumaMonitor {
             id: 0,
             cpus: (0..total_cpus).collect(),
             memory_total_bytes: total_mem,
-            // Neither is read. `memory_used_bytes` was `total_mem`, which says
-            // every byte on the machine is in use.
-            memory_free_bytes: 0,
-            memory_used_bytes: 0,
-            hugepages_total: 0,
-            hugepages_free: 0,
+            // Neither is read, and both now say so. `memory_used_bytes` was
+            // `total_mem` -- every byte on the machine in use -- then `0`,
+            // which is the opposite claim and equally unobserved.
+            memory_free_bytes: None,
+            memory_used_bytes: None,
+            hugepages_total: None,
+            hugepages_free: None,
             pci_devices: Vec::new(),
         });
         Ok(())
@@ -500,11 +533,12 @@ impl NumaMonitor {
         self.nodes.push(NumaNode {
             id: 0,
             cpus: Vec::new(),
-            memory_total_bytes: 0,
-            memory_free_bytes: 0,
-            memory_used_bytes: 0,
-            hugepages_total: 0,
-            hugepages_free: 0,
+            // Nothing was read here; `0` claimed a node with no memory.
+            memory_total_bytes: None,
+            memory_free_bytes: None,
+            memory_used_bytes: None,
+            hugepages_total: None,
+            hugepages_free: None,
             pci_devices: Vec::new(),
         });
 
@@ -581,11 +615,11 @@ mod tests {
         let node = NumaNode {
             id: 0,
             cpus: vec![0, 1, 2, 3],
-            memory_total_bytes: 16_000_000_000,
-            memory_free_bytes: 8_000_000_000,
-            memory_used_bytes: 8_000_000_000,
-            hugepages_total: 0,
-            hugepages_free: 0,
+            memory_total_bytes: Some(16_000_000_000),
+            memory_free_bytes: Some(8_000_000_000),
+            memory_used_bytes: Some(8_000_000_000),
+            hugepages_total: Some(0),
+            hugepages_free: Some(0),
             pci_devices: vec!["0000:00:02.0".into()],
         };
         let json = serde_json::to_string(&node).unwrap();
@@ -609,11 +643,12 @@ mod absent_slit_tests {
         NumaNode {
             id,
             cpus: vec![],
-            memory_total_bytes: 0,
-            memory_free_bytes: 0,
-            memory_used_bytes: 0,
-            hugepages_total: 0,
-            hugepages_free: 0,
+            // Nothing was read here; `0` claimed a node with no memory.
+            memory_total_bytes: None,
+            memory_free_bytes: None,
+            memory_used_bytes: None,
+            hugepages_total: None,
+            hugepages_free: None,
             pci_devices: vec![],
         }
     }

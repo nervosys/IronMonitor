@@ -42,6 +42,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **NUMA nodes no longer report memory nobody read, and the imbalance ratio no
+  longer asserts balance.** `NumaNode`'s five memory and hugepage fields and
+  `NumaSummary`'s total and two imbalance ratios are `Option`.
+
+  The single-node fallback carried this, above two zeroes:
+
+  ```rust
+  // Neither is read. `memory_used_bytes` was `total_mem`, which says
+  // every byte on the machine is in use.
+  memory_free_bytes: 0,
+  memory_used_bytes: 0,
+  ```
+
+  An earlier fix had changed `memory_used_bytes` from one unobserved value to
+  the opposite unobserved value and written down that neither was read.
+
+  **`memory_imbalance_ratio` is the `max_distance` defect again, in the same
+  struct.** That field's doc — three lines above — explains that a bare `u32`
+  falling back to `10` asserts uniform memory access, and that *"the fallback
+  was inside the valid range, so no consumer's bounds check could tell it from a
+  reading"*. The imbalance ratios fell back to `1.0`, which means perfectly
+  balanced, and is likewise inside the valid range. Both now return `None`.
+
+  Also: `parse_node_meminfo` returned `(0, 0, 0)` for an unreadable node;
+  `extract_kb` returned `0` for an unparseable line; per-node hugepage counts
+  were `0` on a kernel built without hugepage support and on Windows, where the
+  concept does not apply; and `GetNumaAvailableMemoryNodeEx` failing yielded `0`
+  available bytes. `ontology/resolve.rs` guarded with
+  `(node.memory_total_bytes > 0).then(..)` and now asks the type directly — so a
+  node genuinely reporting 0 bytes is published as the reading it is.
+
 - **`io_scheduler::IoStats` is `Option` throughout, and a device with no stat
   file no longer reports twelve zeroes.** The field that flagged this was
   `BlockDeviceIo::size_bytes` — the *third* struct in this crate holding a

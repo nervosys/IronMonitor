@@ -926,7 +926,10 @@ fn resolve_numa(out: &mut Vec<Reading>) {
         push_opt(
             out,
             format!("{base}.memory"),
-            (node.memory_total_bytes > 0).then(|| serde_json::json!(node.memory_total_bytes)),
+            // `> 0` was standing in for "was it read", which the type now
+            // answers directly; a node genuinely reporting 0 bytes is a
+            // reading and is published as one.
+            node.memory_total_bytes.map(|b| serde_json::json!(b)),
             Some(Unit::Bytes),
             "the platform reported no memory total for this node",
         );
