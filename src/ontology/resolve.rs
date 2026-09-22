@@ -1887,18 +1887,29 @@ fn resolve_disk(out: &mut Vec<Reading>) {
         match disk.info() {
             Ok(info) => {
                 push_text(out, format!("{base}.model"), &info.model);
-                if info.capacity > 0 {
-                    out.push(Reading::measured(
+                // `capacity > 0` was this resolver compensating for a field
+                // that could not say "not read". It can now, and the two cases
+                // are finally distinguishable: a device that genuinely reports
+                // zero is a different answer from one nobody asked.
+                match info.capacity {
+                    Some(bytes) if bytes > 0 => out.push(Reading::measured(
                         format!("{base}.capacity"),
-                        serde_json::json!(info.capacity),
+                        serde_json::json!(bytes),
                         Some(Unit::Bytes),
-                    ));
-                } else {
-                    out.push(Reading::unavailable(
+                    )),
+                    Some(_) => out.push(Reading::unavailable(
                         format!("{base}.capacity"),
                         Some(Unit::Bytes),
                         "device reported zero capacity",
-                    ));
+                    )),
+                    // Newly expressible: the reader never obtained a capacity,
+                    // which the old sentinel could not distinguish from a
+                    // device answering zero.
+                    None => out.push(Reading::unavailable(
+                        format!("{base}.capacity"),
+                        Some(Unit::Bytes),
+                        "capacity was not read from this device",
+                    )),
                 }
             }
             Err(e) => {

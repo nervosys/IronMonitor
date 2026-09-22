@@ -922,7 +922,8 @@ impl ObservabilityApi {
                     disk_type: format!("{:?}", d.disk_type()),
                     size_gb: info
                         .as_ref()
-                        .map(|i| i.capacity as f64 / (1024.0 * 1024.0 * 1024.0))
+                        .and_then(|i| i.capacity)
+                        .map(|c| c as f64 / (1024.0 * 1024.0 * 1024.0))
                         .unwrap_or(0.0),
                     mount_point: first_fs.map(|f| f.mount_point.to_string_lossy().to_string()),
                     filesystem: first_fs.and_then(|f| {
@@ -1195,8 +1196,8 @@ impl ObservabilityApi {
                         total_gb: fs.total_size as f64 / (1024.0 * 1024.0 * 1024.0),
                         read_bps: io.as_ref().and_then(|i| i.read_throughput),
                         write_bps: io.as_ref().and_then(|i| i.write_throughput),
-                        iops_read: io.as_ref().map(|i| i.read_ops),
-                        iops_write: io.as_ref().map(|i| i.write_ops),
+                        iops_read: io.as_ref().and_then(|i| i.read_ops),
+                        iops_write: io.as_ref().and_then(|i| i.write_ops),
                     });
                 }
             }

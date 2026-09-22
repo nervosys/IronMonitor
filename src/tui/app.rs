@@ -898,8 +898,13 @@ pub struct SystemInfo {
 pub struct DiskInfo {
     pub name: String,
     pub mount_point: String,
-    pub total: u64,
-    pub used: u64,
+    /// Total capacity, or `None` where it could not be read. Mirrors
+    /// [`crate::pipeline::DiskSnapshot::total`]; the placeholder row this view
+    /// pushes when nothing enumerated used to carry `0`, which rendered as a
+    /// disk of no size rather than as no reading.
+    pub total: Option<u64>,
+    /// Used capacity, or `None` where it could not be read.
+    pub used: Option<u64>,
     pub filesystem: String,
     /// Read bytes per second
     /// Read throughput, or `None` where no rate was established.
@@ -1743,8 +1748,8 @@ impl App {
             self.disk_info.push(DiskInfo {
                 name: "No disks detected".to_string(),
                 mount_point: "N/A".to_string(),
-                total: 0,
-                used: 0,
+                total: None,
+                used: None,
                 filesystem: "N/A".to_string(),
                 // A placeholder row for a disk with no readings, so the rates
                 // are absent rather than a throughput of zero.

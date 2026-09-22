@@ -714,18 +714,25 @@ impl PrometheusExporter {
                 if let Some(io) = io_counters.get(disk.name()) {
                     let mut labels = BTreeMap::new();
                     labels.insert("device".into(), disk.name().to_string());
-                    self.add(MetricFamily::counter_with_labels(
-                        &self.prefixed("disk_read_bytes_total"),
-                        "Total bytes read from this device since boot",
-                        io.read_bytes as f64,
-                        labels.clone(),
-                    ));
-                    self.add(MetricFamily::counter_with_labels(
-                        &self.prefixed("disk_write_bytes_total"),
-                        "Total bytes written to this device since boot",
-                        io.write_bytes as f64,
-                        labels.clone(),
-                    ));
+                    // An unread counter is an absent series, not a zero one:
+                    // publishing zero makes a scraper's `rate()` see a counter
+                    // reset and invent a spike on the next scrape.
+                    if let Some(read) = io.read_bytes {
+                        self.add(MetricFamily::counter_with_labels(
+                            &self.prefixed("disk_read_bytes_total"),
+                            "Total bytes read from this device since boot",
+                            read as f64,
+                            labels.clone(),
+                        ));
+                    }
+                    if let Some(written) = io.write_bytes {
+                        self.add(MetricFamily::counter_with_labels(
+                            &self.prefixed("disk_write_bytes_total"),
+                            "Total bytes written to this device since boot",
+                            written as f64,
+                            labels.clone(),
+                        ));
+                    }
                 }
             }
         }

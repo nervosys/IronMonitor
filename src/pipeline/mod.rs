@@ -93,10 +93,16 @@ pub struct DiskSnapshot {
     pub name: String,
     /// Mount point or drive root.
     pub mount_point: String,
-    /// Total capacity in bytes.
-    pub total: u64,
-    /// Used capacity in bytes.
-    pub used: u64,
+    /// Total capacity in bytes, or `None` where it could not be read.
+    ///
+    /// These were `u64`, and the non-Windows path wrote `0` for both whenever
+    /// `filesystem_info` returned nothing -- a disk of zero bytes, zero of them
+    /// in use, which is not a disk. Consumers then guarded with `total > 0`,
+    /// and that guard is why the fabrication was survivable and also why it was
+    /// invisible: the sentinel and the real absence are the same value.
+    pub total: Option<u64>,
+    /// Used capacity in bytes, or `None` where it could not be read.
+    pub used: Option<u64>,
     /// Filesystem label (NTFS, ext4, ...).
     pub filesystem: String,
     /// Read throughput in bytes/sec, or `None` where no rate was established.
@@ -132,10 +138,11 @@ pub struct DiskSnapshot {
 pub struct DiskIoSnapshot {
     /// Device name, e.g. `PhysicalDrive0` or `nvme0n1`.
     pub device: String,
-    /// Bytes read from this device since boot.
-    pub read_bytes: u64,
-    /// Bytes written to this device since boot.
-    pub write_bytes: u64,
+    /// Bytes read from this device since boot, or `None` where the counter
+    /// was not read. Not the same as a device that has read nothing.
+    pub read_bytes: Option<u64>,
+    /// Bytes written to this device since boot, or `None` where unread.
+    pub write_bytes: Option<u64>,
 }
 
 /// A network interface row with computed bandwidth rates.
@@ -1004,6 +1011,7 @@ fn collect_disk_io() -> Vec<DiskIoSnapshot> {
         .into_iter()
         .map(|(device, io)| DiskIoSnapshot {
             device,
+            // Both carry the absence through; see `DiskIoSnapshot`.
             read_bytes: io.read_bytes,
             write_bytes: io.write_bytes,
         })
@@ -1025,8 +1033,10 @@ fn collect_disks() -> Vec<DiskSnapshot> {
                 .map(|d| DiskSnapshot {
                     name: d.name.clone(),
                     mount_point: d.name,
-                    total: d.total,
-                    used: d.used,
+                    // `GetDiskFreeSpaceExW` succeeded or `logical_drives`
+                    // would not have yielded this drive, so both are readings.
+                    total: Some(d.total),
+                    used: Some(d.used),
                     filesystem: d.filesystem,
                     // `logical_drives` reads capacity and no I/O counters, so
                     // there is no rate here to report. It said `0.0`.
@@ -1057,11 +1067,15 @@ fn collect_disks() -> Vec<DiskSnapshot> {
                     (
                         fs.mount_point.to_string_lossy().to_string(),
                         fs.fs_type.clone(),
-                        fs.used_size,
-                        fs.total_size,
+                        Some(fs.used_size),
+                        Some(fs.total_size),
                     )
                 })
-                .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string(), 0, info.capacity));
+                // No filesystem was mounted on this device, or the mount could
+                // not be read. The device's own capacity still stands where
+                // sysfs gave one; how much of it is in use is not known, and
+                // said so rather than reported as none of it.
+                .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string(), None, info.capacity));
 
             let (read_rate, write_rate) = disk
                 .io_stats()

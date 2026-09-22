@@ -471,12 +471,17 @@ impl HttpServer {
             if let Some(rate) = disk.write_rate {
                 collector.record_with_labels("ironmon_disk_write_bytes_per_sec", rate, device);
             }
-            if disk.total > 0 {
-                collector.record_with_labels(
-                    "ironmon_disk_usage_percent",
-                    (disk.used as f64 / disk.total as f64) * 100.0,
-                    device,
-                );
+            // Both readings, and a capacity that is genuinely zero cannot be
+            // divided by. A disk whose capacity was not read emits no series
+            // at all -- `0%` would scrape as a fact about a full-looking disk.
+            if let (Some(used), Some(total)) = (disk.used, disk.total) {
+                if total > 0 {
+                    collector.record_with_labels(
+                        "ironmon_disk_usage_percent",
+                        (used as f64 / total as f64) * 100.0,
+                        device,
+                    );
+                }
             }
         }
 
@@ -500,16 +505,18 @@ impl HttpServer {
         // nobody has written. See `DiskIoSnapshot`.
         for io in &snap.disk_io {
             let device = &[("device", io.device.as_str())];
-            collector.record_with_labels(
-                "ironmon_disk_read_bytes_total",
-                io.read_bytes as f64,
-                device,
-            );
-            collector.record_with_labels(
-                "ironmon_disk_write_bytes_total",
-                io.write_bytes as f64,
-                device,
-            );
+            // A counter that was not read is an absent series, not a zero one.
+            // Emitting zero would make a scraper's rate() see a counter reset.
+            if let Some(read) = io.read_bytes {
+                collector.record_with_labels("ironmon_disk_read_bytes_total", read as f64, device);
+            }
+            if let Some(written) = io.write_bytes {
+                collector.record_with_labels(
+                    "ironmon_disk_write_bytes_total",
+                    written as f64,
+                    device,
+                );
+            }
         }
 
         // `_total` is a counter, and these carry the cumulative byte counts.
@@ -650,8 +657,8 @@ mod snapshot_recording_tests {
         let snap = Snapshot {
             disks: vec![DiskSnapshot {
                 name: "PhysicalDrive0".into(),
-                total: 1_000,
-                used: 250,
+                total: Some(1_000),
+                used: Some(250),
                 read_rate: Some(4096.0),
                 write_rate: Some(512.0),
                 ..Default::default()
@@ -724,8 +731,8 @@ mod snapshot_recording_tests {
         let snap = Snapshot {
             disk_io: vec![crate::pipeline::DiskIoSnapshot {
                 device: "PhysicalDrive0".into(),
-                read_bytes: 8_111_574_792_192,
-                write_bytes: 5_613_750_109_184,
+                read_bytes: Some(8_111_574_792_192),
+                write_bytes: Some(5_613_750_109_184),
             }],
             ..Default::default()
         };
@@ -785,8 +792,8 @@ mod dashboard_coverage_tests {
         let snap = Snapshot {
             disks: vec![DiskSnapshot {
                 name: "PhysicalDrive0".into(),
-                total: 1_000,
-                used: 250,
+                total: Some(1_000),
+                used: Some(250),
                 read_rate: Some(1.0),
                 write_rate: Some(1.0),
                 ..Default::default()

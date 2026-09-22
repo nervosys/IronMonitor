@@ -359,13 +359,19 @@ fn disk_readings_are_self_consistent() {
             !disk.name.is_empty(),
             "a disk was reported with no identifier"
         );
-        assert!(
-            disk.used <= disk.total || disk.total == 0,
-            "disk {} used {} exceeds total {}",
-            disk.name,
-            disk.used,
-            disk.total
-        );
+        // Only checkable where both were read. `|| total == 0` used to carry
+        // the unread case as well as the genuinely-empty one, which is exactly
+        // the conflation `Option` removes: a disk whose capacity is unknown is
+        // now skipped by the `if let` rather than excused by a sentinel.
+        if let (Some(used), Some(total)) = (disk.used, disk.total) {
+            assert!(
+                used <= total || total == 0,
+                "disk {} used {} exceeds total {}",
+                disk.name,
+                used,
+                total
+            );
+        }
         assert!(
             disk.read_rate.unwrap_or(0.0) >= 0.0 && disk.write_rate.unwrap_or(0.0) >= 0.0,
             "disk {} reports a negative transfer rate",

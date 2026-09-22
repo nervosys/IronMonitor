@@ -190,6 +190,14 @@ fn trend_indicator(current: f32, previous: f32) -> (&'static str, Color) {
     }
 }
 
+/// [`auto_unit`], or a dash where the byte count was never read.
+fn auto_unit_or_unknown(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) => auto_unit(b),
+        None => "--".to_string(),
+    }
+}
+
 /// Format bytes to human-readable with auto unit (Glances-style)
 fn auto_unit(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -722,13 +730,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         .disk_info
         .iter()
         .map(|disk| {
-            let used_gb = disk.used as f64 / (1024.0 * 1024.0 * 1024.0);
-            let total_gb = disk.total as f64 / (1024.0 * 1024.0 * 1024.0);
-            let percent = if total_gb > 0.0 {
-                (used_gb / total_gb) * 100.0
-            } else {
-                0.0
-            };
+            let percent = disk_percent(disk.used, disk.total);
             // Shown only when a rate was established and is non-zero. The
             // absent case and the genuinely-idle case both render nothing here,
             // which is the same choice the column made before -- the difference
@@ -746,8 +748,16 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(glances_colors::DISK_TITLE),
                 ),
                 Span::styled(
-                    format!("{:.1} GB / {:.1} GB ({:.0}%)", used_gb, total_gb, percent),
-                    Style::default().fg(disk_color(percent as f32)),
+                    format!(
+                        "{} / {} ({})",
+                        gb_or_unknown(disk.used),
+                        gb_or_unknown(disk.total),
+                        percent_or_unknown(percent)
+                    ),
+                    // An unknown share is drawn in the same colour as an idle
+                    // one; there is no colour for "unknown" in this palette,
+                    // and the text already says so.
+                    Style::default().fg(disk_color(percent.unwrap_or(0.0) as f32)),
                 ),
                 Span::raw(format!(
                     " │ {} │ {}{}",
@@ -1128,20 +1138,53 @@ fn draw_memory_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(mem_gauge, area);
 }
 
+/// A capacity in GB, or a dash where the reading was not taken.
+///
+/// `{:.1} GB` over an unread capacity used to print `0.0 GB`, which reads as a
+/// drive of no size rather than as a drive whose size we do not know. The dash
+/// is narrower than the number it replaces, so a column sized for the number
+/// still fits.
+fn gb_or_unknown(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) => format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0)),
+        None => "-- GB".to_string(),
+    }
+}
+
+/// Used as a share of total, where both were read and the total is non-zero.
+///
+/// `None` covers three distinct cases the caller must not collapse into `0%`:
+/// neither reading was taken, one was, or the disk genuinely reports a capacity
+/// of zero and cannot be divided by.
+fn disk_percent(used: Option<u64>, total: Option<u64>) -> Option<f64> {
+    match (used, total) {
+        (Some(used), Some(total)) if total > 0 => Some((used as f64 / total as f64) * 100.0),
+        _ => None,
+    }
+}
+
+/// A percentage, or a dash. See [`disk_percent`].
+fn percent_or_unknown(percent: Option<f64>) -> String {
+    match percent {
+        Some(p) => format!("{:.0}%", p),
+        None => "--%".to_string(),
+    }
+}
+
 /// Draw disk usage bar gauge with Glances-style auto units
 fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
-    let total_space: u64 = app.disk_info.iter().map(|d| d.total).sum();
-    let used_space: u64 = app.disk_info.iter().map(|d| d.used).sum();
+    // Summed over the disks whose capacity was read. A disk missing from the
+    // sum is a disk the machine could not measure, not a disk of zero bytes --
+    // so the total is `None` rather than short by an unknown amount when any
+    // disk is unreadable.
+    let total_space: Option<u64> = app.disk_info.iter().map(|d| d.total).sum();
+    let used_space: Option<u64> = app.disk_info.iter().map(|d| d.used).sum();
     // Summed over the disks that have a rate. Where none has one the total is
     // zero and the gauge below reads empty, which is what "nothing to show"
     // looks like in a bar -- not a claim that the disks were idle.
     let total_read: f64 = app.disk_info.iter().filter_map(|d| d.read_rate).sum();
     let total_write: f64 = app.disk_info.iter().filter_map(|d| d.write_rate).sum();
-    let disk_percent = if total_space > 0 {
-        (used_space as f64 / total_space as f64) * 100.0
-    } else {
-        0.0
-    };
+    let fleet_percent = disk_percent(used_space, total_space);
 
     // Build disk list string with Glances-style formatting
     let disk_list: Vec<String> = app
@@ -1149,15 +1192,10 @@ fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .take(3)
         .map(|d| {
-            let percent = if d.total > 0 {
-                (d.used as f64 / d.total as f64) * 100.0
-            } else {
-                0.0
-            };
             format!(
-                "{}:{:.0}%",
+                "{}:{}",
                 d.name.chars().take(20).collect::<String>(),
-                percent
+                percent_or_unknown(disk_percent(d.used, d.total))
             )
         })
         .collect();
@@ -1173,26 +1211,31 @@ fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
+    let share = percent_or_unknown(fleet_percent);
+    let used_label = auto_unit_or_unknown(used_space);
+    let total_label = auto_unit_or_unknown(total_space);
+
     let disk_label = if !disk_list.is_empty() {
         format!(
-            "DISK {:.0}% │ {}/{}{}│ {}",
-            disk_percent,
-            auto_unit(used_space),
-            auto_unit(total_space),
+            "DISK {} │ {}/{}{}│ {}",
+            share,
+            used_label,
+            total_label,
             io_str,
             disk_list.join(" ")
         )
     } else {
         format!(
-            "DISK {:.0}% │ {}/{}{} │ No disks",
-            disk_percent,
-            auto_unit(used_space),
-            auto_unit(total_space),
-            io_str
+            "DISK {} │ {}/{}{} │ No disks",
+            share, used_label, total_label, io_str
         )
     };
 
-    let disk_clr = disk_color(disk_percent as f32);
+    // The gauge itself has no way to draw "unknown": it is a bar, and every
+    // width it can take is a claim. An empty bar is the least wrong of them,
+    // and the label beside it reads `--%`.
+    let filled = fleet_percent.unwrap_or(0.0) as f32;
+    let disk_clr = disk_color(filled);
 
     let disk_gauge = Gauge::default()
         .block(
@@ -1204,7 +1247,7 @@ fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
             )),
         )
         .gauge_style(Style::default().fg(disk_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(disk_percent as f32))
+        .percent(safe_percent(filled))
         .label(disk_label);
 
     f.render_widget(disk_gauge, area);
@@ -1415,20 +1458,18 @@ fn draw_disk_graph(f: &mut Frame, app: &App, area: Rect) {
 
     // Disk summary
     let _total_disks = app.disk_info.len();
-    let total_space: u64 = app.disk_info.iter().map(|d| d.total).sum();
-    let used_space: u64 = app.disk_info.iter().map(|d| d.used).sum();
-    let total_gb = total_space as f64 / (1024.0 * 1024.0 * 1024.0);
-    let used_gb = used_space as f64 / (1024.0 * 1024.0 * 1024.0);
-    let disk_percent = if total_space > 0 {
-        (used_gb / total_gb) * 100.0
-    } else {
-        0.0
-    };
+    // `Option` sums: one unreadable disk makes the fleet total unknown rather
+    // than quietly smaller. See `draw_disk_bar`.
+    let total_space: Option<u64> = app.disk_info.iter().map(|d| d.total).sum();
+    let used_space: Option<u64> = app.disk_info.iter().map(|d| d.used).sum();
 
     let disk_text = vec![
-        Line::from(format!("Disk: {:.0}%", disk_percent)),
-        Line::from(format!("{:.1} GB", used_gb)),
-        Line::from(format!("/ {:.1} GB", total_gb)),
+        Line::from(format!(
+            "Disk: {}",
+            percent_or_unknown(disk_percent(used_space, total_space))
+        )),
+        Line::from(gb_or_unknown(used_space)),
+        Line::from(format!("/ {}", gb_or_unknown(total_space))),
     ];
     let disk_info = Paragraph::new(disk_text)
         .block(Block::default().borders(Borders::ALL).title("Disk"))
@@ -1441,16 +1482,10 @@ fn draw_disk_graph(f: &mut Frame, app: &App, area: Rect) {
             .disk_info
             .iter()
             .map(|disk| {
-                let used = disk.used as f64 / (1024.0 * 1024.0 * 1024.0);
-                let total = disk.total as f64 / (1024.0 * 1024.0 * 1024.0);
-                let percent = if total > 0.0 {
-                    (used / total) * 100.0
-                } else {
-                    0.0
-                };
+                let percent = disk_percent(disk.used, disk.total);
                 Span::styled(
-                    format!(" {}: {:.0}% ", disk.name, percent),
-                    Style::default().fg(usage_color(percent as f32)),
+                    format!(" {}: {} ", disk.name, percent_or_unknown(percent)),
+                    Style::default().fg(usage_color(percent.unwrap_or(0.0) as f32)),
                 )
             })
             .collect();
@@ -2647,13 +2682,15 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
         .disk_info
         .iter()
         .map(|disk| {
-            let used_gb = disk.used as f64 / (1024.0 * 1024.0 * 1024.0);
-            let total_gb = disk.total as f64 / (1024.0 * 1024.0 * 1024.0);
-            let percent = (used_gb / total_gb) * 100.0;
-
+            // This one divided without guarding the denominator at all, so an
+            // unread capacity produced `NaN%`.
             ListItem::new(format!(
-                "{}: {:.1} GB / {:.1} GB ({:.0}%) - {}",
-                disk.name, used_gb, total_gb, percent, disk.mount_point
+                "{}: {} / {} ({}) - {}",
+                disk.name,
+                gb_or_unknown(disk.used),
+                gb_or_unknown(disk.total),
+                percent_or_unknown(disk_percent(disk.used, disk.total)),
+                disk.mount_point
             ))
         })
         .collect();

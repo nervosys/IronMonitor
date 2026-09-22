@@ -1762,7 +1762,7 @@ impl AiDataApi {
                         // The exact figure goes alongside so the answer is
                         // never rounded away.
                         "size_bytes": info.capacity,
-                        "size_gb": info.capacity as f64 / 1024.0 / 1024.0 / 1024.0,
+                        "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
                         "disk_type": format!("{:?}", info.disk_type),
                     })
                 })
@@ -1806,7 +1806,7 @@ impl AiDataApi {
             // See `tool_get_disk_list`: the exact byte count alongside a
             // figure that would otherwise truncate small media to zero.
             "size_bytes": info.capacity,
-            "size_gb": info.capacity as f64 / 1024.0 / 1024.0 / 1024.0,
+            "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
             "disk_type": format!("{:?}", info.disk_type),
             "temperature_c": disk.temperature().ok().flatten(),
         }))

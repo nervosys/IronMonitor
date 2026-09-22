@@ -51,11 +51,17 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
             if let Some(firmware) = &info.firmware {
                 println!("  Firmware:       {}", firmware);
             }
-            println!(
-                "  Capacity:       {:.2} GB ({} bytes)",
-                info.capacity as f64 / 1_000_000_000.0,
-                info.capacity
-            );
+            // The exact byte count stays beside the rounded figure, as
+            // `tool_get_disk_list` does, so small media are not truncated to
+            // "0.00 GB" and read as sizeless.
+            match info.capacity {
+                Some(bytes) => println!(
+                    "  Capacity:       {:.2} GB ({} bytes)",
+                    bytes as f64 / 1_000_000_000.0,
+                    bytes
+                ),
+                None => println!("  Capacity:       not reported by this device"),
+            }
             match info.block_size {
                 Some(b) => println!("  Block Size:     {b} bytes"),
                 None => println!("  Block Size:     not read"),
@@ -78,21 +84,25 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
     println!("\n[INFO] I/O Statistics:");
     match disk.io_stats() {
         Ok(stats) => {
-            println!(
-                "  Read:           {:.2} GB ({} ops)",
-                stats.read_bytes as f64 / 1_000_000_000.0,
-                stats.read_ops
-            );
-            println!(
-                "  Write:          {:.2} GB ({} ops)",
-                stats.write_bytes as f64 / 1_000_000_000.0,
-                stats.write_ops
-            );
-            println!(
-                "  Total:          {:.2} GB ({} ops)",
-                stats.total_bytes() as f64 / 1_000_000_000.0,
-                stats.total_ops()
-            );
+            // Each line reports what was read. A counter the platform does
+            // not expose says so rather than printing 0.00 GB, which reads as a
+            // disk that has never been touched.
+            fn line(label: &str, bytes: Option<u64>, ops: Option<u64>) {
+                match (bytes, ops) {
+                    (Some(b), Some(o)) => println!(
+                        "  {label:<15} {:.2} GB ({o} ops)",
+                        b as f64 / 1_000_000_000.0
+                    ),
+                    (Some(b), None) => {
+                        println!("  {label:<15} {:.2} GB (ops not reported)", b as f64 / 1e9)
+                    }
+                    (None, Some(o)) => println!("  {label:<15} bytes not reported ({o} ops)"),
+                    (None, None) => println!("  {label:<15} not reported by this platform"),
+                }
+            }
+            line("Read:", stats.read_bytes, stats.read_ops);
+            line("Write:", stats.write_bytes, stats.write_ops);
+            line("Total:", stats.total_bytes(), stats.total_ops());
             if let Some(read_time) = stats.read_time_ms {
                 println!("  Read Time:      {} ms", read_time);
             }

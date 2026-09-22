@@ -54,7 +54,10 @@ impl DiskDevice for MacDisk {
             model: self.model.clone().unwrap_or_else(|| "Unknown".to_string()),
             serial: self.serial.clone(),
             firmware: None,
-            capacity: self.size_bytes.unwrap_or(0),
+            // `size_bytes` is already `Option` and was being flattened to `0`
+            // here, which is the whole defect in one line: the absence existed,
+            // travelled this far, and was discarded at the last step.
+            capacity: self.size_bytes,
             block_size: None,
             disk_type: self.disk_type,
             interface_type: Some(match self.disk_type {
@@ -112,11 +115,15 @@ impl DiskDevice for MacDisk {
                 // operation field is a cumulative count, and a rate cannot be
                 // stored in one without inventing an interval.
                 let _ = (tps, mb_per_s);
+                // The four cumulative counters now say what the comment above
+                // has always said: `iostat` gave a rate, this struct holds
+                // counts, and no count was observed. They were `0`, which reads
+                // as a disk that has served nothing since boot.
                 return Ok(DiskIoStats {
-                    read_bytes: 0,
-                    write_bytes: 0,
-                    read_ops: 0,
-                    write_ops: 0,
+                    read_bytes: None,
+                    write_bytes: None,
+                    read_ops: None,
+                    write_ops: None,
                     read_time_ms: None,
                     write_time_ms: None,
                     queue_depth: None,

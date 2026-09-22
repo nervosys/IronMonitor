@@ -186,14 +186,14 @@ pub struct DiskState {
     /// Filesystem type
     pub filesystem: String,
 
-    /// Total space (bytes)
-    pub total_bytes: u64,
+    /// Total space (bytes), or `None` where the capacity was not read.
+    pub total_bytes: Option<u64>,
 
     /// Used space (bytes)
     pub used_bytes: u64,
 
-    /// Usage percentage
-    pub usage_percent: f32,
+    /// Usage percentage, or `None` where the capacity was not read.
+    pub usage_percent: Option<f32>,
 }
 
 /// Network interface state for AI context
@@ -388,12 +388,25 @@ impl FullSystemState {
         if !self.disks.is_empty() {
             ctx.push_str("Disks:\n");
             for disk in &self.disks {
-                let used_gb = disk.used_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-                let total_gb = disk.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-                ctx.push_str(&format!(
-                    "  {}: {:.1}GB / {:.1}GB ({:.1}%) at {}\n",
-                    disk.name, used_gb, total_gb, disk.usage_percent, disk.mount_point
-                ));
+                const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+                let used_gb = disk.used_bytes as f64 / GIB;
+                match (disk.total_bytes, disk.usage_percent) {
+                    (Some(total), Some(pct)) => ctx.push_str(&format!(
+                        "  {}: {:.1}GB / {:.1}GB ({:.1}%) at {}\n",
+                        disk.name,
+                        used_gb,
+                        total as f64 / GIB,
+                        pct,
+                        disk.mount_point
+                    )),
+                    // Capacity unread: the used figure is still a measurement
+                    // and is shown; the total is named unknown rather than
+                    // rendered as 0.0GB at 0.0%.
+                    _ => ctx.push_str(&format!(
+                        "  {}: {:.1}GB / capacity unknown at {}\n",
+                        disk.name, used_gb, disk.mount_point
+                    )),
+                }
             }
             ctx.push('\n');
         }
@@ -1300,11 +1313,12 @@ impl MonitoringBackend {
                     (String::new(), String::new(), 0)
                 };
 
-                let usage = if disk_info.capacity > 0 {
-                    (used as f32 / disk_info.capacity as f32) * 100.0
-                } else {
-                    0.0
-                };
+                // `capacity > 0` was a sentinel for "not read", and the `0.0`
+                // it produced was a usage percentage of a disk nobody measured.
+                let usage = disk_info
+                    .capacity
+                    .filter(|c| *c > 0)
+                    .map(|c| (used as f32 / c as f32) * 100.0);
 
                 state.disks.push(DiskState {
                     name: disk.name().to_string(),

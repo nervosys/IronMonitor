@@ -43,7 +43,9 @@ pub struct WindowsDisk {
     disk_type: DiskType,
     model: Option<String>,
     serial: Option<String>,
-    size: u64,
+    /// Capacity in bytes, or `None` where it has not been determined. WMI
+    /// already reports this as optional; it used to be flattened to `0` here.
+    size: Option<u64>,
     disk_index: u32,
     interface_type: Option<String>,
 }
@@ -57,7 +59,7 @@ impl WindowsDisk {
         disk_type: DiskType,
         model: Option<String>,
         serial: Option<String>,
-        size: u64,
+        size: Option<u64>,
         disk_index: u32,
         interface_type: Option<String>,
     ) -> Self {
@@ -87,7 +89,8 @@ impl WindowsDisk {
             disk_type,
             model: None,
             serial: None,
-            size: 0,
+            // Not yet determined, rather than a zero-byte disk.
+            size: None,
             disk_index: index,
             interface_type: None,
         })
@@ -164,10 +167,13 @@ const DISK_PERF_SELECT: &str = "SELECT Name, DiskReadBytesPerSec, DiskWriteBytes
 impl DiskPerf {
     fn to_io_stats(&self) -> DiskIoStats {
         DiskIoStats {
-            read_bytes: self.disk_read_bytes_per_sec,
-            write_bytes: self.disk_write_bytes_per_sec,
-            read_ops: self.disk_reads_per_sec,
-            write_ops: self.disk_writes_per_sec,
+            // `Win32_PerfRawData_*` gives raw cumulative counters; the
+            // `_per_sec` suffix is the counter's display semantics, not its
+            // value. These are real readings.
+            read_bytes: Some(self.disk_read_bytes_per_sec),
+            write_bytes: Some(self.disk_write_bytes_per_sec),
+            read_ops: Some(self.disk_reads_per_sec),
+            write_ops: Some(self.disk_writes_per_sec),
             // The two timers are PERF_PRECISION_100NS_TIMER: the raw value is
             // busy time in 100-nanosecond units.
             read_time_ms: Some(self.percent_disk_read_time / 10_000),
@@ -879,7 +885,8 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
                 disk_type,
                 wmi_disk.model,
                 wmi_disk.serial_number.map(|s| s.trim().to_string()),
-                wmi_disk.size.unwrap_or(0),
+                // WMI already answers `Option`; this used to discard it.
+                wmi_disk.size,
                 wmi_disk.index,
                 interface_type,
             );
@@ -943,7 +950,7 @@ impl WindowsDiskMonitor {
                     disk_type: disk.disk_type(),
                     model: None,
                     serial: None,
-                    size: 0,
+                    size: None,
                     disk_index: i as u32,
                     interface_type: None,
                 },

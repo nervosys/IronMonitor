@@ -74,8 +74,15 @@ pub struct DiskInfo {
     pub serial: Option<String>,
     /// Firmware version
     pub firmware: Option<String>,
-    /// Total capacity in bytes
-    pub capacity: u64,
+    /// Total capacity in bytes, or `None` where it was not read.
+    ///
+    /// **Optional for the same reason `block_size` below already is.** A disk
+    /// reporting 0 bytes is not a plausible reading; it is the absence of one,
+    /// and `macos.rs` had `size_bytes.unwrap_or(0)` producing exactly that.
+    /// `ontology/resolve.rs` was already guarding `capacity > 0` to decide
+    /// between a measured reading and an unavailable one — a sentinel it no
+    /// longer needs.
+    pub capacity: Option<u64>,
     /// Block size in bytes
     /// Block size in bytes, where it was read.
     ///
@@ -109,14 +116,19 @@ pub struct DiskInfo {
 /// I/O Statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskIoStats {
-    /// Total bytes read since boot
-    pub read_bytes: u64,
-    /// Total bytes written since boot
-    pub write_bytes: u64,
-    /// Total read operations
-    pub read_ops: u64,
-    /// Total write operations
-    pub write_ops: u64,
+    /// Total bytes read since boot, or `None` where the counter was not read.
+    ///
+    /// **Not the same as zero.** `macos.rs` returned this struct with all four
+    /// counters hardcoded to `0` — "no bytes read since boot" for a disk that
+    /// has certainly read some — because that platform exposes rates rather
+    /// than cumulative totals and the type had no way to say so.
+    pub read_bytes: Option<u64>,
+    /// Total bytes written since boot, or `None` where unread.
+    pub write_bytes: Option<u64>,
+    /// Total read operations, or `None` where unread.
+    pub read_ops: Option<u64>,
+    /// Total write operations, or `None` where unread.
+    pub write_ops: Option<u64>,
     /// Time spent reading (milliseconds)
     pub read_time_ms: Option<u64>,
     /// Time spent writing (milliseconds)
@@ -132,14 +144,17 @@ pub struct DiskIoStats {
 }
 
 impl DiskIoStats {
-    /// Calculate IOPS (operations per second) - requires delta calculation
-    pub fn total_ops(&self) -> u64 {
-        self.read_ops + self.write_ops
+    /// Total operations, or `None` unless both counters were read.
+    ///
+    /// A total over a counter nobody read is not a total. Same rule as
+    /// `Snapshot::total_rx_rate` and the ECC totals in `crate::edac`.
+    pub fn total_ops(&self) -> Option<u64> {
+        Some(self.read_ops? + self.write_ops?)
     }
 
-    /// Calculate total bytes transferred
-    pub fn total_bytes(&self) -> u64 {
-        self.read_bytes + self.write_bytes
+    /// Total bytes transferred, or `None` unless both counters were read.
+    pub fn total_bytes(&self) -> Option<u64> {
+        Some(self.read_bytes? + self.write_bytes?)
     }
 }
 /// Where a [`SmartInfo`] came from.
@@ -433,10 +448,10 @@ mod tests {
     #[test]
     fn test_disk_io_total_ops() {
         let stats = DiskIoStats {
-            read_bytes: 1000,
-            write_bytes: 2000,
-            read_ops: 100,
-            write_ops: 200,
+            read_bytes: Some(1000),
+            write_bytes: Some(2000),
+            read_ops: Some(100),
+            write_ops: Some(200),
             read_time_ms: None,
             write_time_ms: None,
             queue_depth: None,
@@ -444,16 +459,16 @@ mod tests {
             read_throughput: None,
             write_throughput: None,
         };
-        assert_eq!(stats.total_ops(), 300);
+        assert_eq!(stats.total_ops(), Some(300));
     }
 
     #[test]
     fn test_disk_io_total_bytes() {
         let stats = DiskIoStats {
-            read_bytes: 1_000_000,
-            write_bytes: 2_000_000,
-            read_ops: 0,
-            write_ops: 0,
+            read_bytes: Some(1_000_000),
+            write_bytes: Some(2_000_000),
+            read_ops: Some(0),
+            write_ops: Some(0),
             read_time_ms: None,
             write_time_ms: None,
             queue_depth: None,
@@ -461,16 +476,21 @@ mod tests {
             read_throughput: None,
             write_throughput: None,
         };
-        assert_eq!(stats.total_bytes(), 3_000_000);
+        assert_eq!(stats.total_bytes(), Some(3_000_000));
     }
 
+    /// A disk that genuinely moved no bytes still totals zero.
+    ///
+    /// The companion to it is [`total_over_an_unread_counter_is_absent`]: these
+    /// two fail in opposite directions, so satisfying one by breaking the other
+    /// does not pass.
     #[test]
     fn test_disk_io_zero() {
         let stats = DiskIoStats {
-            read_bytes: 0,
-            write_bytes: 0,
-            read_ops: 0,
-            write_ops: 0,
+            read_bytes: Some(0),
+            write_bytes: Some(0),
+            read_ops: Some(0),
+            write_ops: Some(0),
             read_time_ms: None,
             write_time_ms: None,
             queue_depth: None,
@@ -478,8 +498,35 @@ mod tests {
             read_throughput: None,
             write_throughput: None,
         };
-        assert_eq!(stats.total_ops(), 0);
-        assert_eq!(stats.total_bytes(), 0);
+        assert_eq!(stats.total_ops(), Some(0));
+        assert_eq!(stats.total_bytes(), Some(0));
+    }
+
+    /// An unread counter yields no total, rather than being summed as zero.
+    ///
+    /// `macos.rs` returned this struct with every counter hardcoded to `0`, so
+    /// a total over it read as "this disk has moved nothing" for a disk nobody
+    /// measured.
+    #[test]
+    fn total_over_an_unread_counter_is_absent() {
+        let stats = DiskIoStats {
+            read_bytes: Some(1_000),
+            write_bytes: None,
+            read_ops: Some(10),
+            write_ops: None,
+            read_time_ms: None,
+            write_time_ms: None,
+            queue_depth: None,
+            avg_latency_us: None,
+            read_throughput: None,
+            write_throughput: None,
+        };
+        assert_eq!(
+            stats.total_bytes(),
+            None,
+            "a total over a counter nobody read understates it silently"
+        );
+        assert_eq!(stats.total_ops(), None);
     }
 
     // === FilesystemInfo tests ===

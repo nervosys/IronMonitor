@@ -112,9 +112,15 @@ impl DiskDevice for LinuxDisk {
         // Read firmware
         let firmware = self.read_sysfs_string("device/rev").ok();
 
-        // Read capacity (in 512-byte sectors)
-        let sectors = self.read_sysfs_u64("size")?;
-        let capacity = sectors * 512;
+        // Read capacity (in 512-byte sectors).
+        //
+        // `.ok()` rather than `?`: a drive whose `size` attribute cannot be read
+        // is still a drive, and reporting it with an unknown capacity says more
+        // than dropping it from the enumeration entirely.
+        let capacity = self
+            .read_sysfs_u64("size")
+            .ok()
+            .map(|sectors| sectors * 512);
 
         // Read queue info
         // sysfs carries both; defaulting to 512 asserted a non-4Kn drive.
@@ -170,22 +176,27 @@ impl DiskDevice for LinuxDisk {
             return Err(Error::ParseError("Invalid stat format".to_string()));
         }
 
-        let read_ops: u64 = parts[0].parse().unwrap_or(0);
-        let read_sectors: u64 = parts[2].parse().unwrap_or(0);
-        let read_time_ms: u64 = parts[3].parse().unwrap_or(0);
-        let write_ops: u64 = parts[4].parse().unwrap_or(0);
-        let write_sectors: u64 = parts[6].parse().unwrap_or(0);
-        let write_time_ms: u64 = parts[7].parse().unwrap_or(0);
-        let in_flight: u32 = parts[8].parse().unwrap_or(0);
+        // `.ok()` rather than `.unwrap_or(0)`: a field of this line that does not
+        // parse is a field this kernel did not give us, and a counter of zero is
+        // a claim the device has served no I/O since boot. Those are different
+        // facts, and a consumer differentiating two samples cannot tell them
+        // apart once the second is written as the first.
+        let read_ops: Option<u64> = parts[0].parse().ok();
+        let read_sectors: Option<u64> = parts[2].parse().ok();
+        let read_time_ms: Option<u64> = parts[3].parse().ok();
+        let write_ops: Option<u64> = parts[4].parse().ok();
+        let write_sectors: Option<u64> = parts[6].parse().ok();
+        let write_time_ms: Option<u64> = parts[7].parse().ok();
+        let in_flight: Option<u32> = parts[8].parse().ok();
 
         Ok(DiskIoStats {
-            read_bytes: read_sectors * 512,
-            write_bytes: write_sectors * 512,
+            read_bytes: read_sectors.map(|s| s * 512),
+            write_bytes: write_sectors.map(|s| s * 512),
             read_ops,
             write_ops,
-            read_time_ms: Some(read_time_ms),
-            write_time_ms: Some(write_time_ms),
-            queue_depth: Some(in_flight),
+            read_time_ms,
+            write_time_ms,
+            queue_depth: in_flight,
             avg_latency_us: None,  // Would need to calculate from deltas
             read_throughput: None, // Would need historical data
             write_throughput: None,

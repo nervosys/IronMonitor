@@ -42,6 +42,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **Disk capacity and I/O counters are `Option`, and the `> 0` guards that hid
+  the fabrication are gone.** This is the sixth and last instance from the
+  fabricated-reading sweep, and the one with the widest blast radius, because
+  the invented value travelled three layers before anyone looked at it.
+
+  `DiskInfo.capacity` and the four `DiskIoStats` counters were bare `u64`. On
+  Linux, `/proc/diskstats` fields were parsed with `.unwrap_or(0)`, so a field
+  this kernel did not provide became a device that had served no I/O since
+  boot. `DiskInfo::capacity` came from `read_sysfs_u64("size")?`, which at least
+  failed loudly — but dropped the whole device from the enumeration, turning an
+  unreadable attribute into a disk that does not exist.
+
+  `pipeline::DiskSnapshot` then carried `total: u64, used: u64` and wrote `0`
+  into both whenever `filesystem_info` returned nothing. Every consumer guarded
+  with `total > 0` before dividing, and that guard is the interesting part: it
+  is why the fabrication never crashed anything, and also why nobody found it.
+  The sentinel and the genuine absence are the same value, so a disk that really
+  reports zero bytes and a disk we failed to measure rendered identically — as
+  `0.0 GB / 0.0 GB (0%)`. One TUI panel did not guard at all and printed `NaN%`.
+
+  All of them are `Option` now, through `disk::traits`, `pipeline::DiskSnapshot`
+  and the TUI's `DiskInfo`:
+
+  - `DiskIoStats::total_bytes` and `total_ops` return `Option`, `None` if either
+    side is unread — a total over one known and one unknown counter is not a
+    total.
+  - The served endpoint omits `ironmon_disk_usage_percent` entirely for a disk
+    whose capacity was not read. A scraped `0%` is a fact about a disk; an
+    absent series is Prometheus's own way of saying nothing was reported.
+  - The TUI prints `-- GB` and `--%`. The disk gauge still draws empty, because
+    a bar has no width that means "unknown" — but the label beside it says so.
+  - Fleet totals in the TUI sum as `Option<u64>`, so one unreadable disk makes
+    the total unknown rather than quietly short by an unknown amount.
+  - The `disk_readings_are_self_consistent` plausibility test dropped its
+    `|| total == 0` escape hatch, which had been excusing exactly the unread
+    case it existed to catch.
+
+  The general finding, now recorded in `HANDOFF.md`: **when a type cannot
+  express absence, the absence becomes a plausible value.** The reader invents
+  one, the consumer defends itself with a sentinel filter, and the filter then
+  discards the genuine readings that happen to equal the sentinel.
+
 - **`CpuFreqInfo::is_max_freq` no longer answers "yes" for every core, and
   frequency fields are now `Option`.** `min_freq_khz` and `max_freq_khz` were
   bare `u64` beside a `base_freq_khz` that was already `Option`. With an unread

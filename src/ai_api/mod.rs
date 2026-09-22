@@ -565,7 +565,7 @@ impl AiDataApi {
                     summary.disks.push(DiskSummary {
                         name: info.name.clone(),
                         model: info.model.clone(),
-                        size_gb: (info.capacity / 1024 / 1024 / 1024),
+                        size_gb: info.capacity.map(|c| c / 1024 / 1024 / 1024),
                         disk_type: format!("{:?}", info.disk_type),
                         temperature_c: disk.temperature().ok().flatten(),
                     });

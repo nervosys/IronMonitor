@@ -146,7 +146,9 @@ pub struct DiskSummary {
     /// Disk model
     pub model: String,
     /// Size in GB
-    pub size_gb: u64,
+    /// Total size in GB, or `None` where the capacity was not read. A disk
+    /// of unknown size is not a disk of zero size.
+    pub size_gb: Option<u64>,
     /// Disk type (NVMe, SATA, etc.)
     pub disk_type: String,
     /// Temperature in Celsius

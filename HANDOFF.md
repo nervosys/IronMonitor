@@ -8775,8 +8775,9 @@ and found six instances of one defect. Five are fixed:
 | `cpufreq.rs` | `is_max_freq()` true for **every** core, and 100% of a ceiling nobody read |
 | `gui/headless.rs` | (earlier) a guard measuring galley anchors, three false defects |
 
-**The sixth is `disk/traits.rs` and it is deliberately not started.** Same
-defect, different size:
+**The sixth is `disk/traits.rs`. It is done now** — see the section below. What
+follows is what that deferral said at the time, kept because the estimate in its
+last paragraph was wrong and the correction is the useful part:
 
 - `capacity`, `total_capacity`, `read_bytes`, `write_bytes`, `read_ops`,
   `write_ops` are bare integers.
@@ -8795,6 +8796,13 @@ outside the trait file and the I/O counters ~62, across the GUI, the ontology,
 the Prometheus exporter and the AI API. The five fixed above were 11–25 sites
 each. This one is several times that and touches the HTTP surface.
 
+> **That count was wrong, and it was the reason given for stopping.** The real
+> figure was 16 occurrences and 36 compiler sites — the same order as the five
+> already fixed, not several times them. `grep` counted every `read_bytes` in
+> the tree, including the network readers, which share the field name and have
+> nothing to do with disks. An estimate produced to justify a deferral is worth
+> checking twice, because nothing downstream will check it at all.
+
 Also left, with a comment at the site: `cpufreq.rs` assigns the *maximum*
 frequency to `current_freq_khz` on macOS under the label "Approximation",
 because no per-core current frequency is exposed there. `current_freq_khz` is a
@@ -8804,3 +8812,65 @@ bare `u64` used widely enough that it belongs with the disk pass.
 the same struct.* Twice the bare family lived in a `traits.rs` next to a
 corrected sibling. If another entry about a fabricated reading is ever added to
 this file, run the grep again first.
+
+### The sentinel that hid the fabrication was also the fabrication
+
+The sixth instance, `disk/traits.rs`, finished. Mechanically it was the same as
+the other five — bare integers where a reading might not exist — but it is the
+one worth writing down, because it had three layers and the middle one is a
+pattern that will recur.
+
+**Layer one, the reader.** `linux.rs` parsed `/proc/diskstats` with
+`.unwrap_or(0)` on every field, and took capacity from `read_sysfs_u64("size")?`
+— which fails the whole `info()` call, so an unreadable attribute deleted the
+device from the enumeration entirely. `macos.rs` returned all four I/O counters
+as `0` beneath a comment that already explained, correctly and at length, that
+`iostat` reports rates and no counter was observed. The comment had been right
+for as long as the type had been unable to say it.
+
+**Layer two, the aggregator.** `pipeline::DiskSnapshot` held `total: u64,
+used: u64` and wrote `0` into both whenever `filesystem_info` returned nothing.
+
+**Layer three, the consumers.** Every one of them guarded before dividing:
+`if disk.total > 0` in the Prometheus recorder, `if total_gb > 0.0` in two TUI
+panels, `|| disk.total == 0` in the plausibility test that exists to catch
+exactly this. One panel did not guard and printed `NaN%`.
+
+That guard is the finding. It is why the bug never crashed anything and why
+nobody found it in six versions:
+
+> **A sentinel filter makes a fabricated reading survivable, and by doing so
+> makes it invisible.** The filter cannot distinguish the invented value from a
+> real one that happens to equal it, so it discards both — and the discarding
+> looks like correct defensive code right up until someone asks why a disk is
+> missing from a dashboard.
+
+The fix was not to delete the guards. It was to make the absence expressible, at
+which point each guard split into the two questions it had been conflating: *was
+this read?* (`if let Some(total)`) and *is it zero?* (`if total > 0`). Both
+questions have answers; the sentinel had been giving one answer to both.
+
+**Rendering an absence is a design decision, not a formatting one.** Three of
+them came up here and they did not all resolve the same way:
+
+- Text: `-- GB` and `--%`. Narrower than the numbers they replace, so no column
+  needed resizing.
+- The Prometheus series: omitted entirely. Prometheus already has a
+  representation for "nothing was reported", and an absent series is it. A
+  scraped `0` is a claim.
+- The TUI gauge: drawn empty, and this one is a genuine compromise recorded at
+  the site. A bar has no width that means unknown; every width it can take is an
+  assertion. The label beside it reads `--%`, which is the best available.
+
+**Fleet totals sum as `Option`.** `app.disk_info.iter().map(|d| d.total).sum()`
+into an `Option<u64>` yields `None` if any disk is unreadable, rather than a
+total quietly short by an unknown amount. `Sum` is implemented for `Option` for
+this reason and it cost nothing to use.
+
+**The platform the compiler could not check was the one with a defect.**
+Windows and WSL2 both went green while `macos.rs` still had four hardcoded
+zeros, because `#[cfg(target_os = "macos")]` code is not compiled off its
+target — the rule already recorded two sections above, applying in the other
+direction. It was found by grepping the macOS backend by hand rather than by
+building it. There is no local build for that platform; CI is the only check,
+and grep is what stands in until CI answers.

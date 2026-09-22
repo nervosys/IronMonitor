@@ -4199,15 +4199,18 @@ impl IronMonitorApp {
             .unwrap_or_else(|| "Unknown".to_string());
         let capacity = info
             .as_ref()
-            .map(|i| format_bytes(i.capacity))
+            .and_then(|i| i.capacity)
+            .map(format_bytes)
             .unwrap_or_else(|| "N/A".to_string());
         let read_bytes = io_stats
             .as_ref()
-            .map(|io| format_bytes(io.read_bytes))
+            .and_then(|io| io.read_bytes)
+            .map(format_bytes)
             .unwrap_or_else(|| "N/A".to_string());
         let write_bytes = io_stats
             .as_ref()
-            .map(|io| format_bytes(io.write_bytes))
+            .and_then(|io| io.write_bytes)
+            .map(format_bytes)
             .unwrap_or_else(|| "N/A".to_string());
 
         egui::Frame::NONE
