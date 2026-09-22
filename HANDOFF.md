@@ -8693,3 +8693,69 @@ changing.
 a minute and is worth repeating whenever this file gains another entry about a
 fabricated reading. Most hits are JSON formatting fallbacks and range-check
 bounds; the ones that matter are on a path from hardware to a reported value.
+
+
+### An unreadable ECC counter, published as a measured zero
+
+Found by extending the `unwrap_or(0)` sweep from the GPU entry above into the
+other sensor readers. `src/edac/mod.rs` read the kernel's ECC error counters
+with a helper that correctly returns `Option<u64>`, then discarded the answer:
+
+```rust
+let ce_count = Self::read_sysfs_u64(&mc_path.join("ce_count")).unwrap_or(0);
+```
+
+**The ontology then published that zero as `measured`.** Per AGENTS.md that
+provenance means "sampled from hardware or the OS this cycle" and is the only
+one satisfying `is_observation()`. So an agent asking
+`memory.ecc.correctable_errors` was told, as a confirmed observation, that the
+machine had recorded no memory errors — when the counter simply could not be
+read. *"Zero errors" and "could not check" are opposite conclusions, and the
+first one says the RAM is healthy.*
+
+**The resolver was not at fault, and is worth reading as a model.** Both its
+early-return paths already emit `unavailable` with precise reasons, one
+explicitly refusing to imply the machine has no ECC, "which would be a claim
+about the hardware rather than about the reader". Whoever wrote it understood
+the distinction exactly. It could not tell that the number handed to it was
+invented. **Careful code downstream of a lying type still lies.**
+
+Three things in the fix are worth keeping:
+
+- **A total is `None` if *any* contributor was unreadable**, rather than summing
+  the readable ones. A partial sum looks complete and is silently low, and for
+  ECC an undercount is the dangerous direction. Same rule as
+  `Snapshot::total_rx_rate`.
+- **Silence used to mean "no errors".** The recommendation thresholds were
+  `> 0` and `> 100`; an unreadable counter arrived as `0` and failed both
+  quietly, so an operator reading an empty recommendation list concluded the
+  memory was fine. Absence now produces its own recommendation. That is the one
+  thing it could never say before, and it is the output a human actually reads.
+- **One layer the compiler could not catch.** `serde_json::json!` accepts an
+  `Option` and renders `None` as `null`, so `resolve.rs` still compiled after
+  the types changed and would have emitted `provenance: measured` with a null
+  value — a claimed observation of nothing, through the field that exists to
+  keep claims honest. *When a field gains an `Option`, check every place the
+  value crosses into a dynamically typed boundary — JSON, formatting, FFI —
+  because those accept `None` without a word.*
+
+### Feature-gated is not target-gated
+
+The first EDAC push failed four CI jobs, all Linux. `EdacMonitor::scan` is
+`#[cfg(target_os = "linux")]`, so every local check on the Windows box ran
+against code the compiler here never sees — including a second construction site
+for the newer `dimmN` layout, with its own zero-fills and a hardcoded
+`grain: 0`.
+
+Avoidable: this machine has WSL2, and it had been used two commits earlier to
+verify the GPU change. It was skipped here after over-correcting. The GPU
+modules are gated on *features* (`#[cfg(feature = "amd")]`), which Windows
+compiles happily, so WSL genuinely added nothing there — an earlier claim that
+it had was wrong, and the real cause was a `head -40` truncating the error list.
+Retracting that was right; generalising the retraction to "WSL adds nothing" was
+not.
+
+**Check which gate applies before deciding which compiler can see the code.**
+Feature-gated code compiles anywhere the feature is enabled. Target-gated code
+does not compile off its target at all, and no amount of `--all-features` will
+reveal it.
