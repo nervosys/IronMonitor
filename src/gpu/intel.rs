@@ -684,9 +684,11 @@ struct WmiIntelGpu {
 #[cfg(windows)]
 #[derive(Debug, Default)]
 struct WinIntelPerfData {
-    utilization: u8,
-    dedicated_used: u64,
-    shared_used: u64,
+    /// `None` where no engine performance counter answered. See
+    /// `windows_helpers::EngineUtilization::overall`.
+    utilization: Option<u8>,
+    dedicated_used: Option<u64>,
+    shared_used: Option<u64>,
     temperature: Option<i32>,
     /// Per-engine utilization breakdown
     engines_graphics: Option<u8>,
@@ -745,10 +747,15 @@ impl Gpu for WmiIntelGpu {
 
         // For Intel iGPUs, memory is shared with system
         // For Arc discrete GPUs, we have dedicated VRAM
+        // An iGPU's usage is shared plus dedicated, and a sum needs both: if
+        // either counter did not answer, the total in use is not known.
         let mem_used = if self.is_discrete {
             perf.dedicated_used
         } else {
-            perf.shared_used + perf.dedicated_used
+            match (perf.shared_used, perf.dedicated_used) {
+                (Some(shared), Some(dedicated)) => Some(shared + dedicated),
+                _ => None,
+            }
         };
         // The final `else` fell back to *the used figure itself* as the
         // total, so an adapter whose capacity WMI did not report came out at
@@ -764,18 +771,20 @@ impl Gpu for WmiIntelGpu {
         } else {
             None
         };
-        let memory = match mem_total {
-            Some(total) => GpuMemory::from_total_used(total, mem_used),
-            None => GpuMemory {
-                total: None,
-                used: Some(mem_used),
+        let memory = match (mem_total, mem_used) {
+            (Some(total), Some(used)) => GpuMemory::from_total_used(total, used),
+            (total, used) => GpuMemory {
+                total,
+                used,
                 free: None,
                 utilization: None,
             },
         };
 
         Ok(GpuDynamicInfo {
-            utilization: Some(perf.utilization),
+            // Carried through rather than wrapped: `Some(0)` here was a
+            // measured zero for a GPU whose counters never answered.
+            utilization: perf.utilization,
             memory,
             clocks: GpuClocks {
                 graphics: None,
@@ -871,9 +880,11 @@ mod tests {
     #[test]
     fn test_win_intel_perf_data_default() {
         let data = WinIntelPerfData::default();
-        assert_eq!(data.utilization, 0);
-        assert_eq!(data.dedicated_used, 0);
-        assert_eq!(data.shared_used, 0);
+        // `Default` means "nothing queried yet", which is the same thing a
+        // failed query leaves behind -- so all three are absent, not zero.
+        assert_eq!(data.utilization, None);
+        assert_eq!(data.dedicated_used, None);
+        assert_eq!(data.shared_used, None);
         assert!(data.temperature.is_none());
         assert!(data.engines_graphics.is_none());
         assert!(data.engines_compute.is_none());
@@ -886,9 +897,9 @@ mod tests {
     #[test]
     fn test_win_intel_perf_data_fields() {
         let data = WinIntelPerfData {
-            utilization: 42,
-            dedicated_used: 256 * 1024 * 1024,
-            shared_used: 64 * 1024 * 1024,
+            utilization: Some(42),
+            dedicated_used: Some(256 * 1024 * 1024),
+            shared_used: Some(64 * 1024 * 1024),
             temperature: Some(55),
             engines_graphics: Some(40),
             engines_compute: Some(5),
@@ -896,9 +907,9 @@ mod tests {
             engines_video_encode: Some(15),
             engines_copy: Some(2),
         };
-        assert_eq!(data.utilization, 42);
-        assert_eq!(data.dedicated_used, 256 * 1024 * 1024);
-        assert_eq!(data.shared_used, 64 * 1024 * 1024);
+        assert_eq!(data.utilization, Some(42));
+        assert_eq!(data.dedicated_used, Some(256 * 1024 * 1024));
+        assert_eq!(data.shared_used, Some(64 * 1024 * 1024));
         assert_eq!(data.temperature, Some(55));
         assert_eq!(data.engines_graphics, Some(40));
         assert_eq!(data.engines_video_decode, Some(20));

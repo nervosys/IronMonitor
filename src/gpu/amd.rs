@@ -695,10 +695,12 @@ struct WmiAmdGpu {
 #[cfg(windows)]
 #[derive(Debug, Default)]
 struct WinGpuPerfData {
-    utilization: u8,
-    dedicated_used: u64,
+    /// `None` where no engine performance counter answered. See
+    /// `windows_helpers::EngineUtilization::overall`.
+    utilization: Option<u8>,
+    dedicated_used: Option<u64>,
     #[allow(dead_code)]
-    shared_used: u64,
+    shared_used: Option<u64>,
     temperature: Option<u32>,
     /// Per-engine utilization breakdown
     engines_graphics: Option<u8>,
@@ -768,20 +770,25 @@ impl Gpu for WmiAmdGpu {
         // fell back to *the used figure itself*, which makes every adapter look
         // exactly full -- 100% memory utilisation, permanently. Reporting the
         // used bytes with no total says what is actually known.
-        let mem_used = perf.dedicated_used;
-        let memory = if self.dedicated_video_memory > 0 {
-            GpuMemory::from_total_used(self.dedicated_video_memory, mem_used)
-        } else {
-            GpuMemory {
-                total: None,
-                used: Some(mem_used),
+        // Capacity and usage now fail independently: WMI may report the
+        // adapter's size while the performance counters report nothing in use,
+        // and each is stated on its own rather than one standing in for the
+        // other.
+        let mem_total = (self.dedicated_video_memory > 0).then_some(self.dedicated_video_memory);
+        let memory = match (mem_total, perf.dedicated_used) {
+            (Some(total), Some(used)) => GpuMemory::from_total_used(total, used),
+            (total, used) => GpuMemory {
+                total,
+                used,
                 free: None,
                 utilization: None,
-            }
+            },
         };
 
         Ok(GpuDynamicInfo {
-            utilization: Some(perf.utilization),
+            // Carried through rather than wrapped: `Some(0)` here was a
+            // measured zero for a GPU whose counters never answered.
+            utilization: perf.utilization,
             memory,
             clocks: GpuClocks {
                 graphics: None,
@@ -873,9 +880,11 @@ mod tests {
     #[test]
     fn test_win_gpu_perf_data_default() {
         let data = WinGpuPerfData::default();
-        assert_eq!(data.utilization, 0);
-        assert_eq!(data.dedicated_used, 0);
-        assert_eq!(data.shared_used, 0);
+        // `Default` means "nothing queried yet", which is the same thing a
+        // failed query leaves behind -- so all three are absent, not zero.
+        assert_eq!(data.utilization, None);
+        assert_eq!(data.dedicated_used, None);
+        assert_eq!(data.shared_used, None);
         assert!(data.temperature.is_none());
         assert!(data.engines_graphics.is_none());
         assert!(data.engines_compute.is_none());
@@ -888,9 +897,9 @@ mod tests {
     #[test]
     fn test_win_gpu_perf_data_fields() {
         let data = WinGpuPerfData {
-            utilization: 75,
-            dedicated_used: 1024 * 1024 * 512,
-            shared_used: 1024 * 1024 * 128,
+            utilization: Some(75),
+            dedicated_used: Some(1024 * 1024 * 512),
+            shared_used: Some(1024 * 1024 * 128),
             temperature: Some(65),
             engines_graphics: Some(80),
             engines_compute: Some(10),
@@ -898,9 +907,9 @@ mod tests {
             engines_video_encode: Some(30),
             engines_copy: Some(5),
         };
-        assert_eq!(data.utilization, 75);
-        assert_eq!(data.dedicated_used, 512 * 1024 * 1024);
-        assert_eq!(data.shared_used, 128 * 1024 * 1024);
+        assert_eq!(data.utilization, Some(75));
+        assert_eq!(data.dedicated_used, Some(512 * 1024 * 1024));
+        assert_eq!(data.shared_used, Some(128 * 1024 * 1024));
         assert_eq!(data.temperature, Some(65));
         assert_eq!(data.engines_graphics, Some(80));
         assert_eq!(data.engines_video_decode, Some(50));

@@ -118,8 +118,17 @@ pub struct EngineUtilization {
     pub video_encode: Option<u8>,
     /// Copy engine utilization (0-100)
     pub copy: Option<u8>,
-    /// Overall combined utilization (0-100)
-    pub overall: u8,
+    /// Overall combined utilization (0-100), or `None` where no engine
+    /// counter was found.
+    ///
+    /// **Bare beside five `Option` engine fields**, and it was the only one of
+    /// the six that could not say "no counter answered". It fell back to `0`,
+    /// which `amd.rs` and `intel.rs` then published as
+    /// `utilization: Some(perf.utilization)` -- so a GPU whose performance
+    /// counters returned nothing reported a *measured* 0%. The `Option` on
+    /// `GpuDynamicInfo::utilization` exists precisely to prevent that, and this
+    /// path was filling it in unconditionally.
+    pub overall: Option<u8>,
 }
 
 /// Full GPU performance data from Windows APIs.
@@ -127,10 +136,12 @@ pub struct EngineUtilization {
 pub struct WinGpuPerfData {
     /// Per-engine utilization breakdown
     pub engines: EngineUtilization,
-    /// Dedicated VRAM used in bytes
-    pub dedicated_used: u64,
-    /// Shared memory used in bytes
-    pub shared_used: u64,
+    /// Dedicated VRAM used in bytes, or `None` where no adapter memory row
+    /// matched.
+    pub dedicated_used: Option<u64>,
+    /// Shared memory used in bytes, or `None` where no adapter memory row
+    /// matched.
+    pub shared_used: Option<u64>,
     /// GPU temperature from OHM/LHM in Celsius
     pub temperature: Option<i32>,
 }
@@ -315,16 +326,20 @@ pub fn query_gpu_perf_counters(luid_filter: Option<&str>) -> WinGpuPerfData {
         data.engines.video_encode = avg(venc_total, venc_count);
         data.engines.copy = avg(copy_total, copy_count);
 
-        // Overall = max of graphics and compute (most representative)
+        // Overall = graphics where it answered, else the mean across every
+        // engine that did. No engine answering means no overall figure; the
+        // `else { 0 }` here reported an idle GPU.
         let total_sum = gfx_total + compute_total + vdec_total + venc_total + copy_total;
         let total_count = gfx_count + compute_count + vdec_count + venc_count + copy_count;
         data.engines.overall = if total_count > 0 {
             // Use the graphics engine as primary, fall back to average
-            data.engines
-                .graphics
-                .unwrap_or((total_sum / total_count as f64).min(100.0) as u8)
+            Some(
+                data.engines
+                    .graphics
+                    .unwrap_or((total_sum / total_count as f64).min(100.0) as u8),
+            )
         } else {
-            0
+            None
         };
     }
 
@@ -337,10 +352,13 @@ pub fn query_gpu_perf_counters(luid_filter: Option<&str>) -> WinGpuPerfData {
             }
         }
 
-        data.dedicated_used = *dedicated;
-        data.shared_used = *shared;
+        data.dedicated_used = Some(*dedicated);
+        data.shared_used = Some(*shared);
 
-        if data.dedicated_used > 0 || data.shared_used > 0 {
+        // Keep looking while this row reported nothing in use: a later row may
+        // be the adapter actually in use. A row that reported zero is still a
+        // reading, so it is kept rather than discarded if nothing better comes.
+        if *dedicated > 0 || *shared > 0 {
             break;
         }
     }
@@ -468,15 +486,18 @@ mod tests {
         assert!(eng.video_decode.is_none());
         assert!(eng.video_encode.is_none());
         assert!(eng.copy.is_none());
-        assert_eq!(eng.overall, 0);
+        assert_eq!(
+            eng.overall, None,
+            "no engine counter answered, so there is no overall figure"
+        );
     }
 
     #[test]
     fn test_win_gpu_perf_data_default() {
         let data = WinGpuPerfData::default();
-        assert_eq!(data.engines.overall, 0);
-        assert_eq!(data.dedicated_used, 0);
-        assert_eq!(data.shared_used, 0);
+        assert_eq!(data.engines.overall, None);
+        assert_eq!(data.dedicated_used, None);
+        assert_eq!(data.shared_used, None);
         assert!(data.temperature.is_none());
     }
 

@@ -8965,7 +8965,7 @@ The clearest few, to start from:
 | `io_scheduler/mod.rs` `BlockDeviceIo` | `size_bytes: u64` | no |
 | `observability/context.rs` `CpuMetrics` | `utilization_percent: f32` | no |
 | `observability/metrics.rs` `CpuMetricSnapshot` | `usage_percent: f32` | no |
-| `gpu/windows_helpers.rs` `EngineUtilization` | `overall: u8` beside per-engine `Option`s | no |
+| `gpu/windows_helpers.rs` `EngineUtilization` | `overall: u8` beside per-engine `Option`s | **checked -- fixed** |
 
 #### The first candidate checked was a false positive, and that is the finding
 
@@ -9082,3 +9082,50 @@ Somebody did the careful thing at the parse layer; three call frames later
 fabricated, whether it was fabricated at the source or merely *flattened on
 arrival* -- the fix is much smaller in the second case, and the second case has
 now come up twice (here and macOS `size_bytes`).
+
+### A correct type does not help if the caller can fill it unconditionally
+
+Instance eleven, and the first in this sweep that had already been fixed once.
+
+`GpuDynamicInfo::utilization` is `Option<u8>`. Making it so was the *first*
+thing this sweep did, for exactly the reason stated in that commit: a card whose
+utilisation could not be read must not report 0%, because 0% is what an idle
+card reports. The type has been right for weeks.
+
+`gpu/windows_helpers.rs` computes an overall figure from five per-engine
+counters, each of which is correctly `Option<u8>`, and then:
+
+```rust
+data.engines.overall = if total_count > 0 { .. } else { 0 };   // bare u8
+```
+
+and `amd.rs` and `intel.rs` publish it as:
+
+```rust
+utilization: Some(perf.utilization),
+```
+
+So every AMD and Intel GPU on Windows whose performance counters returned
+nothing reported a **measured** 0% utilisation, through a field specifically
+typed to prevent that, four fields down from five siblings that got it right.
+
+> **An `Option` field is a place where absence *can* be expressed, not a
+> guarantee that it *is*.** `Some(x)` at a call site is an assertion, and it is
+> exactly as checkable as the bare `u64` assignments this sweep has spent its
+> whole length removing -- which is to say, not at all. Widening a type moves
+> the decision to the caller; it does not make it.
+
+Two practical consequences:
+
+- **`Some(..)` wrapping a value that came from a fallible source is worth the
+  same suspicion as `unwrap_or(0)`.** It is the same act. `unwrap_or` is easier
+  to grep for, which is why it was found first and why this was not.
+- **Fixing the struct is not fixing the reading.** Six earlier instances in this
+  sweep were closed by changing a type and following the compiler. That closes
+  every site that *reads* the field and none that *writes* it with a
+  constructed `Some`, because those still compile.
+
+The structural scan does not catch this either -- `overall: u8` did flag,
+but only because it happened to sit beside `Option` siblings in its own struct.
+A `Some(fabricated)` at a call site has no shape to match on. That is a gap in
+the method, recorded here rather than papered over.

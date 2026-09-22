@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **A GPU whose performance counters never answered no longer reports a
+  measured 0% utilisation.** `windows_helpers::EngineUtilization::overall` was
+  bare `u8` beside five `Option` per-engine fields, and fell back to `0` when no
+  counter was found:
+
+  ```rust
+  data.engines.overall = if total_count > 0 { .. } else { 0 };
+  ```
+
+  **This is the first instance in the sweep to have leaked back in behind a
+  field that was already correct.** `GpuDynamicInfo::utilization` is
+  `Option<u8>` — that was the very first thing fixed in this sweep, precisely so
+  a failed read could not read as an idle card. The Windows WMI paths in
+  `amd.rs` and `intel.rs` then wrote `utilization: Some(perf.utilization)`,
+  wrapping the fabricated zero back up as a measurement. A correct type does not
+  help if a caller can fill it unconditionally.
+
+  `dedicated_used` and `shared_used` are `Option` too. Capacity and usage now
+  fail independently, so an adapter whose size WMI reported but whose usage
+  counters did not answer says exactly that, rather than one standing in for the
+  other. On Intel iGPUs, `shared + dedicated` needs both counters and is `None`
+  if either is missing.
+
 - **Two more disk capacities the disk pass walked past.**
   `smart::SmartDiskInfo::capacity_bytes` and `disk::traits::NvmeInfo::
   total_capacity` were both bare `u64` holding the same quantity that
