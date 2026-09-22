@@ -8759,3 +8759,48 @@ not.
 Feature-gated code compiles anywhere the feature is enabled. Target-gated code
 does not compile off its target at all, and no amount of `--all-features` will
 reveal it.
+
+
+### Five fabricated readings from one grep, and the sixth left on the table
+
+`grep -rn "unwrap_or(0" src/gpu src/core src/disk* src/network* src/hwmon*
+src/process_monitor.rs src/power* src/thermal* src/memory*` took about a minute
+and found six instances of one defect. Five are fixed:
+
+| Where | What it claimed |
+| --- | --- |
+| `gpu/traits.rs` | failed reads as 0 MHz, 0%, 0 bytes VRAM, across three backends |
+| `edac/mod.rs` | zero ECC errors, published to agents as `provenance: measured` |
+| `motherboard/traits.rs` | an invented "SOC Die" sensor at 0.0 °C with plausible thresholds |
+| `cpufreq.rs` | `is_max_freq()` true for **every** core, and 100% of a ceiling nobody read |
+| `gui/headless.rs` | (earlier) a guard measuring galley anchors, three false defects |
+
+**The sixth is `disk/traits.rs` and it is deliberately not started.** Same
+defect, different size:
+
+- `capacity`, `total_capacity`, `read_bytes`, `write_bytes`, `read_ops`,
+  `write_ops` are bare integers.
+- `macos.rs` returns `DiskIoStats` with all four counters hardcoded `0` — "0
+  bytes read since boot" for a disk that has certainly read bytes.
+- `linux.rs` has `total_capacity: read_sysfs_u64("size").map(|s| s * 512)
+  .unwrap_or(0)`.
+- **And the file has already had a partial correction pass.** `block_size`,
+  `unallocated_capacity` and `controller_id` are `Option` with comments
+  explaining exactly this reasoning — *"a `controller_id` of 0 is a real
+  controller… neither can stand in for 'not read'"*. Whoever did that fixed some
+  fields and stopped.
+
+The reason to schedule it rather than continue: `.capacity` has ~23 references
+outside the trait file and the I/O counters ~62, across the GUI, the ontology,
+the Prometheus exporter and the AI API. The five fixed above were 11–25 sites
+each. This one is several times that and touches the HTTP surface.
+
+Also left, with a comment at the site: `cpufreq.rs` assigns the *maximum*
+frequency to `current_freq_khz` on macOS under the label "Approximation",
+because no per-core current frequency is exposed there. `current_freq_khz` is a
+bare `u64` used widely enough that it belongs with the disk pass.
+
+*The tell, every time, was a bare numeric field sitting beside `Option` ones in
+the same struct.* Twice the bare family lived in a `traits.rs` next to a
+corrected sibling. If another entry about a fabricated reading is ever added to
+this file, run the grep again first.
