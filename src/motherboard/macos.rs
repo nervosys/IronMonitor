@@ -44,7 +44,7 @@ impl MacSensor {
                 if let Some(val) = extract_ioreg_int(temp_line) {
                     sensors.push(TemperatureSensor {
                         label: "Battery".to_string(),
-                        temperature: val as f32 / 100.0,
+                        temperature: Some(val as f32 / 100.0),
                         max: Some(45.0),
                         critical: Some(55.0),
                         sensor_type: SensorType::Other,
@@ -62,9 +62,16 @@ impl MacSensor {
             let text = String::from_utf8_lossy(&output.stdout);
             if text.contains("pmgr") || text.contains("temp") {
                 // On Apple Silicon, thermal data comes from pmp nodes
+                // The sensor is reported because the machine has one; the
+                // reading is not, because this path does not take one.
+                //
+                // This pushed `0.0` with a comment saying real values need an
+                // IOKit C API it does not call — a die temperature of 0 °C,
+                // beside a plausible 100 °C max and 110 °C critical, on the
+                // strength of the word "temp" appearing in `ioreg` output.
                 sensors.push(TemperatureSensor {
                     label: "SOC Die".to_string(),
-                    temperature: 0.0, // Requires IOKit C API for real values
+                    temperature: None,
                     max: Some(100.0),
                     critical: Some(110.0),
                     sensor_type: SensorType::Cpu,

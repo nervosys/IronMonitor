@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **Motherboard sensor readings that could not be taken are absent rather than
+  zero, and this changes public API.** `TemperatureSensor.temperature`,
+  `VoltageRail.voltage` and `SensorReading.value` were bare `f32` while the
+  thresholds beside them (`max`, `critical`, `min`) were already `Option`.
+
+  One backend had already been forced into a fabrication by that: on Apple
+  Silicon, if `ioreg` output merely contained the word "temp", it reported a
+  "SOC Die" sensor at **0.0 °C** with a plausible 100 °C maximum and 110 °C
+  critical, under a comment conceding that real values need an IOKit API it does
+  not call. A die at 0 °C with credible thresholds is worse than no sensor,
+  because it looks like working instrumentation.
+
+  The HTTP field `temperature_c` in `TemperatureSensorContext` is `Option<f32>`
+  too, serialising as `null` beside the thresholds that always were. The
+  alternative — dropping unreadable sensors from the response — would hide a
+  board that exposes a sensor nobody can sample, which is a different fact from
+  a board without one.
+
 - **ECC memory error counts that could not be read are no longer reported as
   zero, and this changes a public API.** `EdacCsRow`, `EdacMemoryController` and
   `EdacOverview` typed their counters as bare integers, so an unreadable sysfs

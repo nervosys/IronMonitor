@@ -157,7 +157,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !temps.is_empty() {
                                 println!("[TEMP]  Temperatures:");
                                 for temp in temps {
-                                    print!("  {:<20} {:>6.1}°C", temp.label, temp.temperature);
+                                    // The sensor is listed either way; a
+                                    // reading it did not produce says so
+                                    // rather than printing a plausible 0.0.
+                                    match temp.temperature {
+                                        Some(c) => print!("  {:<20} {:>6.1}°C", temp.label, c),
+                                        None => {
+                                            print!("  {:<20} {:>9}", temp.label, "unreadable")
+                                        }
+                                    }
                                     if let Some(max) = temp.max {
                                         print!("  (max: {:.1}°C)", max);
                                     }
@@ -178,7 +186,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !voltages.is_empty() {
                                 println!("[VOLT] Voltages:");
                                 for volt in voltages {
-                                    print!("  {:<20} {:>7.3}V", volt.label, volt.voltage);
+                                    match volt.voltage {
+                                        Some(v) => print!("  {:<20} {:>7.3}V", volt.label, v),
+                                        None => {
+                                            print!("  {:<20} {:>9}", volt.label, "unreadable")
+                                        }
+                                    }
                                     if volt.min.is_some() || volt.max.is_some() {
                                         print!("  (");
                                         if let Some(min) = volt.min {

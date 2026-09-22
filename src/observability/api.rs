@@ -1037,7 +1037,10 @@ impl ObservabilityApi {
             for zone in monitor.thermal_zones() {
                 result.push(TemperatureSensorContext {
                     name: zone.name.clone(),
-                    temperature_c: zone.temp_celsius,
+                    // A thermal zone carries a real reading; the `Option` on
+                    // this field is for sensors that expose themselves without
+                    // one.
+                    temperature_c: Some(zone.temp_celsius),
                     high_threshold_c: None,
                     critical_threshold_c: None,
                     location: Some(zone.zone_type.clone()),

@@ -121,7 +121,8 @@ fn query_lhm_sensors() -> Option<Vec<TemperatureSensor>> {
 
                                 temps.push(TemperatureSensor {
                                     label: name,
-                                    temperature: value,
+                                    // A real reading from the provider.
+                                    temperature: Some(value),
                                     max: sensor.max,
                                     critical: None,
                                     sensor_type,
@@ -155,7 +156,7 @@ fn query_lhm_voltages() -> Option<Vec<VoltageRail>> {
                             if value > 0.0 && value < 20.0 {
                                 voltages.push(VoltageRail {
                                     label: name,
-                                    voltage: value,
+                                    voltage: Some(value),
                                     min: sensor.min,
                                     max: sensor.max,
                                 });
@@ -400,7 +401,7 @@ impl MotherboardDevice for WindowsSensor {
                                 label: probe
                                     .description
                                     .unwrap_or_else(|| "Temperature Probe".to_string()),
-                                temperature: temp_celsius,
+                                temperature: Some(temp_celsius),
                                 max: probe.nominal_reading.map(|r| r as f32 / 10.0),
                                 critical: None,
                                 sensor_type: SensorType::Other,
@@ -443,7 +444,7 @@ impl MotherboardDevice for WindowsSensor {
 
                             sensors.push(TemperatureSensor {
                                 label: format!("ACPI {}", name),
-                                temperature: temp_celsius as f32,
+                                temperature: Some(temp_celsius as f32),
                                 max: Some(90.0),       // Typical high threshold
                                 critical: Some(105.0), // Typical critical threshold
                                 sensor_type: SensorType::Other, // ACPI thermal zone
@@ -1024,16 +1025,21 @@ pub fn get_system_temperatures() -> Result<SystemTemperatures, Error> {
                         || sensor.label.to_lowercase().contains("package")
                         || sensor.label.to_lowercase().contains("tctl")
                     {
-                        cpu_temp = Some(sensor.temperature);
+                        // Propagates absence: a sensor that could not be read
+                        // leaves the summary without a CPU temperature rather
+                        // than reporting one it does not have.
+                        cpu_temp = sensor.temperature;
                     }
                 }
                 SensorType::Gpu => {
                     if gpu_temp.is_none() {
-                        gpu_temp = Some(sensor.temperature);
+                        gpu_temp = sensor.temperature;
                     }
                 }
                 SensorType::Storage => {
-                    storage_temps.push((sensor.label.clone(), sensor.temperature));
+                    if let Some(celsius) = sensor.temperature {
+                        storage_temps.push((sensor.label.clone(), celsius));
+                    }
                 }
                 SensorType::Other
                     // Check for motherboard sensor
@@ -1041,7 +1047,7 @@ pub fn get_system_temperatures() -> Result<SystemTemperatures, Error> {
                         || sensor.label.to_lowercase().contains("motherboard")
                         || sensor.label.to_lowercase().contains("mainboard"))
                         && mb_temp.is_none() => {
-                            mb_temp = Some(sensor.temperature);
+                            mb_temp = sensor.temperature;
                         }
                 _ => {}
             }

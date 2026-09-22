@@ -4939,7 +4939,11 @@ impl IronMonitorApp {
                 if !temps.is_empty() {
                     has_mb_sensors = true;
                     for temp in temps {
-                        all_temps.push((temp.label.clone(), temp.temperature, "Motherboard"));
+                        // A sensor with no reading is not charted as a
+                        // temperature; it has none to chart.
+                        if let Some(celsius) = temp.temperature {
+                            all_temps.push((temp.label.clone(), celsius, "Motherboard"));
+                        }
                     }
                 }
             }
@@ -5064,8 +5068,11 @@ impl IronMonitorApp {
                                     RichText::new(&volt.label).color(CyberColors::TEXT_SECONDARY),
                                 );
                                 ui.label(
-                                    RichText::new(format!("{:.3}V", volt.voltage))
-                                        .color(CyberColors::NEON_YELLOW),
+                                    RichText::new(match volt.voltage {
+                                        Some(v) => format!("{v:.3}V"),
+                                        None => "unavailable".to_string(),
+                                    })
+                                    .color(CyberColors::NEON_YELLOW),
                                 );
                                 ui.end_row();
                             }

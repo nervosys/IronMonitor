@@ -32,8 +32,15 @@ pub trait MotherboardDevice: Send + Sync {
 pub struct TemperatureSensor {
     /// Sensor label (e.g., "CPU", "Chipset", "VRM", "Ambient")
     pub label: String,
-    /// Current temperature in Celsius
-    pub temperature: f32,
+    /// Current temperature in Celsius, or `None` where the sensor exists but
+    /// could not be read.
+    ///
+    /// **Optional because the thresholds beside it always were.** A bare `f32`
+    /// left a reader with nowhere to put "this board exposes a sensor I cannot
+    /// sample", so one backend pushed a sensor reading 0.0 °C with a comment
+    /// saying real values need an API it does not call. A die at 0 °C is not a
+    /// plausible reading; it is the absence of one.
+    pub temperature: Option<f32>,
     /// Maximum safe temperature (optional)
     pub max: Option<f32>,
     /// Critical temperature threshold (optional)
@@ -47,8 +54,9 @@ pub struct TemperatureSensor {
 pub struct VoltageRail {
     /// Rail label (e.g., "VCore", "+12V", "+5V", "VDIMM")
     pub label: String,
-    /// Current voltage in volts
-    pub voltage: f32,
+    /// Current voltage in volts, or `None` where the rail is exposed but not
+    /// readable. See [`TemperatureSensor::temperature`].
+    pub voltage: Option<f32>,
     /// Minimum acceptable voltage (optional)
     pub min: Option<f32>,
     /// Maximum acceptable voltage (optional)
@@ -107,8 +115,11 @@ pub enum SensorType {
 /// Generic sensor reading
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorReading {
+    /// Sensor label.
     pub label: String,
-    pub value: f32,
+    /// The reading, or `None` where the sensor is present and unreadable.
+    pub value: Option<f32>,
+    /// Unit the value is expressed in.
     pub unit: String,
 }
 

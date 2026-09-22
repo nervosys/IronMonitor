@@ -115,7 +115,8 @@ impl MotherboardDevice for LinuxSensor {
 
                 sensors.push(TemperatureSensor {
                     label,
-                    temperature,
+                    // A real hwmon reading; the read above is already guarded.
+                    temperature: Some(temperature),
                     max,
                     critical,
                     sensor_type,
@@ -142,7 +143,7 @@ impl MotherboardDevice for LinuxSensor {
 
                 rails.push(VoltageRail {
                     label,
-                    voltage,
+                    voltage: Some(voltage),
                     min,
                     max,
                 });
@@ -697,18 +698,25 @@ pub fn get_system_temperatures() -> Result<SystemTemperatures, Error> {
             for ts in &temp_sensors {
                 match ts.sensor_type {
                     SensorType::Cpu => {
-                        // Get the highest CPU temperature
-                        if cpu_temp.is_none_or(|t| ts.temperature > t) {
-                            cpu_temp = Some(ts.temperature);
+                        // Highest CPU temperature among sensors that produced
+                        // one. A sensor with no reading cannot be the hottest.
+                        if let Some(celsius) = ts.temperature {
+                            if cpu_temp.is_none_or(|t| celsius > t) {
+                                cpu_temp = Some(celsius);
+                            }
                         }
                     }
                     SensorType::Chipset | SensorType::Ambient | SensorType::Vrm => {
-                        if mb_temp.is_none_or(|t| ts.temperature > t) {
-                            mb_temp = Some(ts.temperature);
+                        if let Some(celsius) = ts.temperature {
+                            if mb_temp.is_none_or(|t| celsius > t) {
+                                mb_temp = Some(celsius);
+                            }
                         }
                     }
                     SensorType::M2Slot => {
-                        storage_temps.push((ts.label.clone(), ts.temperature));
+                        if let Some(celsius) = ts.temperature {
+                            storage_temps.push((ts.label.clone(), celsius));
+                        }
                     }
                     _ => {}
                 }

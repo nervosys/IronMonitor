@@ -300,8 +300,10 @@ pub struct FanContext {
 pub struct TemperatureSensorContext {
     /// Sensor name/label
     pub name: String,
-    /// Current temperature in Celsius
-    pub temperature_c: f32,
+    /// Current temperature in Celsius, or `None` where the sensor exists and
+    /// could not be read. Serialises as `null`, matching the thresholds beside
+    /// it, which were always optional.
+    pub temperature_c: Option<f32>,
     /// High threshold
     pub high_threshold_c: Option<f32>,
     /// Critical threshold
