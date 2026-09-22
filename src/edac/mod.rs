@@ -327,8 +327,12 @@ impl EdacMonitor {
             )),
             Some(_) => {}
             None => recs.push(
-                "ECC uncorrectable-error counters could not be read on at least one                  controller — memory health cannot be assessed from this host"
-                    .into(),
+                concat!(
+                    "ECC uncorrectable-error counters could not be read on at ",
+                    "least one controller — memory health cannot be assessed ",
+                    "from this host"
+                )
+                .into(),
             ),
         }
         match total_ce {
@@ -338,8 +342,12 @@ impl EdacMonitor {
             )),
             Some(_) => {}
             None => recs.push(
-                "ECC correctable-error counters could not be read on at least one                  controller — a rising error rate would not be visible here"
-                    .into(),
+                concat!(
+                    "ECC correctable-error counters could not be read on at ",
+                    "least one controller — a rising error rate would not be ",
+                    "visible here"
+                )
+                .into(),
             ),
         }
         if !ecc_active {
