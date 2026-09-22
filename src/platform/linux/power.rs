@@ -17,8 +17,10 @@ pub fn read_power_stats() -> Result<PowerStats> {
     if let Ok(rails) = read_ina3221_rails() {
         stats.rails = rails;
 
-        // Calculate total
-        let total_power: u32 = stats
+        // Calculate total. `Option` sum: one online rail with no reading
+        // makes the total unknown rather than silently smaller. `.sum()` over
+        // an iterator of `Option` does this for free.
+        let total_power: Option<u32> = stats
             .rails
             .values()
             .filter(|r| r.online)
@@ -79,11 +81,16 @@ fn read_ina3221_channel(hwmon_path: &Path, channel: u32) -> Result<PowerRail> {
     let voltage_path = hwmon_path.join(format!("in{}_input", channel));
     let current_path = hwmon_path.join(format!("curr{}_input", channel));
 
-    let voltage = read_file_u32(&voltage_path).unwrap_or(0);
-    let current = read_file_u32(&current_path).unwrap_or(0);
+    let voltage = read_file_u32(&voltage_path).ok();
+    let current = read_file_u32(&current_path).ok();
 
-    // Calculate power (V * I)
-    let power = (voltage as u64 * current as u64 / 1000) as u32; // mV * mA / 1000 = mW
+    // Calculate power (V * I). Derived, so it needs both: with `unwrap_or(0)`
+    // on either input this produced a rail drawing exactly 0 W, which is what a
+    // rail that is switched off also looks like.
+    let power = match (voltage, current) {
+        (Some(v), Some(i)) => Some((v as u64 * i as u64 / 1000) as u32), // mV * mA / 1000 = mW
+        _ => None,
+    };
 
     // Read limits if available
     let warn = read_file_u32(hwmon_path.join(format!("curr{}_crit", channel))).ok();
@@ -95,6 +102,8 @@ fn read_ina3221_channel(hwmon_path: &Path, channel: u32) -> Result<PowerRail> {
         voltage,
         current,
         power,
+        // Seeded from the instantaneous reading, and `None` where there is
+        // none; `PowerAverageTracker` replaces it once it has samples.
         average: power,
         warn,
         crit,

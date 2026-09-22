@@ -208,9 +208,15 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
         }
 
         println!("  NVMe Version:   {}", or_unknown(nvme.nvme_version));
+        // Same treatment as every other field on this screen, which have
+        // used `or_unknown` since NVMe identify was made to admit it needs
+        // elevation. Capacity printed `0.00 GB` in exactly that case.
         println!(
-            "  Total Capacity: {:.2} GB",
-            nvme.total_capacity as f64 / 1_000_000_000.0
+            "  Total Capacity: {}",
+            nvme.total_capacity.map_or_else(
+                || "unknown (needs elevation)".to_string(),
+                |c| format!("{:.2} GB", c as f64 / 1_000_000_000.0)
+            )
         );
         println!("  Controller ID:  {}", or_unknown(nvme.controller_id));
         println!("  Namespaces:     {}", or_unknown(nvme.num_namespaces));

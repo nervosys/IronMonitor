@@ -1658,14 +1658,20 @@ fn print_power_info(
         return;
     }
 
-    let total = power.total_watts();
-    let total_str = format!("{:.2}W", total);
-    let total_colored = if total > 100.0 {
-        total_str.red().bold()
-    } else if total > 50.0 {
-        total_str.yellow()
-    } else {
-        total_str.green()
+    // `total_watts` is `Option` now: with no readable rail there is no total,
+    // and the colour thresholds below have nothing to compare against.
+    let total_colored = match power.total_watts() {
+        Some(total) => {
+            let total_str = format!("{:.2}W", total);
+            if total > 100.0 {
+                total_str.red().bold()
+            } else if total > 50.0 {
+                total_str.yellow()
+            } else {
+                total_str.green()
+            }
+        }
+        None => "not measured".dimmed(),
     };
     println!("  {} {}", "Total Power:".white().bold(), total_colored);
 
@@ -1673,19 +1679,32 @@ fn print_power_info(
         println!("\n  {}", "Power Rails:".white().bold());
         for (name, rail) in &power.rails {
             if rail.online {
-                let power_w = rail.power as f64 / 1000.0;
-                let power_str = format!("{:.2}W", power_w);
-                let power_colored = if power_w > 30.0 {
-                    power_str.yellow()
-                } else {
-                    power_str.green()
+                let power_colored = match rail.power {
+                    Some(mw) => {
+                        let power_w = mw as f64 / 1000.0;
+                        let power_str = format!("{:.2}W", power_w);
+                        if power_w > 30.0 {
+                            power_str.yellow()
+                        } else {
+                            power_str.green()
+                        }
+                    }
+                    // An online rail with no reading. Distinct from 0.00W,
+                    // which is what a rail that is switched off looks like.
+                    None => "not measured".dimmed(),
                 };
+                let volts = rail
+                    .voltage
+                    .map_or("?V".to_string(), |mv| format!("{:.1}V", mv as f64 / 1000.0));
+                let amps = rail
+                    .current
+                    .map_or("?mA".to_string(), |ma| format!("{:.1}mA", ma as f64));
                 println!(
-                    "    {} {} ({:.1}V, {:.1}mA)",
+                    "    {} {} ({}, {})",
                     format!("{}:", name).white(),
                     power_colored,
-                    rail.voltage as f64 / 1000.0,
-                    rail.current as f64
+                    volts,
+                    amps
                 );
             }
         }
@@ -1827,13 +1846,16 @@ fn run_interactive_mode(
             println!("Max Temperature: {:.1}°C", max_temp);
         }
 
-        // Power. Only report a total when power rails were actually read: with no
-        // rails the total is a fixed zero, and "Total Power: 0.00W" reads as a
-        // measurement of an idle machine rather than the absence of a sensor.
-        if snapshot.power.rails.is_empty() {
-            println!("Total Power: not measured (no power rails on this platform)");
-        } else {
-            println!("Total Power: {:.2}W", snapshot.power.total_watts());
+        // Power. `total_watts()` is `Option`, so the `rails.is_empty()` guard
+        // here is no longer the only thing standing between an unread total and
+        // "Total Power: 0.00W" -- it is kept because it can say *why* there is
+        // no total, which the `None` alone cannot.
+        match snapshot.power.total_watts() {
+            Some(watts) => println!("Total Power: {:.2}W", watts),
+            None if snapshot.power.rails.is_empty() => {
+                println!("Total Power: not measured (no power rails on this platform)")
+            }
+            None => println!("Total Power: not measured (no rail reported a draw)"),
         }
 
         println!("\nPress 'q' to quit");

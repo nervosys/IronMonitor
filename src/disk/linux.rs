@@ -325,7 +325,7 @@ impl DiskDevice for LinuxDisk {
             serial: attr("serial").unwrap_or_default(),
             firmware: attr("firmware_rev").unwrap_or_default(),
             nvme_version: attr("nvme_version"),
-            total_capacity: self.read_sysfs_u64("size").map(|s| s * 512).unwrap_or(0),
+            total_capacity: self.read_sysfs_u64("size").ok().map(|s| s * 512),
             unallocated_capacity: None,
             controller_id: attr("cntlid").and_then(|v| v.parse().ok()),
             num_namespaces: namespaces,

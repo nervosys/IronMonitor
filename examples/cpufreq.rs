@@ -40,11 +40,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("├─ Governor: {}", gov);
             }
 
+            // `?` where no core reported a frequency. These printed `0 - 0
+            // MHz` and an average of `0`, which looks like a stopped CPU.
+            let mhz = |v: Option<u32>| v.map_or("?".to_string(), |m| m.to_string());
             println!(
                 "├─ Frequency range: {} - {} MHz",
-                summary.min_freq_mhz, summary.max_freq_mhz
+                mhz(summary.min_freq_mhz),
+                mhz(summary.max_freq_mhz)
             );
-            println!("├─ Average freq: {} MHz", summary.avg_freq_mhz);
+            println!("├─ Average freq: {} MHz", mhz(summary.avg_freq_mhz));
             println!(
                 "└─ Turbo boost: {}",
                 if summary.turbo_enabled {
@@ -172,7 +176,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "   {:>4} │ {:>6} {} │ {:>6} │ {:>6} │ {} │ {:<12}",
                     cpu.id,
-                    cpu.current_freq_mhz,
+                    cpu.current_freq_mhz
+                        .map_or("?".to_string(), |m| m.to_string()),
                     turbo_marker,
                     cpu.min_freq_khz
                         .map_or("?".to_string(), |k| (k / 1000).to_string()),
@@ -205,8 +210,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for cpu in online.iter().take(16) {
                     // Limit to 16 CPUs for display
                     let Some(ceiling) = max_freq else { break };
-                    let bar_len = ((cpu.current_freq_khz as f64 / ceiling as f64) * 40.0) as usize;
-                    let bar = "█".repeat(bar_len);
+                    // A core with no reading gets no bar. An empty bar beside a
+                    // `?` reads as unknown; a bar drawn from a `0` would read as
+                    // a core sitting idle.
+                    let bar = match cpu.current_freq_khz {
+                        Some(khz) => "█".repeat(((khz as f64 / ceiling as f64) * 40.0) as usize),
+                        None => String::new(),
+                    };
                     let turbo = match cpu.is_turbo() {
                         Some(true) => "🔥",
                         Some(false) => "",
@@ -215,7 +225,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     println!(
                         "   CPU{:>2} │{}│ {} MHz {}",
-                        cpu.id, bar, cpu.current_freq_mhz, turbo
+                        cpu.id,
+                        bar,
+                        cpu.current_freq_mhz
+                            .map_or("?".to_string(), |m| m.to_string()),
+                        turbo
                     );
                 }
 

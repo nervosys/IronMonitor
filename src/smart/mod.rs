@@ -119,8 +119,13 @@ pub struct SmartDiskInfo {
     pub firmware: String,
     /// Drive media type
     pub media_type: DriveMediaType,
-    /// Capacity in bytes
-    pub capacity_bytes: u64,
+    /// Capacity in bytes, or `None` where it was not read.
+    ///
+    /// **This field sat one line above the comment explaining why it should
+    /// have been `Option`**, and was missed by the pass that wrote it. Four
+    /// construction sites set it to a literal `0` and the Windows one used
+    /// `item["Size"].as_u64().unwrap_or(0)`.
+    pub capacity_bytes: Option<u64>,
     /// Overall health assessment
     pub health: DiskHealth,
     // Every counter below is `Option` because "the platform would not tell us" and
@@ -441,7 +446,7 @@ impl SmartMonitor {
                         serial,
                         firmware,
                         media_type: DriveMediaType::NVMe,
-                        capacity_bytes: 0,
+                        capacity_bytes: None,
                         health: DiskHealth::Unknown,
                         temperature_celsius: None,
                         power_on_hours: None,
@@ -516,7 +521,7 @@ impl SmartMonitor {
                 };
 
                 let size_sectors: u64 = Self::read_sys(&base.join("size")).parse().unwrap_or(0);
-                let capacity_bytes = size_sectors * 512;
+                let capacity_bytes = Some(size_sectors * 512);
 
                 let model = Self::read_sys(&base.join("device/model"));
                 let serial = Self::read_sys(&base.join("device/serial"))
@@ -732,7 +737,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 .trim()
                                 .to_string(),
                             media_type,
-                            capacity_bytes: item["Size"].as_u64().unwrap_or(0),
+                            capacity_bytes: item["Size"].as_u64(),
                             health,
                             // Null throughout when Get-StorageReliabilityCounter
                             // was unavailable, which is the unelevated case. These
@@ -875,7 +880,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 serial: String::new(),
                                 firmware: String::new(),
                                 media_type: DriveMediaType::Unknown,
-                                capacity_bytes: 0,
+                                capacity_bytes: None,
                                 health: DiskHealth::Unknown,
                                 temperature_celsius: None,
                                 power_on_hours: None,
@@ -957,7 +962,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 serial: String::new(),
                                 firmware: String::new(),
                                 media_type: DriveMediaType::Unknown,
-                                capacity_bytes: 0,
+                                capacity_bytes: None,
                                 health: DiskHealth::Unknown,
                                 temperature_celsius: None,
                                 power_on_hours: None,
@@ -1061,7 +1066,7 @@ mod tests {
             serial: "ABC".into(),
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
-            capacity_bytes: 500_000_000_000,
+            capacity_bytes: Some(500_000_000_000),
             health: DiskHealth::Unknown,
             temperature_celsius: Some(35),
             power_on_hours: Some(5000),
@@ -1095,7 +1100,7 @@ mod tests {
             serial: "ABC".into(),
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
-            capacity_bytes: 500_000_000_000,
+            capacity_bytes: Some(500_000_000_000),
             // What `IOCTL_STORAGE_PREDICT_FAILURE` reporting a prediction sets.
             health: DiskHealth::Failed,
             temperature_celsius: Some(30),
@@ -1125,7 +1130,7 @@ mod tests {
             serial: "DEF".into(),
             firmware: "2.0".into(),
             media_type: DriveMediaType::HDD,
-            capacity_bytes: 1_000_000_000_000,
+            capacity_bytes: Some(1_000_000_000_000),
             health: DiskHealth::Unknown,
             temperature_celsius: Some(72),
             power_on_hours: Some(80000),
@@ -1157,7 +1162,7 @@ mod tests {
             serial: "S123".into(),
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
-            capacity_bytes: 500_000_000_000,
+            capacity_bytes: Some(500_000_000_000),
             health: DiskHealth::Good,
             temperature_celsius: Some(35),
             power_on_hours: Some(1000),
@@ -1195,7 +1200,7 @@ mod tests {
             serial: String::new(),
             firmware: String::new(),
             media_type: DriveMediaType::NVMe,
-            capacity_bytes: 0,
+            capacity_bytes: None,
             // What the platform itself said; the scorer must not overwrite it.
             health: DiskHealth::Unknown,
             temperature_celsius: None,

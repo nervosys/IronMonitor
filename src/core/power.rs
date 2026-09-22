@@ -10,14 +10,27 @@ pub struct PowerRail {
     pub online: bool,
     /// Sensor type (e.g., INA3221)
     pub sensor_type: String,
-    /// Voltage in millivolts
-    pub voltage: u32,
-    /// Current in milliamperes
-    pub current: u32,
-    /// Power in milliwatts
-    pub power: u32,
-    /// Average power in milliwatts
-    pub average: u32,
+    /// Voltage in millivolts, or `None` where the rail reported none.
+    ///
+    /// **Bare beside `warn`/`crit`, which were already `Option`** -- the same
+    /// tell that found the motherboard voltage rails, one module over. The
+    /// Linux INA3221 reader filled this and `current` with
+    /// `read_file_u32(..).unwrap_or(0)`, and the Windows battery path wrote
+    /// `current: 0, // Not exposed by this class.` -- a comment stating the
+    /// truth into a field asserting 0 mA.
+    pub voltage: Option<u32>,
+    /// Current in milliamperes, or `None` where the rail reported none.
+    pub current: Option<u32>,
+    /// Power in milliwatts, or `None` where it could not be established.
+    ///
+    /// On the INA3221 path this is **derived**, as `voltage * current`, and so
+    /// is only as good as its inputs. It was computed from two `unwrap_or(0)`
+    /// values, which meant one unreadable file produced a rail drawing exactly
+    /// 0 W -- indistinguishable from a rail that is genuinely off, and summed
+    /// into the system total as though it were a measurement.
+    pub power: Option<u32>,
+    /// Average power in milliwatts, or `None` before a sample establishes one.
+    pub average: Option<u32>,
     /// Warning current limit in milliamperes (optional)
     pub warn: Option<u32>,
     /// Critical current limit in milliamperes (optional)
@@ -27,10 +40,16 @@ pub struct PowerRail {
 /// Total power information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotalPower {
-    /// Total power in milliwatts
-    pub power: u32,
-    /// Average total power in milliwatts
-    pub average: u32,
+    /// Total power in milliwatts, or `None` where it could not be totalled.
+    ///
+    /// Summed over the online rails, and `None` if any of them has no reading.
+    /// Skipping an unreadable rail instead would understate system draw by an
+    /// unknown amount while still looking like a measurement -- the worse of
+    /// the two errors for anything sizing a power budget.
+    pub power: Option<u32>,
+    /// Average total power in milliwatts, or `None` before a sample
+    /// establishes one.
+    pub average: Option<u32>,
 }
 
 /// Exponential Moving Average calculator for power readings
@@ -121,7 +140,7 @@ impl PowerAverageTracker {
         }
     }
 
-    /// Update a rail's power reading and return the new average
+    /// Update a rail's power reading and return the new average.
     pub fn update_rail(&mut self, name: &str, power: u32) -> u32 {
         self.rail_emas
             .entry(name.to_string())
@@ -145,14 +164,23 @@ impl PowerAverageTracker {
     }
 
     /// Update PowerStats with tracked averages
+    /// Rails and totals with no reading this cycle are **skipped, not fed a
+    /// zero**. An EMA is a weighted history, so one `0` for an unread rail
+    /// does not just produce one wrong sample -- it pulls every subsequent
+    /// average down and takes several cycles to decay back out. The rail keeps
+    /// whatever average it had, which is the last thing actually observed.
     pub fn update_stats(&mut self, stats: &mut PowerStats) {
         // Update each rail's average
         for (name, rail) in stats.rails.iter_mut() {
-            rail.average = self.update_rail(name, rail.power);
+            if let Some(power) = rail.power {
+                rail.average = Some(self.update_rail(name, power));
+            }
         }
 
         // Update total average
-        stats.total.average = self.update_total(stats.total.power);
+        if let Some(total) = stats.total.power {
+            stats.total.average = Some(self.update_total(total));
+        }
     }
 
     /// Reset all tracking
@@ -185,9 +213,14 @@ impl PowerStats {
     pub fn empty() -> Self {
         Self {
             rails: HashMap::new(),
+            // `None`, not `0`. This function's own documentation above
+            // complains that it "returns zero draw on every rail" and that
+            // three separate defects came from reading it as a constructor
+            // that gathers data. The type can now say what the doc comment
+            // had to.
             total: TotalPower {
-                power: 0,
-                average: 0,
+                power: None,
+                average: None,
             },
         }
     }
@@ -197,9 +230,9 @@ impl PowerStats {
         self.rails.get(name)
     }
 
-    /// Get total power in watts
-    pub fn total_watts(&self) -> f32 {
-        self.total.power as f32 / 1000.0
+    /// Get total power in watts, or `None` where no total was established.
+    pub fn total_watts(&self) -> Option<f32> {
+        Some(self.total.power? as f32 / 1000.0)
     }
 }
 
@@ -343,23 +376,23 @@ mod tests {
     fn test_tracker_update_stats() {
         let mut tracker = PowerAverageTracker::new();
         let mut stats = PowerStats::default();
-        stats.total.power = 15000;
+        stats.total.power = Some(15000);
         stats.rails.insert(
             "VDD_CPU".to_string(),
             PowerRail {
                 online: true,
                 sensor_type: "INA3221".to_string(),
-                voltage: 5000,
-                current: 1000,
-                power: 5000,
-                average: 0,
+                voltage: Some(5000),
+                current: Some(1000),
+                power: Some(5000),
+                average: None,
                 warn: None,
                 crit: None,
             },
         );
         tracker.update_stats(&mut stats);
-        assert_eq!(stats.total.average, 15000);
-        assert_eq!(stats.rails["VDD_CPU"].average, 5000);
+        assert_eq!(stats.total.average, Some(15000));
+        assert_eq!(stats.rails["VDD_CPU"].average, Some(5000));
     }
 
     // === PowerStats tests ===
@@ -367,8 +400,8 @@ mod tests {
     #[test]
     fn test_power_stats_total_watts() {
         let mut stats = PowerStats::default();
-        stats.total.power = 15500;
-        assert!((stats.total_watts() - 15.5).abs() < 0.01);
+        stats.total.power = Some(15500);
+        assert!((stats.total_watts().expect("a total was set") - 15.5).abs() < 0.01);
     }
 
     #[test]
@@ -380,14 +413,52 @@ mod tests {
             PowerRail {
                 online: true,
                 sensor_type: "INA3221".to_string(),
-                voltage: 5000,
-                current: 1000,
-                power: 5000,
-                average: 5000,
+                voltage: Some(5000),
+                current: Some(1000),
+                power: Some(5000),
+                average: Some(5000),
                 warn: Some(3000),
                 crit: None,
             },
         );
         assert!(stats.get_rail("CPU").is_some());
+    }
+
+    /// An unreadable rail must not be averaged as a rail drawing nothing.
+    ///
+    /// The EMA is the reason this matters more than a single wrong sample: a
+    /// `0` fed in for an unread cycle pulls every later average down and takes
+    /// several cycles to decay back out, so one missed read distorts a window.
+    #[test]
+    fn an_unread_rail_is_not_averaged_as_zero() {
+        let mut tracker = PowerAverageTracker::new();
+        let mut stats = PowerStats::empty();
+        stats.rails.insert(
+            "VDD_CPU".to_string(),
+            PowerRail {
+                online: true,
+                sensor_type: "INA3221".to_string(),
+                voltage: None,
+                current: None,
+                power: None,
+                average: None,
+                warn: None,
+                crit: None,
+            },
+        );
+
+        tracker.update_stats(&mut stats);
+
+        assert_eq!(
+            stats.rails["VDD_CPU"].average, None,
+            "a rail with no reading has no average, and must not seed one with 0"
+        );
+        assert_eq!(
+            tracker.get_rail_average("VDD_CPU"),
+            None,
+            "nothing may enter the EMA's history for a cycle that read nothing"
+        );
+        assert_eq!(stats.total.power, None);
+        assert_eq!(stats.total_watts(), None);
     }
 }

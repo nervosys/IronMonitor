@@ -97,12 +97,19 @@ pub struct PowerPlanInfo {
 pub struct CpuFreqConfig {
     /// Current governor
     pub governor: CpuGovernor,
-    /// Current frequency (MHz)
-    pub current_freq_mhz: u32,
-    /// Minimum frequency (MHz)
-    pub min_freq_mhz: u32,
-    /// Maximum frequency (MHz)
-    pub max_freq_mhz: u32,
+    /// Current frequency (MHz), or `None` where `scaling_cur_freq` could not
+    /// be read.
+    ///
+    /// **A second copy of the `cpufreq` defect, one module over.** All three
+    /// of these were bare `u32` filled with `.unwrap_or(0)`, beside a
+    /// `base_freq_mhz` that was already `Option` for exactly this reason --
+    /// the same "bare field next to an `Option` sibling in the same struct"
+    /// tell that found the other six.
+    pub current_freq_mhz: Option<u32>,
+    /// Minimum frequency (MHz), or `None` where unread.
+    pub min_freq_mhz: Option<u32>,
+    /// Maximum frequency (MHz), or `None` where unread.
+    pub max_freq_mhz: Option<u32>,
     /// Base (P1) frequency if known
     pub base_freq_mhz: Option<u32>,
     /// Boost/turbo enabled
@@ -229,9 +236,15 @@ impl PowerProfileMonitor {
                 }
             }
 
-            // Frequency range analysis
-            if freq.max_freq_mhz > 0 && freq.min_freq_mhz > 0 {
-                let ratio = freq.min_freq_mhz as f32 / freq.max_freq_mhz as f32;
+            // Frequency range analysis. The `> 0` pair was doing two jobs --
+            // skipping an unread pair and avoiding a divide by zero -- and
+            // could not tell them apart. Now it only does the second.
+            if let (Some(min), Some(max)) = (freq.min_freq_mhz, freq.max_freq_mhz) {
+                let ratio = if max > 0 {
+                    min as f32 / max as f32
+                } else {
+                    0.0
+                };
                 if ratio > 0.8 {
                     // Min freq locked high — wasteful
                     score = score.saturating_sub(10);
@@ -345,26 +358,25 @@ impl PowerProfileMonitor {
             other => CpuGovernor::Other(other.to_string()),
         };
 
+        // `.map` rather than `.unwrap_or(0)`: a kernel without cpufreq has no
+        // frequency to report, and 0 MHz is not what that looks like.
         let cur_freq =
             std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0)
-                / 1000; // kHz to MHz
+                .map(|khz| khz / 1000);
 
         let min_freq =
             std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq")
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0)
-                / 1000;
+                .map(|khz| khz / 1000);
 
         let max_freq =
             std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq")
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0)
-                / 1000;
+                .map(|khz| khz / 1000);
 
         let base_freq =
             std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency")
@@ -680,9 +692,9 @@ mod tests {
             power_plans: Vec::new(),
             cpu_freq: Some(CpuFreqConfig {
                 governor: CpuGovernor::Performance,
-                current_freq_mhz: 4500,
-                min_freq_mhz: 4000,
-                max_freq_mhz: 5000,
+                current_freq_mhz: Some(4500),
+                min_freq_mhz: Some(4000),
+                max_freq_mhz: Some(5000),
                 base_freq_mhz: Some(3700),
                 boost_enabled: true,
                 energy_perf_preference: "performance".into(),
@@ -706,9 +718,9 @@ mod tests {
             power_plans: Vec::new(),
             cpu_freq: Some(CpuFreqConfig {
                 governor: CpuGovernor::Powersave,
-                current_freq_mhz: 800,
-                min_freq_mhz: 400,
-                max_freq_mhz: 3600,
+                current_freq_mhz: Some(800),
+                min_freq_mhz: Some(400),
+                max_freq_mhz: Some(3600),
                 base_freq_mhz: Some(2400),
                 boost_enabled: false,
                 energy_perf_preference: "power".into(),

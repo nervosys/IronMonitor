@@ -8874,3 +8874,211 @@ target — the rule already recorded two sections above, applying in the other
 direction. It was found by grepping the macOS backend by hand rather than by
 building it. There is no local build for that platform; CI is the only check,
 and grep is what stands in until CI answers.
+
+### An approximation you cannot distinguish from a measurement
+
+The item the sweep named and deferred — `cpufreq.rs` assigning the *maximum*
+frequency to `current_freq_khz` on macOS, labelled `// Approximation` — is done,
+and it is worth a section of its own because of the label.
+
+The comment was honest, specific and permanently attached to the line. It is
+also worthless to every consumer, because `current_freq_khz` was a bare `u64`
+and a consumer reads the field, not the comment beside it. Every core on every
+Mac reported `is_max_freq() == Some(true)` and `freq_percent() == Some(100.0)`,
+from `hw.cpufrequency_max` — a number describing the silicon's ceiling and
+nothing happening now.
+
+> **An approximation that the type cannot distinguish from a measurement is not
+> an approximation. It is a fabrication with a comment.** The comment does not
+> travel with the value; nothing downstream can branch on it, test it, or
+> refuse it. This crate already has the machinery for exactly this distinction
+> — `provenance` in the ontology separates `measured` from `derived` — and the
+> in-memory readers were not using it.
+
+The fix substitutes nothing. macOS exposes no per-core current frequency through
+sysctl: `hw.cpufrequency` is a fixed nominal value on Apple silicon, and the
+live per-cluster residencies are behind IOReport, which this module does not
+use. So the field is left unset and says so.
+
+**The deferral's cost estimate was wrong in the same direction as the disk
+one.** It said `current_freq_khz` was "used widely enough that it belongs with
+the disk pass". The real figure was 31 references, 24 of them inside
+`cpufreq.rs` itself — four call sites outside the module. That is the second
+consecutive deferral justified by a count that nobody checked. **Check the
+count before writing it into a reason to stop**, because the reason outlives
+the moment and nothing downstream will re-derive it.
+
+**And the grep was not finished.** `power_profile::CpuFreqConfig` held the same
+three fields as bare `u32` filled with `.unwrap_or(0)`, beside a
+`base_freq_mhz` that was already `Option` — the exact tell recorded two
+sections above, one module away from where the tell was written down. Its
+consumer had the sentinel guard too:
+
+```rust
+if freq.max_freq_mhz > 0 && freq.min_freq_mhz > 0 {
+```
+
+which is one condition doing two jobs — skip an unread pair, avoid dividing by
+zero — with no way to tell which it was doing. Same shape as the disk `> 0`
+guards, found the same week, in a struct the original grep's path list did not
+cover.
+
+### The tell, made mechanical
+
+After the seventh instance turned up in a module the original grep's path list
+did not cover, the grep was replaced with something that matches the *shape*
+rather than the text. `unwrap_or(0)` appears 755 times in `src/` and most of
+them are fine — a parsed column width, a counter that genuinely starts at zero.
+That is not a defect list, it is noise.
+
+What actually found instances four, six and seven was structural:
+
+> **A bare numeric field holding a reading, sitting in the same struct as
+> `Option` siblings.** Somebody already decided that *this* quantity can be
+> absent. The bare field next to it holds the same kind of quantity and cannot
+> say so, and the difference is almost never deliberate.
+
+A scan for that shape over `src/` returns 133 structs. Most are immediately
+fine on reading, and the reason is worth stating because it is what any future
+version of this scan has to encode: the legitimate bare fields are
+**identifiers** (`index`, `id`, `pid`, `vendor_id`) and **quantities the
+program produces rather than reads** (`total_controllers`, `node_count`,
+`process_count`). Neither can fail to exist. A *reading* can.
+
+That left a short list of real candidates, and the first one checked —
+`core::power::PowerRail`, bare `voltage`/`current`/`power`/`average` beside
+`Option` `warn`/`crit` — was instance eight, with three fabrications in it.
+
+Encoding those two exemptions as name rules -- identifier-shaped names, and
+names for quantities the program counts rather than reads -- takes the 133 down
+to **87 structs that still need a human decision**. That is the real number,
+and it is stated here rather than a short excerpt of it, because the last two
+deferrals in this file were each justified by a count nobody checked and each
+was wrong.
+
+The clearest few, to start from:
+
+| Struct | Bare field holding a reading | Checked? |
+| --- | --- | --- |
+| `hwmon/mod.rs` `HwSensor` | `value: f32` beside `min`/`max: Option` | **checked -- not a defect** |
+| `smart/mod.rs` `SmartDiskInfo` | `capacity_bytes: u64` beside 13 `Option`s | **checked -- fixed** |
+| `io_scheduler/mod.rs` `BlockDeviceIo` | `size_bytes: u64` | no |
+| `observability/context.rs` `CpuMetrics` | `utilization_percent: f32` | no |
+| `observability/metrics.rs` `CpuMetricSnapshot` | `usage_percent: f32` | no |
+| `gpu/windows_helpers.rs` `EngineUtilization` | `overall: u8` beside per-engine `Option`s | no |
+
+#### The first candidate checked was a false positive, and that is the finding
+
+`HwSensor` was written into the table above as "the same defect as the
+motherboard sensors, in the module those readings pass through on the way
+there". It is not. All 28 of its construction sites -- `hwmon/linux.rs`,
+`hwmon/cpu_temp.rs` -- build the struct **inside** the `if let Ok(..)` that
+parsed the reading, and several also gate on a plausibility range before
+pushing. A `HwSensor` that exists has a value by construction; there is no path
+that fabricates one. The `Option` on `min`/`max` is about *thresholds*, which a
+chip may or may not publish, not about the reading.
+
+So the bare field is correct here, and the third column exists because of it.
+
+> **The scan detects a shape, not a defect.** Every one of the eight real
+> instances had this shape, and so do an unknown number of structs that are
+> perfectly correct -- because a struct built only on a successful read does
+> not need a type that can express failure. The shape narrows 4,000 structs to
+> 87; it does not decide any of them.
+
+This is the concrete argument for why the 87 cannot be turned into an allowlist
+mechanically, in either direction. Auto-fixing them would churn correct code
+into `Option` and force pointless unwrapping at every call site. Auto-allowing
+them would assert 87 things nobody looked at. **Each one is a five-minute read
+of its construction sites, and there is no shortcut that is honest.**
+
+**This scan belongs in `tests/` rather than in a scratch directory**, alongside
+`zero_constructors.rs` and `source_hygiene.rs`, which already scan source the
+same way. That is the difference between a rule and a habit, and this file has
+already recorded once that *"the ruleset required a scan nobody was running"*.
+
+It is **not** written yet, and the reason is worth stating so the next person
+does not mistake the gap for an oversight. Such a test needs an allowlist, and
+an allowlist of 87 structs is a written claim that each of those 87 bare fields
+is legitimately bare. Committing that list without checking each one would put
+86 unverified assertions into the repository in the name of catching
+unverified assertions. **The triage is the work; the test is the easy part.**
+
+### An EMA remembers the zero you fed it
+
+Worth separating from the rest of the power fix, because it is the one place in
+this sweep where a fabricated reading did lasting damage rather than momentary
+damage.
+
+`PowerAverageTracker::update_stats` ran every collection cycle:
+
+```rust
+rail.average = self.update_rail(name, rail.power);
+```
+
+With `rail.power` fabricated as `0` for an unreadable rail, that is not one
+wrong sample. It is a sample entering an exponential moving average, which is a
+weighted history: it pulls the average down, and it keeps pulling for several
+cycles as it decays. A rail that failed to read once had a depressed average
+for a window afterwards, long after the read succeeded again.
+
+> **A fabricated value in a stateful accumulator outlives the cycle that
+> produced it.** Everything else in this sweep was wrong only for as long as it
+> was on screen.
+
+The fix is to skip rather than substitute: a cycle that read nothing puts
+nothing into the history, and the rail keeps the last average actually
+observed. The test asserts the EMA's history stays empty, not merely that the
+displayed average is `None` — the displayed value would have looked right while
+the history was already poisoned.
+
+### Two capacities my own disk pass walked past
+
+Instances nine and ten, and they are not a new defect class -- they are the
+*same quantity* the disk pass had just finished fixing. `SmartDiskInfo::
+capacity_bytes` and `NvmeInfo::total_capacity` are both a disk's size in bytes,
+both were bare `u64`, and both were in files that pass edited.
+
+`disk/linux.rs` is the sharpest version of it. The pass changed line 117:
+
+```rust
+let capacity = self.read_sysfs_u64("size").ok().map(|sectors| sectors * 512);
+```
+
+and left line 328 exactly as the deferral note two sections above had quoted it:
+
+```rust
+total_capacity: self.read_sysfs_u64("size").map(|s| s * 512).unwrap_or(0),
+```
+
+Same file, same sysfs attribute, same arithmetic, 211 lines apart. The pass was
+driven by the compiler -- change the type, fix what stops compiling -- and the
+compiler had nothing to say about a *different* field of a *different* struct
+that happened to hold the same fact. **A type-driven sweep finds every consumer
+of the field you changed and none of the duplicates of the thing it measures.**
+
+Both fields also sit directly under a comment from an earlier partial
+correction explaining why they should have been `Option`. `NvmeInfo`:
+
+```rust
+// ... They are `Option` because a `controller_id` of 0 is a
+// real controller and `num_namespaces` of 0 is a real answer -- neither can
+// stand in for "not read".
+/// NVMe version (e.g., "1.4")
+pub nvme_version: Option<String>,
+/// Total NVM capacity (bytes)
+pub total_capacity: u64,
+```
+
+That is now three separate times in this file that a bare field was found
+immediately below the paragraph arguing against it. The paragraph is a better
+detector than the paragraph's author was.
+
+**And the absence already existed.** `nvme_log::IdentifyController::
+total_capacity` is `Option<u128>` and has been, built with `(total != 0)
+.then_some(total)` precisely to separate an absent field from a zero one.
+Somebody did the careful thing at the parse layer; three call frames later
+`.unwrap_or(0)` threw it away. Worth checking, whenever a reading looks
+fabricated, whether it was fabricated at the source or merely *flattened on
+arrival* -- the fix is much smaller in the second case, and the second case has
+now come up twice (here and macOS `size_bytes`).

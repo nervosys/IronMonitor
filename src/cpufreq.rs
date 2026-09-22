@@ -23,7 +23,10 @@
 //!
 //! // Get CPU frequencies
 //! for cpu in monitor.cpus() {
-//!     println!("CPU{}: {} MHz", cpu.id, cpu.current_freq_mhz);
+//!     match cpu.current_freq_mhz {
+//!         Some(mhz) => println!("CPU{}: {} MHz", cpu.id, mhz),
+//!         None => println!("CPU{}: frequency not readable here", cpu.id),
+//!     }
 //! }
 //! ```
 
@@ -162,10 +165,22 @@ pub struct CpuFreqInfo {
     pub id: u32,
     /// Is CPU online
     pub online: bool,
-    /// Current frequency (kHz)
-    pub current_freq_khz: u64,
-    /// Current frequency (MHz) for convenience
-    pub current_freq_mhz: u32,
+    /// Current frequency (kHz), or `None` where it was not read.
+    ///
+    /// **The last bare frequency field, and the one every helper below
+    /// divides by.** `CpuFreqInfo::new` set it to `0`, so a core whose
+    /// `scaling_cur_freq` could not be read reported `freq_percent() ==
+    /// Some(0.0)` -- an idle core -- and `is_min_freq() == Some(true)`, since
+    /// `0 <= min` for every minimum there is. Neither was observed.
+    ///
+    /// macOS is the reason this could not simply be left alone: that reader
+    /// has no per-core current frequency at all and was assigning the
+    /// *maximum* to it under a comment reading `// Approximation`. An
+    /// approximation that cannot be told apart from a measurement is not an
+    /// approximation, it is a fabrication with a comment.
+    pub current_freq_khz: Option<u64>,
+    /// Current frequency (MHz) for convenience, or `None` where unread.
+    pub current_freq_mhz: Option<u32>,
     /// Minimum allowed frequency (kHz), or `None` where it was not read.
     ///
     /// **Optional because `0` was answering a question nobody asked.** With a
@@ -208,8 +223,8 @@ impl CpuFreqInfo {
         Self {
             id,
             online: true,
-            current_freq_khz: 0,
-            current_freq_mhz: 0,
+            current_freq_khz: None,
+            current_freq_mhz: None,
             min_freq_khz: None,
             max_freq_khz: None,
             cpuinfo_min_freq_khz: None,
@@ -233,10 +248,11 @@ impl CpuFreqInfo {
     /// ceiling, which reads as an idle processor.
     pub fn freq_percent(&self) -> Option<f32> {
         let max = self.max_freq_khz?;
+        let current = self.current_freq_khz?;
         if max == 0 {
             return None;
         }
-        Some((self.current_freq_khz as f32 / max as f32) * 100.0)
+        Some((current as f32 / max as f32) * 100.0)
     }
 
     /// Whether the CPU is at its maximum frequency, or `None` without one.
@@ -244,12 +260,14 @@ impl CpuFreqInfo {
     /// **This returned `true` for every core when the maximum was unread**,
     /// because a fabricated `0` made `current >= 0` trivially true.
     pub fn is_max_freq(&self) -> Option<bool> {
-        Some(self.current_freq_khz >= self.max_freq_khz?)
+        Some(self.current_freq_khz? >= self.max_freq_khz?)
     }
 
     /// Whether the CPU is at its minimum frequency, or `None` without one.
+    /// This one was the worse of the pair: with an unread current frequency
+    /// of `0`, `0 <= min` held for every minimum, so every core read as parked.
     pub fn is_min_freq(&self) -> Option<bool> {
-        Some(self.current_freq_khz <= self.min_freq_khz?)
+        Some(self.current_freq_khz? <= self.min_freq_khz?)
     }
 
     /// Whether the core is above its base frequency, or `None` when the base
@@ -273,7 +291,7 @@ impl CpuFreqInfo {
     /// `base_freq_khz` comes from `cpufreq/base_frequency`, which
     /// intel_pstate exposes and other governors do not.
     pub fn is_turbo(&self) -> Option<bool> {
-        self.base_freq_khz.map(|base| self.current_freq_khz > base)
+        Some(self.current_freq_khz? > self.base_freq_khz?)
     }
 }
 
@@ -642,8 +660,8 @@ impl CpuFreqMonitor {
             // Read current frequency
             if let Ok(freq_str) = fs::read_to_string(cpufreq_dir.join("scaling_cur_freq")) {
                 if let Ok(freq) = freq_str.trim().parse::<u64>() {
-                    cpu.current_freq_khz = freq;
-                    cpu.current_freq_mhz = (freq / 1000) as u32;
+                    cpu.current_freq_khz = Some(freq);
+                    cpu.current_freq_mhz = Some((freq / 1000) as u32);
                 }
             }
 
@@ -1083,13 +1101,13 @@ impl CpuFreqMonitor {
             // Apply WMI info if available
             if let Some(current) = current_mhz {
                 cpu.model = name.clone();
-                cpu.current_freq_mhz = current;
+                cpu.current_freq_mhz = Some(current);
                 // `max_mhz.unwrap_or(current)` reported the current frequency
                 // as the maximum whenever WMI gave no maximum — which makes
                 // `freq_percent` read 100% and `is_max_freq` read true, for a
                 // ceiling nobody reported.
                 cpu.max_freq_khz = max_mhz.map(|m| (m as u64) * 1000);
-                cpu.current_freq_khz = (cpu.current_freq_mhz as u64) * 1000;
+                cpu.current_freq_khz = Some((current as u64) * 1000);
                 // Windows exposes no minimum core frequency here. This was
                 // `max_freq_khz / 4`, which is not a property of any CPU — it
                 // just produced a plausible-looking number, then `0` standing in
@@ -1099,12 +1117,12 @@ impl CpuFreqMonitor {
                 cpu.available_governors.push(governor.clone());
             } else if base_freq_mhz > 0 {
                 // Fallback to base frequency from registry
-                cpu.current_freq_mhz = base_freq_mhz;
-                cpu.current_freq_khz = (base_freq_mhz as u64) * 1000;
+                cpu.current_freq_mhz = Some(base_freq_mhz);
+                cpu.current_freq_khz = Some((base_freq_mhz as u64) * 1000);
                 // The registry gives a *base* frequency, which is not a maximum.
                 // Assigning it to `max_freq_khz` claimed a ceiling this path
                 // never read; it belongs in the field that means base.
-                cpu.base_freq_khz = Some(cpu.current_freq_khz);
+                cpu.base_freq_khz = Some((base_freq_mhz as u64) * 1000);
                 cpu.max_freq_khz = None;
                 cpu.min_freq_khz = None;
             }
@@ -1193,14 +1211,20 @@ impl CpuFreqMonitor {
                     for cpu in &mut self.cpus {
                         // A real reading: `hw.cpufrequency_max` answered.
                         cpu.max_freq_khz = Some(freq / 1000);
-                        // Still an approximation, and still marked as one: this
-                        // assigns the *maximum* to the current frequency because
-                        // macOS exposes no per-core current frequency here.
-                        // `current_freq_khz` is a bare `u64` and cannot say
-                        // "not read", so the substitution stays for now. It is
-                        // the same shape as the defects fixed around it.
-                        cpu.current_freq_khz = freq / 1000; // Approximation
-                        cpu.current_freq_mhz = (freq / 1_000_000) as u32;
+                        // The current frequency is **not** set here, and that
+                        // is the fix. This used to assign the maximum to it
+                        // under a `// Approximation` comment, so every core on
+                        // every Mac read as pinned at its ceiling: `is_max_freq`
+                        // true, `freq_percent` 100%, for a number that came from
+                        // `hw.cpufrequency_max` and described nothing happening
+                        // now.
+                        //
+                        // macOS exposes no per-core current frequency through
+                        // sysctl. `hw.cpufrequency` is a fixed nominal value on
+                        // Apple silicon rather than a live reading, and the real
+                        // per-cluster residencies live behind IOReport, which
+                        // this module does not use. Until it does, this is
+                        // genuinely unknown and now says so.
                     }
                 }
             }
@@ -1296,12 +1320,13 @@ pub struct CpuFreqSummary {
     pub online_cpus: usize,
     /// Current governor
     pub governor: Option<String>,
-    /// Average frequency (MHz)
-    pub avg_freq_mhz: u32,
-    /// Maximum frequency seen (MHz)
-    pub max_freq_mhz: u32,
-    /// Minimum frequency seen (MHz)
-    pub min_freq_mhz: u32,
+    /// Average frequency (MHz) over the cores that reported one, or `None`
+    /// if no core did.
+    pub avg_freq_mhz: Option<u32>,
+    /// Highest frequency seen (MHz), or `None` if no core reported one.
+    pub max_freq_mhz: Option<u32>,
+    /// Lowest frequency seen (MHz), or `None` if no core reported one.
+    pub min_freq_mhz: Option<u32>,
     /// Turbo enabled
     pub turbo_enabled: bool,
     /// CPU model
@@ -1317,24 +1342,26 @@ pub fn cpufreq_summary() -> Result<CpuFreqSummary> {
 
     let online_cpus: Vec<_> = cpus.iter().filter(|c| c.online).collect();
 
-    let total_freq: u64 = online_cpus.iter().map(|c| c.current_freq_khz).sum();
-    let avg_freq = if online_cpus.is_empty() {
-        0
+    // Averaged over the cores that reported a frequency, and `None` if none
+    // did. Summing `0` for an unread core and dividing by the full core count
+    // produced an average that was neither the mean of what was read nor a
+    // statement that nothing was -- it just dropped with each unreadable core.
+    let read: Vec<u64> = online_cpus
+        .iter()
+        .filter_map(|c| c.current_freq_khz)
+        .collect();
+    let avg_freq = if read.is_empty() {
+        None
     } else {
-        (total_freq / online_cpus.len() as u64 / 1000) as u32
+        Some((read.iter().sum::<u64>() / read.len() as u64 / 1000) as u32)
     };
 
-    let max_freq = online_cpus
-        .iter()
-        .map(|c| c.current_freq_mhz)
-        .max()
-        .unwrap_or(0);
-
-    let min_freq = online_cpus
-        .iter()
-        .map(|c| c.current_freq_mhz)
-        .min()
-        .unwrap_or(0);
+    // `max`/`min` over an `Option`-yielding iterator: absent cores are skipped
+    // rather than contributing a `0` that wins every `min` comparison. The
+    // `unwrap_or(0)` here meant one unreadable core made the reported fleet
+    // minimum zero.
+    let max_freq = online_cpus.iter().filter_map(|c| c.current_freq_mhz).max();
+    let min_freq = online_cpus.iter().filter_map(|c| c.current_freq_mhz).min();
 
     Ok(CpuFreqSummary {
         total_cpus: cpus.len(),
@@ -1439,7 +1466,7 @@ mod tests {
     #[test]
     fn turbo_is_unknown_without_a_base_frequency() {
         let mut cpu = CpuFreqInfo::new(0);
-        cpu.current_freq_khz = 4_400_000;
+        cpu.current_freq_khz = Some(4_400_000);
         cpu.cpuinfo_max_freq_khz = Some(4_400_000);
         cpu.base_freq_khz = None;
 
@@ -1454,7 +1481,39 @@ mod tests {
         assert_eq!(cpu.is_turbo(), Some(true));
 
         // At or below base is not.
-        cpu.current_freq_khz = 3_700_000;
+        cpu.current_freq_khz = Some(3_700_000);
         assert_eq!(cpu.is_turbo(), Some(false));
+    }
+
+    /// A core whose current frequency was never read answers nothing, rather
+    /// than answering as though it were parked at 0 kHz.
+    ///
+    /// Every one of these returned a confident wrong answer before: `0%` of
+    /// the ceiling, not at maximum, **at minimum**, not boosting. The last two
+    /// are the dangerous ones, because `false` and `true` are what a working
+    /// reading looks like.
+    #[test]
+    fn an_unread_current_frequency_answers_nothing() {
+        let mut cpu = CpuFreqInfo::new(0);
+        cpu.min_freq_khz = Some(800_000);
+        cpu.max_freq_khz = Some(4_400_000);
+        cpu.base_freq_khz = Some(3_700_000);
+        assert_eq!(cpu.current_freq_khz, None, "new() must not invent one");
+
+        assert_eq!(cpu.freq_percent(), None, "0% of the ceiling is a reading");
+        assert_eq!(cpu.is_max_freq(), None);
+        assert_eq!(
+            cpu.is_min_freq(),
+            None,
+            "0 <= min held for every minimum, so every unread core read as parked"
+        );
+        assert_eq!(cpu.is_turbo(), None);
+
+        // With a reading, all four answer again.
+        cpu.current_freq_khz = Some(4_400_000);
+        assert_eq!(cpu.freq_percent(), Some(100.0));
+        assert_eq!(cpu.is_max_freq(), Some(true));
+        assert_eq!(cpu.is_min_freq(), Some(false));
+        assert_eq!(cpu.is_turbo(), Some(true));
     }
 }

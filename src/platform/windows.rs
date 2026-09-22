@@ -871,17 +871,22 @@ pub fn read_power_stats() -> Result<PowerStats> {
             crate::core::power::PowerRail {
                 online: true,
                 sensor_type: sensor_type.to_string(),
-                voltage: battery.voltage.unwrap_or(0),
-                current: 0, // Not exposed by this class.
-                power: rate_mw,
-                average: rate_mw,
+                voltage: battery.voltage,
+                // Not exposed by this class. This was `0`, with that sentence
+                // as a comment beside it -- the comment was right and the
+                // field said 0 mA.
+                current: None,
+                power: Some(rate_mw),
+                average: Some(rate_mw),
                 warn: None,
                 crit: None,
             },
         );
 
-        power_stats.total.power += rate_mw;
-        power_stats.total.average += rate_mw;
+        // Accumulated across batteries; `empty()` starts at `None`, and the
+        // first battery with a reading establishes the total.
+        power_stats.total.power = Some(power_stats.total.power.unwrap_or(0) + rate_mw);
+        power_stats.total.average = Some(power_stats.total.average.unwrap_or(0) + rate_mw);
     }
 
     Ok(power_stats)

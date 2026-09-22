@@ -262,8 +262,16 @@ pub struct NvmeInfo {
     // stand in for "not read".
     /// NVMe version (e.g., "1.4")
     pub nvme_version: Option<String>,
-    /// Total NVM capacity (bytes)
-    pub total_capacity: u64,
+    /// Total NVM capacity (bytes), or `None` where it was not read.
+    ///
+    /// **The comment directly above this field states the rule this field was
+    /// breaking.** It was `u64` filled with `.unwrap_or(0)`, and
+    /// `nvme_log::IdentifyController::total_capacity` -- the thing it is built
+    /// from -- has been `Option<u128>` all along, with `(total != 0)
+    /// .then_some(total)` to distinguish an absent field from a zero one. The
+    /// absence was established correctly at the parse layer, travelled here,
+    /// and was discarded on the last line of its journey.
+    pub total_capacity: Option<u64>,
     /// Unallocated capacity (bytes)
     pub unallocated_capacity: Option<u64>,
     /// Controller ID

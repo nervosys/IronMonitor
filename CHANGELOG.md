@@ -42,6 +42,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **Two more disk capacities the disk pass walked past.**
+  `smart::SmartDiskInfo::capacity_bytes` and `disk::traits::NvmeInfo::
+  total_capacity` were both bare `u64` holding the same quantity that
+  `DiskInfo::capacity` had just been fixed for, and both are `Option` now.
+
+  Each sits directly beneath a comment explaining why it should have been
+  `Option`, written by an earlier partial correction that stopped one field
+  short. `NvmeInfo`'s reads *"They are `Option` because a `controller_id` of 0
+  is a real controller and `num_namespaces` of 0 is a real answer — neither can
+  stand in for 'not read'"*, and the very next field was `total_capacity: u64`.
+
+  `SmartDiskInfo` had four construction sites setting a literal `0` and a
+  Windows one using `item["Size"].as_u64().unwrap_or(0)`. One of those four is
+  in the fixture for `a_drive_with_no_readable_counters_is_not_graded_healthy`,
+  where every other field is `None` — the capacity was the single value in that
+  test contradicting its own name.
+
+  `NvmeInfo::total_capacity` is the clearest instance of a pattern that showed
+  up repeatedly in this sweep: `nvme_log::IdentifyController` has parsed it as
+  `Option<u128>` all along, using `(total != 0).then_some(total)` to tell an
+  absent field from a zero one. **The absence was established correctly at the
+  parse layer, carried three call frames, and was discarded on the last line of
+  its journey** by `.unwrap_or(0)`. Same shape as the macOS `size_bytes`
+  flattening fixed alongside the disk pass.
+
+- **Power rails report what they read, and an unread rail no longer poisons a
+  moving average.** `core::power::PowerRail` held `voltage`, `current`, `power`
+  and `average` as bare `u32` beside `warn` and `crit`, which were already
+  `Option` — the same structural tell as the six before it. All four are
+  `Option` now, as are `TotalPower`'s two fields and `total_watts()`.
+
+  Three separate fabrications sat behind it:
+
+  - The Linux INA3221 reader filled `voltage` and `current` with
+    `read_file_u32(..).unwrap_or(0)`, then computed `power = voltage * current`
+    from them. One unreadable file produced a rail drawing exactly 0 W —
+    indistinguishable from a rail that is switched off, and summed into the
+    system total as if measured.
+  - The Windows battery path wrote `current: 0, // Not exposed by this class.`
+    The comment was correct and the field said 0 mA.
+  - `PowerStats::empty()` set the total to `0`. Its own doc comment already
+    complained about this — *"**This reads nothing.** It returns zero draw on
+    every rail"* — and recorded that three defects had come from misreading it
+    as a constructor that gathers data. The type can now say what the comment
+    had to.
+
+  **`PowerAverageTracker` is the reason this one was worth more than a single
+  wrong sample.** `update_stats` fed `rail.power` into an exponential moving
+  average every cycle. A `0` for an unread rail does not produce one wrong
+  reading; it enters a weighted history, drags every subsequent average down,
+  and takes several cycles to decay out — so one missed read distorted a
+  window. Rails with no reading are now skipped rather than fed a zero, and a
+  new test asserts that nothing enters the EMA's history for a cycle that read
+  nothing.
+
+  `TotalPower::power` sums as `Option`, so one online rail with no reading
+  makes the total unknown rather than silently smaller — the understating error
+  being the worse one for anything sizing a power budget.
+
+- **`current_freq_khz` is `Option`, and macOS no longer reports every core
+  pinned at its ceiling.** This was the item the previous sweep named and left,
+  because the field was bare `u64` and used too widely to change at the time.
+  The real count was 31 references, 24 of them inside `cpufreq.rs` itself.
+
+  The macOS reader had `cpu.current_freq_khz = freq / 1000; // Approximation`,
+  where `freq` came from `hw.cpufrequency_max`. So every core on every Mac
+  reported `is_max_freq() == Some(true)` and `freq_percent() == Some(100.0)` —
+  from a number that describes the hardware's ceiling and nothing happening now.
+  **An approximation that cannot be told apart from a measurement is not an
+  approximation.** It is not substituted with anything; macOS exposes no
+  per-core current frequency through sysctl, and the field now says so.
+
+  `CpuFreqInfo::new` set the same field to `0`, which made `is_min_freq()`
+  return `true` for every unread core — `0 <= min` holds for every minimum
+  there is — and `freq_percent()` return `0.0`, an idle processor. All four
+  helpers (`freq_percent`, `is_max_freq`, `is_min_freq`, `is_turbo`) now return
+  `None` without a current reading, guarded by a new test that checks each of
+  them in both directions.
+
+  `CpuFreqSummary`'s three aggregates are `Option<u32>`. The average was summing
+  `0` for unread cores and dividing by the full core count, so it fell with each
+  unreadable core while still looking like a mean; `min_freq_mhz` used
+  `.unwrap_or(0)`, so one unread core made the reported fleet minimum zero.
+
+  **A second copy of the same defect turned up one module over** and is fixed
+  with it: `power_profile::CpuFreqConfig` held `current_freq_mhz`,
+  `min_freq_mhz` and `max_freq_mhz` as bare `u32` filled by `.unwrap_or(0)`,
+  beside a `base_freq_mhz` that was already `Option`. Its consumer guarded with
+  `if freq.max_freq_mhz > 0 && freq.min_freq_mhz > 0`, a test doing two jobs —
+  skip an unread pair, avoid a division by zero — that could not tell them
+  apart. It now only does the second.
+
 - **Disk capacity and I/O counters are `Option`, and the `> 0` guards that hid
   the fabrication are gone.** This is the sixth and last instance from the
   fabricated-reading sweep, and the one with the widest blast radius, because

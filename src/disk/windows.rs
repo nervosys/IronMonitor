@@ -275,12 +275,14 @@ impl WindowsDisk {
                 wmi.as_ref().map(|w| w.firmware.clone()),
             ),
             nvme_version: id.as_ref().and_then(|i| i.version.clone()),
+            // Identify Controller first, WMI second, and `None` if neither
+            // answered. The trailing `.unwrap_or(0)` here turned "no source
+            // knew" into a zero-byte drive.
             total_capacity: id
                 .as_ref()
                 .and_then(|i| i.total_capacity)
                 .map(|c| c.min(u64::MAX as u128) as u64)
-                .or_else(|| wmi.as_ref().map(|w| w.capacity_bytes))
-                .unwrap_or(0),
+                .or_else(|| wmi.as_ref().and_then(|w| w.capacity_bytes)),
             unallocated_capacity: id
                 .as_ref()
                 .and_then(|i| i.unallocated_capacity)
