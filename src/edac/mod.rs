@@ -265,9 +265,9 @@ impl EdacMonitor {
                     Self::read_sysfs(&dimm_path.join("dimm_mem_type")).unwrap_or_default();
                 let mem_type = Self::parse_mem_type(&mem_type_str);
 
-                let size_mb = Self::read_sysfs_u64(&dimm_path.join("size")).unwrap_or(0);
-                let cs_ce = Self::read_sysfs_u64(&dimm_path.join("dimm_ce_count")).unwrap_or(0);
-                let cs_ue = Self::read_sysfs_u64(&dimm_path.join("dimm_ue_count")).unwrap_or(0);
+                let size_mb = Self::read_sysfs_u64(&dimm_path.join("size"));
+                let cs_ce = Self::read_sysfs_u64(&dimm_path.join("dimm_ce_count"));
+                let cs_ue = Self::read_sysfs_u64(&dimm_path.join("dimm_ue_count"));
 
                 let location =
                     Self::read_sysfs(&dimm_path.join("dimm_location")).unwrap_or_default();
@@ -280,7 +280,10 @@ impl EdacMonitor {
                     ce_count: cs_ce,
                     ue_count: cs_ue,
                     location,
-                    grain: 0,
+                    // The dimm layout exposes no grain attribute. `0` claimed an
+                    // error resolution of zero bytes, which is not a value this
+                    // interface can report.
+                    grain: None,
                 });
             }
 
@@ -311,17 +314,33 @@ impl EdacMonitor {
         let ecc_active = total > 0;
 
         let mut recs = Vec::new();
-        if total_ue > 0 {
-            recs.push(format!(
+
+        // **An unreadable counter earns a recommendation of its own.** Silence
+        // here used to mean "no errors", because an unreadable counter arrived
+        // as `0` and simply failed every threshold. An operator reading an empty
+        // recommendation list concluded the memory was fine. Now the absence
+        // says so, which is the one thing it could never say before.
+        match total_ue {
+            Some(count) if count > 0 => recs.push(format!(
                 "CRITICAL: {} uncorrectable ECC error(s) detected — replace affected DIMM(s)",
-                total_ue
-            ));
+                count
+            )),
+            Some(_) => {}
+            None => recs.push(
+                "ECC uncorrectable-error counters could not be read on at least one                  controller — memory health cannot be assessed from this host"
+                    .into(),
+            ),
         }
-        if total_ce > 100 {
-            recs.push(format!(
+        match total_ce {
+            Some(count) if count > 100 => recs.push(format!(
                 "WARNING: {} correctable ECC errors — monitor for increasing rate",
-                total_ce
-            ));
+                count
+            )),
+            Some(_) => {}
+            None => recs.push(
+                "ECC correctable-error counters could not be read on at least one                  controller — a rising error rate would not be visible here"
+                    .into(),
+            ),
         }
         if !ecc_active {
             recs.push(
