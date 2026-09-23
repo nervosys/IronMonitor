@@ -189,8 +189,12 @@ pub struct DiskState {
     /// Total space (bytes), or `None` where the capacity was not read.
     pub total_bytes: Option<u64>,
 
-    /// Used space (bytes)
-    pub used_bytes: u64,
+    /// Used space (bytes), or `None` where no filesystem reported one.
+    ///
+    /// The `(String::new(), String::new(), 0)` fallback below set this to `0`
+    /// for a disk with no readable filesystem -- a mounted volume using none
+    /// of itself.
+    pub used_bytes: Option<u64>,
 
     /// Usage percentage, or `None` where the capacity was not read.
     pub usage_percent: Option<f32>,
@@ -389,10 +393,14 @@ impl FullSystemState {
             ctx.push_str("Disks:\n");
             for disk in &self.disks {
                 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-                let used_gb = disk.used_bytes as f64 / GIB;
+                // Shown only where it is a measurement. This was
+                // `disk.used_bytes as f64 / GIB` over a fabricated zero.
+                let used_gb = disk.used_bytes.map_or("unknown".to_string(), |b| {
+                    format!("{:.1}GB", b as f64 / GIB)
+                });
                 match (disk.total_bytes, disk.usage_percent) {
                     (Some(total), Some(pct)) => ctx.push_str(&format!(
-                        "  {}: {:.1}GB / {:.1}GB ({:.1}%) at {}\n",
+                        "  {}: {} / {:.1}GB ({:.1}%) at {}\n",
                         disk.name,
                         used_gb,
                         total as f64 / GIB,
@@ -403,7 +411,7 @@ impl FullSystemState {
                     // and is shown; the total is named unknown rather than
                     // rendered as 0.0GB at 0.0%.
                     _ => ctx.push_str(&format!(
-                        "  {}: {:.1}GB / capacity unknown at {}\n",
+                        "  {}: {} / capacity unknown at {}\n",
                         disk.name, used_gb, disk.mount_point
                     )),
                 }
@@ -1307,18 +1315,19 @@ impl MonitoringBackend {
                             first_fs.used_size,
                         )
                     } else {
-                        (String::new(), String::new(), 0)
+                        (String::new(), String::new(), None)
                     }
                 } else {
-                    (String::new(), String::new(), 0)
+                    (String::new(), String::new(), None)
                 };
 
                 // `capacity > 0` was a sentinel for "not read", and the `0.0`
                 // it produced was a usage percentage of a disk nobody measured.
-                let usage = disk_info
-                    .capacity
-                    .filter(|c| *c > 0)
-                    .map(|c| (used as f32 / c as f32) * 100.0);
+                // Both sides must be readings for there to be a percentage.
+                let usage = match (used, disk_info.capacity.filter(|c| *c > 0)) {
+                    (Some(used), Some(capacity)) => Some((used as f32 / capacity as f32) * 100.0),
+                    _ => None,
+                };
 
                 state.disks.push(DiskState {
                     name: disk.name().to_string(),

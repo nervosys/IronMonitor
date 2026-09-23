@@ -480,8 +480,13 @@ impl NumaMonitor {
 
     #[cfg(target_os = "macos")]
     fn refresh_macos(&mut self) -> Result<(), IronError> {
-        // macOS is UMA, create a single node
-        let mut total_mem = 0u64;
+        // macOS is UMA, create a single node.
+        //
+        // `total_mem` was `0u64`, so a `sysctl hw.memsize` that failed produced
+        // a machine with no memory. It is `None` until sysctl answers -- the
+        // same correction this commit's sibling made to the Linux and Windows
+        // readers, in the one path neither of those compiles.
+        let mut total_mem = None;
         let mut total_cpus = 0u32;
 
         if let Ok(output) = std::process::Command::new("sysctl")
@@ -493,7 +498,7 @@ impl NumaMonitor {
                 .trim()
                 .parse::<u64>()
             {
-                total_mem = mem;
+                total_mem = Some(mem);
             }
         }
 

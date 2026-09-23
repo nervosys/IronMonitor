@@ -1067,8 +1067,8 @@ fn collect_disks() -> Vec<DiskSnapshot> {
                     (
                         fs.mount_point.to_string_lossy().to_string(),
                         fs.fs_type.clone(),
-                        Some(fs.used_size),
-                        Some(fs.total_size),
+                        fs.used_size,
+                        fs.total_size,
                     )
                 })
                 // No filesystem was mounted on this device, or the mount could

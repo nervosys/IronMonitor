@@ -461,12 +461,17 @@ pub struct MemoryMetrics {
 pub struct DiskMetrics {
     /// Device name
     pub device: String,
-    /// Used space in GB
-    pub used_gb: f64,
-    /// Free space in GB
-    pub free_gb: f64,
-    /// Total space in GB
-    pub total_gb: f64,
+    /// Used space in GB, or `None` where the filesystem did not report it.
+    ///
+    /// **Bare beside four `Option` throughput fields**, and reached by the
+    /// compiler from `FilesystemInfo` rather than by the scan that had already
+    /// flagged it -- these three were being filled from figures that WMI
+    /// reports as nullable and that were flattened to `0` on the way here.
+    pub used_gb: Option<f64>,
+    /// Free space in GB, or `None` where not reported.
+    pub free_gb: Option<f64>,
+    /// Total space in GB, or `None` where not reported.
+    pub total_gb: Option<f64>,
     /// Read bytes per second
     pub read_bps: Option<u64>,
     /// Write bytes per second

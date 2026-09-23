@@ -4177,6 +4177,10 @@ impl IronMonitorApp {
                 format!("{} B", bytes)
             }
         };
+        // `None` renders as a dash rather than "0 B": an unread filesystem and
+        // an empty one look different on screen, as they should.
+        let format_bytes_opt =
+            |bytes: Option<u64>| bytes.map_or_else(|| "--".to_string(), format_bytes);
 
         // Use cached data instead of making I/O calls
         let info = &cached.info;
@@ -4398,13 +4402,21 @@ impl IronMonitorApp {
                     ui.add_space(6.0);
 
                     for fs in filesystems.iter().take(3) {
+                        // An unread filesystem draws an empty bar in the
+                        // neutral colour and labels itself `--%`. The red/
+                        // orange thresholds are judgements about a reading and
+                        // there is nothing here to judge.
                         let pct = fs.usage_percent();
-                        let color = if pct > 90.0 {
-                            CyberColors::NEON_RED
-                        } else if pct > 75.0 {
-                            CyberColors::NEON_ORANGE
-                        } else {
-                            CyberColors::NEON_GREEN
+                        let color = match pct {
+                            Some(p) if p > 90.0 => CyberColors::NEON_RED,
+                            Some(p) if p > 75.0 => CyberColors::NEON_ORANGE,
+                            Some(_) => CyberColors::NEON_GREEN,
+                            None => CyberColors::TEXT_SECONDARY,
+                        };
+                        let bar_fraction = pct.unwrap_or(0.0);
+                        let pct_label = match pct {
+                            Some(p) => format!("{:.0}%", p),
+                            None => "--%".to_string(),
                         };
 
                         ui.horizontal(|ui| {
@@ -4440,7 +4452,7 @@ impl IronMonitorApp {
                             if ui.is_rect_visible(rect) {
                                 ui.painter()
                                     .rect_filled(rect, 3.0, CyberColors::BACKGROUND_DARK);
-                                let w = rect.width() * pct / 100.0;
+                                let w = rect.width() * bar_fraction / 100.0;
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
                                         rect.min,
@@ -4452,7 +4464,7 @@ impl IronMonitorApp {
                                 ui.painter().text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    format!("{:.0}%", pct),
+                                    pct_label.clone(),
                                     egui::FontId::proportional(12.0),
                                     CyberColors::TEXT_PRIMARY,
                                 );
@@ -4463,8 +4475,8 @@ impl IronMonitorApp {
                                 ui.label(
                                     RichText::new(format!(
                                         "{} / {}",
-                                        format_bytes(fs.used_size),
-                                        format_bytes(fs.total_size)
+                                        format_bytes_opt(fs.used_size),
+                                        format_bytes_opt(fs.total_size)
                                     ))
                                     .color(CyberColors::TEXT_SECONDARY)
                                     .size(14.0),

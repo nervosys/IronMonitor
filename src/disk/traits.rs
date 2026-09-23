@@ -319,12 +319,19 @@ pub struct FilesystemInfo {
     pub mount_point: PathBuf,
     /// Filesystem type (ext4, ntfs, apfs, etc.)
     pub fs_type: String,
-    /// Total size in bytes
-    pub total_size: u64,
-    /// Used space in bytes
-    pub used_size: u64,
-    /// Available space in bytes
-    pub available_size: u64,
+    /// Total size in bytes, or `None` where the platform did not report it.
+    ///
+    /// **Linux fills these three from `statvfs` and cannot fail to** -- the
+    /// struct is built inside the `if let Ok(stat)`, so on that platform they
+    /// are always readings. Windows is why they are `Option`: the WMI
+    /// `Win32_LogicalDisk` fields are themselves `Option` and were flattened
+    /// here with `.unwrap_or(0)`, so a drive whose `Size` came back null
+    /// reported a filesystem of zero bytes with zero in use.
+    pub total_size: Option<u64>,
+    /// Used space in bytes, or `None` where not reported.
+    pub used_size: Option<u64>,
+    /// Available space in bytes, or `None` where not reported.
+    pub available_size: Option<u64>,
     /// Total inodes (Unix-like systems)
     pub total_inodes: Option<u64>,
     /// Used inodes
@@ -334,13 +341,17 @@ pub struct FilesystemInfo {
 }
 
 impl FilesystemInfo {
-    /// Calculate usage percentage
-    pub fn usage_percent(&self) -> f32 {
-        if self.total_size == 0 {
-            0.0
-        } else {
-            (self.used_size as f64 / self.total_size as f64 * 100.0) as f32
+    /// Usage percentage, or `None` where either figure is unread or the
+    /// filesystem reports no size.
+    ///
+    /// Returned `0.0` for an unread filesystem, which is an empty disk -- the
+    /// most reassuring possible answer to a question nobody could answer.
+    pub fn usage_percent(&self) -> Option<f32> {
+        let (used, total) = (self.used_size?, self.total_size?);
+        if total == 0 {
+            return None;
         }
+        Some((used as f64 / total as f64 * 100.0) as f32)
     }
 }
 
@@ -364,14 +375,20 @@ pub enum DiskHealth {
 pub struct ProcessDiskIo {
     /// Process ID
     pub pid: u32,
-    /// Bytes read
-    pub read_bytes: u64,
-    /// Bytes written
-    pub write_bytes: u64,
-    /// Read syscalls
-    pub read_syscalls: u64,
-    /// Write syscalls
-    pub write_syscalls: u64,
+    /// Bytes read, or `None` where `/proc/<pid>/io` did not report it.
+    ///
+    /// **`cancelled_write_bytes` below is the tell**, and it is in this same
+    /// struct: it is `Option` because it is only set when its line is present,
+    /// while these four were accumulators initialised to `0` and left there
+    /// when their line was absent. A process missing `rchar:` reported having
+    /// read no bytes.
+    pub read_bytes: Option<u64>,
+    /// Bytes written, or `None` where not reported.
+    pub write_bytes: Option<u64>,
+    /// Read syscalls, or `None` where not reported.
+    pub read_syscalls: Option<u64>,
+    /// Write syscalls, or `None` where not reported.
+    pub write_syscalls: Option<u64>,
     /// Cancelled write bytes (Linux)
     pub cancelled_write_bytes: Option<u64>,
 }
@@ -544,14 +561,14 @@ mod tests {
         let fs = FilesystemInfo {
             mount_point: PathBuf::from("/"),
             fs_type: "ext4".to_string(),
-            total_size: 1_000_000_000,
-            used_size: 500_000_000,
-            available_size: 500_000_000,
+            total_size: Some(1_000_000_000),
+            used_size: Some(500_000_000),
+            available_size: Some(500_000_000),
             total_inodes: None,
             used_inodes: None,
             read_only: false,
         };
-        assert!((fs.usage_percent() - 50.0).abs() < 0.01);
+        assert!((fs.usage_percent().expect("both figures read") - 50.0).abs() < 0.01);
     }
 
     #[test]
@@ -559,14 +576,17 @@ mod tests {
         let fs = FilesystemInfo {
             mount_point: PathBuf::from("/"),
             fs_type: "tmpfs".to_string(),
-            total_size: 0,
-            used_size: 0,
-            available_size: 0,
+            total_size: Some(0),
+            used_size: Some(0),
+            available_size: Some(0),
             total_inodes: None,
             used_inodes: None,
             read_only: false,
         };
-        assert_eq!(fs.usage_percent(), 0.0);
+        // A tmpfs genuinely reporting zero total has no usage percentage --
+        // there is nothing to be a percentage of. This asserted `0.0`, which
+        // was also what an unread filesystem returned.
+        assert_eq!(fs.usage_percent(), None);
     }
 
     #[test]
@@ -574,14 +594,14 @@ mod tests {
         let fs = FilesystemInfo {
             mount_point: PathBuf::from("/data"),
             fs_type: "ntfs".to_string(),
-            total_size: 1_000_000,
-            used_size: 1_000_000,
-            available_size: 0,
+            total_size: Some(1_000_000),
+            used_size: Some(1_000_000),
+            available_size: Some(0),
             total_inodes: None,
             used_inodes: None,
             read_only: true,
         };
-        assert!((fs.usage_percent() - 100.0).abs() < 0.01);
+        assert!((fs.usage_percent().expect("both figures read") - 100.0).abs() < 0.01);
     }
 
     // === DiskHealth tests ===

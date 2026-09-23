@@ -432,9 +432,17 @@ impl SystemHealth {
                 // Get filesystem space usage
                 if let Ok(fs_infos) = disk.filesystem_info() {
                     for fs in fs_infos {
-                        if fs.total_size > 1_000_000_000 {
+                        // A filesystem whose size was not read is not
+                        // checked: `> 1_000_000_000` on a fabricated `0` had
+                        // been excluding them anyway, but by accident rather
+                        // than on purpose, and a health check that silently
+                        // skips is worth doing deliberately.
+                        let Some(total) = fs.total_size else { continue };
+                        let Some(usage_pct) = fs.usage_percent().map(f64::from) else {
+                            continue;
+                        };
+                        if total > 1_000_000_000 {
                             // Only check disks > 1GB
-                            let usage_pct = fs.usage_percent() as f64;
                             let mount_name = fs.mount_point.display().to_string();
 
                             let (status, message) = if usage_pct >= thresholds.disk_critical as f64

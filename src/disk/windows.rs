@@ -677,9 +677,18 @@ impl DiskDevice for WindowsDisk {
                                 if let Some(ld) =
                                     logical_disks.iter().find(|d| d.device_i_d == drive_letter)
                                 {
-                                    let total_size = ld.size.unwrap_or(0);
-                                    let free_space = ld.free_space.unwrap_or(0);
-                                    let used_size = total_size.saturating_sub(free_space);
+                                    // WMI reports both as nullable and they
+                                    // were flattened to 0 here, so a drive with
+                                    // a null `Size` became a filesystem of no
+                                    // size with none of it used.
+                                    let total_size = ld.size;
+                                    let free_space = ld.free_space;
+                                    let used_size = match (total_size, free_space) {
+                                        (Some(total), Some(free)) => {
+                                            Some(total.saturating_sub(free))
+                                        }
+                                        _ => None,
+                                    };
 
                                     filesystems.push(FilesystemInfo {
                                         mount_point: PathBuf::from(format!("{}\\", drive_letter)),
@@ -752,9 +761,11 @@ impl DiskDevice for WindowsDisk {
                                     filesystems.push(FilesystemInfo {
                                         mount_point: PathBuf::from(format!("{}:\\", drive_letter)),
                                         fs_type,
-                                        total_size: total_bytes,
-                                        used_size: total_bytes.saturating_sub(total_free_bytes),
-                                        available_size: free_bytes_available,
+                                        total_size: Some(total_bytes),
+                                        used_size: Some(
+                                            total_bytes.saturating_sub(total_free_bytes),
+                                        ),
+                                        available_size: Some(free_bytes_available),
                                         total_inodes: None,
                                         used_inodes: None,
                                         read_only: false,

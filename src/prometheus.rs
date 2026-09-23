@@ -677,29 +677,39 @@ impl PrometheusExporter {
                         labels.insert("device".into(), disk.name().to_string());
                         labels.insert("mount".into(), fs.mount_point.to_string_lossy().to_string());
 
-                        self.add(MetricFamily::gauge_with_labels(
-                            &self.prefixed("disk_total_bytes"),
-                            "Total disk capacity in bytes",
-                            fs.total_size as f64,
-                            labels.clone(),
-                        ));
-                        self.add(MetricFamily::gauge_with_labels(
-                            &self.prefixed("disk_used_bytes"),
-                            "Used disk space in bytes",
-                            fs.used_size as f64,
-                            labels.clone(),
-                        ));
-                        self.add(MetricFamily::gauge_with_labels(
-                            &self.prefixed("disk_available_bytes"),
-                            "Available disk space in bytes",
-                            fs.available_size as f64,
-                            labels.clone(),
-                        ));
-                        if fs.total_size > 0 {
+                        // One series per figure that was actually read. A
+                        // gauge of 0 is a claim about the filesystem; an absent
+                        // series is Prometheus's own way of saying nothing was
+                        // reported, and is what an unread figure gets.
+                        if let Some(total) = fs.total_size {
+                            self.add(MetricFamily::gauge_with_labels(
+                                &self.prefixed("disk_total_bytes"),
+                                "Total disk capacity in bytes",
+                                total as f64,
+                                labels.clone(),
+                            ));
+                        }
+                        if let Some(used) = fs.used_size {
+                            self.add(MetricFamily::gauge_with_labels(
+                                &self.prefixed("disk_used_bytes"),
+                                "Used disk space in bytes",
+                                used as f64,
+                                labels.clone(),
+                            ));
+                        }
+                        if let Some(available) = fs.available_size {
+                            self.add(MetricFamily::gauge_with_labels(
+                                &self.prefixed("disk_available_bytes"),
+                                "Available disk space in bytes",
+                                available as f64,
+                                labels.clone(),
+                            ));
+                        }
+                        if let Some(percent) = fs.usage_percent() {
                             self.add(MetricFamily::gauge_with_labels(
                                 &self.prefixed("disk_usage_percent"),
                                 "Disk utilization percentage",
-                                (fs.used_size as f64 / fs.total_size as f64) * 100.0,
+                                percent as f64,
                                 labels.clone(),
                             ));
                         }

@@ -381,12 +381,15 @@ impl DiskDevice for LinuxDisk {
                     let free_size = stat.blocks_free() * stat.block_size();
                     let used_size = total_size - free_size;
 
+                    // `statvfs` succeeded, so all three are readings. They are
+                    // wrapped rather than optional-at-source because the
+                    // Windows path cannot say the same.
                     filesystems.push(FilesystemInfo {
                         mount_point: PathBuf::from(mount_point),
                         fs_type: fs_type.to_string(),
-                        total_size,
-                        used_size,
-                        available_size,
+                        total_size: Some(total_size),
+                        used_size: Some(used_size),
+                        available_size: Some(available_size),
                         total_inodes: Some(stat.files()),
                         used_inodes: Some(stat.files() - stat.files_free()),
                         read_only: stat.flags().contains(nix::sys::statvfs::FsFlags::ST_RDONLY),
@@ -441,10 +444,10 @@ pub fn get_process_io(pid: u32) -> Result<ProcessDiskIo, Error> {
     let content = fs::read_to_string(&io_path)
         .map_err(|e| Error::QueryFailed(format!("Failed to read {}: {}", io_path, e)))?;
 
-    let mut read_bytes = 0;
-    let mut write_bytes = 0;
-    let mut read_syscalls = 0;
-    let mut write_syscalls = 0;
+    let mut read_bytes = None;
+    let mut write_bytes = None;
+    let mut read_syscalls = None;
+    let mut write_syscalls = None;
     let mut cancelled_write_bytes = None;
 
     for line in content.lines() {
@@ -453,12 +456,17 @@ pub fn get_process_io(pid: u32) -> Result<ProcessDiskIo, Error> {
             continue;
         }
 
-        let value: u64 = parts[1].parse().unwrap_or(0);
+        // A line that does not parse leaves its counter absent rather than
+        // zero, matching `cancelled_write_bytes`, which was already doing this
+        // by virtue of only existing when its line does.
+        let Ok(value) = parts[1].parse::<u64>() else {
+            continue;
+        };
         match parts[0] {
-            "rchar:" => read_bytes = value,
-            "wchar:" => write_bytes = value,
-            "syscr:" => read_syscalls = value,
-            "syscw:" => write_syscalls = value,
+            "rchar:" => read_bytes = Some(value),
+            "wchar:" => write_bytes = Some(value),
+            "syscr:" => read_syscalls = Some(value),
+            "syscw:" => write_syscalls = Some(value),
             "cancelled_write_bytes:" => cancelled_write_bytes = Some(value),
             _ => {}
         }

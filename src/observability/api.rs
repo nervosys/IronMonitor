@@ -1191,9 +1191,11 @@ impl ObservabilityApi {
                 for fs in &fs_list {
                     result.push(DiskMetrics {
                         device: format!("{} ({})", d.name(), fs.mount_point.display()),
-                        used_gb: fs.used_size as f64 / (1024.0 * 1024.0 * 1024.0),
-                        free_gb: fs.available_size as f64 / (1024.0 * 1024.0 * 1024.0),
-                        total_gb: fs.total_size as f64 / (1024.0 * 1024.0 * 1024.0),
+                        used_gb: fs.used_size.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
+                        free_gb: fs
+                            .available_size
+                            .map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
+                        total_gb: fs.total_size.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0)),
                         read_bps: io.as_ref().and_then(|i| i.read_throughput),
                         write_bps: io.as_ref().and_then(|i| i.write_throughput),
                         iops_read: io.as_ref().and_then(|i| i.read_ops),

@@ -136,19 +136,21 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
             for fs in filesystems {
                 println!("  Mount Point:    {}", fs.mount_point.display());
                 println!("  Type:           {}", fs.fs_type);
+                // Each figure printed only where it was read. Windows reports
+                // these as nullable and they used to arrive here as zeroes.
+                let gb = |b: Option<u64>| {
+                    b.map_or("unknown".to_string(), |b| {
+                        format!("{:.2} GB", b as f64 / 1_000_000_000.0)
+                    })
+                };
+                println!("  Total:          {}", gb(fs.total_size));
                 println!(
-                    "  Total:          {:.2} GB",
-                    fs.total_size as f64 / 1_000_000_000.0
-                );
-                println!(
-                    "  Used:           {:.2} GB ({:.1}%)",
-                    fs.used_size as f64 / 1_000_000_000.0,
+                    "  Used:           {} ({})",
+                    gb(fs.used_size),
                     fs.usage_percent()
+                        .map_or("unknown".to_string(), |p| format!("{:.1}%", p))
                 );
-                println!(
-                    "  Available:      {:.2} GB",
-                    fs.available_size as f64 / 1_000_000_000.0
-                );
+                println!("  Available:      {}", gb(fs.available_size));
                 if let Some(total_inodes) = fs.total_inodes {
                     println!("  Total Inodes:   {}", total_inodes);
                 }
