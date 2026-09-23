@@ -20,7 +20,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n📊 Fan Summary");
             println!("├─ Total fans: {}", summary.total_fans);
             println!("├─ Running fans: {}", summary.running_fans);
-            println!("├─ Average speed: {:.1}%", summary.avg_speed_percent);
+            println!(
+                "├─ Average speed: {}",
+                summary
+                    .avg_speed_percent
+                    .map_or("not reported".to_string(), |p| format!("{:.1}%", p))
+            );
 
             if let Some(max_rpm) = summary.max_rpm {
                 println!("├─ Max RPM: {}", max_rpm);
@@ -64,9 +69,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("\n{} {} ({})", type_icon, fan.name, fan.fan_type);
 
-                // Speed bar
-                let speed_bar = create_bar(fan.speed_percent, 20);
-                println!("   Speed: {} {:.1}%", speed_bar, fan.speed_percent);
+                // Speed bar. A fan with no speed reading gets an empty bar
+                // and says so, rather than a bar drawn from a fabricated 0%.
+                match fan.speed_percent {
+                    Some(pct) => {
+                        println!("   Speed: {} {:.1}%", create_bar(pct, 20), pct);
+                    }
+                    None => println!("   Speed: {} not reported", create_bar(0.0, 20)),
+                }
 
                 // PWM value
                 if let Some(pwm) = fan.pwm_value {
@@ -81,9 +91,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     println!();
 
-                    // Check for stalled fan
-                    if rpm == 0 && fan.speed_percent > 10.0 {
-                        println!("   ⚠️  Warning: Fan may be stalled!");
+                    // Check for stalled fan. `is_potentially_stalled` is
+                    // `Option` now, and a fan whose speed was not read gets
+                    // neither the warning nor silent reassurance.
+                    match fan.is_potentially_stalled() {
+                        Some(true) => println!("   ⚠️  Warning: Fan may be stalled!"),
+                        Some(false) => {}
+                        None => {
+                            let _ = rpm;
+                            println!("   ?  Stall check needs a speed reading; none was taken");
+                        }
                     }
                 }
 

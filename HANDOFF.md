@@ -9233,3 +9233,122 @@ longer worth treating as a coincidence:
 > correction in this codebase was made by someone who understood the principle
 > -- they wrote it down -- and applied it to the field in front of them. The
 > understanding was never the missing part.
+
+### What "the tests pass" has to mean here
+
+Two commits in a row went red on CI after I reported them locally green. The
+fix for the first was itself incomplete and the second CI run caught the rest.
+Neither was a subtle failure -- both were compile errors -- and both were
+invisible to the command I was running.
+
+**CI runs `cargo test --all-features`.** This session had been running `cargo
+test --lib --tests --features full` and reading the exit code off it. Those
+differ in three ways and every one of them has now caused a red build:
+
+| Gap | What it hides | Cost |
+| --- | --- | --- |
+| `--lib --tests` skips doctests | 73 doc examples, each compiled against the public API | `2213d80` |
+| `full` is not `--all-features` | the `fleet-store` feature and its dependency tree | none yet, found looking |
+| Target-gated code | `#[cfg(target_os = "macos")]`, which no local build compiled | `95a9efa`, `fcbe7f3` (caught), `b5b07c4` |
+
+A doc example is *a caller of the public API that lives in a comment*, which is
+exactly the thing a type change breaks and exactly the thing a test-target
+filter excludes. That combination is why this was not found sooner and why it
+is worth its own row.
+
+**macOS is now checkable from this Windows box.** `cargo check` does not link,
+so it needs no macOS SDK:
+
+```bash
+rustup target add aarch64-apple-darwin
+cargo check --target aarch64-apple-darwin --features full --lib
+```
+
+`--all-features` does **not** work: `fleet-store` pulls `zstd-sys`, which wants
+a C cross-compiler. So macOS coverage is `full`, not all, and that is a real
+remaining hole rather than a technicality -- `fleet_store` has no
+`target_os` gating today, but nothing stops it acquiring some.
+
+This was verified to discriminate rather than assumed to: with the fix in
+place it reports 0 errors, and reintroducing the macOS-only bug on purpose
+reproduced exactly the `E0308` CI had reported, at the same line. **A check
+that has never been seen to fail is not evidence that the code is clean; it is
+evidence of nothing at all.**
+
+The working set, all four of which must be run before claiming a change is
+verified:
+
+```bash
+cargo check --all-targets --all-features                          # Windows
+wsl cargo clippy --all-targets                                    # Linux
+cargo check --target aarch64-apple-darwin --features full --lib   # macOS
+cargo test --all-features                                         # incl. doctests
+```
+
+And the exit code must come from `cargo`, not from the tail of a pipeline --
+`cargo test ... | grep ... | head` reports `head`'s success, and a run killed
+partway through then reads as a pass. That happened once this session and was
+caught only because the output stopped mid-binary.
+
+### `Some(fabricated)` has now happened three times
+
+Instances eleven, fifteen and sixteen are the same defect, and it is the one
+**neither instrument can find**:
+
+| Where | The line |
+| --- | --- |
+| `gpu/amd.rs`, `gpu/intel.rs` | `utilization: Some(perf.utilization)` over an `else { 0 }` |
+| `observability/api.rs` | `speed_percent: Some(fan.speed_percent as u8)` over a `0.0` default |
+| `platform/linux/memory.rs` | `ram.buffers = Some(buffers)` over an accumulator starting at `0` |
+
+In all three the destination field is `Option` and was *deliberately* made so,
+with a doc comment explaining the defect it was introduced to prevent. In all
+three a caller filled it unconditionally, and the fabrication continued through
+a type built to stop it.
+
+The structural scan cannot see this: the struct is consistent, every field that
+should be `Option` is `Option`, and there is no seam. The diagnosis grep cannot
+see it either -- the diagnosis is present and *correct*, attached to the field,
+describing a fix that a caller then undid. Both instruments look at
+declarations. This lives at a call site.
+
+> **`Some(x)` is an assertion that `x` was observed.** It is exactly as
+> checkable as the bare assignments this sweep exists to remove, and it is
+> harder to find because it looks like the fix rather than the bug.
+
+The searchable form, which is the nearest thing to a third instrument:
+
+```bash
+grep -rnE ': Some\(' --include=*.rs src | grep -vE 'Some\([a-z_]+\?\)|then_some|\.map\('
+```
+
+That is high-noise -- most `Some(x)` is correct, because most `x` really was
+observed -- so it is a reading exercise rather than a list. The discriminator
+is whether `x` can be traced back to a fallible source without passing through
+a `?`, a `.map`, or a match. All three instances above fail that test at a
+glance once you know to apply it.
+
+### A test that asserts a race
+
+`sync_snapshot_populates_display_state_from_collector` failed once under
+full-suite parallel load and passed standalone and on CI. The assertion was:
+
+```rust
+assert!(!app.sync_snapshot(), "sync_snapshot re-applied the same generation");
+```
+
+The App behind it owns a **live collector that ticks on an interval**. The
+assertions preceding this line take time; under load they can take longer than
+a tick, at which point a genuinely new generation arrives and `sync_snapshot`
+correctly returns `true`. The test then reports a broken generation guard.
+
+> **The assertion was not the property.** The property is "applying the same
+> generation twice is a no-op"; what was written is "no tick arrived just now",
+> which is a statement about scheduling. It now asserts the implication -- a
+> second sync returns true only if `applied_generation` changed -- which holds
+> whether or not the collector ticked.
+
+Worth noting how it was found: `cargo test` exited **101** and the run was only
+believed because the exit code came from `cargo` rather than from the tail of a
+pipeline. Under the pipeline habit this session started with
+(`cargo test ... | grep ... | head`), this would have reported success.

@@ -42,6 +42,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **A fan nobody measured no longer reports that it is fine.**
+  `fan_control::FanInfo::speed_percent` was bare `f32` beside five `Option`
+  siblings, and `FanInfo::new` set it to `0.0`. The Windows WMI path pushes
+  fans with no speed source at all — `Win32_Fan` exposes no tachometer, as a
+  comment right there says — so every fan on that path reported a speed of
+  exactly zero.
+
+  Three predicates read that value, and all three answered confidently about
+  fans that were never measured:
+
+  ```rust
+  pub fn is_potentially_stalled(&self) -> bool {
+      self.speed_percent > 10.0 && self.rpm == Some(0)
+  }
+  ```
+
+  **That returned `false`** — a thermal-safety check reporting *no problem*
+  about a fan with no readings. `is_running()` likewise returned `false`, a
+  positive claim that the fan is stopped, from two absent readings. All three
+  now return `Option<bool>`, and `fan_summary` filters on `== Some(true)` so a
+  check that could not be performed lands in neither list rather than being
+  silently counted either way.
+
+  `FanCurvePoint::speed_percent` in the same file is *not* affected: it is a
+  configured setpoint, not a reading, and a curve point has one by
+  construction.
+
+  `observability::api` had `speed_percent: Some(fan.speed_percent as u8)` — a
+  correctly-typed `Option` field filled unconditionally, the same shape as the
+  GPU utilisation defect.
+
+- **The Linux `/proc/meminfo` reader stops inventing memory figures.** Every
+  accumulator started at `0` and every value came through `.unwrap_or(0)`, so a
+  missing or unparseable line became a measurement. Fixed two ways, because the
+  two halves are different problems:
+
+  - `MemTotal`, `MemFree` and `MemAvailable` land in bare `u64` fields that
+    cannot express absence. A `/proc/meminfo` without `MemTotal:` is a broken
+    system rather than a machine with no memory, so the reader now **fails**
+    instead of reporting zero — matching macOS and Windows, where the syscall
+    failing fails the whole call. Those two platforms derive the same three
+    figures from syscalls, so their bare fields are genuine readings and the
+    struct did not need widening.
+  - `Buffers`, `Cached`/`SReclaimable` and `Shmem` land in `Option` fields that
+    exist for exactly this reason, and were filled `Some(accumulator)`
+    regardless. A kernel with no `Buffers:` line reported `Some(0)` — a measured
+    zero through a field typed to say "not reported", which
+    `RamInfo::buffers`'s own documentation describes as the defect it was
+    introduced to fix.
+
+### Fixed
+
+- **A flaky TUI test.** `sync_snapshot_populates_display_state_from_collector`
+  asserted `!app.sync_snapshot()` against a live, ticking collector, so a
+  genuinely new generation arriving between two calls read as a broken
+  generation guard. It now asserts the property it means — a second sync
+  returns true only if the generation moved.
+
+- **`FilesystemInfo`, `ProcessDiskIo` and `DiskMetrics` report what was read.**
+  `FilesystemInfo`'s total/used/available were bare `u64`; Linux fills them from
+  a successful `statvfs` and is fine, but the Windows path flattened nullable
+  WMI fields with `.unwrap_or(0)`, so a drive with a null `Size` became a
+  filesystem of zero bytes with zero in use. `usage_percent()` returned `0.0`
+  for an unread filesystem — an empty disk, the most reassuring possible answer
+  to a question nobody could answer.
+
+  `ProcessDiskIo`'s four counters were accumulators starting at `0`, beside a
+  `cancelled_write_bytes` that was already `Option` because it is only set when
+  its line appears. A process whose `/proc/<pid>/io` lacked `rchar:` reported
+  having read no bytes.
+
+  Carried through to `observability::DiskMetrics`, `backend::DiskState`, the
+  Prometheus exporter (one series per figure actually read), the GUI filesystem
+  rows, `health.rs` and the disk example.
+
+  Also `numa::refresh_macos`, which had `let mut total_mem = 0u64` — the same
+  defect the previous entry fixed on Linux and Windows, in the one path neither
+  of those compiles.
+
 - **NUMA nodes no longer report memory nobody read, and the imbalance ratio no
   longer asserts balance.** `NumaNode`'s five memory and hugepage fields and
   `NumaSummary`'s total and two imbalance ratios are `Option`.

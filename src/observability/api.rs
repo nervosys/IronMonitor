@@ -1021,7 +1021,11 @@ impl ObservabilityApi {
                 result.push(FanContext {
                     name: fan.name.clone(),
                     speed_rpm: fan.rpm,
-                    speed_percent: Some(fan.speed_percent as u8),
+                    // Carried through, not wrapped. `Some(x as u8)` over a
+                    // fabricated 0.0 reported a measured 0% for a fan with no
+                    // speed source -- the same shape as the GPU utilisation
+                    // defect, into a field already typed to express absence.
+                    speed_percent: fan.speed_percent.map(|p| p as u8),
                     min_rpm: fan.rpm_min,
                     max_rpm: fan.rpm_max,
                 });

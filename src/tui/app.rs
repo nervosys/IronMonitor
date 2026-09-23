@@ -2708,14 +2708,29 @@ mod tests {
             app.memory_info.total
         );
 
-        // The generation guard must make a second immediate sync a no-op, otherwise
-        // the render loop would repaint identical frames.
+        // The generation guard must make a second sync of the *same* generation
+        // a no-op, otherwise the render loop would repaint identical frames.
+        //
+        // This asserted `!app.sync_snapshot()` outright, which is a race rather
+        // than the property: the collector behind this App is live and ticking,
+        // so a genuinely new generation can arrive between the two calls and
+        // make a correct `true` look like a broken guard. It failed that way
+        // once under full-suite parallel load, where the assertions above take
+        // longer than a tick.
+        //
+        // What is actually being tested is the implication: a second sync
+        // returns true only if the generation moved.
+        let generation_before = app.applied_generation;
+        let resynced = app.sync_snapshot();
         assert!(
-            !app.sync_snapshot(),
-            "sync_snapshot re-applied the same generation"
+            !resynced || app.applied_generation != generation_before,
+            "sync_snapshot re-applied generation {generation_before} without it changing"
         );
 
-        // First call reports the new generation, second reports nothing new.
+        // First call reports the generation now applied, second reports nothing
+        // new. Unlike the guard above this is not racy: `snapshot_changed_since_render`
+        // consumes a flag set by `sync_snapshot`, and no sync happens between
+        // these two lines.
         assert!(app.snapshot_changed_since_render());
         assert!(
             !app.snapshot_changed_since_render(),

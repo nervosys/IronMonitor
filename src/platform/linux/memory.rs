@@ -21,24 +21,31 @@ pub fn read_memory_stats() -> Result<MemoryStats> {
     Ok(stats)
 }
 
+/// Parse the RAM figures out of `/proc/meminfo`.
+///
+/// **Every accumulator here used to start at `0` and every value came through
+/// `.unwrap_or(0)`**, so a missing or unparseable line became a measurement.
+/// That mattered in two different ways, fixed two different ways:
+///
+/// - `MemTotal`, `MemFree` and `MemAvailable` land in bare `u64` fields, which
+///   cannot express absence. A `/proc/meminfo` without `MemTotal:` is a broken
+///   system rather than a machine with no memory, so this now **fails** rather
+///   than reporting zero -- matching the macOS and Windows readers, where the
+///   syscall failing fails the whole call.
+/// - `Buffers`, `Cached`, `SReclaimable` and `Shmem` land in `Option` fields
+///   that already exist for exactly this reason. They were being filled with
+///   `Some(accumulator)` regardless, so a kernel with no `Buffers:` line
+///   reported `Some(0)` -- a measured zero, through a field typed to say
+///   "not reported". `RamInfo::buffers`'s own documentation describes that as
+///   the defect it was introduced to fix.
 fn parse_ram_info(meminfo: &str) -> Result<RamInfo> {
-    let mut ram = RamInfo {
-        total: 0,
-        used: 0,
-        free: 0,
-        buffers: None,
-        cached: None,
-        shared: None,
-        lfb: None,
-    };
-
-    let mut mem_total = 0u64;
-    let mut mem_free = 0u64;
-    let mut mem_available = 0u64;
-    let mut buffers = 0u64;
-    let mut cached = 0u64;
-    let mut s_reclaimable = 0u64;
-    let mut shmem = 0u64;
+    let mut mem_total = None;
+    let mut mem_free = None;
+    let mut mem_available = None;
+    let mut buffers = None;
+    let mut cached = None;
+    let mut s_reclaimable = None;
+    let mut shmem = None;
 
     for line in meminfo.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -47,34 +54,51 @@ fn parse_ram_info(meminfo: &str) -> Result<RamInfo> {
         }
 
         let key = parts[0].trim_end_matches(':');
-        let value: u64 = parts[1].parse().unwrap_or(0);
+        // A line whose value does not parse is a line we did not read.
+        let Ok(value) = parts[1].parse::<u64>() else {
+            continue;
+        };
 
         match key {
-            "MemTotal" => mem_total = value,
-            "MemFree" => mem_free = value,
-            "MemAvailable" => mem_available = value,
-            "Buffers" => buffers = value,
-            "Cached" => cached = value,
-            "SReclaimable" => s_reclaimable = value,
-            "Shmem" => shmem = value,
+            "MemTotal" => mem_total = Some(value),
+            "MemFree" => mem_free = Some(value),
+            "MemAvailable" => mem_available = Some(value),
+            "Buffers" => buffers = Some(value),
+            "Cached" => cached = Some(value),
+            "SReclaimable" => s_reclaimable = Some(value),
+            "Shmem" => shmem = Some(value),
             _ => {}
         }
     }
 
-    ram.total = mem_total;
-    ram.free = mem_free;
-    ram.buffers = Some(buffers);
-    ram.cached = Some(cached + s_reclaimable);
-    // Linux does report this, via Shmem in /proc/meminfo.
-    ram.shared = Some(shmem);
-    ram.used = mem_total.saturating_sub(mem_available);
+    let missing = |field: &str| {
+        crate::error::IronError::Parse(format!(
+            "/proc/meminfo has no {field} line; refusing to report it as zero"
+        ))
+    };
 
-    // Try to read LFB (Large Free Blocks) for Jetson
-    if let Ok(lfb) = read_lfb() {
-        ram.lfb = Some(lfb);
-    }
+    let total = mem_total.ok_or_else(|| missing("MemTotal"))?;
+    let free = mem_free.ok_or_else(|| missing("MemFree"))?;
+    let available = mem_available.ok_or_else(|| missing("MemAvailable"))?;
 
-    Ok(ram)
+    Ok(RamInfo {
+        total,
+        free,
+        // Derived from two readings that are both present by this point.
+        used: total.saturating_sub(available),
+        buffers,
+        // `Cached` alone understates it; the kernel's reclaimable slab counts
+        // too. Absent unless at least one of the pair was read, and summing
+        // only what was.
+        cached: match (cached, s_reclaimable) {
+            (None, None) => None,
+            (c, s) => Some(c.unwrap_or(0) + s.unwrap_or(0)),
+        },
+        // Linux does report this, via Shmem in /proc/meminfo.
+        shared: shmem,
+        // Try to read LFB (Large Free Blocks) for Jetson
+        lfb: read_lfb().ok(),
+    })
 }
 
 /// Parse the swap figures out of `/proc/meminfo`.

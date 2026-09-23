@@ -16,7 +16,12 @@
 //!
 //! // List all fans
 //! for fan in monitor.fans() {
-//!     println!("Fan: {} - {}% @ {} RPM", fan.name, fan.speed_percent, fan.rpm.unwrap_or(0));
+//!     match (fan.speed_percent, fan.rpm) {
+//!         (Some(pct), Some(rpm)) => println!("Fan: {} - {}% @ {} RPM", fan.name, pct, rpm),
+//!         (Some(pct), None) => println!("Fan: {} - {}%, no tachometer", fan.name, pct),
+//!         (None, Some(rpm)) => println!("Fan: {} - {} RPM, speed not read", fan.name, rpm),
+//!         (None, None) => println!("Fan: {} - no readings", fan.name),
+//!     }
 //! }
 //!
 //! // Set fan profile
@@ -135,8 +140,16 @@ pub struct FanInfo {
     pub name: String,
     /// Fan type
     pub fan_type: FanType,
-    /// Current speed percentage (0-100)
-    pub speed_percent: f32,
+    /// Current speed percentage (0-100), or `None` where no speed was read.
+    ///
+    /// **Bare beside five `Option` siblings**, and `FanInfo::new` set it to
+    /// `0.0`. The Windows WMI path pushes a `FanInfo::new` with no speed source
+    /// at all -- `Win32_Fan` exposes no tachometer, as the comment there says --
+    /// so every fan on that path reported a speed of exactly zero.
+    ///
+    /// The three predicates below are why this one is worse than a wrong
+    /// number on a screen. See [`Self::is_potentially_stalled`].
+    pub speed_percent: Option<f32>,
     /// Current PWM value (0-255)
     pub pwm_value: Option<u8>,
     /// Current RPM (if available)
@@ -172,7 +185,7 @@ impl FanInfo {
         Self {
             name: name.into(),
             fan_type: FanType::Unknown,
-            speed_percent: 0.0,
+            speed_percent: None,
             pwm_value: None,
             rpm: None,
             rpm_min: None,
@@ -189,24 +202,43 @@ impl FanInfo {
         }
     }
 
-    /// Check if fan is running
+    /// Whether the fan is running, or `None` when neither speed nor RPM was
+    /// read.
+    ///
+    /// A fan with an unread speed and an unread tachometer returned `false`
+    /// here -- a positive claim that the fan is stopped, from two absent
+    /// readings.
     pub fn is_running(&self) -> bool {
-        self.speed_percent > 0.0 || self.rpm.is_some_and(|r| r > 0)
+        self.is_running_opt().unwrap_or(false)
     }
 
-    /// Check if fan is at full speed
-    pub fn is_full_speed(&self) -> bool {
-        self.speed_percent >= 95.0
+    /// [`Self::is_running`] without the fabricated `false`.
+    pub fn is_running_opt(&self) -> Option<bool> {
+        match (self.speed_percent, self.rpm) {
+            (None, None) => None,
+            (speed, rpm) => Some(speed.is_some_and(|s| s > 0.0) || rpm.is_some_and(|r| r > 0)),
+        }
     }
 
-    /// Check if fan might be stalled (RPM = 0 but PWM > 0)
-    pub fn is_potentially_stalled(&self) -> bool {
-        self.speed_percent > 10.0 && self.rpm == Some(0)
+    /// Whether the fan is at full speed, or `None` without a speed reading.
+    pub fn is_full_speed(&self) -> Option<bool> {
+        Some(self.speed_percent? >= 95.0)
+    }
+
+    /// Whether the fan might be stalled -- commanded above 10% but reporting
+    /// 0 RPM -- or `None` when the command level was not read.
+    ///
+    /// **The one that matters.** This returned `false` for a fan whose speed
+    /// nobody read: a thermal-safety signal answering "no problem" about a fan
+    /// that was never measured. `None` says the check could not be performed,
+    /// which is a different thing to report and a different thing to act on.
+    pub fn is_potentially_stalled(&self) -> Option<bool> {
+        Some(self.speed_percent? > 10.0 && self.rpm == Some(0))
     }
 
     /// Get fan efficiency estimate (RPM per PWM%)
     pub fn efficiency(&self) -> Option<f32> {
-        match (self.rpm, self.speed_percent) {
+        match (self.rpm, self.speed_percent?) {
             (Some(rpm), speed) if speed > 5.0 => Some(rpm as f32 / speed),
             _ => None,
         }
@@ -600,7 +632,7 @@ impl FanMonitor {
                 if let Ok(pwm_str) = fs::read_to_string(&pwm_file) {
                     if let Ok(pwm) = pwm_str.trim().parse::<u8>() {
                         fan.pwm_value = Some(pwm);
-                        fan.speed_percent = (pwm as f32 / 255.0) * 100.0;
+                        fan.speed_percent = Some((pwm as f32 / 255.0) * 100.0);
                     }
                 }
 
@@ -680,7 +712,7 @@ impl FanMonitor {
             if let Ok(pwm_str) = fs::read_to_string(&target_pwm) {
                 if let Ok(pwm) = pwm_str.trim().parse::<u32>() {
                     fan.pwm_value = Some((pwm.min(255)) as u8);
-                    fan.speed_percent = (pwm as f32 / 255.0) * 100.0;
+                    fan.speed_percent = Some((pwm as f32 / 255.0) * 100.0);
                 }
             }
 
@@ -1122,8 +1154,13 @@ pub struct FanSummary {
     pub total_fans: usize,
     /// Number of running fans
     pub running_fans: usize,
-    /// Average speed across all fans
-    pub avg_speed_percent: f32,
+    /// Average speed across the fans that reported one, or `None` if none
+    /// did.
+    ///
+    /// Summing `0.0` for unread fans and dividing by the full fan count gave a
+    /// mean that fell with each unreadable fan while still looking like a
+    /// measurement -- the same arithmetic the NUMA and cpufreq summaries had.
+    pub avg_speed_percent: Option<f32>,
     /// Maximum RPM detected
     pub max_rpm: Option<u32>,
     /// Any stalled fans detected
@@ -1137,15 +1174,28 @@ pub fn fan_summary() -> Result<FanSummary> {
     let monitor = FanMonitor::new()?;
     let fans = monitor.fans();
 
-    let running_fans: Vec<_> = fans.iter().filter(|f| f.is_running()).collect();
-    let full_speed: Vec<_> = fans.iter().filter(|f| f.is_full_speed()).collect();
-    let stalled: Vec<_> = fans.iter().filter(|f| f.is_potentially_stalled()).collect();
+    // `== Some(true)` throughout: a fan whose check could not be performed is
+    // counted in neither list. `stalled_fans` in particular must not silently
+    // include or exclude a fan nobody measured -- see `is_potentially_stalled`.
+    let running_fans: Vec<_> = fans
+        .iter()
+        .filter(|f| f.is_running_opt() == Some(true))
+        .collect();
+    let full_speed: Vec<_> = fans
+        .iter()
+        .filter(|f| f.is_full_speed() == Some(true))
+        .collect();
+    let stalled: Vec<_> = fans
+        .iter()
+        .filter(|f| f.is_potentially_stalled() == Some(true))
+        .collect();
 
-    let total_speed: f32 = fans.iter().map(|f| f.speed_percent).sum();
-    let avg_speed = if fans.is_empty() {
-        0.0
+    // Averaged over the fans that reported a speed.
+    let read: Vec<f32> = fans.iter().filter_map(|f| f.speed_percent).collect();
+    let avg_speed = if read.is_empty() {
+        None
     } else {
-        total_speed / fans.len() as f32
+        Some(read.iter().sum::<f32>() / read.len() as f32)
     };
 
     let max_rpm = fans.iter().filter_map(|f| f.rpm).max();
@@ -1226,7 +1276,10 @@ mod tests {
         let fan = FanInfo::new("cpu_fan");
         assert_eq!(fan.name, "cpu_fan");
         assert_eq!(fan.fan_type, FanType::Unknown);
-        assert_eq!(fan.speed_percent, 0.0);
+        assert_eq!(
+            fan.speed_percent, None,
+            "a fan with no speed source has no speed, not a speed of zero"
+        );
         assert!(!fan.controllable);
     }
 
@@ -1234,7 +1287,7 @@ mod tests {
     fn test_fan_is_running_by_speed() {
         let mut fan = FanInfo::new("test");
         assert!(!fan.is_running());
-        fan.speed_percent = 50.0;
+        fan.speed_percent = Some(50.0);
         assert!(fan.is_running());
     }
 
@@ -1248,29 +1301,36 @@ mod tests {
     #[test]
     fn test_fan_is_full_speed() {
         let mut fan = FanInfo::new("test");
-        fan.speed_percent = 94.0;
-        assert!(!fan.is_full_speed());
-        fan.speed_percent = 95.0;
-        assert!(fan.is_full_speed());
-        fan.speed_percent = 100.0;
-        assert!(fan.is_full_speed());
+        assert_eq!(
+            fan.is_full_speed(),
+            None,
+            "an unread fan is not at full speed and is not below it either"
+        );
+        fan.speed_percent = Some(94.0);
+        assert_eq!(fan.is_full_speed(), Some(false));
+        fan.speed_percent = Some(95.0);
+        assert_eq!(fan.is_full_speed(), Some(true));
+        fan.speed_percent = Some(100.0);
+        assert_eq!(fan.is_full_speed(), Some(true));
     }
 
     #[test]
     fn test_fan_is_potentially_stalled() {
         let mut fan = FanInfo::new("test");
-        // Not stalled: speed 0, no rpm
-        assert!(!fan.is_potentially_stalled());
+        // Unknown, not "not stalled": nothing was read, so the check could not
+        // be performed. This asserted `false` -- a thermal-safety signal
+        // reporting no problem about a fan nobody measured.
+        assert_eq!(fan.is_potentially_stalled(), None);
         // Not stalled: speed > 10 but rpm not zero
-        fan.speed_percent = 50.0;
+        fan.speed_percent = Some(50.0);
         fan.rpm = Some(1200);
-        assert!(!fan.is_potentially_stalled());
+        assert_eq!(fan.is_potentially_stalled(), Some(false));
         // Stalled: speed > 10 and rpm == 0
         fan.rpm = Some(0);
-        assert!(fan.is_potentially_stalled());
+        assert_eq!(fan.is_potentially_stalled(), Some(true));
         // Not stalled: low speed
-        fan.speed_percent = 5.0;
-        assert!(!fan.is_potentially_stalled());
+        fan.speed_percent = Some(5.0);
+        assert_eq!(fan.is_potentially_stalled(), Some(false));
     }
 
     #[test]
@@ -1279,11 +1339,11 @@ mod tests {
         // No rpm -> None
         assert!(fan.efficiency().is_none());
         // Low speed -> None
-        fan.speed_percent = 3.0;
+        fan.speed_percent = Some(3.0);
         fan.rpm = Some(500);
         assert!(fan.efficiency().is_none());
         // Normal case
-        fan.speed_percent = 50.0;
+        fan.speed_percent = Some(50.0);
         fan.rpm = Some(1000);
         let eff = fan.efficiency().unwrap();
         assert!((eff - 20.0).abs() < 0.01); // 1000 / 50 = 20

@@ -451,23 +451,31 @@ fn parse_fdinfo_processes(card_path: &str) -> Result<Vec<GpuProcess>, Error> {
                     if let Ok(content) = fs::read_to_string(fdinfo_entry.path()) {
                         // Look for drm-client-id and drm-driver: amdgpu
                         if content.contains("drm-driver:\tamdgpu") {
-                            let mut vram_mem = 0u64;
-                            let mut gtt_mem = 0u64;
+                            // `Option`, not `0`: a client whose
+                            // `drm-memory-vram:` line is absent or
+                            // unparseable is not a client using no VRAM,
+                            // and the two were indistinguishable here.
+                            let mut vram_mem = None;
+                            let mut gtt_mem = None;
 
                             for line in content.lines() {
                                 if line.starts_with("drm-memory-vram:") {
                                     // Parse "drm-memory-vram:\t1234 KiB"
                                     if let Some(val) = parse_fdinfo_memory(line) {
-                                        vram_mem = val;
+                                        vram_mem = Some(val);
                                     }
                                 } else if line.starts_with("drm-memory-gtt:") {
                                     if let Some(val) = parse_fdinfo_memory(line) {
-                                        gtt_mem = val;
+                                        gtt_mem = Some(val);
                                     }
                                 }
                             }
 
-                            if vram_mem > 0 || gtt_mem > 0 {
+                            // Reported if either figure was read at all. The
+                            // test was `vram_mem > 0 || gtt_mem > 0`, which
+                            // also dropped every client that genuinely holds
+                            // no VRAM -- a compute job between allocations.
+                            if vram_mem.is_some() || gtt_mem.is_some() {
                                 // Get process name
                                 let name = fs::read_to_string(proc_entry.path().join("comm"))
                                     .map(|s| s.trim().to_string())
@@ -481,7 +489,11 @@ fn parse_fdinfo_processes(card_path: &str) -> Result<Vec<GpuProcess>, Error> {
                                     user: String::new(),
                                     process_type: GpuProcessType::Unknown,
                                     gpu_usage: None,
-                                    memory_usage: Some(vram_mem),
+                                    // Carried through rather than wrapped:
+                                    // with a readable gtt line and an
+                                    // unreadable vram one, `Some(vram_mem)`
+                                    // published a measured 0 B.
+                                    memory_usage: vram_mem,
                                     memory_usage_percent: None,
                                     encoder_usage: None,
                                     decoder_usage: None,
