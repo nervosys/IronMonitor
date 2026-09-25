@@ -9352,3 +9352,123 @@ Worth noting how it was found: `cargo test` exited **101** and the run was only
 believed because the exit code came from `cargo` rather than from the tail of a
 pipeline. Under the pipeline habit this session started with
 (`cargo test ... | grep ... | head`), this would have reported success.
+
+### Six partial corrections, and what they have in common
+
+Instance eighteen, `watchdog/mod.rs`, is the sixth time in this sweep that a
+bare field was found immediately below a corrected sibling whose doc comment
+argues against it. The list is now long enough to be a finding rather than an
+anecdote:
+
+| Where | The corrected field | The one left bare, and how far away |
+| --- | --- | --- |
+| `disk/traits.rs` | `block_size`, `unallocated_capacity` | `capacity`, same struct |
+| `disk/traits.rs` | `nvme_version`, `unallocated_capacity` | `total_capacity`, next line |
+| `smart/mod.rs` | thirteen counters | `capacity_bytes`, one line above the comment |
+| `numa/mod.rs` | `max_distance` | `memory_imbalance_ratio`, three lines below |
+| `core/memory.rs` | `SwapInfo` entirely, `RamInfo::buffers` | the Linux reader, via `Some(0)` |
+| `watchdog/mod.rs` | `timeout_secs` | four fields below it, same helper |
+
+In every case the author understood the principle -- each wrote it down, often
+at length and more clearly than this file does -- and applied it to the field
+in front of them. **The understanding was never the missing part.** What was
+missing was a pass over the rest of the struct after the fix landed.
+
+The cheapest possible guard against this is not a test. It is a habit:
+
+> **When you change a field's type to express absence, read every other field
+> in that struct before you close the file, and every other call to the helper
+> you just fixed.** Both are seconds of work. Six of the eighteen instances in
+> this sweep existed because neither was done.
+
+`watchdog` is the clearest illustration of the second half: all five fields
+call `read_sysfs_u32`, which *already returns `Option`*. Fixing `timeout_secs`
+meant deleting one `.unwrap_or(0)`. The other four were identical, adjacent,
+and stayed for another release.
+
+#### A sentinel that is also a real setting
+
+`pretimeout_secs` deserves separate note because it inverts the usual argument.
+Everywhere else in this sweep the fabricated value was *impossible* -- a disk
+of zero bytes, a watchdog that fires instantly, a CPU at 0 MHz -- and that
+impossibility is what made the defect arguable at all.
+
+Here `0` is documented as **disabled**, a configuration an administrator
+deliberately chooses. So the fabrication produced a value that is not merely
+plausible but *correct-looking and actionable*: someone reading it would
+conclude the pre-timeout had been turned off on purpose.
+
+> **The more meaningful a sentinel's value is in its own domain, the worse it
+> is as a stand-in for "not read".** A zero-byte disk gets questioned. A
+> disabled pre-timeout gets believed.
+
+### The fourth instrument, and it is the good one
+
+`watchdog` suggested a query sharper than either of the first two, and it is
+the first with a genuinely low false-positive rate **by construction**:
+
+> **An `Option`-returning helper whose result is immediately discarded with
+> `.unwrap_or(<literal>)`.** The helper's own author already decided the value
+> can be absent. The caller overruled that decision with a fabricated default.
+
+There is nothing to judge about whether absence is possible -- the return type
+settles it. The only question left is whether the default is a legitimate
+domain value at that call site, which is a much smaller question than the ones
+the other scans leave open.
+
+It returns **43 hits across 124 `Option<numeric>` helpers**. Roughly half are
+iterator adapters -- `.max()`, `.min()`, `.last()`, `.latest()` -- which are
+`Option` because a *sequence* may be empty, a different proposition, and where
+`unwrap_or(0)` is often fine. Filtering those out leaves the named reader
+helpers, which is the real list:
+
+| Site | Helper |
+| --- | --- |
+| `platform/linux/gpu.rs:214,216,218` | `read_file_u32` on `cur_freq`/`max_freq`/`min_freq` |
+| `thermal_zone/mod.rs:417,418` | `read_sysfs_u32` on `cur_state`/`max_state` |
+| `silicon/apple.rs:100,101,102` | `get_sysctl_value`, `get_gpu_cores` |
+| `voltage_regulator/mod.rs:215` | `read_sysfs_u32` on `num_users` |
+| `motherboard/macos.rs:156` | `extract_ioreg_int` |
+
+The GPU frequency trio is the same defect as instance seven in `cpufreq.rs`,
+in a different reader. None of these are triaged yet.
+
+The scan lives in the session scratchpad rather than the repo, for the same
+reason the structural one does: it is a lead generator, and committing it as a
+test means committing an allowlist, which is a claim about every entry.
+
+### Two corrections about how this session worked
+
+**`LNK1104` was misdiagnosed.** Earlier in this sweep a linker failure was
+written off as a "transient linker file-lock" because it passed on retry. It is
+not transient and it is not mysterious: it is **two `cargo` invocations at
+once**. A second `cargo test` tries to relink `ironmon.exe` while a running
+`agentic_contract` still holds it open -- that suite spawns the built binary as
+a subprocess, which is the whole point of it. The orphan `ironmon.exe`
+processes visible at that moment were its own children, mid-test.
+
+> Never run `cargo` against this target directory while a suite is running.
+> "It passed on retry" is what a lock contention looks like, and treating it as
+> flakiness hides a cause that will recur every time.
+
+**The `cargo fmt` line-continuation trap was hit a third time.** A `\` at the
+end of a line inside a string literal, which `cargo fmt` then rewrites onto one
+line, turning the indentation into literal spaces:
+
+```
+"{}: boot status could not be read, so a watchdog-triggered                      reboot ..."
+```
+
+This is recorded twice already in this file, the guard test
+`source_hygiene::string_literals_carry_no_collapsed_indentation` exists
+specifically for it, and it was hit while editing the very module the fix was
+being written into. `concat!` is the fix, as before.
+
+The standing procedural rule -- *run the hygiene scan after the last edit* --
+is necessary but was not sufficient here, because the attempt to run it was
+what surfaced the lock contention above. The stronger form:
+
+> **Never write a `\` line continuation inside a Rust string literal in this
+> codebase. Reach for `concat!` first, every time.** The trap is not that the
+> guard is missing; the guard works. The trap is that the defect is invisible
+> in the source you wrote and only appears after `cargo fmt` has run.

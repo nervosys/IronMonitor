@@ -34,12 +34,29 @@ impl std::fmt::Display for WatchdogType {
 /// Watchdog status flags.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct WatchdogStatus {
-    /// Watchdog is active (currently ticking).
-    pub active: bool,
+    /// Watchdog is active (currently ticking), or `None` where `state` was not
+    /// read.
+    ///
+    /// `read_sysfs(..).unwrap_or_default()` gave an empty string, which is not
+    /// `"active"`, so an unreadable `state` reported a watchdog that is not
+    /// running -- the reassuring answer, asserted from nothing.
+    pub active: Option<bool>,
     /// Watchdog has triggered at least once.
+    ///
+    /// Always `false`: no sysfs attribute reports this, and the field has
+    /// never been fed by a reader. It is `bool` rather than `Option` because
+    /// that is a fact about this crate, not about the device -- see the
+    /// constructor, which is the only place it is set.
     pub triggered: bool,
-    /// Boot status — did watchdog cause last reboot?
-    pub boot_triggered: bool,
+    /// Did the watchdog cause the last reboot? `None` where `bootstatus` was
+    /// not read.
+    ///
+    /// **A safety-relevant claim, and it defaulted to the comfortable one.**
+    /// `unwrap_or(0)` then `!= 0` reported "the system was not reset by the
+    /// watchdog" for any device whose `bootstatus` could not be read -- which
+    /// is exactly the question someone investigating an unexplained reboot is
+    /// asking.
+    pub boot_triggered: Option<bool>,
 }
 
 /// Pre-timeout governor.
@@ -81,16 +98,26 @@ pub struct WatchdogInfo {
     /// `unwrap_or(0)` published a watchdog with a zero-second timeout, which
     /// would fire immediately and is not a configuration any device holds.
     pub timeout_secs: Option<u32>,
-    /// Pre-timeout in seconds (0 = disabled).
-    pub pretimeout_secs: u32,
+    /// Pre-timeout in seconds, where it was read. `Some(0)` means disabled.
+    ///
+    /// **The sharpest of the four below `timeout_secs`**, because here `0` is a
+    /// meaningful configuration rather than an impossible one: a pre-timeout of
+    /// zero *is* how the kernel reports "disabled". So `unwrap_or(0)` did not
+    /// merely invent a number, it invented a specific and plausible claim --
+    /// that the administrator had turned the pre-timeout off -- about a device
+    /// whose `pretimeout` attribute was never read.
+    pub pretimeout_secs: Option<u32>,
     /// Pre-timeout governor.
     pub pretimeout_governor: PreTimeoutGovernor,
-    /// Minimum timeout in seconds.
-    pub min_timeout_secs: u32,
-    /// Maximum timeout in seconds.
-    pub max_timeout_secs: u32,
-    /// Firmware version (if available).
-    pub firmware_version: u32,
+    /// Minimum timeout in seconds, where it was read.
+    ///
+    /// Not every driver exposes `min_timeout`/`max_timeout`; those that do not
+    /// have no bound to report, which is different from a bound of zero.
+    pub min_timeout_secs: Option<u32>,
+    /// Maximum timeout in seconds, where it was read.
+    pub max_timeout_secs: Option<u32>,
+    /// Firmware version, where the driver exposes `fw_version`.
+    pub firmware_version: Option<u32>,
     /// Status.
     pub status: WatchdogStatus,
     /// Available pre-timeout governors.
@@ -180,10 +207,14 @@ impl WatchdogMonitor {
             };
 
             let timeout_secs = Self::read_sysfs_u32(&path.join("timeout"));
-            let pretimeout_secs = Self::read_sysfs_u32(&path.join("pretimeout")).unwrap_or(0);
-            let min_timeout_secs = Self::read_sysfs_u32(&path.join("min_timeout")).unwrap_or(0);
-            let max_timeout_secs = Self::read_sysfs_u32(&path.join("max_timeout")).unwrap_or(0);
-            let firmware_version = Self::read_sysfs_u32(&path.join("fw_version")).unwrap_or(0);
+            // `read_sysfs_u32` already returns `Option`; these four threw it
+            // away four lines below the `timeout_secs` doc explaining why that
+            // is wrong. A driver exposing no `min_timeout` is not a driver with
+            // a minimum of zero.
+            let pretimeout_secs = Self::read_sysfs_u32(&path.join("pretimeout"));
+            let min_timeout_secs = Self::read_sysfs_u32(&path.join("min_timeout"));
+            let max_timeout_secs = Self::read_sysfs_u32(&path.join("max_timeout"));
+            let firmware_version = Self::read_sysfs_u32(&path.join("fw_version"));
 
             let pretimeout_governor =
                 match Self::read_sysfs(&path.join("pretimeout_governor")).as_deref() {
@@ -198,12 +229,11 @@ impl WatchdogMonitor {
                     .map(|s| s.split_whitespace().map(String::from).collect())
                     .unwrap_or_default();
 
-            // Status from state file
-            let state_str = Self::read_sysfs(&path.join("state")).unwrap_or_default();
-            let active = state_str == "active";
-
-            let bootstatus = Self::read_sysfs_u32(&path.join("bootstatus")).unwrap_or(0);
-            let boot_triggered = bootstatus != 0;
+            // Status from state file. Both of these are `Option` now: the
+            // helpers already returned one and both call sites threw it away,
+            // three lines below four sibling reads that did the same.
+            let active = Self::read_sysfs(&path.join("state")).map(|s| s == "active");
+            let boot_triggered = Self::read_sysfs_u32(&path.join("bootstatus")).map(|b| b != 0);
 
             let status = WatchdogStatus {
                 active,
@@ -229,7 +259,13 @@ impl WatchdogMonitor {
         devices.sort_by(|a, b| a.name.cmp(&b.name));
 
         let total = devices.len() as u32;
-        let active = devices.iter().filter(|d| d.status.active).count() as u32;
+        // Counted only where the state was read. A device whose `state` is
+        // unreadable is not counted as inactive; `active_count` is a count of
+        // devices known to be ticking, which is what its name claims.
+        let active = devices
+            .iter()
+            .filter(|d| d.status.active == Some(true))
+            .count() as u32;
         let hw = devices
             .iter()
             .filter(|d| d.watchdog_type == WatchdogType::Hardware)
@@ -240,11 +276,23 @@ impl WatchdogMonitor {
             recs.push("No hardware watchdog detected; software watchdog only".into());
         }
         for dev in &devices {
-            if dev.status.boot_triggered {
-                recs.push(format!(
+            match dev.status.boot_triggered {
+                Some(true) => recs.push(format!(
                     "{}: watchdog-triggered reboot detected in boot status",
                     dev.name
-                ));
+                )),
+                Some(false) => {}
+                // Saying nothing here would be the old behaviour: silence that
+                // reads as "no watchdog reboot". Someone investigating an
+                // unexplained reset needs to know the question went unanswered.
+                None => recs.push(format!(
+                    concat!(
+                        "{}: boot status could not be read, so a ",
+                        "watchdog-triggered reboot can be neither ",
+                        "confirmed nor ruled out"
+                    ),
+                    dev.name
+                )),
             }
         }
 
@@ -326,15 +374,15 @@ mod tests {
             identity: "iTCO_wdt".into(),
             watchdog_type: WatchdogType::Hardware,
             timeout_secs: Some(30),
-            pretimeout_secs: 0,
+            pretimeout_secs: Some(0),
             pretimeout_governor: PreTimeoutGovernor::None,
-            min_timeout_secs: 2,
-            max_timeout_secs: 614,
-            firmware_version: 0,
+            min_timeout_secs: Some(2),
+            max_timeout_secs: Some(614),
+            firmware_version: Some(0),
             status: WatchdogStatus {
-                active: false,
+                active: Some(false),
                 triggered: false,
-                boot_triggered: false,
+                boot_triggered: Some(false),
             },
             available_governors: Vec::new(),
         };
@@ -362,15 +410,15 @@ mod tests {
             identity: "softdog".into(),
             watchdog_type: WatchdogType::Software,
             timeout_secs: Some(60),
-            pretimeout_secs: 10,
+            pretimeout_secs: Some(10),
             pretimeout_governor: PreTimeoutGovernor::Panic,
-            min_timeout_secs: 1,
-            max_timeout_secs: 65535,
-            firmware_version: 0,
+            min_timeout_secs: Some(1),
+            max_timeout_secs: Some(65535),
+            firmware_version: Some(0),
             status: WatchdogStatus {
-                active: true,
+                active: Some(true),
                 triggered: false,
-                boot_triggered: false,
+                boot_triggered: Some(false),
             },
             available_governors: vec!["noop".into(), "panic".into()],
         };

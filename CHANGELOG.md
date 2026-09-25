@@ -42,6 +42,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **A watchdog whose boot status could not be read no longer reports that it
+  did not reset the machine.** `WatchdogStatus::active` and `boot_triggered`
+  are `Option<bool>`.
+
+  ```rust
+  let state_str = Self::read_sysfs(&path.join("state")).unwrap_or_default();
+  let active = state_str == "active";              // unread -> "not active"
+  let bootstatus = Self::read_sysfs_u32(&path.join("bootstatus")).unwrap_or(0);
+  let boot_triggered = bootstatus != 0;            // unread -> "not reset by watchdog"
+  ```
+
+  `boot_triggered` is the one that matters: it defaults to the comfortable
+  answer to precisely the question someone investigating an unexplained reboot
+  is asking. `watchdog_overview` now emits a recommendation saying the boot
+  status could not be read, rather than staying silent in a way that reads as
+  "no watchdog reboot". `active_count` counts only devices known to be ticking,
+  which is what its name claims.
+
+  `triggered` stays a plain `bool` and is documented as always `false`: no
+  sysfs attribute reports it and no reader ever sets it. That is a fact about
+  this crate rather than about the device, so `Option` would misrepresent it.
+
+- **Watchdog attributes that were not read no longer read as configuration.**
+  `WatchdogInfo`'s `pretimeout_secs`, `min_timeout_secs`, `max_timeout_secs` and
+  `firmware_version` were bare `u32` filled with `.unwrap_or(0)`, four lines
+  below a `timeout_secs` that had already been made `Option` with a doc comment
+  explaining that *"`unwrap_or(0)` published a watchdog with a zero-second
+  timeout, which would fire immediately and is not a configuration any device
+  holds"*. The helper they all call, `read_sysfs_u32`, already returns `Option`.
+
+  `pretimeout_secs` is the one that matters most, and it is the opposite of the
+  `timeout_secs` case: it is documented *"(0 = disabled)"*, so zero is a real
+  configuration rather than an impossible one. `unwrap_or(0)` therefore did not
+  merely invent a number — it invented a specific, plausible and checkable
+  claim, that an administrator had turned the pre-timeout off, about a device
+  whose `pretimeout` attribute was never read.
+
+- **`ironmon cli power` stops contradicting itself.** With no rails it printed
+  *"No hwmon power rails on this platform (Linux exposes these; Windows does
+  not)"* — wrong in three ways, and most visibly on the platform it named as
+  the working one:
+
+  - It printed that sentence **on Linux**, where it reads as a contradiction.
+  - Linux rails come from `ina3221x` on i2c, which is Jetson-class hardware,
+    not from hwmon generally. An ordinary Linux desktop has none, so the
+    absence is normal rather than a gap.
+  - Windows does produce rails — battery rails, via WMI — so "Windows does
+    not" is false there too.
+
+  Each platform now says what is actually true where it is read.
+
 - **A fan nobody measured no longer reports that it is fine.**
   `fan_control::FanInfo::speed_percent` was bare `f32` beside five `Option`
   siblings, and `FanInfo::new` set it to `0.0`. The Windows WMI path pushes

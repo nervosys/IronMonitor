@@ -1650,11 +1650,30 @@ fn print_power_info(
     // absent rail set only means the rails are absent.
     if power.rails.is_empty() {
         println!();
-        println!(
-            "  {}",
-            "No hwmon power rails on this platform (Linux exposes these; Windows does not)"
-                .yellow()
+        // Says what is true where it is read. The previous text --
+        // "No hwmon power rails on this platform (Linux exposes these; Windows
+        // does not)" -- was wrong in three ways at once, and wrong most visibly
+        // on the platform it named as the one that works:
+        //
+        //   * It printed that sentence *on Linux*, where it reads as a
+        //     contradiction: this is Linux, and Linux is said to expose them.
+        //   * Linux rails come from `ina3221x` on i2c, a Jetson-class part, not
+        //     from hwmon generally. An ordinary Linux desktop has none, so the
+        //     absence is normal rather than a gap.
+        //   * Windows does produce rails -- battery rails, via WMI -- so
+        //     "Windows does not" is false there too.
+        #[cfg(target_os = "linux")]
+        let reason = concat!(
+            "No power rails: this reads INA3221 sensors on i2c, which are ",
+            "Jetson-class hardware. An ordinary Linux machine has none."
         );
+        #[cfg(target_os = "windows")]
+        let reason =
+            "No power rails: this reads battery rails via WMI, and no battery reported one.";
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        let reason = "No power rails: IronMonitor has no rail reader for this platform.";
+
+        println!("  {}", reason.yellow());
         return;
     }
 
