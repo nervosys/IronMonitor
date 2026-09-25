@@ -16,12 +16,24 @@ pub enum GpuType {
 /// GPU frequency information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuFrequency {
-    /// Current frequency in MHz
-    pub current: u32,
-    /// Minimum frequency in MHz
-    pub min: u32,
-    /// Maximum frequency in MHz
-    pub max: u32,
+    /// Current frequency in MHz, or `None` where no clock was read.
+    ///
+    /// **All three of these were bare `u32`, and this struct undid the first
+    /// fix this sweep ever made.** `gpu::GpuClocks::graphics` was made `Option`
+    /// so that an unreadable clock could not read as 0 MHz; the Windows reader
+    /// then built this struct with `di.clocks.graphics.or(..).unwrap_or(0)`,
+    /// flattening it straight back. NVML's clock calls went through
+    /// `.ok().unwrap_or(0)`, and two readers set `min: 0` beside a comment
+    /// saying no minimum is reported -- the comment right, the field wrong.
+    pub current: Option<u32>,
+    /// Minimum frequency in MHz, or `None` where the source reports none.
+    ///
+    /// NVML and every Windows vendor adapter expose no minimum clock at all,
+    /// so on those paths this is always `None`. Only the Linux iGPU devfreq
+    /// path reads one.
+    pub min: Option<u32>,
+    /// Maximum frequency in MHz, or `None` where not read.
+    pub max: Option<u32>,
     /// Frequency governor
     pub governor: String,
     /// GPC frequencies for Orin/Thor series (optional)

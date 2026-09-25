@@ -9472,3 +9472,47 @@ what surfaced the lock contention above. The stronger form:
 > codebase. Reach for `concat!` first, every time.** The trap is not that the
 > guard is missing; the guard works. The trap is that the defect is invisible
 > in the source you wrote and only appears after `cargo fmt` has run.
+
+### A fix can be undone one struct downstream
+
+Instance twenty is worth recording as a category, because it is the only one in
+this sweep that *reverses* an earlier instance rather than being a new one.
+
+`gpu::GpuClocks::graphics` became `Option` in the sweep's first commit. That was
+correct and it stayed correct. But `core::gpu::GpuFrequency` -- a second,
+parallel representation of the same clock, used by the Windows and Linux
+platform readers -- was built from it with `.unwrap_or(0)`. From the point of
+view of anything consuming `GpuFrequency`, instance one had never happened.
+
+> **A fix to a type protects the consumers of that type, and no one else.**
+> Where the same quantity is represented twice, the fix has to be made twice,
+> and the second representation is usually the one nobody remembers exists.
+
+This crate represents several quantities more than once -- GPU clocks here,
+disk capacity in four structs, memory figures in `core::memory` and
+`pipeline::Snapshot` -- and every one of those duplications has now produced an
+instance. The fourth instrument (an `Option` helper discarded with
+`.unwrap_or`) is what found this one; a type-driven sweep never would have,
+because nothing about `GpuFrequency` changed when `GpuClocks` did.
+
+### Why the builds were slow, found
+
+Asked directly this session, and answered wrongly first: I attributed it to
+test runtime and a large codebase. Both are real. Neither is the main cause.
+
+At one point there were **twelve concurrent `cargo` processes on this machine,
+across at least six projects** -- a `cargo-mutants` sweep in agentq, a release
+CUDA build in ironworks, workspace-wide clippy and check runs, and others -- all
+sharing the single target directory at `~/.cargo-target`. Cargo holds an
+exclusive lock on a target directory per build, so these queue behind one
+another, and when they do run they compete for the same cores.
+
+That shared directory had also grown to 156 GB, 144 GB of it `debug/`, on a
+volume that reached 100% with 19 GB free. That is plausibly what caused the
+background jobs killed earlier for "critically low memory" -- Windows pages to
+disk -- though it is inferred rather than confirmed.
+
+The structural fix is a per-repository target directory. It has not been made:
+it changes how every project on the machine builds, and it trades lock
+contention for a duplicated dependency tree per repository, on a disk that was
+full. Recorded here as the owner's decision.

@@ -42,6 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **`core::gpu::GpuFrequency` stops undoing the first fix this sweep made.**
+  `current`, `min` and `max` are `Option<u32>`.
+
+  `gpu::GpuClocks::graphics` was the very first field in this sweep to be made
+  `Option`, so that a GPU clock that could not be read would not show as 0 MHz.
+  The Windows reader then built this struct with
+  `di.clocks.graphics.or(di.clocks.sm).unwrap_or(0)`, flattening that straight
+  back to zero for every Windows GPU. NVML's clock calls went through
+  `.ok().unwrap_or(0)` — a `Result` converted to an `Option` and discarded in a
+  single expression — and the Linux iGPU devfreq reader discarded three in three
+  lines. Two readers set `min: 0` beside a comment saying no minimum is
+  reported.
+
+  The CLI guarded with `current > 0 || max > 0`, which kept "0 MHz (0-0 MHz)"
+  off screen for an unread clock and also hid a GPU genuinely clocked to 0 MHz
+  in deep idle.
+
 - **A watchdog whose boot status could not be read no longer reports that it
   did not reset the machine.** `WatchdogStatus::active` and `boot_triggered`
   are `Option<bool>`.

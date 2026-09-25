@@ -759,9 +759,13 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
         };
 
         let frequency = GpuFrequency {
-            current: di.clocks.graphics.or(di.clocks.sm).unwrap_or(0),
-            min: 0, // No vendor adapter reports a minimum clock.
-            max: di.clocks.graphics_max.unwrap_or(0),
+            // Carried through, not flattened. `GpuClocks::graphics` is
+            // `Option` precisely so an unreadable clock is not 0 MHz, and
+            // `.unwrap_or(0)` here undid that for every Windows GPU.
+            current: di.clocks.graphics.or(di.clocks.sm),
+            // No vendor adapter reports a minimum clock.
+            min: None,
+            max: di.clocks.graphics_max,
             // `governor` is a Linux DVFS concept; Windows has no equivalent, and
             // naming the vendor here would present it as one.
             governor: String::new(),

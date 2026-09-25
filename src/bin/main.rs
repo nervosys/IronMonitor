@@ -1396,15 +1396,20 @@ fn print_gpu_info(gpus: &std::collections::HashMap<String, ironmonlib::core::gpu
         println!("    {} {}", "Load:".white(), load_colored);
 
         // Clocks are unavailable on several adapters (the Windows AMD path reads
-        // none). Printing "0 MHz (0-0 MHz)" states a clock that was never read.
-        if gpu.frequency.current > 0 || gpu.frequency.max > 0 {
+        // none). Printing "0 MHz (0-0 MHz)" stated a clock that was never read,
+        // and the `current > 0 || max > 0` guard that prevented it also hid a
+        // GPU genuinely clocked down to 0 MHz in a deep idle state. The fields
+        // are `Option` now, so the guard asks what it meant.
+        let f = &gpu.frequency;
+        if f.current.is_some() || f.max.is_some() {
+            let mhz = |v: Option<u32>| v.map_or("?".to_string(), |m| m.to_string());
             println!(
                 "    {} {} {} ({}-{} MHz)",
                 "Frequency:".white(),
-                format!("{} MHz", gpu.frequency.current).cyan(),
+                format!("{} MHz", mhz(f.current)).cyan(),
                 "range:".dimmed(),
-                gpu.frequency.min,
-                gpu.frequency.max
+                mhz(f.min),
+                mhz(f.max)
             );
         }
         // Only Linux DVFS drivers expose a governor.

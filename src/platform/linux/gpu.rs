@@ -81,14 +81,14 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
             .map(|p| p as f32 / 1000.0);
 
         // Get clock speeds
+        // `.ok()` and stop: the call's failure is the absence, and
+        // `.unwrap_or(0)` after it turned "NVML would not say" into 0 MHz.
         let sm_clock = device
             .clock_info(nvml_wrapper::enum_wrappers::device::Clock::SM)
-            .ok()
-            .unwrap_or(0);
+            .ok();
         let max_sm_clock = device
             .max_clock_info(nvml_wrapper::enum_wrappers::device::Clock::SM)
-            .ok()
-            .unwrap_or(0);
+            .ok();
 
         let status = GpuStatus {
             load,
@@ -105,7 +105,9 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
 
         let frequency = GpuFrequency {
             current: sm_clock,
-            min: 0, // NVML doesn't provide min
+            // NVML exposes no minimum clock. This was `0` beside a comment
+            // saying so.
+            min: None,
             max: max_sm_clock,
             governor: "nvml".to_string(),
             gpc: None,
@@ -211,11 +213,18 @@ fn read_igpu_frequency(frq_path: &str) -> Result<GpuFrequency> {
     let governor = read_file_string(format!("{}/governor", frq_path))
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let current = read_file_u32(format!("{}/cur_freq", frq_path)).unwrap_or(0) / 1000; // kHz to MHz
-
-    let max = read_file_u32(format!("{}/max_freq", frq_path)).unwrap_or(0) / 1000;
-
-    let min = read_file_u32(format!("{}/min_freq", frq_path)).unwrap_or(0) / 1000;
+    // devfreq reports kHz. Each read is `Option` because `read_file_u32`
+    // returns one; this discarded it three times in three lines.
+    let khz_to_mhz = |khz: u32| khz / 1000;
+    let current = read_file_u32(format!("{}/cur_freq", frq_path))
+        .ok()
+        .map(khz_to_mhz);
+    let max = read_file_u32(format!("{}/max_freq", frq_path))
+        .ok()
+        .map(khz_to_mhz);
+    let min = read_file_u32(format!("{}/min_freq", frq_path))
+        .ok()
+        .map(khz_to_mhz);
 
     Ok(GpuFrequency {
         current,
