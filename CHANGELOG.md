@@ -42,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **A cooling device whose state could not be read no longer reports that the
+  CPU is not being throttled.** `thermal_zone::CoolingDeviceInfo`'s `cur_state`
+  and `max_state` are `Option<u32>`, and `utilization_pct()` returns
+  `Option<f64>`.
+
+  For a cooling device `cur_state: 0` is a real and reassuring state: **not
+  throttling**. On a `Processor` device it means the CPU is running at full
+  speed. `read_sysfs_u32(..).unwrap_or(0)` therefore reported "no thermal
+  throttling" for every device whose state could not be read — the comfortable
+  answer to the question someone chasing an unexplained slowdown is asking.
+  `utilization_pct()` returned `0.0` for an unread state, for an unread range,
+  and for a device reporting no range, all of which are the figure for a device
+  doing no cooling at all.
+
+- **`voltage_regulator::VoltageRegulatorInfo::num_users` is `Option<u32>`.** The four
+  sysfs reads above it in the reader each keep the `Option` their helper
+  returns; this was the fifth, on the next line, and alone discarded it with
+  `.unwrap_or(0)`. Zero consumers is a real state for a regulator, so an unread
+  count read as an idle one.
+
 - **`core::gpu::GpuFrequency` stops undoing the first fix this sweep made.**
   `current`, `min` and `max` are `Option<u32>`.
 

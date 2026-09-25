@@ -99,20 +99,31 @@ pub struct CoolingDeviceInfo {
     pub name: String,
     /// Cooling type (e.g. "Processor", "intel_powerclamp", "Fan").
     pub cooling_type: String,
-    /// Current cooling state.
-    pub cur_state: u32,
-    /// Maximum cooling state.
-    pub max_state: u32,
+    /// Current cooling state, or `None` where `cur_state` was not read.
+    ///
+    /// **`0` is a real and reassuring state here: not throttling.** For a
+    /// `Processor` cooling device it means the CPU is running at full speed.
+    /// `unwrap_or(0)` therefore reported "no thermal throttling" for any
+    /// device whose state could not be read -- the comfortable answer to the
+    /// question someone chasing an unexplained slowdown is asking. Same shape
+    /// as the watchdog pre-timeout, where `0` means disabled.
+    pub cur_state: Option<u32>,
+    /// Maximum cooling state, or `None` where not read.
+    pub max_state: Option<u32>,
 }
 
 impl CoolingDeviceInfo {
-    /// Utilization percentage.
-    pub fn utilization_pct(&self) -> f64 {
-        if self.max_state > 0 {
-            (self.cur_state as f64 / self.max_state as f64) * 100.0
-        } else {
-            0.0
+    /// How far into its range the device is throttling, as a percentage, or
+    /// `None` where either state is unread or the device reports no range.
+    ///
+    /// Returned `0.0` in all three of those cases, which is the figure for a
+    /// device doing no cooling at all.
+    pub fn utilization_pct(&self) -> Option<f64> {
+        let (cur, max) = (self.cur_state?, self.max_state?);
+        if max == 0 {
+            return None;
         }
+        Some((cur as f64 / max as f64) * 100.0)
     }
 }
 
@@ -414,8 +425,9 @@ impl ThermalZoneMonitor {
     #[cfg(target_os = "linux")]
     fn read_cooling_device(path: &std::path::Path, name: &str) -> Option<CoolingDeviceInfo> {
         let cooling_type = Self::read_sysfs(&path.join("type")).unwrap_or_default();
-        let cur_state = Self::read_sysfs_u32(&path.join("cur_state")).unwrap_or(0);
-        let max_state = Self::read_sysfs_u32(&path.join("max_state")).unwrap_or(0);
+        // `read_sysfs_u32` returns `Option`; these discarded it.
+        let cur_state = Self::read_sysfs_u32(&path.join("cur_state"));
+        let max_state = Self::read_sysfs_u32(&path.join("max_state"));
 
         Some(CoolingDeviceInfo {
             name: name.to_string(),
@@ -586,10 +598,10 @@ mod tests {
         let cd = CoolingDeviceInfo {
             name: "cooling_device0".into(),
             cooling_type: "Processor".into(),
-            cur_state: 5,
-            max_state: 10,
+            cur_state: Some(5),
+            max_state: Some(10),
         };
-        assert!((cd.utilization_pct() - 50.0).abs() < 0.01);
+        assert!((cd.utilization_pct().expect("both states read") - 50.0).abs() < 0.01);
     }
 
     #[test]

@@ -85,8 +85,15 @@ pub struct VoltageRegulatorInfo {
     pub max_voltage_uv: Option<u64>,
     /// Current in microamps (if readable).
     pub current_ua: Option<u64>,
-    /// Number of consumers using this regulator.
-    pub num_users: u32,
+    /// Number of consumers using this regulator, or `None` where `num_users`
+    /// was not read.
+    ///
+    /// The four reads above this one in the reader -- `microvolts`,
+    /// `min_microvolts`, `max_microvolts`, `microamps` -- each keep the `Option`
+    /// that `read_sysfs_*` returns. This was the fifth, on the next line, and
+    /// alone discarded it with `.unwrap_or(0)`. Zero consumers is a real state
+    /// for a regulator, so an unread count read as an idle one.
+    pub num_users: Option<u32>,
     /// Whether regulator is always on.
     pub always_on: bool,
     /// Power in microwatts (voltage * current if both available).
@@ -212,7 +219,7 @@ impl VoltageRegulatorMonitor {
             let min_voltage_uv = Self::read_sysfs_u64(&path.join("min_microvolts"));
             let max_voltage_uv = Self::read_sysfs_u64(&path.join("max_microvolts"));
             let current_ua = Self::read_sysfs_u64(&path.join("microamps"));
-            let num_users = Self::read_sysfs_u32(&path.join("num_users")).unwrap_or(0);
+            let num_users = Self::read_sysfs_u32(&path.join("num_users"));
 
             let regulator_type = if min_voltage_uv.is_some() && max_voltage_uv.is_some() {
                 if min_voltage_uv == max_voltage_uv {
@@ -357,7 +364,7 @@ mod tests {
             min_voltage_uv: Some(800_000),
             max_voltage_uv: Some(1_300_000),
             current_ua: Some(5_000_000),
-            num_users: 1,
+            num_users: Some(1),
             always_on: true,
             power_uw: Some(5_500_000),
         };
@@ -378,7 +385,7 @@ mod tests {
             min_voltage_uv: Some(800_000),
             max_voltage_uv: Some(1_300_000),
             current_ua: None,
-            num_users: 0,
+            num_users: Some(0),
             always_on: false,
             power_uw: None,
         };
@@ -403,7 +410,7 @@ mod tests {
             min_voltage_uv: Some(900_000),
             max_voltage_uv: Some(900_000),
             current_ua: None,
-            num_users: 2,
+            num_users: Some(2),
             always_on: true,
             power_uw: None,
         };

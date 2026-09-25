@@ -9424,11 +9424,11 @@ helpers, which is the real list:
 
 | Site | Helper |
 | --- | --- |
-| `platform/linux/gpu.rs:214,216,218` | `read_file_u32` on `cur_freq`/`max_freq`/`min_freq` |
-| `thermal_zone/mod.rs:417,418` | `read_sysfs_u32` on `cur_state`/`max_state` |
-| `silicon/apple.rs:100,101,102` | `get_sysctl_value`, `get_gpu_cores` |
-| `voltage_regulator/mod.rs:215` | `read_sysfs_u32` on `num_users` |
-| `motherboard/macos.rs:156` | `extract_ioreg_int` |
+| `platform/linux/gpu.rs:214,216,218` | `read_file_u32` on `cur_freq`/`max_freq`/`min_freq` -- **fixed** |
+| `thermal_zone/mod.rs:417,418` | `read_sysfs_u32` on `cur_state`/`max_state` -- **fixed** |
+| `silicon/apple.rs:100,101,102` | `get_sysctl_value`, `get_gpu_cores` -- **not defects**, see below |
+| `voltage_regulator/mod.rs:215` | `read_sysfs_u32` on `num_users` -- **fixed** |
+| `motherboard/macos.rs:156` | `extract_ioreg_int` -- **scanner false positive**, see below |
 
 The GPU frequency trio is the same defect as instance seven in `cpufreq.rs`,
 in a different reader. None of these are triaged yet.
@@ -9516,3 +9516,47 @@ The structural fix is a per-repository target directory. It has not been made:
 it changes how every project on the machine builds, and it trades lock
 contention for a duplicated dependency tree per repository, on a disk that was
 full. Recorded here as the owner's decision.
+
+#### Two hits from the fourth instrument that were not defects
+
+Recorded because the instrument's value depends on its false positives being
+cheap to dismiss, and these two show what dismissing one looks like.
+
+- `silicon/apple.rs` `e_cores`/`p_cores`: the comment directly above explains
+  that zero feeds `(0..0)`, producing an empty `core_ids` while the cluster
+  keeps the frequency and utilisation `powermetrics` measured -- "an unknown
+  composition, not an unknown cluster". A deliberate and documented use, where
+  the zero is never presented as a count.
+- `silicon/apple.rs` `gpu_cores`: flows into a private field, `gpu_core_count`,
+  that is written once and **read nowhere in the crate**. A fabricated value
+  with no consumer is dead data rather than a wrong reading. It is worth
+  deleting at some point; it is not worth widening a type for.
+
+Both took under a minute, because the question was narrow: *does this zero
+ever reach anyone as a reading?* That is the question to ask of every hit.
+
+#### A hit that was the scanner's fault
+
+`motherboard/macos.rs:156` is the *definition* of `extract_ioreg_int`, not a
+call to it. The scan's regex allows the argument list to span lines, and it ran
+from the signature into the next function's `run_cmd(..).unwrap_or_default()`.
+Both real callers, at lines 44 and 98, use `if let Some(val) =
+extract_ioreg_int(..)` and are correct.
+
+So the reader-helper list from the fourth instrument is fully triaged: three
+fixed (GPU frequency, cooling state, regulator users), two genuine non-defects
+in `silicon/apple.rs`, one scanner error. **If the scan is rerun, exclude lines
+beginning with `fn` before reading the output** -- a definition can never be a
+discarded call.
+
+What is left from that scan is the iterator-adapter half -- `.max()`,
+`.min()`, `.last()` followed by `.unwrap_or(0)` -- which was set aside as a
+different proposition: those are `Option` because a *sequence* may be empty.
+That is not the same as a reading failing, but it is not always harmless
+either: a maximum over nothing, reported as zero, is still a claim. Worth a
+pass of its own, with that question in mind rather than this one.
+
+The first question to ask of each is whether the sequence *can* be empty at
+all. `pipeline/mod.rs:213` looked like a candidate and is not -- it is a
+`.max()` over a fixed seven-element array literal, so the `.unwrap_or(0)` is
+unreachable.
