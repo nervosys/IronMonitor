@@ -68,36 +68,58 @@ impl ProfileProvider for MemoryProfileProvider {
                 "Bank Locator",
                 SettingValue::Text(dimm.bank.clone()),
             ));
-            g.push(
-                Setting::info(
-                    "rated_speed_mts",
-                    "Rated Speed",
-                    SettingValue::Uint(dimm.speed_mts as u64),
-                )
-                .with_unit("MT/s")
-                .with_description("Maximum speed the DIMM is rated for (SPD)."),
-            );
-            g.push(
-                Setting::info(
-                    "configured_speed_mts",
-                    "Configured Speed",
-                    SettingValue::Uint(dimm.configured_speed_mts as u64),
-                )
-                .with_unit("MT/s")
-                .with_description(
-                    "Speed the BIOS programmed at boot. If lower than Rated Speed, \
-                    XMP/EXPO is likely disabled.",
-                ),
-            );
-            if dimm.configured_speed_mts > 0
-                && dimm.speed_mts > 0
-                && dimm.configured_speed_mts < dimm.speed_mts
-            {
-                g.note(format!(
-                    "DIMM is running at {} MT/s but is rated for {} MT/s — enable \
-                    XMP/EXPO in BIOS to use the rated speed.",
-                    dimm.configured_speed_mts, dimm.speed_mts
-                ));
+            // Rows only for what was read, following the voltage row below.
+            if let Some(rated) = dimm.speed_mts {
+                g.push(
+                    Setting::info(
+                        "rated_speed_mts",
+                        "Rated Speed",
+                        SettingValue::Uint(rated as u64),
+                    )
+                    .with_unit("MT/s")
+                    .with_description("Maximum speed the DIMM is rated for (SPD)."),
+                );
+            }
+            if let Some(configured) = dimm.configured_speed_mts {
+                g.push(
+                    Setting::info(
+                        "configured_speed_mts",
+                        "Configured Speed",
+                        SettingValue::Uint(configured as u64),
+                    )
+                    .with_unit("MT/s")
+                    .with_description(concat!(
+                        "Speed the BIOS programmed at boot. If lower than Rated Speed, ",
+                        "XMP/EXPO is likely disabled."
+                    )),
+                );
+            }
+            // **The advice this tab exists to give was being suppressed.** Every
+            // DIMM reader filled a missing configured speed by copying the rated
+            // one, so the two were equal and `configured < rated` never held --
+            // on every Mac, and on every Windows machine where WMI returned no
+            // `ConfiguredClockSpeed`. Those are the machines where XMP/EXPO is
+            // most likely off, and they were told nothing.
+            match (dimm.configured_speed_mts, dimm.speed_mts) {
+                (Some(configured), Some(rated)) if configured < rated => {
+                    g.note(format!(
+                        concat!(
+                            "DIMM is running at {} MT/s but is rated for {} MT/s — ",
+                            "enable XMP/EXPO in BIOS to use the rated speed."
+                        ),
+                        configured, rated
+                    ));
+                }
+                // Rated is known and configured is not: the one comparison this
+                // tab exists to make cannot be made, and saying so is better than
+                // a silence that reads as "your memory is at its rated speed".
+                (None, Some(_)) => {
+                    g.note(concat!(
+                        "This platform did not report the configured memory speed, ",
+                        "so whether XMP/EXPO is enabled cannot be determined here."
+                    ));
+                }
+                _ => {}
             }
             g.push(Setting::info(
                 "memory_type",
@@ -124,11 +146,14 @@ impl ProfileProvider for MemoryProfileProvider {
                         ),
                 );
             }
-            g.push(Setting::info(
-                "ranks",
-                "Ranks",
-                SettingValue::Uint(dimm.ranks as u64),
-            ));
+            // Windows and macOS report no rank count; the row used to say 1.
+            if let Some(ranks) = dimm.ranks {
+                g.push(Setting::info(
+                    "ranks",
+                    "Ranks",
+                    SettingValue::Uint(ranks as u64),
+                ));
+            }
             if let Some(w) = dimm.data_width_bits {
                 g.push(Setting::info(
                     "data_width_bits",

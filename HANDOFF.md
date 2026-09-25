@@ -9560,3 +9560,52 @@ The first question to ask of each is whether the sequence *can* be empty at
 all. `pipeline/mod.rs:213` looked like a candidate and is not -- it is a
 `.max()` over a fixed seven-element array literal, so the `.unwrap_or(0)` is
 unreachable.
+
+### A sentinel guard cannot see a fabrication that is not its sentinel
+
+Instance twenty-two, `memory_topology::DimmInfo`, is the first case where a
+`> 0` guard was **correct and still let a fabrication through**.
+
+The resolver publishes DIMM speeds behind `> 0`:
+
+```rust
+(dimm.configured_speed_mts > 0).then(|| serde_json::json!(dimm.configured_speed_mts)),
+```
+
+For the rated speed that works: an unparseable speed became `0`, the guard
+dropped it, and the ontology correctly reported the value unavailable. But all
+three readers filled a *missing configured* speed by copying the *rated* one.
+That value is non-zero -- it is a real number, just the wrong field's -- so it
+passed the guard and was published.
+
+> **A sentinel guard detects exactly one fabrication: its sentinel.**
+> Substitution produces a plausible value, and plausible values are what
+> guards are built to let through. This is why substitution is the worse of
+> the two defects, and why every guard in this sweep has been replaced by a
+> type rather than kept alongside one.
+
+Substitution has now appeared in five places: macOS `current_freq_khz :=
+max`, Windows `max_freq_khz := current`, Windows `min_freq := max / 4` (all
+`cpufreq`), macOS `configured_speed := rated`, and this one across all three
+DIMM readers. It is more dangerous than a zero in every case, for the reason
+above.
+
+### Open: DIMM capacity, and a lookup table presented as a speed
+
+Two things found while fixing instance twenty-two and deliberately not fixed in
+that commit.
+
+**`DimmInfo::capacity_bytes`** is documented *"0 means empty slot"* and sits
+beside a separate `populated` flag. The macOS reader derives `populated:
+capacity_bytes > 0`, so a populated slot whose `dimm_size` string does not
+parse is reported as an *empty slot* -- the defect this whole sweep is about.
+The fix is not mechanical: it means deciding what establishes that a slot is
+populated when size is unreadable, in three readers with three different
+sources. That is a design question for whoever owns the module.
+
+**`memory_bandwidth` fills an unread memory speed from a lookup table.**
+`max_speed = generation.typical_speed_mts()` substitutes a *typical* speed for
+the detected DDR generation when the real one was not read. That is the exact
+class `AGENTS.md` names by example -- *"a GPU power percentage whose
+denominator came from a core-count lookup table"* -- and it feeds a peak
+bandwidth figure. Separate module, separate fix, not started.

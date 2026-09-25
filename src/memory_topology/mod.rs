@@ -97,10 +97,24 @@ pub struct DimmInfo {
     pub bank: String,
     /// Capacity in bytes (0 means empty slot).
     pub capacity_bytes: u64,
-    /// Speed in MT/s (megatransfers per second).
-    pub speed_mts: u32,
-    /// Configured speed in MT/s (may differ from rated).
-    pub configured_speed_mts: u32,
+    /// Rated speed in MT/s, or `None` where it was not read.
+    ///
+    /// `parse_mts` returned `0` for anything it could not parse, and the
+    /// Windows reader used `.unwrap_or(0)` on a missing `Speed`.
+    pub speed_mts: Option<u32>,
+    /// Configured speed in MT/s, or `None` where the platform did not report
+    /// one.
+    ///
+    /// **All three readers substituted the rated speed when this was missing**
+    /// -- Linux with `if conf_speed_str.is_empty() { speed_mts }`, Windows with
+    /// `ConfiguredClockSpeed.unwrap_or(speed)`, macOS by assigning
+    /// `configured_speed_mts: speed_mts` unconditionally, since
+    /// `system_profiler` reports no configured speed at all. Rated and
+    /// configured are precisely the two figures that differ when XMP or EXPO
+    /// is not enabled, so the substitution asserted "this memory runs at its
+    /// rated speed" on exactly the machines where that is least certain. The
+    /// ontology published it under `memory.dimm.{n}.configured_speed`.
+    pub configured_speed_mts: Option<u32>,
     /// Memory type.
     pub memory_type: MemoryType,
     /// Form factor.
@@ -111,8 +125,14 @@ pub struct DimmInfo {
     /// Total width in bits (72 = ECC, 64 = non-ECC).
     /// Total width in bits, where it was read. See [`Self::is_ecc`].
     pub total_width_bits: Option<u32>,
-    /// Number of ranks.
-    pub ranks: u32,
+    /// Number of ranks, or `None` where it was not read.
+    ///
+    /// Windows and macOS set `1` unconditionally -- one beside the comment
+    /// "WMI doesn't expose rank count easily" -- and Linux fell back to `1`
+    /// when SMBIOS carried no `Rank` field. Single-rank is a specific,
+    /// plausible and consequential claim: rank count affects achievable
+    /// bandwidth and interleaving, which is what this module estimates.
+    pub ranks: Option<u32>,
     /// Manufacturer name.
     pub manufacturer: String,
     /// Part number.
@@ -173,8 +193,14 @@ pub struct MemoryAnalysis {
     pub matched_capacities: bool,
     /// Whether ECC is active.
     pub ecc_active: bool,
-    /// Estimated peak bandwidth in GB/s.
-    pub estimated_bandwidth_gbs: f64,
+    /// Estimated peak bandwidth in GB/s, or `None` where no DIMM speed was
+    /// read.
+    ///
+    /// An estimate, and labelled as one -- it multiplies the fastest DIMM's
+    /// rated speed by bus width and inferred channel count, and measures
+    /// nothing. It was `0.0` when no speed was read, which is an estimate of no
+    /// bandwidth at all.
+    pub estimated_bandwidth_gbs: Option<f64>,
     /// Inferred memory channel count.
     pub channel_count: u32,
     /// Upgrade recommendations.
@@ -241,7 +267,7 @@ impl MemoryTopologyMonitor {
         let total_slots = dimms.len();
 
         // Check matched speeds and capacities
-        let speeds: Vec<u32> = populated.iter().map(|d| d.speed_mts).collect();
+        let speeds: Vec<u32> = populated.iter().filter_map(|d| d.speed_mts).collect();
         let capacities: Vec<u64> = populated.iter().map(|d| d.capacity_bytes).collect();
         let matched_speeds = speeds.windows(2).all(|w| w[0] == w[1]) || speeds.len() <= 1;
         let matched_capacities =
@@ -257,8 +283,15 @@ impl MemoryTopologyMonitor {
         let quad_channel = channel_count >= 4;
 
         // Bandwidth estimation
-        let max_speed = speeds.iter().copied().max().unwrap_or(0);
-        let estimated_bandwidth_gbs = Self::estimate_bandwidth(max_speed, channel_count);
+        // No speed read on any DIMM means no estimate. `.max().unwrap_or(0)`
+        // fed `estimate_bandwidth(0, ..)`, which published 0.00 GB/s -- an
+        // estimate of no memory bandwidth for a machine whose DIMMs could not
+        // be read.
+        let estimated_bandwidth_gbs = speeds
+            .iter()
+            .copied()
+            .max()
+            .map(|max_speed| Self::estimate_bandwidth(max_speed, channel_count));
 
         // Max capacity: assume 2x current or 128GB per slot, whichever is more reasonable
         let max_per_slot: u64 = if populated
@@ -524,11 +557,9 @@ impl MemoryTopologyMonitor {
             .or(fields.get("Configured Clock Speed"))
             .cloned()
             .unwrap_or_default();
-        let configured_speed_mts = if conf_speed_str.is_empty() {
-            speed_mts
-        } else {
-            Self::parse_mts(&conf_speed_str)
-        };
+        // No substitution. An absent "Configured Memory Speed" is not
+        // evidence that the DIMM runs at its rated speed.
+        let configured_speed_mts = Self::parse_mts(&conf_speed_str);
 
         let type_str = fields.get("Type").cloned().unwrap_or_default();
         let memory_type = Self::parse_memory_type(&type_str);
@@ -549,10 +580,9 @@ impl MemoryTopologyMonitor {
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse::<u32>().ok());
 
-        let rank = fields
-            .get("Rank")
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(1);
+        // SMBIOS reports `Unknown` or omits the field on many boards; that is
+        // not a single-rank DIMM.
+        let rank = fields.get("Rank").and_then(|s| s.parse::<u32>().ok());
 
         let manufacturer = fields.get("Manufacturer").cloned().unwrap_or_default();
         let part_number = fields.get("Part Number").cloned().unwrap_or_default();
@@ -606,11 +636,15 @@ impl MemoryTopologyMonitor {
         }
     }
 
-    fn parse_mts(s: &str) -> u32 {
+    /// The leading number of a speed string, or `None` if there is none.
+    ///
+    /// SMBIOS Type 17 uses `0` for "unknown" in its speed fields, so a parsed
+    /// zero is treated as absent too, the same rule `voltage` already follows.
+    fn parse_mts(s: &str) -> Option<u32> {
         s.split_whitespace()
             .next()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0)
+            .filter(|v| *v > 0)
     }
 
     fn parse_memory_type(s: &str) -> MemoryType {
@@ -685,10 +719,14 @@ impl MemoryTopologyMonitor {
                     .as_u64()
                     .or_else(|| item["Capacity"].as_str().and_then(|s| s.parse().ok()))
                     .unwrap_or(0);
-                let speed = item["Speed"].as_u64().unwrap_or(0) as u32;
+                // WMI uses 0 for "unknown" here as SMBIOS does, so a zero is
+                // absent too. `ConfiguredClockSpeed` falling back to `Speed`
+                // asserted the DIMM runs at its rating.
+                let speed = item["Speed"].as_u64().filter(|v| *v > 0).map(|v| v as u32);
                 let conf_speed = item["ConfiguredClockSpeed"]
                     .as_u64()
-                    .unwrap_or(speed as u64) as u32;
+                    .filter(|v| *v > 0)
+                    .map(|v| v as u32);
                 let data_width = item["DataWidth"].as_u64().map(|w| w as u32);
                 let total_width = item["TotalWidth"].as_u64().map(|w| w as u32);
 
@@ -719,7 +757,9 @@ impl MemoryTopologyMonitor {
                     form_factor,
                     data_width_bits: data_width,
                     total_width_bits: total_width,
-                    ranks: 1, // WMI doesn't expose rank count easily
+                    // Win32_PhysicalMemory has no rank field. This was `1`
+                    // beside a comment saying so.
+                    ranks: None,
                     manufacturer: item["Manufacturer"]
                         .as_str()
                         .unwrap_or("")
@@ -759,8 +799,7 @@ impl MemoryTopologyMonitor {
                     for slot in slots {
                         let size_str = slot["dimm_size"].as_str().unwrap_or("0");
                         let capacity_bytes = Self::parse_size_to_bytes(size_str);
-                        let speed_str = slot["dimm_speed"].as_str().unwrap_or("0 MHz");
-                        let speed_mts = Self::parse_mts(speed_str);
+                        let speed_mts = slot["dimm_speed"].as_str().and_then(Self::parse_mts);
                         let type_str = slot["dimm_type"].as_str().unwrap_or("Unknown");
 
                         dimms.push(DimmInfo {
@@ -768,14 +807,18 @@ impl MemoryTopologyMonitor {
                             bank: String::new(),
                             capacity_bytes,
                             speed_mts,
-                            configured_speed_mts: speed_mts,
+                            // system_profiler reports no configured speed. This
+                            // copied the rated one, asserting every Mac's
+                            // memory runs at its rating.
+                            configured_speed_mts: None,
                             memory_type: Self::parse_memory_type(type_str),
                             form_factor: FormFactor::Unknown,
                             // system_profiler reports neither width, and
                             // 64/64 asserted "no ECC" on every Mac.
                             data_width_bits: None,
                             total_width_bits: None,
-                            ranks: 1,
+                            // system_profiler reports no rank count.
+                            ranks: None,
                             manufacturer: slot["dimm_manufacturer"]
                                 .as_str()
                                 .unwrap_or("")
@@ -816,7 +859,7 @@ impl Default for MemoryTopologyMonitor {
                     matched_speeds: true,
                     matched_capacities: true,
                     ecc_active: false,
-                    estimated_bandwidth_gbs: 0.0,
+                    estimated_bandwidth_gbs: None,
                     channel_count: 0,
                     recommendations: Vec::new(),
                     efficiency_score: 0,
@@ -842,13 +885,13 @@ mod tests {
             locator: "DIMM_A1".into(),
             bank: "BANK 0".into(),
             capacity_bytes: 16 * 1024 * 1024 * 1024,
-            speed_mts: 3200,
-            configured_speed_mts: 3200,
+            speed_mts: Some(3200),
+            configured_speed_mts: Some(3200),
             memory_type: MemoryType::DDR4,
             form_factor: FormFactor::DIMM,
             data_width_bits: Some(64),
             total_width_bits: Some(64),
-            ranks: 2,
+            ranks: Some(2),
             manufacturer: "Samsung".into(),
             part_number: "M378A2G43AB3-CWE".into(),
             serial_number: "12345678".into(),
@@ -875,13 +918,13 @@ mod tests {
             locator: "DIMM_A1".into(),
             bank: String::new(),
             capacity_bytes: 0,
-            speed_mts: 0,
-            configured_speed_mts: 0,
+            speed_mts: Some(0),
+            configured_speed_mts: Some(0),
             memory_type: MemoryType::Unknown,
             form_factor: FormFactor::Unknown,
             data_width_bits: None,
             total_width_bits: None,
-            ranks: 1,
+            ranks: Some(1),
             manufacturer: String::new(),
             part_number: String::new(),
             serial_number: String::new(),
@@ -906,13 +949,13 @@ mod tests {
             locator: "DIMM_A1".into(),
             bank: "".into(),
             capacity_bytes: 32 * 1024 * 1024 * 1024,
-            speed_mts: 3200,
-            configured_speed_mts: 3200,
+            speed_mts: Some(3200),
+            configured_speed_mts: Some(3200),
             memory_type: MemoryType::DDR4,
             form_factor: FormFactor::RDIMM,
             data_width_bits: Some(64),
             total_width_bits: Some(72),
-            ranks: 2,
+            ranks: Some(2),
             manufacturer: "SK Hynix".into(),
             part_number: "".into(),
             serial_number: "".into(),
@@ -956,13 +999,13 @@ mod tests {
                 locator: "DIMM_A1".into(),
                 bank: "BANK 0".into(),
                 capacity_bytes: 8 * 1024 * 1024 * 1024,
-                speed_mts: 3200,
-                configured_speed_mts: 3200,
+                speed_mts: Some(3200),
+                configured_speed_mts: Some(3200),
                 memory_type: MemoryType::DDR4,
                 form_factor: FormFactor::DIMM,
                 data_width_bits: Some(64),
                 total_width_bits: Some(64),
-                ranks: 1,
+                ranks: Some(1),
                 manufacturer: "Samsung".into(),
                 part_number: "".into(),
                 serial_number: "".into(),
@@ -973,13 +1016,13 @@ mod tests {
                 locator: "DIMM_B1".into(),
                 bank: "BANK 1".into(),
                 capacity_bytes: 8 * 1024 * 1024 * 1024,
-                speed_mts: 3200,
-                configured_speed_mts: 3200,
+                speed_mts: Some(3200),
+                configured_speed_mts: Some(3200),
                 memory_type: MemoryType::DDR4,
                 form_factor: FormFactor::DIMM,
                 data_width_bits: Some(64),
                 total_width_bits: Some(64),
-                ranks: 1,
+                ranks: Some(1),
                 manufacturer: "Samsung".into(),
                 part_number: "".into(),
                 serial_number: "".into(),
@@ -992,7 +1035,12 @@ mod tests {
         assert!(analysis.dual_channel);
         assert!(analysis.matched_speeds);
         assert!(analysis.matched_capacities);
-        assert!(analysis.estimated_bandwidth_gbs > 40.0);
+        assert!(
+            analysis
+                .estimated_bandwidth_gbs
+                .expect("both DIMM speeds were read")
+                > 40.0
+        );
     }
 
     #[test]
@@ -1013,7 +1061,7 @@ mod tests {
             matched_speeds: true,
             matched_capacities: true,
             ecc_active: false,
-            estimated_bandwidth_gbs: 51.2,
+            estimated_bandwidth_gbs: Some(51.2),
             channel_count: 2,
             recommendations: vec!["2 empty DIMM slot(s) available for expansion".into()],
             efficiency_score: 85,

@@ -42,6 +42,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **A DIMM whose configured speed was not reported no longer claims to run at
+  its rated speed.** `memory_topology::DimmInfo`'s `speed_mts`,
+  `configured_speed_mts` and `ranks` are `Option<u32>`, and
+  `MemoryTopology::estimated_bandwidth_gbs` is `Option<f64>`.
+
+  **All three readers substituted the rated speed for a missing configured
+  speed:** Linux with `if conf_speed_str.is_empty() { speed_mts }`, Windows with
+  `ConfiguredClockSpeed.unwrap_or(speed)`, and macOS by assigning
+  `configured_speed_mts: speed_mts` unconditionally, since `system_profiler`
+  reports no configured speed at all. Rated and configured are precisely the
+  two figures that differ when XMP or EXPO is not enabled, so this asserted
+  "your memory runs at its rated speed" on exactly the machines where that is
+  least certain.
+
+  It reached agents. The resolver published `memory.dimm.{n}.configured_speed`
+  behind a `> 0` guard, and the substituted value was non-zero, so it passed.
+  The guard was correct for the fabricated *zeros* elsewhere in this struct and
+  could not see a fabrication that was not zero.
+
+  **It also silenced the advice the Profiles tab exists to give.** That tab
+  says *"DIMM is running at X MT/s but is rated for Y — enable XMP/EXPO"* when
+  configured is below rated. With configured copied from rated, the two were
+  always equal, so the warning never fired — on every Mac, and on every Windows
+  machine where WMI returned no `ConfiguredClockSpeed`. Those are the machines
+  most likely to have XMP off. The tab now says when the comparison cannot be
+  made rather than staying silent in a way that reads as "running at rated
+  speed".
+
+  `ranks` was `1` on Windows (beside the comment *"WMI doesn't expose rank count
+  easily"*) and on macOS, and Linux fell back to `1` when SMBIOS carried no
+  `Rank` field. Single-rank is a specific, consequential claim — rank count
+  affects achievable bandwidth, which is what this module estimates.
+
+  `estimated_bandwidth_gbs` came from `speeds.max().unwrap_or(0)` fed into
+  `estimate_bandwidth(0, ..)`, publishing 0.00 GB/s for a machine whose DIMMs
+  could not be read.
+
+  `parse_mts` now treats a parsed `0` as absent: SMBIOS Type 17 defines zero as
+  "unknown" in its speed fields, which the same reader already applied to
+  `voltage`.
+
+  **Not changed: `capacity_bytes`**, documented as *"0 means empty slot"*. The
+  macOS reader derives `populated` from it, so a slot whose size string does not
+  parse is reported as empty — a real defect. Fixing it redefines how slot
+  population is determined in three readers, which is a design decision rather
+  than a mechanical one, and it is recorded in `HANDOFF.md` as open.
+
 - **A cooling device whose state could not be read no longer reports that the
   CPU is not being throttled.** `thermal_zone::CoolingDeviceInfo`'s `cur_state`
   and `max_state` are `Option<u32>`, and `utilization_pct()` returns

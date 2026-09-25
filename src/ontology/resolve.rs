@@ -1277,14 +1277,17 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         push_spec_opt(
             out,
             format!("{base}.speed"),
-            (dimm.speed_mts > 0).then(|| serde_json::json!(dimm.speed_mts)),
+            dimm.speed_mts.map(|v| serde_json::json!(v)),
             Some(Unit::MegatransfersPerSecond),
             "SMBIOS reported no rated speed",
         );
         push_spec_opt(
             out,
             format!("{base}.configured_speed"),
-            (dimm.configured_speed_mts > 0).then(|| serde_json::json!(dimm.configured_speed_mts)),
+            // `> 0` passed the substituted rated speed straight through, since
+            // it was non-zero. The reader no longer substitutes, so the type
+            // now carries the absence the guard could not see.
+            dimm.configured_speed_mts.map(|v| serde_json::json!(v)),
             Some(Unit::MegatransfersPerSecond),
             "SMBIOS reported no configured speed",
         );
