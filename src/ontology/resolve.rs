@@ -3743,9 +3743,53 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
         return;
     }
 
+    // The generation is known but the speed may not be. That case used to be
+    // filled from a per-generation lookup table and published here as a
+    // `specification` of this machine -- the guard above covered an unknown
+    // generation and not an unknown speed, which fell back to the same kind of
+    // default. Everything derived from the speed is withheld with it.
+    let (Some(speed), Some(peak), Some(achievable), Some(triad)) = (
+        est.speed_mts,
+        est.peak_bandwidth_gbs,
+        est.achievable_bandwidth_gbs,
+        est.stream_triad_estimate_gbs,
+    ) else {
+        const NO_SPEED: &str = concat!(
+            "no DIMM reported a transfer rate, so the speed and every bandwidth ",
+            "figure derived from it would be a built-in default"
+        );
+        out.push(Reading::unavailable(
+            "memory.bandwidth.speed",
+            Some(Unit::Count),
+            NO_SPEED,
+        ));
+        for id in [
+            "memory.bandwidth.peak",
+            "memory.bandwidth.achievable",
+            "memory.bandwidth.stream_triad",
+        ] {
+            out.push(Reading::unavailable(
+                id,
+                Some(Unit::BytesPerSecond),
+                NO_SPEED,
+            ));
+        }
+        out.push(Reading::spec(
+            "memory.bandwidth.channels",
+            serde_json::json!(est.channels.active_channels),
+            Some(Unit::Count),
+        ));
+        out.push(Reading::spec(
+            "memory.bandwidth.max_channels",
+            serde_json::json!(est.channels.max_channels),
+            Some(Unit::Count),
+        ));
+        return;
+    };
+
     out.push(Reading::spec(
         "memory.bandwidth.speed",
-        serde_json::json!(est.speed_mts),
+        serde_json::json!(speed),
         Some(Unit::Count),
     ));
     out.push(Reading::spec(
@@ -3766,17 +3810,17 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
     const GB: f64 = 1_000_000_000.0;
     out.push(Reading::derived(
         "memory.bandwidth.peak",
-        serde_json::json!(est.peak_bandwidth_gbs * GB),
+        serde_json::json!(peak * GB),
         Some(Unit::BytesPerSecond),
     ));
     out.push(Reading::derived(
         "memory.bandwidth.achievable",
-        serde_json::json!(est.achievable_bandwidth_gbs * GB),
+        serde_json::json!(achievable * GB),
         Some(Unit::BytesPerSecond),
     ));
     out.push(Reading::derived(
         "memory.bandwidth.stream_triad",
-        serde_json::json!(est.stream_triad_estimate_gbs * GB),
+        serde_json::json!(triad * GB),
         Some(Unit::BytesPerSecond),
     ));
 }

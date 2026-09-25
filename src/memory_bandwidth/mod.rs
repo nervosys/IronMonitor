@@ -110,20 +110,28 @@ pub struct ChannelConfig {
 pub struct BandwidthEstimate {
     /// Memory generation.
     pub generation: MemoryGeneration,
-    /// Speed in MT/s.
-    pub speed_mts: u32,
+    /// Speed in MT/s, or `None` where no DIMM speed was read.
+    ///
+    /// **This was filled from `MemoryGeneration::typical_speed_mts()` whenever
+    /// the real speed was missing** -- a lookup table keyed on the generation,
+    /// published by the ontology as a `specification` of *this* machine's
+    /// memory. A DDR5 system whose SMBIOS speed field was unreadable reported
+    /// 5600 MT/s because that is what DDR5 typically runs at. That is the exact
+    /// defect class `AGENTS.md` cites: a plausible constant arriving through
+    /// the same field as a reading.
+    pub speed_mts: Option<u32>,
     /// Channel configuration.
     pub channels: ChannelConfig,
-    /// Theoretical peak bandwidth (GB/s).
-    pub peak_bandwidth_gbs: f64,
-    /// Estimated achievable bandwidth (GB/s) — typically 70-85% of peak.
-    pub achievable_bandwidth_gbs: f64,
-    /// Estimated read bandwidth (GB/s).
-    pub estimated_read_gbs: f64,
-    /// Estimated write bandwidth (GB/s).
-    pub estimated_write_gbs: f64,
-    /// STREAM Triad estimate (GB/s).
-    pub stream_triad_estimate_gbs: f64,
+    /// Theoretical peak bandwidth (GB/s), or `None` without a speed to compute it from.
+    pub peak_bandwidth_gbs: Option<f64>,
+    /// Estimated achievable bandwidth (GB/s) — typically 70-85% of peak, or `None` without a speed to compute it from.
+    pub achievable_bandwidth_gbs: Option<f64>,
+    /// Estimated read bandwidth (GB/s), or `None` without a speed to compute it from.
+    pub estimated_read_gbs: Option<f64>,
+    /// Estimated write bandwidth (GB/s), or `None` without a speed to compute it from.
+    pub estimated_write_gbs: Option<f64>,
+    /// STREAM Triad estimate (GB/s), or `None` without a speed to compute it from.
+    pub stream_triad_estimate_gbs: Option<f64>,
 }
 
 /// Live bandwidth measurement (if hardware counters available).
@@ -201,7 +209,12 @@ impl MemoryBandwidthMonitor {
     fn analyze() -> Result<BandwidthAnalysis, IronError> {
         let (generation, speed_mts, channels) = Self::detect_memory_config()?;
 
-        let peak = Self::compute_peak_bandwidth(speed_mts, channels.active_channels, &generation);
+        // Every figure below is computed from the speed. Without one there is
+        // nothing to compute from, and a typical speed for the generation would
+        // make each of them an estimate of a different machine.
+        let peak = speed_mts.map(|speed| {
+            Self::compute_peak_bandwidth(speed, channels.active_channels, &generation)
+        });
 
         // Achievable is typically 70-85% of peak depending on technology
         let efficiency = match generation {
@@ -215,7 +228,7 @@ impl MemoryBandwidthMonitor {
             _ => 0.75,
         };
 
-        let achievable = peak * efficiency;
+        let achievable = peak.map(|p| p * efficiency);
         let read_ratio = 0.65; // Typical workloads are ~65% reads
         let stream_triad_ratio = 0.72; // STREAM Triad typically achieves ~72% of peak
 
@@ -225,9 +238,9 @@ impl MemoryBandwidthMonitor {
             channels,
             peak_bandwidth_gbs: peak,
             achievable_bandwidth_gbs: achievable,
-            estimated_read_gbs: achievable * read_ratio,
-            estimated_write_gbs: achievable * (1.0 - read_ratio),
-            stream_triad_estimate_gbs: peak * stream_triad_ratio,
+            estimated_read_gbs: achievable.map(|a| a * read_ratio),
+            estimated_write_gbs: achievable.map(|a| a * (1.0 - read_ratio)),
+            stream_triad_estimate_gbs: peak.map(|p| p * stream_triad_ratio),
         };
 
         // Try live measurement
@@ -245,11 +258,15 @@ impl MemoryBandwidthMonitor {
             _ => 70.0,
         };
 
-        // Score: bandwidth per core. Absent when the core count is, because the
-        // quotient is only meaningful over a denominator that was read.
+        // Score: bandwidth per core. Absent when either side of the quotient
+        // is: the core count, or -- now that it can be missing -- the
+        // achievable bandwidth. A per-core figure from a typical speed would
+        // put a bottleneck recommendation in front of someone on the strength
+        // of a lookup table.
         let bw_per_core = std::thread::available_parallelism()
             .ok()
-            .map(|n| achievable / n.get() as f64);
+            .zip(achievable)
+            .map(|(n, a)| a / n.get() as f64);
         let score = bw_per_core.map(|b| (b * 10.0).min(100.0) as u32);
 
         // < 3 GB/s per core is concerning
@@ -296,7 +313,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         // Try dmidecode first
         let output = std::process::Command::new("dmidecode")
             .args(["-t", "memory"])
@@ -307,12 +324,14 @@ impl MemoryBandwidthMonitor {
             return Self::parse_dmidecode(&text);
         }
 
-        // Fallback: infer from CPU model
-        Self::infer_from_cpu()
+        // Nothing read.
+        Self::memory_config_unreadable()
     }
 
     #[cfg(target_os = "linux")]
-    fn parse_dmidecode(text: &str) -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
+    fn parse_dmidecode(
+        text: &str,
+    ) -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         let mut generation = MemoryGeneration::Unknown;
         let mut max_speed = 0u32;
         let mut populated_count = 0u32;
@@ -367,16 +386,16 @@ impl MemoryBandwidthMonitor {
             }
         }
 
-        if max_speed == 0 {
-            max_speed = generation.typical_speed_mts();
-        }
+        // No substitution. `max_speed == 0` means no DIMM reported a speed,
+        // and a typical speed for the generation is not this machine's.
+        let speed = (max_speed > 0).then_some(max_speed);
 
         let (active_channels, max_channels) =
             Self::infer_channels(populated_count, total_slots, &generation);
 
         Ok((
             generation,
-            max_speed,
+            speed,
             ChannelConfig {
                 active_channels,
                 max_channels,
@@ -387,7 +406,7 @@ impl MemoryBandwidthMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -423,15 +442,14 @@ impl MemoryBandwidthMonitor {
                     }
                 }
 
-                if max_speed == 0 {
-                    max_speed = gen.typical_speed_mts();
-                }
+                // No substitution; see the Linux reader.
+                let speed = (max_speed > 0).then_some(max_speed);
 
                 let (active, max) = Self::infer_channels(populated, populated, &gen);
 
                 return Ok((
                     gen,
-                    max_speed,
+                    speed,
                     ChannelConfig {
                         active_channels: active,
                         max_channels: max,
@@ -442,11 +460,11 @@ impl MemoryBandwidthMonitor {
             }
         }
 
-        Self::infer_from_cpu()
+        Self::memory_config_unreadable()
     }
 
     #[cfg(target_os = "macos")]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
+    fn detect_memory_config() -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         // Apple Silicon uses unified LPDDR
         let output = std::process::Command::new("sysctl")
             .arg("-n")
@@ -483,9 +501,12 @@ impl MemoryBandwidthMonitor {
                 (MemoryGeneration::LPDDR5, 6400, 4)
             };
 
+            // A per-chip table, not a reading -- see HANDOFF, "macOS memory
+            // bandwidth is a brand-string table". Left as-is rather than
+            // "corrected" from memory, which would be the same defect.
             return Ok((
                 gen,
-                speed,
+                Some(speed),
                 ChannelConfig {
                     active_channels: channels,
                     max_channels: channels,
@@ -495,25 +516,31 @@ impl MemoryBandwidthMonitor {
             ));
         }
 
-        Self::infer_from_cpu()
+        Self::memory_config_unreadable()
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn detect_memory_config() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
-        Self::infer_from_cpu()
+    fn detect_memory_config() -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
+        Self::memory_config_unreadable()
     }
 
-    fn infer_from_cpu() -> Result<(MemoryGeneration, u32, ChannelConfig), IronError> {
-        // Baseline fallback
-        Ok((
-            MemoryGeneration::DDR4,
-            3200,
-            ChannelConfig {
-                active_channels: 2,
-                max_channels: 2,
-                interleaved: true,
-                mode: "dual-channel (inferred)".into(),
-            },
+    /// The memory configuration could not be read on this path.
+    ///
+    /// **This was `infer_from_cpu`, and it inferred nothing.** It returned
+    /// `DDR4`, 3200 MT/s and a dual-channel layout as constants whenever SMBIOS
+    /// could not be read -- and because it said `DDR4` rather than `Unknown`,
+    /// it defeated the resolver guard written specifically to withhold figures
+    /// built on an unidentified generation. A machine whose memory was not read
+    /// at all published DDR4-3200 dual-channel as a specification of itself.
+    ///
+    /// An error is the honest answer, and the resolver already has the right
+    /// path for one: it reports the configuration as unreadable and publishes
+    /// nothing built on it.
+    fn memory_config_unreadable(
+    ) -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
+        Err(IronError::FeatureNotAvailable(
+            "the memory configuration (generation, speed, channels) could not be read from SMBIOS"
+                .into(),
         ))
     }
 
@@ -584,18 +611,18 @@ impl Default for MemoryBandwidthMonitor {
             analysis: BandwidthAnalysis {
                 estimate: BandwidthEstimate {
                     generation: MemoryGeneration::Unknown,
-                    speed_mts: 0,
+                    speed_mts: None,
                     channels: ChannelConfig {
                         active_channels: 0,
                         max_channels: 0,
                         interleaved: false,
                         mode: String::new(),
                     },
-                    peak_bandwidth_gbs: 0.0,
-                    achievable_bandwidth_gbs: 0.0,
-                    estimated_read_gbs: 0.0,
-                    estimated_write_gbs: 0.0,
-                    stream_triad_estimate_gbs: 0.0,
+                    peak_bandwidth_gbs: None,
+                    achievable_bandwidth_gbs: None,
+                    estimated_read_gbs: None,
+                    estimated_write_gbs: None,
+                    stream_triad_estimate_gbs: None,
                 },
                 measurement: None,
                 estimated_latency_ns: 0.0,
@@ -655,18 +682,18 @@ mod tests {
     fn test_serialization() {
         let estimate = BandwidthEstimate {
             generation: MemoryGeneration::DDR5,
-            speed_mts: 5600,
+            speed_mts: Some(5600),
             channels: ChannelConfig {
                 active_channels: 2,
                 max_channels: 4,
                 interleaved: true,
                 mode: "dual-channel".into(),
             },
-            peak_bandwidth_gbs: 89.6,
-            achievable_bandwidth_gbs: 73.5,
-            estimated_read_gbs: 47.8,
-            estimated_write_gbs: 25.7,
-            stream_triad_estimate_gbs: 64.5,
+            peak_bandwidth_gbs: Some(89.6),
+            achievable_bandwidth_gbs: Some(73.5),
+            estimated_read_gbs: Some(47.8),
+            estimated_write_gbs: Some(25.7),
+            stream_triad_estimate_gbs: Some(64.5),
         };
         let json = serde_json::to_string(&estimate).unwrap();
         assert!(json.contains("DDR5"));

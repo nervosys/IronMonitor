@@ -42,6 +42,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **Memory bandwidth figures are no longer computed from a lookup table
+  presented as this machine's memory speed.** `BandwidthEstimate::speed_mts` and
+  its five derived bandwidth fields are `Option`.
+
+  When the SMBIOS speed was missing, the Linux and Windows readers substituted
+  `MemoryGeneration::typical_speed_mts()` — 5600 MT/s for DDR5, 3200 for DDR4 —
+  and the ontology published it as `memory.bandwidth.speed` with
+  `specification` provenance, with peak, achievable and STREAM-triad bandwidth
+  published as `derived` from it. That is the defect class `AGENTS.md` names by
+  example: a plausible constant arriving through the same field as a reading.
+
+  **The fallback also defeated its own guard.** When SMBIOS could not be read
+  at all, `infer_from_cpu()` returned `DDR4`, 3200 MT/s and a dual-channel
+  layout as constants. The resolver already withholds the whole bandwidth chain
+  when the generation is `Unknown`, with a careful explanation of why — but this
+  fallback said `DDR4`, so the guard never fired, and a machine whose memory was
+  not read at all published DDR4-3200 dual-channel as a specification of
+  itself. It inferred nothing from the CPU despite its name. It is now an
+  error, which the resolver already reports correctly as "the memory
+  configuration needed for an estimate is not readable here".
+
+  The resolver's guard is extended from "generation unknown" to "speed not
+  read", which was the adjacent branch of the same fallback.
+
 - **A DIMM whose configured speed was not reported no longer claims to run at
   its rated speed.** `memory_topology::DimmInfo`'s `speed_mts`,
   `configured_speed_mts` and `ranks` are `Option<u32>`, and

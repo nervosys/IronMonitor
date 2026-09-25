@@ -9604,8 +9604,109 @@ populated when size is unreadable, in three readers with three different
 sources. That is a design question for whoever owns the module.
 
 **`memory_bandwidth` fills an unread memory speed from a lookup table.**
+*(Fixed in the following commit for Linux and Windows; see "A fallback that
+defeats its own guard" below. The macOS table remains open.)*
 `max_speed = generation.typical_speed_mts()` substitutes a *typical* speed for
 the detected DDR generation when the real one was not read. That is the exact
 class `AGENTS.md` names by example -- *"a GPU power percentage whose
 denominator came from a core-count lookup table"* -- and it feeds a peak
 bandwidth figure. Separate module, separate fix, not started.
+
+### A fallback that defeats its own guard
+
+Instance twenty-three. `ontology/resolve.rs` contains one of the most carefully
+reasoned guards in this crate:
+
+> Everything below rests on the generation, and an unidentified generation
+> does not stop the estimator producing numbers -- it falls back to 3200 MT/s,
+> a 64-bit bus and a 0.75 efficiency factor, none of which is a fact about this
+> machine. [...] Withholding the chain is the only honest answer.
+
+It checks `generation == MemoryGeneration::Unknown`. And the function that
+runs when SMBIOS could not be read at all, `infer_from_cpu`, returned
+`MemoryGeneration::DDR4`. Not `Unknown`. So the guard never saw the case it was
+written for, and a machine whose memory had not been read published DDR4-3200
+dual-channel as a `specification` of itself.
+
+> **A guard keyed on a sentinel is defeated by a fallback that picks a
+> different value.** The author of the guard reasoned correctly about the
+> fallback they could see in the estimator. The reader one call further out
+> had its own fallback, which produced a *valid* generation, and validity was
+> the thing the guard used to decide what to trust.
+
+This is the same lesson as instance twenty-two's `> 0` guard from the other
+side. There, a substitution produced a non-zero value that a zero-check could
+not see. Here, a fallback produced a non-`Unknown` value that an
+`Unknown`-check could not see. In both, the guard was right and the reader
+defeated it, and in both the fix was to make the reader stop inventing rather
+than to make the guard cleverer.
+
+`infer_from_cpu` also inferred nothing from the CPU. It took no arguments and
+returned three constants. **A function's name is a claim about what it does,
+and this one's was false** -- which matters, because a reader skimming the
+Linux path sees `// Fallback: infer from CPU model` and reasonably concludes
+something was inferred. It is now `memory_config_unreadable`, returns an error,
+and the resolver's existing error path reports it correctly.
+
+### Open: macOS memory bandwidth is a brand-string table
+
+`memory_bandwidth::detect_memory_config` on macOS reads no memory. It matches
+the CPU brand string -- `M4 -> LPDDR5X-8533 x8`, `M3 | M2 -> LPDDR5-6400 x8`,
+`else -> LPDDR5-6400 x4` -- and returns that as the configuration.
+
+A per-chip specification table is legitimately `specification`-class data, and
+Apple does publish these figures. The problem is that this table is too coarse
+to be right: `M3` matches the M3, M3 Pro and M3 Max, which have different
+memory bus widths, and the `else` arm would assign a newer memory generation to
+the original M1 than it shipped with.
+
+It was **deliberately not corrected** in the commit that fixed the Linux and
+Windows paths. Correcting it means writing per-SKU constants, and asserting
+specification figures from recall is exactly the defect this sweep exists to
+remove. It should be rebuilt from Apple's published specifications, keyed on
+the full chip name, with an `Unknown` arm for anything not in the table.
+
+#### Two other lookup-table latencies, checked and left
+
+Found while checking whether instance twenty-three had siblings, and recorded
+so they are not rediscovered as new:
+
+- `memory_bandwidth::BandwidthAnalysis::estimated_latency_ns` is a
+  per-generation table with `_ => 70.0` for an unknown generation. It is named
+  as an estimate, is not consumed outside its module, and is not an ontology
+  entity.
+- `interconnect::InterconnectLink::latency_ns` is assigned bare constants
+  (`20.0`, `40.0`, `60.0`, `80.0`, `120.0`) by link type. Its doc says
+  "(estimated)", it is not an ontology entity, and nothing in the crate reads
+  it. It is public library API, so a library consumer who does not read the
+  doc could take it for a measurement; renaming it `estimated_latency_ns`, to
+  match the other one, would make the field name carry what only the comment
+  does now.
+
+Neither reaches an agent, so neither was changed in the bandwidth commit.
+
+#### The iterator-adapter half, triaged: nothing to fix
+
+The fourth instrument's other half -- `.max()`, `.min()`, `.first()`,
+`.last()` followed by `.unwrap_or(0)` -- was set aside as a different
+proposition, since those are `Option` because a *sequence* may be empty rather
+than because a read failed. Checked:
+
+| Site | Verdict |
+| --- | --- |
+| `pipeline/mod.rs:213` | `.max()` over a fixed seven-element array; cannot be empty |
+| `observability/metrics.rs:280` | preceded by `if data.is_empty() { return None }`; unreachable |
+| `process_tree.rs:642` | an empty tree genuinely has depth 0 |
+| `interrupt_map/mod.rs:190` | an unreadable `/proc/interrupts` errors out upstream via `?` |
+| `firmware/mod.rs:173` | would report zero risk for no entries, but only a doc example and one test call it |
+
+Five for five not worth changing. **The question that settled every one was
+the first: can this sequence actually be empty on a path that reaches
+someone?** Four could not, or not from a failed read; the fifth has no
+consumer. That is a useful result in itself -- it means the iterator-adapter
+shape is low-yield in this crate, and the reader-helper shape was where the
+defects were.
+
+`firmware::risk_score()` is the one to revisit if it ever acquires a caller:
+zero is the *safest* possible score, so an unread inventory would report no
+risk, which is the reassuring-default shape seen elsewhere in this sweep.
