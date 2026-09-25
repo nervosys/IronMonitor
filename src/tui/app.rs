@@ -702,15 +702,6 @@ pub enum InitState {
     Ready,
 }
 
-/// The physical core count, from the same reader `cpu.cores.physical` resolves
-/// from.
-///
-/// `None` rather than a fallback: the resolver's own arm for this reports "the
-/// platform reported no physical core count distinct from the logical one" when
-/// the reader returns 0, and a display that filled the gap with the logical
-/// count would be reintroducing the bug this function exists to fix.
-static PHYSICAL_CORES: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-
 /// Start the physical-core probe on its own thread.
 ///
 /// **This query does not belong on any path the UI waits for**, and both places
@@ -730,13 +721,10 @@ static PHYSICAL_CORES: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock:
 /// blocking. Until it lands the display says "24 threads" rather than guessing,
 /// which is the same rule every other absent reading in this crate follows.
 fn start_physical_core_probe() {
+    // Fills the crate-wide cache in `cpu_microarch`, which the CLI and the
+    // agent read too. This thread is the only reason the TUI never waits on it.
     std::thread::spawn(|| {
-        let cores = crate::cpu_microarch::CpuMicroarchMonitor::new()
-            .ok()
-            .map(|m| m.report().physical_cores)
-            .filter(|&p| p > 0)
-            .map(|p| p as usize);
-        let _ = PHYSICAL_CORES.set(cores);
+        let _ = crate::cpu_microarch::cpu_identity();
     });
 }
 
@@ -745,7 +733,7 @@ fn start_physical_core_probe() {
 /// Never blocks: a not-yet-known count and an unreadable one are both absent,
 /// and the display treats them the same.
 fn physical_cores() -> Option<usize> {
-    PHYSICAL_CORES.get().copied().flatten()
+    crate::cpu_microarch::physical_cores_if_known()
 }
 
 #[derive(Clone, Default)]

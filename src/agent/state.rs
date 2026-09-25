@@ -27,12 +27,24 @@ pub const GPU_TEMP_CRITICAL_C: u32 = 90;
 pub struct CpuState {
     /// CPU model name
     pub name: String,
-    /// Number of physical cores
-    pub cores: usize,
-    /// Number of threads
+    /// Physical cores, or `None` where the platform reported no count
+    /// distinct from the logical one.
+    ///
+    /// **This is the context the model actually receives**, built by
+    /// `SystemState::to_context_string` and handed over in
+    /// `agent::engine::generate_response`. It was documented "Number of
+    /// physical cores" and filled with `stats.cores.len()` -- one entry per
+    /// *logical* processor -- on every platform, beside `threads` taking the
+    /// same value. So the model was told a 12-core, 24-thread CPU had 24
+    /// cores. See `cpu_microarch::cpu_identity`.
+    pub cores: Option<usize>,
+    /// Logical processors (hardware threads).
     pub threads: usize,
-    /// Overall CPU utilization (0-100%)
-    pub utilization: f32,
+    /// Overall CPU utilisation (0-100%), or `None` where it was not read.
+    ///
+    /// macOS set this to `0.0` under the comment "Would need IOKit for real
+    /// value" -- so the model was told a Mac's CPU was idle.
+    pub utilization: Option<f32>,
     /// CPU temperature (Celsius) if available
     pub temperature_c: Option<f32>,
     /// Current frequency (MHz) if available
@@ -187,9 +199,9 @@ impl SystemState {
                         .first()
                         .map(|c| c.model.clone())
                         .unwrap_or_else(|| "CPU".to_string()),
-                    cores: num_cpus,
+                    cores: crate::cpu_microarch::physical_cores(),
                     threads: num_cpus,
-                    utilization,
+                    utilization: Some(utilization),
                     temperature_c: None, // Requires admin
                     frequency_mhz: stats
                         .cores
@@ -216,9 +228,9 @@ impl SystemState {
                         .first()
                         .map(|c| c.model.clone())
                         .unwrap_or_else(|| "CPU".to_string()),
-                    cores: num_cpus,
+                    cores: crate::cpu_microarch::physical_cores(),
                     threads: num_cpus,
-                    utilization,
+                    utilization: Some(utilization),
                     temperature_c: None,
                     frequency_mhz: stats
                         .cores
@@ -236,13 +248,21 @@ impl SystemState {
 
         #[cfg(target_os = "macos")]
         {
-            // macOS fallback
-            let num_cpus = num_cpus::get();
+            // macOS. The name, core count and utilisation were all invented
+            // here: "Apple Silicon / Intel" -- a guess spanning two
+            // architectures -- the logical count as the core count, and 0.0%
+            // utilisation beside a comment saying it was not read. The name and
+            // physical count now come from `cpu_identity`; utilisation is not
+            // read on this path and is absent.
+            let identity = crate::cpu_microarch::cpu_identity();
             return Some(CpuState {
-                name: "Apple Silicon / Intel".to_string(),
-                cores: num_cpus,
-                threads: num_cpus,
-                utilization: 0.0, // Would need IOKit for real value
+                name: identity
+                    .model_name
+                    .clone()
+                    .unwrap_or_else(|| "CPU".to_string()),
+                cores: identity.physical_cores,
+                threads: num_cpus::get(),
+                utilization: None,
                 temperature_c: None,
                 frequency_mhz: None,
                 per_core_usage: vec![],
@@ -331,8 +351,18 @@ impl SystemState {
 
         // CPU information
         if let Some(cpu) = &self.cpu {
-            context.push_str(&format!("\nCPU: {} ({} cores)\n", cpu.name, cpu.cores));
-            context.push_str(&format!("  Utilization: {:.1}%\n", cpu.utilization));
+            // Physical and logical named separately; the physical count left
+            // out rather than guessed. It said "({} cores)" with the logical
+            // count, so a 12-core CPU was described to the model as 24-core.
+            let counts = match cpu.cores {
+                Some(cores) => format!("{cores} cores, {} threads", cpu.threads),
+                None => format!("{} threads", cpu.threads),
+            };
+            context.push_str(&format!("\nCPU: {} ({})\n", cpu.name, counts));
+            match cpu.utilization {
+                Some(u) => context.push_str(&format!("  Utilization: {:.1}%\n", u)),
+                None => context.push_str("  Utilization: not read on this platform\n"),
+            }
             if let Some(freq) = cpu.frequency_mhz {
                 context.push_str(&format!("  Frequency: {} MHz\n", freq));
             }
@@ -698,14 +728,54 @@ mod tests {
         assert!(!empty.to_context_string().contains("Reference thresholds"));
     }
 
+    /// **The context the model is actually given** must not call logical
+    /// processors cores, and must not report utilisation that was not read.
+    ///
+    /// This is `agent::state`, which `agent::engine` hands to the model -- not
+    /// `backend::FullSystemState`, which has no production caller and was
+    /// fixed first under the mistaken belief that it was this one.
+    #[test]
+    fn the_model_is_told_physical_and_logical_cores_and_no_invented_utilisation() {
+        let cpu = |cores, utilization| CpuState {
+            name: "AMD Ryzen 9 9900X 12-Core Processor".to_string(),
+            cores,
+            threads: 24,
+            utilization,
+            temperature_c: None,
+            frequency_mhz: None,
+            per_core_usage: Vec::new(),
+        };
+        let state = |c| SystemState {
+            cpu: Some(c),
+            memory: None,
+            gpus: Vec::new(),
+            timestamp: 0,
+        };
+
+        let ctx = state(cpu(Some(12), Some(10.0))).to_context_string();
+        assert!(ctx.contains("12 cores, 24 threads"), "{ctx}");
+        assert!(!ctx.contains("24 cores"), "logical count labelled as cores: {ctx}");
+        assert!(ctx.contains("Utilization: 10.0%"), "{ctx}");
+
+        // What macOS produces: no physical count, no utilisation read.
+        let ctx = state(cpu(None, None)).to_context_string();
+        assert!(ctx.contains("(24 threads)"), "{ctx}");
+        assert!(!ctx.contains("cores"), "no physical count, so no core count: {ctx}");
+        assert!(
+            !ctx.contains("Utilization: 0"),
+            "an unread utilisation must not reach the model as idle: {ctx}"
+        );
+        assert!(ctx.contains("not read on this platform"), "{ctx}");
+    }
+
     #[test]
     fn test_system_state_aggregations() {
         let state = SystemState {
             cpu: Some(CpuState {
                 name: "Test CPU".to_string(),
-                cores: 8,
+                cores: Some(8),
                 threads: 16,
-                utilization: 45.0,
+                utilization: Some(45.0),
                 temperature_c: Some(55.0),
                 frequency_mhz: Some(3600),
                 per_core_usage: vec![40.0, 50.0, 45.0, 42.0, 48.0, 46.0, 44.0, 50.0]
@@ -762,7 +832,7 @@ mod tests {
 
         // Test CPU state
         assert!(state.cpu.is_some());
-        assert_eq!(state.cpu.as_ref().unwrap().utilization, 45.0);
+        assert_eq!(state.cpu.as_ref().unwrap().utilization, Some(45.0));
 
         // Test memory state
         assert!(state.memory.is_some());

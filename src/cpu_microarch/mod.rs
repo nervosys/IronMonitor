@@ -1207,6 +1207,69 @@ impl CpuMicroarchMonitor {
     }
 }
 
+/// The CPU's identity -- its model name and physical core count -- probed
+/// once per process.
+///
+/// **One cache for every surface that needs these two facts.** Before this,
+/// the TUI kept its own `OnceLock` fed from a background thread, instance 25
+/// added a second, blocking one to `backend.rs`, and `agent/state.rs` read
+/// neither: it set `cores` to the logical count and, on macOS, named the CPU
+/// "Apple Silicon / Intel". Four other modules each read
+/// `machdep.cpu.brand_string` themselves. Every surface that disagrees with
+/// another about how many cores a machine has is a surface that read the count
+/// its own way, so there is now one way.
+///
+/// Both fields are `None` where the platform did not report them. A physical
+/// count of `0` from the reader means "not reported", and the logical count is
+/// never substituted for it -- that substitution is the defect this exists to
+/// end.
+#[derive(Debug, Clone, Default)]
+pub struct CpuIdentity {
+    /// Marketing name, e.g. "AMD Ryzen 9 9900X 12-Core Processor".
+    pub model_name: Option<String>,
+    /// Physical cores, distinct from hardware threads.
+    pub physical_cores: Option<usize>,
+}
+
+static CPU_IDENTITY: std::sync::OnceLock<CpuIdentity> = std::sync::OnceLock::new();
+
+/// The CPU's identity, probing on first use and blocking until it has it.
+///
+/// Probing can take a noticeable time on Windows, where it goes through WMI.
+/// Call this only off any thread that draws: the CLI, the agent's `ask()` path
+/// (already off the UI thread, and already waiting on a model), or a
+/// background thread. A UI thread uses [`cpu_identity_if_known`].
+pub fn cpu_identity() -> &'static CpuIdentity {
+    CPU_IDENTITY.get_or_init(|| {
+        let Ok(monitor) = CpuMicroarchMonitor::new() else {
+            return CpuIdentity::default();
+        };
+        let report = monitor.report();
+        CpuIdentity {
+            model_name: Some(report.model_name.trim().to_string()).filter(|n| !n.is_empty()),
+            physical_cores: Some(report.physical_cores as usize).filter(|&p| p > 0),
+        }
+    })
+}
+
+/// The CPU's identity if it has already been probed, without blocking.
+///
+/// `None` both before the probe has run and after it has run and found
+/// nothing; a display treats the two the same, by showing what it does know.
+pub fn cpu_identity_if_known() -> Option<&'static CpuIdentity> {
+    CPU_IDENTITY.get()
+}
+
+/// Physical core count; see [`cpu_identity`] for when it may block.
+pub fn physical_cores() -> Option<usize> {
+    cpu_identity().physical_cores
+}
+
+/// Physical core count if already probed; never blocks.
+pub fn physical_cores_if_known() -> Option<usize> {
+    cpu_identity_if_known().and_then(|id| id.physical_cores)
+}
+
 impl Default for CpuMicroarchMonitor {
     fn default() -> Self {
         Self::new().unwrap_or(Self {

@@ -67,10 +67,20 @@ pub struct CpuState {
     /// CPU model name
     pub name: String,
 
-    /// Number of cores
-    pub cores: usize,
+    /// Physical cores, or `None` where the platform reported no count
+    /// distinct from the logical one.
+    ///
+    /// **The sixth surface of a defect the other five were fixed for.** This
+    /// was `cpu.cores.len()` -- one entry per *logical* processor -- beside
+    /// `threads` taking the same value under a `// Simplified` comment. So the
+    /// AI context read "AMD Ryzen 9 9900X 12-Core Processor (24 cores)", the
+    /// name and the figure contradicting each other one space apart. HANDOFF,
+    /// "A 12-core CPU that read 24", records the fix to the TUI and four other
+    /// surfaces; this one was not among them. It now reads the same source as
+    /// the TUI, `CpuMicroarchMonitor`'s physical count.
+    pub cores: Option<usize>,
 
-    /// Number of threads
+    /// Logical processors (hardware threads).
     pub threads: usize,
 
     /// Overall utilization (0-100%)
@@ -303,8 +313,15 @@ impl FullSystemState {
         // CPU
         if let Some(ref cpu) = self.cpu {
             ctx.push_str(&format!(
-                "CPU: {} ({} cores)\n  Utilization: {:.1}%",
-                cpu.name, cpu.cores, cpu.utilization
+                "CPU: {} ({})\n  Utilization: {:.1}%",
+                cpu.name,
+                // Physical and logical named separately, and the physical count
+                // left out rather than guessed when the platform gave none.
+                match cpu.cores {
+                    Some(cores) => format!("{cores} cores, {} threads", cpu.threads),
+                    None => format!("{} threads", cpu.threads),
+                },
+                cpu.utilization
             ));
             if let Some(temp) = cpu.temperature {
                 ctx.push_str(&format!(" | Temp: {:.0}°C", temp));
@@ -838,11 +855,14 @@ impl MonitoringBackend {
         self.cpu_stats.as_ref()
     }
 
-    pub fn cpu_utilization(&self) -> f32 {
-        self.cpu_stats
-            .as_ref()
-            .map(|s| 100.0 - s.total.idle)
-            .unwrap_or(0.0)
+    /// Overall CPU utilisation, or `None` before a sample has been taken.
+    ///
+    /// Returned `0.0` when no stats had been read -- an idle machine, reported
+    /// for one that was never sampled. `pipeline::Snapshot::cpu_utilization`,
+    /// the method of the same name on the other snapshot type, already returned
+    /// `Option`; the two now answer "not sampled" the same way.
+    pub fn cpu_utilization(&self) -> Option<f32> {
+        self.cpu_stats.as_ref().map(|s| 100.0 - s.total.idle)
     }
 
     pub fn cpu_history(&self) -> &HistoryBuffer<f32> {
@@ -891,11 +911,10 @@ impl MonitoringBackend {
         self.memory_stats.as_ref()
     }
 
-    pub fn memory_utilization(&self) -> f32 {
-        self.memory_stats
-            .as_ref()
-            .map(|s| s.ram_usage_percent())
-            .unwrap_or(0.0)
+    /// RAM utilisation, or `None` before a sample has been taken. See
+    /// [`Self::cpu_utilization`].
+    pub fn memory_utilization(&self) -> Option<f32> {
+        self.memory_stats.as_ref().map(|s| s.ram_usage_percent())
     }
 
     pub fn memory_history(&self) -> &HistoryBuffer<f32> {
@@ -1241,8 +1260,8 @@ impl MonitoringBackend {
                     .first()
                     .map(|c| c.model.clone())
                     .unwrap_or_else(|| "CPU".to_string()),
-                cores: cpu.cores.len(),
-                threads: cpu.cores.len(), // Simplified
+                cores: crate::cpu_microarch::physical_cores(),
+                threads: cpu.cores.len(),
                 utilization: 100.0 - cpu.total.idle,
                 temperature: None, // Would need thermal zone access
                 frequency_mhz: cpu
@@ -1590,6 +1609,42 @@ mod tests {
         let state = FullSystemState::empty();
         let ctx = state.to_context_string();
         assert!(ctx.contains("Current System State"));
+    }
+
+    /// The context handed to the model must not call logical processors cores.
+    ///
+    /// It read "AMD Ryzen 9 9900X 12-Core Processor (24 cores)" -- the name and
+    /// the figure contradicting each other one space apart -- because `cores`
+    /// was the logical count. With a physical count, both are named; without
+    /// one, only threads are, rather than relabelling them.
+    #[test]
+    fn the_ai_context_names_physical_and_logical_cores_separately() {
+        let cpu = |cores| CpuState {
+            name: "AMD Ryzen 9 9900X 12-Core Processor".into(),
+            cores,
+            threads: 24,
+            utilization: 10.0,
+            temperature: None,
+            frequency_mhz: None,
+            per_core_usage: Vec::new(),
+        };
+
+        let mut state = FullSystemState::empty();
+        state.cpu = Some(cpu(Some(12)));
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("12 cores, 24 threads"), "{ctx}");
+        assert!(
+            !ctx.contains("24 cores"),
+            "logical count labelled as cores: {ctx}"
+        );
+
+        state.cpu = Some(cpu(None));
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("(24 threads)"), "{ctx}");
+        assert!(
+            !ctx.contains("cores"),
+            "with no physical count, no core count may be stated: {ctx}"
+        );
     }
 
     // === BackendConfig tests ===

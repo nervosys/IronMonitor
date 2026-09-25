@@ -9736,3 +9736,142 @@ idle, when no domain produced a delta, and on every first sample -- when there
 is no previous reading to difference against at all. The test added for
 instance twenty-four deliberately does not assert that `0.0` is correct there;
 it asserts only that the fabricated delta did not reach the sum.
+
+#### Two Option-helper hits in `disk/windows.rs` that looked worst and were not defects
+
+Both were ranked at the top of the completion plan on the strength of the scan's
+one-line summary, and both turned out to be correct code once read:
+
+- **`disk/windows.rs:449-450`**, SMART pending and uncorrectable sectors with
+  `.unwrap_or(0)`. The `Healthy` verdict does not come from these. It rests on
+  the drive's own failure prediction (`predict_failure`), which *was* read --
+  the ioctl succeeded and the drive answered. The sector counts feed an
+  additional, downgrade-only check: known and non-zero drops the grade to
+  `Warning`. An unread count as `0` means "no further downgrade", which is the
+  right reading. The comment directly above already says so and names the test
+  (`a_drive_with_no_readable_counters_is_not_graded_healthy`) that guards the
+  genuine empty-scorecard case.
+- **`disk/windows.rs:294`**, `temperature_celsius -> unwrap_or_default()`. The
+  value being defaulted is an `Option<Vec<f32>>`, so the default is an empty
+  list -- no sensors -- not 0 degrees C.
+
+> **`.unwrap_or(0)` inside a downgrade-only check is not a fabrication.** The
+> question is what the zero *does*: if it can only ever fail to trigger a
+> warning, and the verdict it sits beside rests on a real reading, it asserts
+> nothing. The scan cannot see that distinction, which is why its output is a
+> list to read and not a list to fix.
+
+### The sixth surface, fixed on the wrong struct first
+
+Instance twenty-five closes the "12-core CPU that read 24" defect on the surface
+its fix did not reach. **It was first fixed on the wrong struct**, and the
+correction is the useful part.
+
+There are two `CpuState` types and two `to_context_string` methods:
+`backend::FullSystemState` and `agent::state::SystemState`. Both had
+
+```rust
+cores: cpu.cores.len(),
+threads: cpu.cores.len(),
+```
+
+and both render "({} cores)". The first fix went into `backend`, described as
+"the context handed to the model". That was not checked, and it was wrong:
+`agent::engine::generate_response` takes an `agent::SystemState`, and
+`FullSystemState` has **no production caller at all** -- it is reachable only as
+re-exported library API. The model's context was untouched. It was found while
+ranking the structural-scan candidates by reach, before the change was
+committed.
+
+> **Two types with the same name and the same method are two surfaces, and a
+> fix to one says nothing about the other.** "The context handed to the model"
+> is a claim about a call graph. It takes one grep for the caller's parameter
+> type to check, and it was not made until after the fix had been written and
+> tested against the wrong type.
+
+The agent's version was also worse. On macOS it named the CPU `"Apple Silicon /
+Intel"` -- a guess spanning two architectures -- and set utilisation to `0.0`
+beside the comment "Would need IOKit for real value". So a Mac's model was told
+its CPU was idle.
+
+#### One cache instead of three probes
+
+Fixing both surfaces the obvious way would have added a third copy of the
+physical-core probe: the TUI already had one, and the backend fix had just
+added another. HANDOFF's own rule is to count the copies before adding one.
+`cpu_microarch::cpu_identity()` now holds the model name and physical count,
+probed once, with two ways to read it:
+
+- `cpu_identity()` blocks until probed -- for the CLI backend and the agent,
+  neither of which draws. Every caller of `agent.ask()` is already off the UI
+  thread: the GUI runs it in a background thread and the TUI in a worker, and
+  `ask()` already waits on a model round-trip.
+- `cpu_identity_if_known()` never blocks -- for the TUI, whose background
+  thread now fills the shared cache instead of its own.
+
+It also retires, for this path, the fourth independent reader of
+`machdep.cpu.brand_string`.
+
+#### A comment describing who calls a module
+
+`lib.rs` described `backend` as "Unified backend for CLI, TUI, and GUI", which
+would make a blocking probe there a UI hazard. It was not true: every
+`MonitoringBackend` construction is inside `handle_cli_command`. Corrected in
+the same commit. A comment about a module's callers is a claim about the rest of
+the codebase, and it rots from the other end -- nothing in `backend.rs` changed
+when the TUI and GUI stopped using it, so nothing prompted the comment to.
+
+#### A control that did not run
+
+The test for the agent context was checked with a control -- put the old
+rendering back, confirm the test fails. The first attempt's patch did not
+match, left the source unchanged, and the test "passed". That looks exactly
+like "the test does not catch the regression", and it means nothing of the
+kind. **A control has to confirm its mutation applied** before its result is
+read; the second attempt counted the fixed line (0) before running, and the
+test failed as it should.
+
+### Task 1.3: the Option-helper list, finished
+
+| Site | Verdict |
+| --- | --- |
+| `backend.rs` `cpu_utilization()`, `memory_utilization()` | **fixed** (instance 25) |
+| `backend.rs` `CpuState` cores | **fixed** (instance 25) |
+| `core/memory.rs:188` `swap_usage_percent_or_zero` | not a defect -- named for its choice, so callers opt in |
+| `disk/windows.rs:449-450` SMART sectors | not a defect -- downgrade-only; see above |
+| `disk/windows.rs:294` temperature | not a defect -- the default is an empty `Vec` |
+| `gpu/mod.rs` | scanner matched doc comments, not code |
+
+The rest of that list, read:
+
+| Site | Verdict |
+| --- | --- |
+| `core/power.rs:18` | scanner matched a doc comment -- one written for instance 8, quoting the defect it fixed |
+| `disk/windows.rs:192` | scanner matched a definition; `physical_index` correctly returns `Option` |
+| `stats.rs:593` | macOS `hw.logicalcpu` read as 0 gives an empty core list, not a count; that sysctl exists on every Mac |
+| `pcie.rs:353-355` | vendor/device/class default to 0, and class 0 decodes as "unclassified" -- but nothing outside `pcie.rs` consumes the module |
+| `dma_engine:184`, `gpu_topology:219` | `numa_node` `.unwrap_or(-1)` collides with the kernel's own `-1` for "no affinity"; library API only, not in the ontology |
+
+The ontology's `numa_node` comes from `pci_devices`, behind a `>= 0` guard, so
+both the kernel's `-1` and an unread one are published as unavailable -- which
+is defensible, since the kernel's value also means "no affinity information".
+
+**Three weaknesses in the scanner, from this pass.** It matched comment lines
+(two doc comments, one of them this sweep's own) and `fn` definitions (two).
+Both are now excluded. The third is not fixed: the argument pattern `[^;]*?`
+can run across a struct literal, which contains no semicolons, and land on an
+unrelated `.unwrap_or_default()` several fields later. That is what flagged
+`disk/linux.rs:328`, which holds instance ten's correct fix. Any hit inside a
+multi-field struct literal should be read with that in mind; bounding the
+argument pattern to a single balanced call would fix it properly.
+
+After the first two exclusions the scan returns fifteen hits, and every one of
+them has a verdict above.
+
+`pcie.rs`'s zero IDs are the one worth fixing if the module ever gains a
+consumer: a class code of 0 is a positive claim ("unclassified device") rather
+than an absence.
+
+`gpu/mod.rs:87` is worth fixing separately even though it is prose: it is a doc
+example that teaches `info.dynamic_info.power.draw.unwrap_or(0) as f32 /
+1000.0`, which is the anti-pattern, in the place users copy from.

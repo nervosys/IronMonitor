@@ -42,6 +42,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **The model is no longer told a 12-core CPU has 24 cores, or that a Mac's
+  CPU is idle.** `agent::state::CpuState`, which builds the context
+  `agent::engine` hands to the model, set `cores` to `stats.cores.len()` — one
+  entry per *logical* processor — on every platform, beside `threads` taking the
+  same value, despite a doc comment reading "Number of physical cores". On a
+  Ryzen 9 9900X the model read "12-Core Processor (24 cores)". On macOS it was
+  worse: the name was the literal `"Apple Silicon / Intel"`, a guess spanning
+  two architectures, and utilisation was `0.0` beside the comment "Would need
+  IOKit for real value". `cores` and `utilization` are now `Option`, the macOS
+  name is read, and the context names physical and logical counts separately,
+  or only threads when no physical count was reported. This is the sixth
+  surface of a defect already fixed on five; see HANDOFF, "A 12-core CPU that
+  read 24". On the machine it was found on, `cpu.cores.physical` is 12 and
+  `cpu.cores.logical` is 24, both measured.
+
+  `backend::CpuState` had the same defect and is fixed the same way. It was
+  fixed first, in the belief that it was the model's context. It is not:
+  `FullSystemState` has no production caller and is reachable only as library
+  API.
+
+- **One cache for the CPU's identity.** `cpu_microarch::cpu_identity()`
+  probes the model name and physical core count once per process and is the
+  single source for the TUI, the CLI backend and the agent.
+  `cpu_identity_if_known()` never blocks, for the TUI's UI thread. Before this
+  the TUI kept its own cache, the backend fix added a second, the agent read
+  neither, and four modules each read `machdep.cpu.brand_string` themselves.
+
+- **`MonitoringBackend::cpu_utilization()` and `memory_utilization()` return
+  `Option<f32>`.** They returned `0.0` before any sample had been taken — an
+  idle machine, reported for one never sampled. The identically named methods
+  on `pipeline::Snapshot` already returned `Option`, so the same method name
+  answered "not sampled" two different ways depending on which type you held.
+  Nothing in the crate called these two, so the change reaches library users
+  only.
+
 - **An unreadable RAPL counter range is no longer published as a measured
   `u64::MAX`.** `rapl::EnergyReading::max_energy_range_uj` is `Option<u64>`.
 

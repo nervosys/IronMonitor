@@ -265,7 +265,10 @@ pub mod wsl; // WSL2 detection and monitoring
 #[cfg(feature = "jetson-utils")]
 pub mod utils;
 
-// Unified backend for CLI, TUI, and GUI
+// Backend for the `ironmon cli` subcommands. The TUI and GUI read the collector
+// pipeline (`pipeline::Snapshot`) instead; this said "for CLI, TUI, and GUI",
+// which stopped being true and would lead a reader to treat a blocking call
+// here as a UI-thread hazard.
 pub mod backend;
 
 // Lock-free snapshot pipeline: decouples hardware collection from rendering
