@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **An unreadable RAPL counter range is no longer published as a measured
+  `u64::MAX`.** `rapl::EnergyReading::max_energy_range_uj` is `Option<u64>`.
+
+  It fell back to `u64::MAX`, and the ontology published it with `measured`
+  provenance, so an unreadable range reached agents as
+  `power.rapl.N.max_energy_range = 18446744073709551615`. The fallback also fed
+  the counter-wrap arithmetic: when a counter genuinely wrapped, the interval's
+  delta became `(u64::MAX - prev) + curr` — about 18.4 terawatts for one core
+  for one second, which a new test reproduces exactly when the fallback is put
+  back. A wrap with no known range now skips that domain for the interval,
+  since no delta is recoverable, and the range is published through `push_opt`
+  so an unread one is `unavailable` with a reason.
+
 - **Memory bandwidth figures are no longer computed from a lookup table
   presented as this machine's memory speed.** `BandwidthEstimate::speed_mts` and
   its five derived bandwidth fields are `Option`.

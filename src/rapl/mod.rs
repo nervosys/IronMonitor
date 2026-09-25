@@ -60,8 +60,16 @@ pub struct EnergyReading {
     pub socket: u32,
     /// Current energy counter in microjoules.
     pub energy_uj: u64,
-    /// Maximum energy range in microjoules (counter wraps at this value).
-    pub max_energy_range_uj: u64,
+    /// Counter range in microjoules -- the counter wraps at this value -- or
+    /// `None` where `max_energy_range_uj` was not read.
+    ///
+    /// **This fell back to `u64::MAX`, and was published as `measured`.** An
+    /// unreadable range reached agents as `power.rapl.N.max_energy_range =
+    /// 18446744073709551615`, a type's maximum stated as an observation. It
+    /// also fed the wrap arithmetic in `compute_power`, where a counter that
+    /// genuinely wrapped produced a delta near 1.8e19 uJ -- a power reading in
+    /// the terawatts for that interval.
+    pub max_energy_range_uj: Option<u64>,
     /// Current power limit (constraint) in microwatts, if available.
     pub power_limit_uw: Option<u64>,
     /// Whether this domain is enabled.
@@ -244,8 +252,14 @@ impl RaplMonitor {
                 let delta = if c.energy_uj >= p.energy_uj {
                     c.energy_uj - p.energy_uj
                 } else {
-                    // Counter wrapped
-                    (c.max_energy_range_uj - p.energy_uj) + c.energy_uj
+                    // Counter wrapped. Recovering the delta needs the range it
+                    // wrapped at; without one there is no delta for this
+                    // interval, and the domain is skipped rather than given
+                    // one computed against `u64::MAX`.
+                    let Some(range) = c.max_energy_range_uj else {
+                        continue;
+                    };
+                    (range - p.energy_uj) + c.energy_uj
                 };
 
                 let watts = delta as f64 / (secs * 1_000_000.0);
@@ -330,8 +344,7 @@ impl RaplMonitor {
 
         let max_energy_range_uj = std::fs::read_to_string(path.join("max_energy_range_uj"))
             .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .unwrap_or(u64::MAX);
+            .and_then(|s| s.trim().parse::<u64>().ok());
 
         let enabled = std::fs::read_to_string(path.join("enabled"))
             .ok()
@@ -413,7 +426,7 @@ mod tests {
             name: "package-0".into(),
             socket: 0,
             energy_uj: 1_000_000, // 1 joule
-            max_energy_range_uj: u64::MAX,
+            max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
             enabled: true,
         }];
@@ -422,7 +435,7 @@ mod tests {
             name: "package-0".into(),
             socket: 0,
             energy_uj: 11_000_000, // 11 joules (10J delta)
-            max_energy_range_uj: u64::MAX,
+            max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
             enabled: true,
         }];
@@ -439,7 +452,7 @@ mod tests {
             name: "core".into(),
             socket: 0,
             energy_uj: 90_000_000,
-            max_energy_range_uj: 100_000_000,
+            max_energy_range_uj: Some(100_000_000),
             power_limit_uw: None,
             enabled: true,
         }];
@@ -448,7 +461,7 @@ mod tests {
             name: "core".into(),
             socket: 0,
             energy_uj: 5_000_000, // Wrapped around
-            max_energy_range_uj: 100_000_000,
+            max_energy_range_uj: Some(100_000_000),
             power_limit_uw: None,
             enabled: true,
         }];
@@ -456,6 +469,46 @@ mod tests {
         let snap = RaplMonitor::compute_power(&prev, &curr, elapsed);
         // Delta = (100M - 90M) + 5M = 15M uJ = 15W
         assert!((snap.total_core_watts - 15.0).abs() < 0.1);
+    }
+
+    /// A wrap with no known range has no recoverable delta, so the domain is
+    /// left out of the interval rather than given one computed against
+    /// `u64::MAX`.
+    ///
+    /// Before, an unreadable `max_energy_range_uj` fell back to `u64::MAX`, and
+    /// this exact input produced a delta of about 1.8e19 uJ: a core drawing
+    /// some eighteen terawatts for one second.
+    #[test]
+    fn a_wrap_with_no_known_range_reports_no_power_rather_than_terawatts() {
+        let reading = |energy_uj| EnergyReading {
+            domain: PowerDomain::Core,
+            name: "core".into(),
+            socket: 0,
+            energy_uj,
+            max_energy_range_uj: None,
+            power_limit_uw: None,
+            enabled: true,
+        };
+        let prev = vec![reading(90_000_000)];
+        let curr = vec![reading(5_000_000)]; // wrapped, range unknown
+
+        let snap = RaplMonitor::compute_power(&prev, &curr, Duration::from_secs(1));
+
+        assert!(
+            snap.domain_watts.is_empty(),
+            "no delta is recoverable, so the domain must be absent: {:?}",
+            snap.domain_watts
+        );
+        // Nothing was summed into the total. Note what this does *not* claim:
+        // that `0.0` is the right answer. `PowerSnapshot`'s totals are bare
+        // `f64` sums, so "no domain produced a delta" and "the cores drew no
+        // power" are both `0.0` -- recorded in HANDOFF as open. This asserts
+        // only that the fabricated terawatt delta did not reach the sum.
+        assert!(
+            snap.total_core_watts < 1.0,
+            "the unrecoverable delta must not reach the core total: {}",
+            snap.total_core_watts
+        );
     }
 
     #[test]
@@ -503,7 +556,7 @@ mod tests {
             name: "package-0".into(),
             socket: 0,
             energy_uj: 12345678,
-            max_energy_range_uj: u64::MAX,
+            max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
             enabled: true,
         };

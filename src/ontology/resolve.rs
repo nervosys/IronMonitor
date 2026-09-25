@@ -3898,11 +3898,15 @@ fn resolve_rapl(out: &mut Vec<Reading>) {
             serde_json::json!(r.energy_uj),
             Some(Unit::Count),
         ));
-        out.push(Reading::measured(
+        // `push_opt`, not `Reading::measured`: the range was `u64::MAX` when
+        // unread and was published here as a measurement of it.
+        push_opt(
+            out,
             format!("{base}.max_energy_range"),
-            serde_json::json!(r.max_energy_range_uj),
+            r.max_energy_range_uj.map(|v| serde_json::json!(v)),
             Some(Unit::Count),
-        ));
+            "the domain's max_energy_range_uj attribute could not be read",
+        );
         push_opt(
             out,
             format!("{base}.power_limit"),

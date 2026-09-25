@@ -9710,3 +9710,29 @@ defects were.
 `firmware::risk_score()` is the one to revisit if it ever acquires a caller:
 zero is the *safest* possible score, so an unread inventory would report no
 risk, which is the reassuring-default shape seen elsewhere in this sweep.
+
+### A counter range of `u64::MAX`, published as measured
+
+Instance twenty-four. `rapl::EnergyReading::max_energy_range_uj` fell back to
+`u64::MAX` when its sysfs attribute could not be read, and the resolver
+published it with `Reading::measured` -- so an unreadable range reached agents
+as `power.rapl.N.max_energy_range = 18446744073709551615`, a type's maximum
+stated as an observation.
+
+It also fed the wrap arithmetic. When a counter genuinely wrapped, the delta
+became `(u64::MAX - prev) + curr`. The new test reproduces the old behaviour
+exactly when the fallback is put back: `{"socket0:core": 18446744073624.55}` --
+a core drawing about 18.4 terawatts for one second. A wrap with no known range
+now skips the domain for that interval, since no delta is recoverable.
+
+Worth noting: `energy_uj` beside it was already correct, using `?` to drop the
+whole reading when the counter itself could not be read.
+
+#### Open: `PowerSnapshot`'s totals cannot say "nothing measured"
+
+`total_package_watts`, `total_core_watts` and `total_dram_watts` are bare `f64`
+accumulators starting at `0.0`. They read `0.0` when the machine is genuinely
+idle, when no domain produced a delta, and on every first sample -- when there
+is no previous reading to difference against at all. The test added for
+instance twenty-four deliberately does not assert that `0.0` is correct there;
+it asserts only that the fabricated delta did not reach the sum.
