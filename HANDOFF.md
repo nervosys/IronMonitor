@@ -10023,3 +10023,29 @@ A single GPU whose query errors therefore makes the whole call fail, and the
 chat agent cannot answer anything. `snapshot_all_partial`, directly beside it,
 preserves per-device results for exactly this case. Not a fabricated reading,
 so not fixed in this sweep.
+
+### A skip that could never fire
+
+Checking whether the new renderer test had genuinely compared numbers on CI --
+rather than passing through its slow-machine skip -- found that the skip could
+never be taken at all. `agentic_contract.rs` returned early when stderr
+contained "no snapshot arrived", and `renderer_agreement.rs` copied the check.
+The binary prints "no **complete** snapshot arrived" (TUI) and "was still
+loading after" (GUI). The old phrase is not a substring of either, so both
+guards were dead: on a runner slow enough to time out, the tests would have
+failed with a parsing error rather than skipping as documented.
+
+That also answered the original question. With the skip unreachable, a green
+result on Linux and Windows can only mean the frame was parsed and compared;
+the runs took 3.95 s and 21.6 s, inside the binary's 10 s-per-frame wait.
+
+Fixed in all three places, and fenced: the phrases are constants in
+`renderer_agreement.rs`, and
+`the_give_up_messages_these_tests_key_on_still_exist` reads `src/bin/main.rs`
+and fails, naming both files to update, if either phrase disappears. Setting the
+constant back to the old wording makes it fail with exactly that message.
+
+> **A test that quotes another file's text has no way to notice that text
+> changing.** The fix is not to quote more carefully; it is to make the quote
+> checked. The same shape as the stale `lib.rs` comment about who calls
+> `backend`: prose about the rest of the codebase, rotting from the other end.

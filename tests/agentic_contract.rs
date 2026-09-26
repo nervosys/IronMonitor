@@ -287,7 +287,10 @@ fn a_rendered_frame_carries_readings_not_zeroed_defaults() {
 
     // The command says so on stderr if it gave up waiting. If it did, that is a
     // legitimate outcome on a slow machine and the warning is the contract.
-    if stderr.contains("no snapshot arrived") {
+    // The binary's wording is "no complete snapshot arrived"; this checked for
+    // "no snapshot arrived", which is not a substring of it, so the skip could
+    // never fire. `renderer_agreement.rs` asserts the phrase still exists.
+    if stderr.contains("no complete snapshot arrived") {
         return;
     }
 

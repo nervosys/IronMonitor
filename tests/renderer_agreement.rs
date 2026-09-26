@@ -67,6 +67,13 @@ fn number_after(line: &str, label: &str) -> Option<f64> {
     token.parse().ok()
 }
 
+/// What `ironmon tui --frame` prints on stderr when it gives up waiting for a
+/// snapshot. Keyed on by the TUI test here and by `agentic_contract.rs`.
+const TUI_GAVE_UP: &str = "no complete snapshot arrived";
+/// What `ironmon gui --frame` prints when a tab was still loading at its
+/// deadline.
+const GUI_GAVE_UP: &str = "was still loading after";
+
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -84,8 +91,10 @@ fn the_tui_memory_panel_agrees_with_the_ontology() {
     ]);
     assert_eq!(code, 0, "rendering the Memory tab failed:\n{stderr}");
     // A slow machine may give up waiting for the first snapshot; the command
-    // says so, and that is the contract rather than a failure.
-    if stderr.contains("no snapshot arrived") {
+    // says so, and that is the contract rather than a failure. The phrase is a
+    // constant checked against the binary's source below, because the first
+    // version of this check keyed on wording the binary no longer printed.
+    if stderr.contains(TUI_GAVE_UP) {
         return;
     }
     let Some(total_bytes) = ontology_memory_total() else {
@@ -122,7 +131,7 @@ fn the_gui_memory_tab_agrees_with_the_ontology() {
     }
     let (stdout, stderr, code) = run(&["gui", "--frame", "--tab", "memory"]);
     assert_eq!(code, 0, "rendering the GUI Memory tab failed:\n{stderr}");
-    if stderr.contains("no snapshot arrived") {
+    if stderr.contains(GUI_GAVE_UP) {
         return;
     }
     let Some(total_bytes) = ontology_memory_total() else {
@@ -156,4 +165,33 @@ fn the_gui_memory_tab_agrees_with_the_ontology() {
         (used + available - total).abs() <= 1.5,
         "the GUI's used + available ({used} + {available}) does not equal its total ({total})"
     );
+}
+
+/// The give-up messages these tests key on must still be what the binary
+/// prints.
+///
+/// **This exists because they were not.** `agentic_contract.rs` skipped a slow
+/// render when stderr contained "no snapshot arrived", and this file copied the
+/// check. The binary's message had become "no *complete* snapshot arrived", of
+/// which the old phrase is not a substring, so the skip could never fire -- on a
+/// slow runner both tests would have failed with a parsing error rather than
+/// skipping as they document. A test quoting another file's text has no way to
+/// notice that text changing; this one reads the source it depends on.
+#[test]
+fn the_give_up_messages_these_tests_key_on_still_exist() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/main.rs"))
+        .expect("read src/bin/main.rs");
+    for (phrase, surface) in [(TUI_GAVE_UP, "tui --frame"), (GUI_GAVE_UP, "gui --frame")] {
+        assert!(
+            main.contains(phrase),
+            concat!(
+                "`ironmon {}` no longer prints \"{}\" when it gives up waiting. ",
+                "Update the constant here and the matching check in ",
+                "tests/agentic_contract.rs, or the slow-machine skip in both ",
+                "will silently stop working."
+            ),
+            surface,
+            phrase
+        );
+    }
 }
