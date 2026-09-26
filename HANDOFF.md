@@ -9943,10 +9943,19 @@ copy can be replaced mid-run by one without those features. That was not
 traced to certainty. It is one more cost of the shared target directory, and
 it produces false *failures*, which is worse than the queueing.
 
-### Four collection paths, and the one without a fence
+### Collection paths, and the ones without a fence
 
-This crate reads the same hardware through four separate paths, and the
-agreement tests covered two of them:
+**Correction to the first version of this section**, which said the crate had
+four collection paths and that the agent's context was "the one without a
+fence". It undercounted. The table below is the four that *collect* -- that
+call the platform readers themselves -- but the TUI and GUI are separate
+**renderers** of the pipeline snapshot, each converting units for display, and
+neither has an agreement test either. `tests/plausibility.rs` covers the
+pipeline, but it checks self-consistency (used <= total), which a uniform unit
+error passes. Instance twenty-seven's bugs were in exactly those renderers. So
+the agent context is fenced now, and the renderers are not.
+
+The collecting paths, and which were guarded:
 
 | Path | Guarded by |
 | --- | --- |
@@ -9967,8 +9976,9 @@ file's rules: fixed quantities only, compared only where both sides report them,
 and a failure if nothing was compared. Its control reproduces instance twenty-six
 exactly.
 
-> **An agreement test per collection path is what catches values that are
-> simply wrong.** The structural scans in this file find absences stated as
+> **An agreement test per path that produces a number someone reads is what
+> catches values that are simply wrong** -- collecting paths and rendering
+> paths alike. The structural scans in this file find absences stated as
 > values. Neither can find a unit error, because a unit error is present,
 > consistent and confident. Comparing two independent readers of the same fixed
 > quantity is the one mechanical check that sees it. When a new path is added,
@@ -9982,10 +9992,16 @@ cached` (GUI Memory tab). All five now use `total - used`, which the readers
 define as each platform's own available figure. The GUI tab's version was
 self-contradicting on Windows: `ram.free` is already `ullAvailPhys`, and adding
 `SystemCache` counted the standby list twice, so "used" + "available" exceeded
-installed RAM. The magnitude on this machine was not measured -- the ontology
-exposes neither input, and the machine was at 99.6% memory use when it was
-checked -- so no figure is claimed; the contradiction is established from the
-readers' own definitions.
+installed RAM. The contradiction was first established from the readers' own
+definitions, with no figure claimed, because the ontology exposes neither input.
+
+**It was then measured**, from the GUI's own headless render after the fix
+(`ironmon gui --frame --tab memory`), which prints both inputs: Free 54,780 MB
+and Cached 42,088 MB, of a 95,890 MB total. The old formula therefore reported
+**96,868 MB available on a 95,890 MB machine** -- more available memory than is
+installed, with "used" plus "available" at 144% of RAM. The fixed tab reads
+Used 41,110 + Available 54,780 = 95,890 MB, and the TUI's panel agrees
+(93.64 GiB total, 40.26 used + 53.38 available).
 
 The GUI's JSON and CSV exports also published KB under `bytes`. Both fixed.
 

@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An agreement test for what the TUI and GUI paint.** The TUI and GUI collect
+  nothing of their own, but each converts units for display, and nothing
+  compared a rendered number to anything: `tests/plausibility.rs` checks the
+  pipeline for self-consistency, which a uniform unit error passes.
+  `tests/renderer_agreement.rs` renders each Memory tab headlessly with
+  `--frame` — the text a person sees — and checks that the displayed total
+  matches the ontology's `memory.total` and that the renderer's own used plus
+  available equals its total. Restoring the GUI's old `free + buffers + cached`
+  formula makes it fail with "used + available (72630 + 42967) does not equal
+  its total (95890)".
+
 - **An agreement test for the chat agent's context.** This crate reads the same
   hardware through four paths. The ontology is the reference, and the
   Prometheus exporters and the MCP tool surface each had a test comparing their
