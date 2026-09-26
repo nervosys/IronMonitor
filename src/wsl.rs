@@ -15,9 +15,7 @@
 //!     println!("Running in WSL{}", info.version.unwrap_or(0));
 //!     if info.gpu_passthrough {
 //!         println!("GPU passthrough is available");
-//!         for gpu in &info.gpu_devices {
-//!             println!("  GPU: {}", gpu);
-//!         }
+//!         println!("  CUDA library mapped in: {}", info.cuda_available);
 //!     }
 //! }
 //! # Ok(())
@@ -37,13 +35,19 @@ pub struct WslInfo {
     pub windows_build: Option<String>,
     /// Whether GPU passthrough is available
     pub gpu_passthrough: bool,
-    /// GPU devices visible via /dev/dxg or /usr/lib/wsl
-    pub gpu_devices: Vec<String>,
     /// Whether /dev/dxg (DirectX Graphics) device exists
     pub dxg_available: bool,
     /// Whether D3D12 is available for GPU compute
     pub d3d12_available: bool,
-    /// Whether CUDA is available via WSL2 passthrough
+    /// Whether the host's CUDA user-space library (`libcuda.so`) is mapped
+    /// into `/usr/lib/wsl/lib`.
+    ///
+    /// There is deliberately no list of GPU devices. WSL2 does not expose its
+    /// adapters through the filesystem: a list read from `/usr/lib/wsl/drivers`
+    /// is the Windows driver store -- 941 packages on the machine this was
+    /// found on, FireWire and ACPI drivers among them, all published here as
+    /// GPUs. Adapters are enumerated through DXCore, which this module does
+    /// not call.
     pub cuda_available: bool,
     /// WSL distribution name
     pub distro_name: Option<String>,
@@ -77,7 +81,6 @@ impl WslDetector {
             version: None,
             windows_build: None,
             gpu_passthrough: false,
-            gpu_devices: Vec::new(),
             dxg_available: false,
             d3d12_available: false,
             cuda_available: false,
@@ -149,11 +152,12 @@ impl WslDetector {
         // Check /dev/dxg — DirectX Graphics device (GPU passthrough)
         info.dxg_available = Path::new("/dev/dxg").exists();
 
-        // Check for CUDA passthrough libraries
+        // Check for CUDA passthrough libraries. `/usr/lib/wsl/drivers` is not
+        // one: it is the Windows driver store, present on every WSL2 install
+        // whether or not the host has a CUDA-capable GPU.
         let cuda_paths = [
             "/usr/lib/wsl/lib/libcuda.so",
             "/usr/lib/wsl/lib/libcuda.so.1",
-            "/usr/lib/wsl/drivers",
         ];
         info.cuda_available = cuda_paths.iter().any(|p| Path::new(p).exists());
 
@@ -165,37 +169,6 @@ impl WslDetector {
         info.d3d12_available = d3d12_paths.iter().any(|p| Path::new(p).exists());
 
         info.gpu_passthrough = info.dxg_available || info.cuda_available || info.d3d12_available;
-
-        // Enumerate GPU devices from /usr/lib/wsl/drivers/
-        if let Ok(entries) = fs::read_dir("/usr/lib/wsl/drivers") {
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            info.gpu_devices.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Also check for GPU libraries in /usr/lib/wsl/lib/
-        if let Ok(entries) = fs::read_dir("/usr/lib/wsl/lib") {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("libnvidia") || name.starts_with("libcuda") {
-                        if !info
-                            .gpu_devices
-                            .iter()
-                            .any(|d| d.to_lowercase().contains("nvidia"))
-                        {
-                            info.gpu_devices.push("NVIDIA (WSL2 CUDA)".to_string());
-                        }
-                        break;
-                    }
-                }
-            }
-        }
 
         // Get distro name from WSL_DISTRO_NAME env var
         info.distro_name = std::env::var("WSL_DISTRO_NAME").ok();
@@ -315,9 +288,6 @@ mod tests {
             println!("  CUDA available: {}", info.cuda_available);
             println!("  D3D12 available: {}", info.d3d12_available);
             println!("  Distro: {:?}", info.distro_name);
-            for gpu in &info.gpu_devices {
-                println!("  GPU: {}", gpu);
-            }
         }
     }
 

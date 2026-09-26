@@ -184,4 +184,35 @@ fn main() {
             m.vulnerabilities.len()
         }
     );
+
+    // The four readers HANDOFF listed as never probed. `hardware_ai` is not
+    // here: every field of its report is an inference or an identifier, so it
+    // has nothing a probe could confirm as a reading.
+    probe!(
+        "drm_monitor",
+        ironmonlib::drm_monitor::DrmMonitor,
+        |m: &ironmonlib::drm_monitor::DrmMonitor| m.devices().len()
+    );
+    probe!(
+        "scheduler",
+        ironmonlib::scheduler::SchedulerMonitor,
+        // PSI entries enumerated, not "how many are under pressure": the table
+        // counts what a reader read, which `security_mitigations` got wrong once.
+        |m: &ironmonlib::scheduler::SchedulerMonitor| m.pressure().len()
+    );
+    {
+        // `WslDetector::detect` cannot fail, so it does not fit `probe!`. Not
+        // being inside WSL is a correct `none` on a Windows host.
+        let w = ironmonlib::wsl::WslDetector::detect();
+        let status = if w.is_wsl { "ok" } else { "none" };
+        println!(
+            "{:<22} {:<7} version {:?}, dxg {}, cuda {}, {} virtual adapter(s)",
+            "wsl",
+            status,
+            w.version,
+            w.dxg_available,
+            w.cuda_available,
+            w.virtual_adapters.len()
+        );
+    }
 }

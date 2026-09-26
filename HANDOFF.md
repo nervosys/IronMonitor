@@ -7988,6 +7988,7 @@ evidence — `bandwidth_gbs`, `latency_ns` and `single_thread_score` all look
 exactly like measurements at the call site.
 
 Still uncovered and not probed: `wsl`, `drm_monitor`, `hardware_ai`, `scheduler`.
+*(Since probed -- see "The last four unprobed readers" at the end.)*
 
 Add a cluster per change, verify each field resolves to a true provenance on the
 machine at hand, and check the absent variant first — see open work 5 for why
@@ -10108,3 +10109,38 @@ Not fixed: a correct fix needs real localized `ping` output to test against,
 and guessing the strings would be the defect again. Parsing the reply count
 from the numeric structure rather than the words, or using the ICMP API
 directly, would avoid the problem entirely.
+
+### The last four unprobed readers
+
+`examples/probe_readers.rs` now covers `drm_monitor`, `scheduler` and `wsl`, run
+on both Windows and WSL2. `hardware_ai` stays out of the probe on purpose: every
+field of its report is an inference or an identifier, so there is nothing a
+probe could confirm as a reading. It has no consumer outside its own module.
+
+| Reader | Windows | WSL2 | Verdict |
+| --- | --- | --- | --- |
+| `drm_monitor` | ok, 3 | none, 0 | clean |
+| `scheduler` | none, 0 -- as `Ok` | ok, 3 | **fixed**: declined nothing, and its aggregates defaulted to 0 |
+| `wsl` | none | ok, 941 "GPUs" | **fixed**: the GPU list was the Windows driver store |
+
+**`scheduler`.** Off Linux, `SchedulerMonitor::new()` returned `Ok` with an
+empty analysis -- no pressure, nothing queued -- on a platform that exposes
+neither: "cannot be read here" and "idle" were the same value, the shape the
+watchdog and RAPL readers shipped before. It now returns
+`IronError::UnsupportedPlatform` with the reason. On Linux, an unreadable
+`/proc/schedstat` gave `avg_runqueue_depth: 0.0`, `max_runqueue_depth: 0` and
+`busiest_cpu: 0`, the last naming a CPU as busiest from no data; all three are
+now `Option`. The module doc claimed Windows and macOS support that never
+existed; it now says there is none. Control: restoring `Ok(empty)` fails the
+new `a_platform_without_proc_declines_rather_than_reporting_an_idle_scheduler`.
+
+**`wsl`.** `gpu_devices` listed every directory under `/usr/lib/wsl/drivers`.
+That is the Windows driver store, not a device list: 941 entries on this
+machine, beginning `1394.inf_amd64_...` -- a FireWire driver published as a
+GPU. A synthetic `"NVIDIA (WSL2 CUDA)"` entry was added when an NVIDIA library
+was present. WSL2 does not expose its adapters through the filesystem at all
+(they come from DXCore), so there is no honest filesystem replacement and the
+field is removed rather than refilled. `cuda_available` counted that same
+directory as evidence of CUDA, so it was `true` on every WSL2 install; it now
+requires `libcuda.so` in `/usr/lib/wsl/lib`. Nothing outside the module
+consumed either.

@@ -376,6 +376,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`scheduler` declines off Linux instead of reporting an idle machine.**
+  `SchedulerMonitor::new()` returned an empty analysis on platforms with no
+  `/proc`; it now returns `IronError::UnsupportedPlatform`. On Linux,
+  `avg_runqueue_depth`, `max_runqueue_depth` and `busiest_cpu` are `Option`,
+  `None` when `/proc/schedstat` gave no rows rather than 0 -- `busiest_cpu: 0`
+  named CPU 0 from no data. **Breaking** for direct library callers of those
+  fields.
+
+- **`wsl` no longer lists the Windows driver store as GPUs.** `WslInfo::gpu_devices`
+  enumerated `/usr/lib/wsl/drivers` -- 941 driver packages, FireWire and ACPI
+  among them -- and is removed; WSL2 exposes no adapter list through the
+  filesystem. `cuda_available` was true on every WSL2 install because it counted
+  that directory; it now requires `libcuda.so`. **Breaking** for direct library
+  callers of `gpu_devices`.
+
 - **A flaky TUI test.** `sync_snapshot_populates_display_state_from_collector`
   asserted `!app.sync_snapshot()` against a live, ticking collector, so a
   genuinely new generation arriving between two calls read as a broken
