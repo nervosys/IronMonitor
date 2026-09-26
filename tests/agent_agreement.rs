@@ -129,3 +129,80 @@ fn the_agent_surface_and_the_ontology_agree_on_what_does_not_move() {
          ontology, so this test asserted nothing"
     );
 }
+
+/// The built-in chat agent's context, against the ontology.
+///
+/// **This is the fourth collection path, and until now the only one with no
+/// agreement test.** The ontology is the reference; `prometheus_agreement.rs`
+/// covers the exporters; the test above covers the MCP tool surface.
+/// `agent::state::SystemState` -- what `agent::engine` renders into the prompt
+/// -- was covered by nothing, and it carried both defects the other paths had
+/// already been fenced against: it told the model a 94 GiB machine had 93 MB of
+/// RAM (a KB figure divided by 1024 twice), and that a 12-core CPU had 24 cores
+/// (the logical count in the physical field).
+///
+/// Compared only where both sides report the figure. The agent reads no memory
+/// on macOS, and a VM may report no physical core count distinct from the
+/// logical one; neither is a disagreement. What is required is that *something*
+/// was compared, so the test cannot pass by comparing nothing.
+#[test]
+fn the_agent_context_and_the_ontology_agree_on_what_does_not_move() {
+    let Ok(monitor) = ironmonlib::UnifiedMonitor::new() else {
+        eprintln!("skipping: no UnifiedMonitor on this machine");
+        return;
+    };
+    let query = ironmonlib::Query::parse("what is the state of this machine");
+    let state = match ironmonlib::SystemState::from_monitor(&monitor, &query) {
+        Ok(state) => state,
+        Err(e) => panic!("the agent could not build its context: {e}"),
+    };
+    let readings = ironmonlib::ontology::resolve::snapshot();
+
+    const MIB: f64 = 1024.0 * 1024.0;
+    let mut compared = 0usize;
+    let mut problems: Vec<String> = Vec::new();
+
+    if let (Some(mem), Some(total)) = (&state.memory, reading(&readings, "memory.total")) {
+        compared += 1;
+        let agent_bytes = mem.total_mb as f64 * MIB;
+        // `total_mb` is an integer division of a byte count, so it can be up
+        // to one MiB short -- never more, and never a factor of 1024 off.
+        if !(0.0..MIB).contains(&(total - agent_bytes)) {
+            problems.push(format!(
+                "memory: the agent says {} MiB ({agent_bytes} bytes), the ontology {total} bytes",
+                mem.total_mb
+            ));
+        }
+    }
+
+    if let Some(cpu) = &state.cpu {
+        if let Some(logical) = reading(&readings, "cpu.cores.logical") {
+            compared += 1;
+            if cpu.threads as f64 != logical {
+                problems.push(format!(
+                    "threads: the agent says {}, cpu.cores.logical is {logical}",
+                    cpu.threads
+                ));
+            }
+        }
+        if let (Some(cores), Some(physical)) = (cpu.cores, reading(&readings, "cpu.cores.physical"))
+        {
+            compared += 1;
+            if cores as f64 != physical {
+                problems.push(format!(
+                    "cores: the agent says {cores}, cpu.cores.physical is {physical}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "the agent's context disagrees with the ontology:\n  {}",
+        problems.join("\n  ")
+    );
+    assert!(
+        compared > 0,
+        "no figure was reported by both the agent's context and the ontology, so this test asserted nothing"
+    );
+}

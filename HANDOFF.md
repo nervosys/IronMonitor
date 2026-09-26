@@ -9275,15 +9275,24 @@ reproduced exactly the `E0308` CI had reported, at the same line. **A check
 that has never been seen to fail is not evidence that the code is clean; it is
 evidence of nothing at all.**
 
-The working set, all four of which must be run before claiming a change is
-verified:
+The working set, all five of which must be run before claiming a change is
+verified -- **the last one last**, after every edit including tests added by
+script:
 
 ```bash
 cargo check --all-targets --all-features                          # Windows
 wsl cargo clippy --all-targets                                    # Linux
 cargo check --target aarch64-apple-darwin --features full --lib   # macOS
 cargo test --all-features                                         # incl. doctests
+cargo fmt --all -- --check                                        # immediately before commit
 ```
+
+The fifth was added after `9b220f9` went red on CI's Format job alone -- every
+test passed on all three platforms. `cargo fmt` had been run, then tests were
+appended by script, then the commit was made. Running the formatter partway
+through a change and not again is the same shape as the other gaps in this
+list: a check that was true when it ran and stopped being true before the
+commit.
 
 And the exit code must come from `cargo`, not from the tail of a pipeline --
 `cargo test ... | grep ... | head` reports `head`'s success, and a run killed
@@ -9933,3 +9942,68 @@ build of it running concurrently against the shared target directory, that
 copy can be replaced mid-run by one without those features. That was not
 traced to certainty. It is one more cost of the shared target directory, and
 it produces false *failures*, which is worse than the queueing.
+
+### Four collection paths, and the one without a fence
+
+This crate reads the same hardware through four separate paths, and the
+agreement tests covered two of them:
+
+| Path | Guarded by |
+| --- | --- |
+| the ontology resolver | -- the reference the others are compared to |
+| the Prometheus exporters | `tests/prometheus_agreement.rs` |
+| the MCP tool surface (`AiDataApi`) | `tests/agent_agreement.rs` |
+| the chat agent's context (`agent::state::SystemState`) | **nothing, until now** |
+
+`agent_agreement.rs`'s own header gives the reason these tests exist: "exactly
+how a 93.6 GiB machine came to report 98 MB of RAM through the Prometheus
+exporter". The same defect was found, fixed and fenced on one path, and survived
+on the one path with no fence -- which is also the path whose output goes
+straight into a model's prompt. Instances twenty-five and twenty-six are both
+things a test on that path would have caught.
+
+It now has one, in `agent_agreement.rs` beside its sibling, following that
+file's rules: fixed quantities only, compared only where both sides report them,
+and a failure if nothing was compared. Its control reproduces instance twenty-six
+exactly.
+
+> **An agreement test per collection path is what catches values that are
+> simply wrong.** The structural scans in this file find absences stated as
+> values. Neither can find a unit error, because a unit error is present,
+> consistent and confident. Comparing two independent readers of the same fixed
+> quantity is the one mechanical check that sees it. When a new path is added,
+> the agreement test is part of adding it.
+
+### "Available memory", five ways
+
+Instance twenty-seven. Five surfaces computed available memory, three
+different ways: `free` (agent, backend, TUI, GUI export) and `free + buffers +
+cached` (GUI Memory tab). All five now use `total - used`, which the readers
+define as each platform's own available figure. The GUI tab's version was
+self-contradicting on Windows: `ram.free` is already `ullAvailPhys`, and adding
+`SystemCache` counted the standby list twice, so "used" + "available" exceeded
+installed RAM. The magnitude on this machine was not measured -- the ontology
+exposes neither input, and the machine was at 99.6% memory use when it was
+checked -- so no figure is claimed; the contradiction is established from the
+readers' own definitions.
+
+The GUI's JSON and CSV exports also published KB under `bytes`. Both fixed.
+
+#### Open: `RamInfo::free` means different things per platform
+
+Linux fills `free` with `MemFree`. Windows fills it with `ullAvailPhys`, which is
+*available*, not free. So the GUI's "Free" card has always shown the available
+figure on Windows, and after instance twenty-seven it matches the "Available"
+card there -- accurate to what the reader provides, and a visible sign of the
+mismatch. A true free figure on Windows needs the `\Memory\Free & Zero Page
+List Bytes` counter, which the reader does not query. That is a reader fix, not
+a rendering one.
+
+#### Open: one failing GPU fails the whole agent context
+
+`SystemState::from_monitor` calls `UnifiedMonitor::snapshot_gpus`, which calls
+`GpuCollection::snapshot_all`, which collects every device's `Result` into one.
+A single GPU whose query errors therefore makes the whole call fail, and the
+chat agent cannot answer anything. `snapshot_all_partial`, directly beside it,
+preserves per-device results for exactly this case. Not a fabricated reading,
+so not fixed in this sweep.

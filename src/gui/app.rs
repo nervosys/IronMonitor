@@ -1633,9 +1633,12 @@ impl IronMonitorApp {
 
         let mem_data = self.memory_stats.as_ref().map(|s| {
             json!({
-                "total_bytes": s.ram.total,
-                "used_bytes": s.ram.used,
-                "available_bytes": s.ram.free,
+                // `RamInfo` is in KB. These were published under `_bytes`
+                // without converting, 1024 times too small, in the snapshot the
+                // JSON button copies to the clipboard.
+                "total_bytes": s.ram.total * 1024,
+                "used_bytes": s.ram.used * 1024,
+                "available_bytes": s.ram.total.saturating_sub(s.ram.used) * 1024,
                 "usage_percent": s.ram_usage_percent(),
             })
         });
@@ -1697,11 +1700,14 @@ impl IronMonitorApp {
         if let Some(mem) = &self.memory_stats {
             csv.push_str(&format!(
                 "memory_total,{},bytes,{}\n",
-                mem.ram.total, timestamp
+                // KB to bytes: the unit column says bytes and `RamInfo` is KB.
+                mem.ram.total * 1024,
+                timestamp
             ));
             csv.push_str(&format!(
                 "memory_used,{},bytes,{}\n",
-                mem.ram.used, timestamp
+                mem.ram.used * 1024,
+                timestamp
             ));
             csv.push_str(&format!(
                 "memory_usage,{:.1},percent,{}\n",
@@ -3328,9 +3334,19 @@ impl IronMonitorApp {
                     Some(x) => format!("{x:.0}"),
                     None => "—".to_string(),
                 };
-                // Available = free + buffers + cached (like `free -h`), over
-                // whichever of the two this platform reports.
-                let available_mb = free_mb + buffers_mb.unwrap_or(0.0) + cached_mb.unwrap_or(0.0);
+                // Available is `total - used`. The readers define `used` as
+                // total minus each platform's own available figure, so this is
+                // that figure, and "used" + "available" on this tab now sum to
+                // the installed total.
+                //
+                // It was `free + buffers + cached`, the Linux `free -h`
+                // approximation. On Windows `ram.free` is `ullAvailPhys` --
+                // already the available figure, standby list included -- and
+                // `cached` is `SystemCache`, which Microsoft documents as the
+                // standby list plus the system working set. So the standby list
+                // was counted twice, and "used" + "available" exceeded installed
+                // RAM whenever the cache was non-zero.
+                let available_mb = (total_mb - used_mb).max(0.0);
 
                 ui.add(SectionHeader::new("Physical Memory").icon("💾"));
 

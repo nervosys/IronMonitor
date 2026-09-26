@@ -42,6 +42,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **"Available memory" means the same thing on every surface.** It was
+  computed five different ways: the agent and the CLI backend used `free`, the
+  TUI used `free`, the GUI's Memory tab used `free + buffers + cached`, and the
+  GUI's JSON export used `free`. All five now use `total - used`, which the
+  readers define as each platform's own available figure (Linux `MemAvailable`,
+  Windows `ullAvailPhys`).
+
+  The GUI Memory tab's formula was the one that contradicted itself. It is the
+  Linux `free -h` approximation, but on Windows `ram.free` already *is*
+  `ullAvailPhys`, standby list included, and `cached` is `SystemCache`, which
+  Microsoft documents as the standby list plus the system working set. The
+  standby list was counted twice, so the tab's "used" and "available" added up
+  to more than the installed RAM whenever the cache was non-zero.
+
+- **The GUI's JSON and CSV exports report memory in the unit they name.** Both
+  published `RamInfo`'s figures — which are in KB — under `_bytes` / `bytes`
+  without converting, so the snapshot copied by the JSON and CSV buttons gave
+  total and used memory 1024 times too small.
+
+### Added
+
+- **An agreement test for the chat agent's context.** This crate reads the same
+  hardware through four paths. The ontology is the reference, and the
+  Prometheus exporters and the MCP tool surface each had a test comparing their
+  fixed quantities against it. The built-in agent's context — what is rendered
+  into the model's prompt — had none, and it was the path carrying the 93 MB and
+  24-core errors. `the_agent_context_and_the_ontology_agree_on_what_does_not_move`
+  compares installed memory, threads and physical cores. Putting the double
+  division back makes it fail with "the agent says 93 MiB (97517568 bytes), the
+  ontology 100547727360 bytes".
+
 - **The model is no longer told a 94 GiB machine has 93 MB of RAM.**
   `agent::state::MemoryState` converted with `stats.ram.total / 1024 / 1024`.
   `RamInfo` is in KB — its fields say so, and the Windows reader stores

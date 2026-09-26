@@ -1505,7 +1505,11 @@ impl App {
         self.memory_info = MemoryInfo {
             total: stats.ram.total * 1024,
             used: stats.ram.used * 1024,
-            available: stats.ram.free * 1024,
+            // `total - used`, not `free`: the readers define `used` as total
+            // minus each platform's own available figure, so this recovers it
+            // exactly. `free` on Linux excludes reclaimable cache. Same rule as
+            // `agent::state::MemoryState::from_ram` and the GUI.
+            available: stats.ram.total.saturating_sub(stats.ram.used) * 1024,
             swap_total: stats.swap.total.map(|v| v * 1024),
             swap_used: stats.swap.used.map(|v| v * 1024),
         };
