@@ -26,10 +26,6 @@ struct SocInfo {
     name: String,
     e_core_count: u32,
     p_core_count: u32,
-    gpu_core_count: u32,
-    cpu_max_power: f32,
-    gpu_max_power: f32,
-    ane_max_power: f32,
 }
 
 /// Powermetrics data
@@ -99,35 +95,18 @@ impl AppleSiliconMonitor {
         // composition, not an unknown cluster.
         let e_cores = Self::get_sysctl_value("hw.perflevel1.logicalcpu").unwrap_or(0);
         let p_cores = Self::get_sysctl_value("hw.perflevel0.logicalcpu").unwrap_or(0);
-        let gpu_cores = Self::get_gpu_cores().unwrap_or(0);
 
-        // Determine power limits based on SOC
-        let (cpu_max_power, gpu_max_power, ane_max_power) = match name.as_str() {
-            s if s.contains("M1 Max") => (30.0, 60.0, 8.0),
-            s if s.contains("M1 Pro") => (30.0, 30.0, 8.0),
-            s if s.contains("M1 Ultra") => (60.0, 120.0, 16.0),
-            s if s.contains("M2 Max") => (35.0, 65.0, 8.0),
-            s if s.contains("M2 Pro") => (35.0, 35.0, 8.0),
-            s if s.contains("M2 Ultra") => (70.0, 130.0, 16.0),
-            s if s.contains("M2") => (25.0, 15.0, 8.0),
-            s if s.contains("M3 Max") => (40.0, 70.0, 8.0),
-            s if s.contains("M3 Pro") => (40.0, 40.0, 8.0),
-            s if s.contains("M3") => (30.0, 20.0, 8.0),
-            s if s.contains("M4 Max") => (45.0, 75.0, 10.0),
-            s if s.contains("M4 Pro") => (45.0, 45.0, 10.0),
-            s if s.contains("M4") => (35.0, 25.0, 10.0),
-            s if s.contains("M1") => (20.0, 20.0, 8.0),
-            _ => (20.0, 20.0, 8.0), // Default for unknown
-        };
-
+        // There was a per-chip power table here -- CPU, GPU and ANE ceilings
+        // by brand-string match, with `(20.0, 20.0, 8.0)` for any chip it did
+        // not name. Its only reader divided the ANE's measured draw by that
+        // ceiling and reported the result as utilisation; see `npu_info`. A GPU
+        // core count read from `system_profiler` sat beside it, stored and
+        // never read. Both are gone, and with them a `system_profiler` spawn on
+        // every construction.
         Ok(SocInfo {
             name,
             e_core_count: e_cores,
             p_core_count: p_cores,
-            gpu_core_count: gpu_cores,
-            cpu_max_power,
-            gpu_max_power,
-            ane_max_power,
         })
     }
 
@@ -136,24 +115,6 @@ impl AppleSiliconMonitor {
         let output = Command::new("sysctl").args(["-n", key]).output().ok()?;
 
         String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-    }
-
-    /// Get GPU core count from system_profiler
-    fn get_gpu_cores() -> Option<u32> {
-        let output = Command::new("system_profiler")
-            .args(["-detailLevel", "basic", "SPDisplaysDataType"])
-            .output()
-            .ok()?;
-
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            if line.contains("Total Number of Cores") {
-                if let Some(cores_str) = line.split(':').nth(1) {
-                    return cores_str.trim().parse().ok();
-                }
-            }
-        }
-        None
     }
 
     /// Start powermetrics process
@@ -358,12 +319,17 @@ impl SiliconMonitor for AppleSiliconMonitor {
         // E-cluster. An empty `core_ids` means the per-level core count was
         // not read, not that the cluster has no cores; the figures beside it
         // are measured either way.
+        //
+        // Neither cluster reports power. `powermetrics` gives one CPU figure,
+        // and this used to split it 40/60 between the clusters -- a fixed
+        // ratio presented as two per-cluster readings, the E-cluster's
+        // unchanged whether it was idle or saturated.
         clusters.push(CpuCluster {
             cluster_type: CpuClusterType::Efficiency,
             core_ids: (0..self.soc_info.e_core_count).collect(),
             frequency_mhz: Some(data.e_cluster_freq_mhz),
             utilization: Some(data.e_cluster_active),
-            power_watts: Some(data.cpu_power_mw as f32 / 1000.0 * 0.4), // Approximate
+            power_watts: None,
         });
 
         // P-cluster
@@ -372,7 +338,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
             core_ids: (0..self.soc_info.p_core_count).collect(),
             frequency_mhz: Some(data.p_cluster_freq_mhz),
             utilization: Some(data.p_cluster_active),
-            power_watts: Some(data.cpu_power_mw as f32 / 1000.0 * 0.6), // Approximate
+            power_watts: None,
         });
 
         Ok((cores, clusters))
@@ -381,18 +347,18 @@ impl SiliconMonitor for AppleSiliconMonitor {
     fn npu_info(&self) -> Result<Vec<NpuInfo>> {
         let data = self.parse_powermetrics()?;
 
-        // ANE utilization is estimated from power consumption
-        let ane_util =
-            ((data.ane_power_mw as f32 / 1000.0) / self.soc_info.ane_max_power * 100.0) as u8;
-
         Ok(vec![NpuInfo {
             name: "Apple Neural Engine".to_string(),
             vendor: "Apple".to_string(),
             // "Most" is not this machine. The ANE core count is not read.
             cores: None,
-            // Derived from power draw, not measured directly — the comment
-            // above says so, and the figure is real.
-            utilization: Some(ane_util),
+            // Not reported. This was the ANE's measured draw divided by a
+            // ceiling from a brand-string table -- 8 W for any chip the table
+            // did not name -- which is the GPU power-percentage defect over
+            // again: a real numerator over an invented denominator, reaching
+            // the TUI's accelerator panel as a utilisation. `powermetrics`
+            // reports no ANE activity figure, so there is nothing to put here.
+            utilization: None,
             power_watts: Some(data.ane_power_mw as f32 / 1000.0),
             frequency_mhz: None,
         }])

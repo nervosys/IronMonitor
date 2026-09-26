@@ -376,6 +376,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Apple Neural Engine no longer reports a utilisation.** It was the ANE's
+  measured power divided by a ceiling from a per-chip table -- 8 W for any chip
+  the table did not name -- and reached the TUI's accelerator panel. The same
+  defect was fixed for the Apple GPU earlier. `powermetrics` reports no ANE
+  activity, so `NpuInfo::utilization` is `None`. `cpu_info`'s per-cluster
+  `power_watts`, a fixed 40/60 split of one CPU figure, is `None` too. The
+  table and an unread GPU core count are removed, and with them a
+  `system_profiler` process spawned on every Apple GPU read.
+
+- **`firmware::FirmwareInventory::risk_score()` returns `Option<u8>`**, `None`
+  when no firmware entry was read, instead of `0` -- the lowest-risk score.
+  **Breaking** for direct library callers.
+
+- **`interconnect::InterconnectLink::latency_ns` is renamed
+  `estimated_latency_ns`.** Every value is a constant per link type; the name
+  now says so. **Breaking** for direct library callers.
+
 - **`scheduler` declines off Linux instead of reporting an idle machine.**
   `SchedulerMonitor::new()` returned an empty analysis on platforms with no
   `/proc`; it now returns `IronError::UnsupportedPlatform`. On Linux,

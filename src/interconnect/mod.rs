@@ -106,8 +106,9 @@ pub struct InterconnectLink {
     pub width: u32,
     /// Speed per lane in GT/s (gigatransfers/second).
     pub speed_gts: f64,
-    /// Latency in nanoseconds (estimated).
-    pub latency_ns: f64,
+    /// Latency in nanoseconds, **estimated** from the link type -- a constant
+    /// per kind of link, never measured on this machine.
+    pub estimated_latency_ns: f64,
     /// Whether this link is active/detected.
     pub active: bool,
 }
@@ -325,7 +326,7 @@ impl InterconnectMonitor {
                         bidirectional_bandwidth_gbs: bidi_bw,
                         width,
                         speed_gts,
-                        latency_ns: if speed_gts >= 16.0 { 60.0 } else { 80.0 },
+                        estimated_latency_ns: if speed_gts >= 16.0 { 60.0 } else { 80.0 },
                         active: true,
                     });
                 }
@@ -341,7 +342,7 @@ impl InterconnectMonitor {
             bidirectional_bandwidth_gbs: 0.0,
             width: 0,
             speed_gts: 0.0,
-            latency_ns: if matches!(on_die, InterconnectType::MeshInterconnect) {
+            estimated_latency_ns: if matches!(on_die, InterconnectType::MeshInterconnect) {
                 15.0
             } else {
                 10.0
@@ -407,7 +408,7 @@ impl InterconnectMonitor {
                         bidirectional_bandwidth_gbs: inter_bw * 2.0,
                         width: 16,
                         speed_gts: if_speed_gts,
-                        latency_ns: 120.0,
+                        estimated_latency_ns: 120.0,
                         active: true,
                     });
                 }
@@ -425,7 +426,7 @@ impl InterconnectMonitor {
                     bidirectional_bandwidth_gbs: on_pkg_bw * 2.0,
                     width: 32,
                     speed_gts: if_speed_gts,
-                    latency_ns: 40.0,
+                    estimated_latency_ns: 40.0,
                     active: true,
                 });
             }
@@ -486,7 +487,7 @@ impl InterconnectMonitor {
             bidirectional_bandwidth_gbs: bw,
             width: 0,
             speed_gts: 0.0,
-            latency_ns: 20.0,
+            estimated_latency_ns: 20.0,
             active: true,
         }];
 
@@ -818,7 +819,7 @@ mod tests {
             bidirectional_bandwidth_gbs: 128.0,
             width: 3,
             speed_gts: 16.0,
-            latency_ns: 60.0,
+            estimated_latency_ns: 60.0,
             active: true,
         };
         let json = serde_json::to_string(&link).unwrap();

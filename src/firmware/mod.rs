@@ -24,7 +24,10 @@
 //! for fw in inventory.items() {
 //!     println!("{}: {} v{} ({})", fw.component, fw.vendor, fw.version, fw.date);
 //! }
-//! println!("Risk score: {}/100", inventory.risk_score());
+//! match inventory.risk_score() {
+//!     Some(score) => println!("Inferred risk score: {}/100", score),
+//!     None => println!("No firmware entries were read; no risk score"),
+//! }
 //! ```
 
 use crate::error::IronError;
@@ -165,13 +168,14 @@ impl FirmwareInventory {
         &self.system_product
     }
 
-    /// Overall firmware risk score (max across all components).
-    pub fn risk_score(&self) -> u8 {
-        self.entries
-            .iter()
-            .map(|e| e.inferred_risk_score)
-            .max()
-            .unwrap_or(0)
+    /// Overall inferred firmware risk score (max across all components), or
+    /// `None` when no firmware entry was read.
+    ///
+    /// This returned `0` for an empty inventory, and zero is the *safest*
+    /// score there is: a machine whose firmware could not be read at all
+    /// would have been reported as carrying no risk.
+    pub fn risk_score(&self) -> Option<u8> {
+        self.entries.iter().map(|e| e.inferred_risk_score).max()
     }
 
     /// Average firmware age in days.
@@ -775,6 +779,20 @@ mod tests {
         let _ = inv.risk_score();
         let _ = inv.average_firmware_age_days();
         let _ = inv.high_risk_entries();
+    }
+
+    #[test]
+    fn an_inventory_with_no_entries_has_no_risk_score_rather_than_zero_risk() {
+        // Built directly: `default()` reads this machine's firmware first.
+        let inv = FirmwareInventory {
+            entries: Vec::new(),
+            secure_boot: SecureBootStatus::Unknown,
+            boot_mode: BootMode::Unknown,
+            system_vendor: String::new(),
+            system_product: String::new(),
+            system_serial: String::new(),
+        };
+        assert_eq!(inv.risk_score(), None);
     }
 
     #[test]

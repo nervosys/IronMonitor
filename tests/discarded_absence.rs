@@ -218,12 +218,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "zero feeds (0..0), giving an empty core list rather than a reported count; documented at the site",
     ),
     (
-        "src/silicon/apple.rs",
-        "get_gpu_cores",
-        1,
-        "feeds a private field that is written once and read nowhere",
-    ),
-    (
         "src/stats.rs",
         "sysctl_u64",
         1,

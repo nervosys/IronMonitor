@@ -10144,3 +10144,51 @@ field is removed rather than refilled. `cuda_available` counted that same
 directory as evidence of CUDA, so it was `true` on every WSL2 install; it now
 requires `libcuda.so` in `/usr/lib/wsl/lib`. Nothing outside the module
 consumed either.
+
+### Instance twenty-eight, found while deleting dead data
+
+Phase 5.2 was three cleanups. The first -- delete `silicon/apple.rs`'s
+`gpu_core_count`, recorded above as "written once and read nowhere" -- turned
+up a live defect beside it.
+
+`SocInfo` also held a per-chip power table: CPU, GPU and ANE ceilings by
+brand-string match, `(20.0, 20.0, 8.0)` for any chip the table did not name
+(so every M5). Its one reader was `npu_info`, which divided the ANE's measured
+draw by the table's ceiling and returned it as `NpuInfo::utilization`, and the
+TUI's accelerator panel draws that field. **This is the GPU
+power-percentage defect `AGENTS.md` cites by name** -- a real numerator over an
+invented denominator -- fixed for the GPU in `gpu/apple.rs` and left standing
+one module over for the ANE. A comment beside it said "the figure is real".
+`powermetrics` reports no ANE activity figure, so utilisation is now `None`.
+
+Two more went with it:
+
+- `cpu_info`'s two clusters split the one CPU power figure 40/60, marked
+  `// Approximate` -- a fixed ratio published as two per-cluster readings, the
+  E-cluster's share unchanged whether it was idle or saturated. Both are now
+  `None`. `cpu_info` has no caller outside `silicon`, so this reached only
+  library callers.
+- With the table and `gpu_core_count` gone, so is `get_gpu_cores` -- and the
+  `system_profiler` process it spawned on every `AppleSiliconMonitor::new()`,
+  which `gpu/apple.rs` calls on every GPU dynamic read. Its allowlist entry in
+  `tests/discarded_absence.rs` is removed with it, and the stale-entry test is
+  what confirms the count went to zero.
+
+**Not run on a Mac.** The macOS cross-check and a macOS clippy pass are clean;
+no test executes this code, because none can off macOS. It is on the Phase 4
+hardware list.
+
+The other two cleanups:
+
+- `interconnect::InterconnectLink::latency_ns` is now `estimated_latency_ns`,
+  matching `memory_bandwidth`'s field, so the name carries what only the doc
+  comment did. Every value is a per-link-type constant. Breaking for library
+  callers; nothing in the crate reads it.
+- `firmware::FirmwareInventory::risk_score()` returns `Option<u8>`, `None` for
+  an inventory with no entries. It returned `0` -- the safest score there is --
+  for a machine whose firmware could not be read at all. It still has no caller
+  but its doc example; it was changed now because it is cheaper than
+  remembering to.
+
+Lesson, again: **"dead" data is worth one grep of what sits beside it.** The
+field was dead; the struct it lived in was not.
