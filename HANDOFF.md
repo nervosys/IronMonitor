@@ -9275,23 +9275,18 @@ reproduced exactly the `E0308` CI had reported, at the same line. **A check
 that has never been seen to fail is not evidence that the code is clean; it is
 evidence of nothing at all.**
 
-The working set, all five of which must be run before claiming a change is
-verified -- **the last one last**, after every edit including tests added by
-script:
+**The working set now lives in `CONTRIBUTING.md`, "Verifying a change"**,
+which is the single copy: five checks, the format check run last, with the
+reason each one is there. It replaced a Getting Started section that
+prescribed `cargo test --lib --features full` -- the command that missed both
+failures described here, handed to every new contributor. It was kept in this
+file only until it had a better home; two copies of a procedure drift.
 
-```bash
-cargo check --all-targets --all-features                          # Windows
-wsl cargo clippy --all-targets                                    # Linux
-cargo check --target aarch64-apple-darwin --features full --lib   # macOS
-cargo test --all-features                                         # incl. doctests
-cargo fmt --all -- --check                                        # immediately before commit
-```
-
-The fifth was added after `9b220f9` went red on CI's Format job alone -- every
+The fifth check, `cargo fmt --all -- --check`, was added after `9b220f9` went
+red on CI's Format job alone -- every
 test passed on all three platforms. `cargo fmt` had been run, then tests were
 appended by script, then the commit was made. Running the formatter partway
-through a change and not again is the same shape as the other gaps in this
-list: a check that was true when it ran and stopped being true before the
+through a change and not again is the same shape as the other gaps above: a check that was true when it ran and stopped being true before the
 commit.
 
 And the exit code must come from `cargo`, not from the tail of a pipeline --
