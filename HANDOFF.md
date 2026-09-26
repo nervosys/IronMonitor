@@ -10078,3 +10078,33 @@ Its control reintroduces instance eighteen -- the watchdog's `pretimeout` read
 with `.unwrap_or(0)` -- and the test names the file and helper. That code is
 Linux-gated, so on Windows it compiles with the mutation in place; the scan is
 the only check that can see it there.
+
+### Task 1.4, finished: the "library-only" candidates
+
+The first ranking called 64 candidates "library-only" because no *agent-facing*
+surface named them. That skipped the surfaces people read -- the CLI, TUI and
+GUI -- so they were re-ranked against those. Six are named there; 58 are named
+by no surface at all.
+
+| Candidate | Verdict |
+| --- | --- |
+| `network_monitor::NetworkInterfaceInfo` | clean -- `?`-guarded on Linux, `GetIfTable2` 64-bit counters on Windows |
+| `network_tools::PingResult` | RTTs default to 0.0, but the GUI shows them only when `is_reachable`, and a summary that did not parse is recomputed from the per-reply times; the zeros never reach the screen |
+| `network_tools::NmapScanResult`, `CaptureConfig` | not readings: a duration the program measured, and configuration |
+| `tsdb::ProcessSnapshot` | carries `process_monitor`'s figures; first-sample behaviour already documented |
+| `tui::app::CpuInfo` | utilisation computed only where CPU stats exist, from the ontology's source |
+
+The 58 unnamed ones reach no one except a direct library caller, and are not
+worth triaging one by one while anything reachable remains.
+
+#### Open: `ping` parsing assumes English output
+
+Every parse in `network_tools::ping` matches English text -- `"Minimum = "`,
+`"Received = "`, `"time="`. Windows localizes `ping`'s output. On a
+non-English Windows, `packets_received` would fail to parse, so `is_reachable`
+would be `false`, and **a reachable host would be reported as unreachable** --
+a claim made from a failed parse, the same shape as the rest of this sweep.
+Not fixed: a correct fix needs real localized `ping` output to test against,
+and guessing the strings would be the defect again. Parsing the reply count
+from the numeric structure rather than the words, or using the ICMP API
+directly, would avoid the problem entirely.
