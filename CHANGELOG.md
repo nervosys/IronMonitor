@@ -63,6 +63,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A test that no reader helper's absence is thrown away.**
+  `tests/discarded_absence.rs` finds every `fn` in `src/` returning
+  `Option<numeric>` and fails on any call written `helper(..).unwrap_or(<literal>)`
+  or `.unwrap_or_default()` that is not on its allowlist. That is the shape of
+  most readings the fabricated-reading sweep fixed: `read_sysfs_u32(..)
+  .unwrap_or(0)` reporting a watchdog pre-timeout as deliberately disabled, a
+  cooling device as not throttling, a GPU clock as 0 MHz. Nine sites where the
+  default was judged correct are listed, each with its reason and an exact
+  count, and a second test fails on any entry that no longer matches its code.
+  Putting instance eighteen's `.unwrap_or(0)` back makes it fail, naming the
+  file and helper. It sees only the direct form: a discard after a closure
+  boundary is not adjacent to the call and is missed, which the test says.
+
 - **An agreement test for what the TUI and GUI paint.** The TUI and GUI collect
   nothing of their own, but each converts units for display, and nothing
   compared a rendered number to anything: `tests/plausibility.rs` checks the

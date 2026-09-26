@@ -10044,3 +10044,37 @@ constant back to the old wording makes it fail with exactly that message.
 > changing.** The fix is not to quote more carefully; it is to make the quote
 > checked. The same shape as the stale `lib.rs` comment about who calls
 > `backend`: prose about the rest of the codebase, rotting from the other end.
+
+### The fourth scan, made a test
+
+Plan task 2.1. The Option-helper scan -- a function returning `Option<numeric>`
+whose result is discarded with a literal default -- is now
+`tests/discarded_absence.rs`. It was written only once every current hit had a
+recorded verdict, because an allowlist is a claim about each entry, and it was
+ported to plain `std` rather than a regex, as `source_hygiene.rs` is.
+
+Porting it to exact parenthesis matching fixed the weakness recorded earlier
+(the Python pattern ran across struct literals) and in doing so **corrected the
+allowlist**: the test's own stale-entry check found two of the ten planned
+entries did not match.
+
+- `disk/windows.rs` `temperature_celsius` was never a discard of that helper.
+  The default there is applied to an `Option<Vec<_>>` after a `.map(..)`; the
+  Python scan matched only because of the looseness being fixed. It was a
+  scanner false positive recorded as a verdict, and it is out.
+- `dma_engine/mod.rs` has two `numa_node` reads discarding to `-1`, and the test
+  sees one. The other calls the helper inside an `.and_then(|p| { .. })`
+  closure and discards after the closure closes, so the discard is not adjacent
+  to the call. That is a genuine limit of the test, stated in its header rather
+  than papered over: it sees the *direct* form, which is the form of every
+  instance this sweep fixed, and a clean run is not proof of none.
+
+> **An allowlist needs a test that its entries still exist.** Without
+> `every_allowlist_entry_still_matches_its_call_sites`, the `temperature_celsius`
+> entry would have sat in the list admitting nothing, and a real discard of that
+> helper added later in the same file would have been let through by it.
+
+Its control reintroduces instance eighteen -- the watchdog's `pretimeout` read
+with `.unwrap_or(0)` -- and the test names the file and helper. That code is
+Linux-gated, so on Windows it compiles with the mutation in place; the scan is
+the only check that can see it there.
