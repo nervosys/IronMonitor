@@ -10192,3 +10192,27 @@ The other two cleanups:
 
 Lesson, again: **"dead" data is worth one grep of what sits beside it.** The
 field was dead; the struct it lived in was not.
+
+### Task 2.2: the structural scan, made a ratchet
+
+`tests/partial_correction.rs` ports the structural scan -- a struct with an
+`Option<numeric>` field beside a bare numeric one whose name is not an
+identifier or a self-produced count -- from the scratch Python to a test. The
+port was checked against the Python in both directions: 76 structs each.
+
+Those 76 are not triaged, so the test could not be an allowlist the way
+`discarded_absence.rs` is; that would have written "judged correct" beside 70
+structs nobody judged. It is a **ratchet** instead. `BASELINE` holds every
+match with its exact bare fields and says in its doc that it is not a list of
+approvals. The test fails when a struct gains a bare field beside `Option`
+siblings or a new struct of the shape appears, and fails when an entry shrinks
+or disappears, so fixing a struct forces its entry out and the list only
+shrinks.
+
+Control: turning `WatchdogInfo::pretimeout_secs` back into a bare `u32`
+(instance 18) fails it, naming the struct and field.
+
+It shares the Python scan's blind spots, stated in the module doc: multi-line
+field declarations, type aliases, and structs whose fields are all bare. That
+last is the "type that could not say 'not reported'" case, and nothing
+mechanical finds it.

@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A ratchet on partial corrections.** `tests/partial_correction.rs` fails
+  when a struct that already has an `Option` numeric field gains a bare one --
+  the shape where one reading was taught it could be missing and its siblings
+  were not. The 76 structs that match today are a baseline that may only
+  shrink, recorded as untriaged rather than approved.
+
 - **A test that no reader helper's absence is thrown away.**
   `tests/discarded_absence.rs` finds every `fn` in `src/` returning
   `Option<numeric>` and fails on any call written `helper(..).unwrap_or(<literal>)`
