@@ -9875,3 +9875,61 @@ than an absence.
 `gpu/mod.rs:87` is worth fixing separately even though it is prose: it is a doc
 example that teaches `info.dynamic_info.power.draw.unwrap_or(0) as f32 /
 1000.0`, which is the anti-pattern, in the place users copy from.
+
+### What the model is told, audited end to end
+
+After instance twenty-five showed that the model's context was a different
+struct from the one being fixed, the rest of task 1.4 started from the other
+end: read `agent::state::SystemState::to_context_string` top to bottom, then
+every input it renders. That is a short read, and it is the one surface where
+a wrong number is guaranteed to reach someone.
+
+| Section | Verdict |
+| --- | --- |
+| CPU | wrong -- logical count as cores; name and 0% utilisation invented on macOS (instance 25) |
+| Memory | wrong -- a factor of 1024, and "available" filled from "free" (instance 26) |
+| GPU | correct -- every field `Option`, bytes / 1024^2 is MiB, mW / 1000 is W |
+| Rendering | correct -- says "unavailable" rather than omitting, thresholds labelled as ironmon's own |
+
+**Instance twenty-six is the worst reading this sweep has found by magnitude.**
+`MemoryState` divided a KB figure by 1024 twice and called the result
+megabytes. On this machine the model was told it had 93 MB of RAM out of
+roughly 94 GiB. HANDOFF already has a section titled "Two renderers, one
+machine, and a factor of 1024"; this was a third renderer, and the only one a
+model reads.
+
+It could not have been found by either structural scan. Every field of
+`MemoryState` is bare, so there is no `Option` sibling to contrast with, and
+nothing about the defect is an absence -- it is a present, confident, wrong
+number. It was found because the test fixture for instance twenty-five
+happened to show the struct.
+
+> **The scans find absences stated as values. They cannot find values that
+> are simply wrong.** A unit error, a double conversion, a mislabelled field --
+> these produce readings with nothing missing and nothing inconsistent. The
+> only method that finds them is reading what a consumer is actually shown and
+> checking it against the machine, which is what the end-to-end read of the
+> model's context did.
+
+#### Ranking by name is not ranking by reach
+
+The candidate ranking matched struct *names* against the files of
+agent-facing surfaces. It produced two false positives, both from name
+collisions: `memory_management::MemorySummary` matched `ai_api::MemorySummary`
+and has no callers at all, and the two `CpuState` types are how instance
+twenty-five was first fixed on the wrong struct. Reach has to be confirmed
+through the call graph -- the parameter type of the function that consumes it
+-- before it is trusted.
+
+#### Doctests that fail only under contention
+
+The full suite for instance twenty-five failed three doctests in
+`agent::local` -- the feature-gated LLM clients -- with "found an item that was
+configured out". Nothing in those files had changed, and all 73 doctests pass
+when run on their own. The most likely cause is that doctests link against
+the un-hashed `target/debug/libironmonlib.rlib`, which is overwritten by
+whichever build of this crate last produced it; with a `--no-default-features`
+build of it running concurrently against the shared target directory, that
+copy can be replaced mid-run by one without those features. That was not
+traced to certainty. It is one more cost of the shared target directory, and
+it produces false *failures*, which is worse than the queueing.

@@ -61,14 +61,50 @@ pub struct CpuState {
 /// Condensed memory state for agent context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryState {
-    /// Total RAM (MB)
+    /// Total RAM (MiB)
     pub total_mb: u64,
-    /// Used RAM (MB)
+    /// Used RAM (MiB)
     pub used_mb: u64,
-    /// Available RAM (MB)
+    /// Available RAM (MiB) -- total minus used, which is each platform's own
+    /// "available" figure. See [`MemoryState::from_ram`].
     pub available_mb: u64,
     /// Memory utilization (0-100%)
     pub utilization: f32,
+}
+
+impl MemoryState {
+    /// Build the agent's memory state from the platform reading.
+    ///
+    /// **This divided by 1024 twice**, on both Windows and Linux:
+    /// `stats.ram.total / 1024 / 1024`. `RamInfo` is in KB -- its fields say so,
+    /// and the Windows reader stores `ullTotalPhys / 1024` -- so one division
+    /// gives MiB and the second gives GiB, stored in a field named `_mb` and
+    /// rendered to the model as "MB". A machine with 100,547,727,360 bytes of
+    /// RAM was described to the model as having 93 MB. HANDOFF records the same
+    /// factor on two other renderers; this was the one the model reads.
+    ///
+    /// `available_mb` was filled from `ram.free`. `RamInfo` carries no
+    /// "available" figure, and on Linux free excludes reclaimable cache, so it
+    /// understated what was available. `total - used` recovers each platform's
+    /// own figure: Linux computes `used` as `MemTotal - MemAvailable`, and
+    /// Windows as `ullTotalPhys - ullAvailPhys`.
+    pub fn from_ram(ram: &crate::core::memory::RamInfo) -> Self {
+        const KIB_PER_MIB: u64 = 1024;
+        let utilization = if ram.total > 0 {
+            (ram.used as f64 / ram.total as f64 * 100.0) as f32
+        } else {
+            // A reading with no total is not reachable: the Linux reader now
+            // fails rather than report zero, and Windows reads it from a
+            // syscall that fails the call. Kept as a guard against division.
+            0.0
+        };
+        Self {
+            total_mb: ram.total / KIB_PER_MIB,
+            used_mb: ram.used / KIB_PER_MIB,
+            available_mb: ram.total.saturating_sub(ram.used) / KIB_PER_MIB,
+            utilization,
+        }
+    }
 }
 
 /// Condensed system state for agent context
@@ -278,40 +314,14 @@ impl SystemState {
         #[cfg(target_os = "windows")]
         {
             if let Ok(stats) = crate::platform::windows::read_memory_stats() {
-                let total_mb = stats.ram.total / 1024 / 1024;
-                let used_mb = stats.ram.used / 1024 / 1024;
-                let available_mb = stats.ram.free / 1024 / 1024;
-                let utilization = if stats.ram.total > 0 {
-                    (stats.ram.used as f64 / stats.ram.total as f64 * 100.0) as f32
-                } else {
-                    0.0
-                };
-                return Some(MemoryState {
-                    total_mb,
-                    used_mb,
-                    available_mb,
-                    utilization,
-                });
+                return Some(MemoryState::from_ram(&stats.ram));
             }
         }
 
         #[cfg(target_os = "linux")]
         {
             if let Ok(stats) = crate::platform::linux::read_memory_stats() {
-                let total_mb = stats.ram.total / 1024 / 1024;
-                let used_mb = stats.ram.used / 1024 / 1024;
-                let available_mb = stats.ram.free / 1024 / 1024;
-                let utilization = if stats.ram.total > 0 {
-                    (stats.ram.used as f64 / stats.ram.total as f64 * 100.0) as f32
-                } else {
-                    0.0
-                };
-                return Some(MemoryState {
-                    total_mb,
-                    used_mb,
-                    available_mb,
-                    utilization,
-                });
+                return Some(MemoryState::from_ram(&stats.ram));
             }
         }
 
@@ -754,18 +764,50 @@ mod tests {
 
         let ctx = state(cpu(Some(12), Some(10.0))).to_context_string();
         assert!(ctx.contains("12 cores, 24 threads"), "{ctx}");
-        assert!(!ctx.contains("24 cores"), "logical count labelled as cores: {ctx}");
+        assert!(
+            !ctx.contains("24 cores"),
+            "logical count labelled as cores: {ctx}"
+        );
         assert!(ctx.contains("Utilization: 10.0%"), "{ctx}");
 
         // What macOS produces: no physical count, no utilisation read.
         let ctx = state(cpu(None, None)).to_context_string();
         assert!(ctx.contains("(24 threads)"), "{ctx}");
-        assert!(!ctx.contains("cores"), "no physical count, so no core count: {ctx}");
+        assert!(
+            !ctx.contains("cores"),
+            "no physical count, so no core count: {ctx}"
+        );
         assert!(
             !ctx.contains("Utilization: 0"),
             "an unread utilisation must not reach the model as idle: {ctx}"
         );
         assert!(ctx.contains("not read on this platform"), "{ctx}");
+    }
+
+    /// RAM is in KB; the agent context is in MiB. One division, not two.
+    ///
+    /// The figures are this machine's: 100,547,727,360 bytes is 98,191,140
+    /// KiB. Divided twice it is 93 -- which the model was told was megabytes.
+    #[test]
+    fn memory_reaches_the_model_in_mebibytes_not_gibibytes() {
+        let ram = crate::core::memory::RamInfo {
+            total: 98_191_140,
+            used: 49_095_570,
+            free: 10_000_000,
+            buffers: None,
+            cached: None,
+            shared: None,
+            lfb: None,
+        };
+        let m = MemoryState::from_ram(&ram);
+        assert_eq!(m.total_mb, 95_889, "98,191,140 KiB is 95,889 MiB");
+        assert_eq!(m.used_mb, 47_944);
+        assert_eq!(
+            m.available_mb,
+            (98_191_140 - 49_095_570) / 1024,
+            "available is total minus used, not `free`"
+        );
+        assert!((m.utilization - 50.0).abs() < 0.01);
     }
 
     #[test]

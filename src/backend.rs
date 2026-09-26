@@ -1283,7 +1283,13 @@ impl MonitoringBackend {
             state.memory = Some(MemoryState {
                 total_bytes: mem.ram.total * 1024,
                 used_bytes: mem.ram.used * 1024,
-                available_bytes: mem.ram.free * 1024,
+                // `total - used`, not `free`: the twin of the agent's
+                // `MemoryState::available_mb`, which read `free` the same way.
+                // Linux computes `used` as `MemTotal - MemAvailable` and
+                // Windows as `ullTotalPhys - ullAvailPhys`, so this recovers
+                // each platform's own available figure; `free` on Linux
+                // excludes reclaimable cache and understates it.
+                available_bytes: mem.ram.total.saturating_sub(mem.ram.used) * 1024,
                 usage_percent: ram_usage,
                 swap_total_bytes: mem.swap.total.map(|v| v * 1024),
                 swap_used_bytes: mem.swap.used.map(|v| v * 1024),

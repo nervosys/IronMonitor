@@ -42,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you set up yourself is not telemetry; it is your data going where you told it
   to.
 
+- **The model is no longer told a 94 GiB machine has 93 MB of RAM.**
+  `agent::state::MemoryState` converted with `stats.ram.total / 1024 / 1024`.
+  `RamInfo` is in KB — its fields say so, and the Windows reader stores
+  `ullTotalPhys / 1024` — so one division gives MiB and the second gives GiB,
+  which was stored in a field named `total_mb` and rendered to the model as
+  "MB". On the machine it was found on, 100,547,727,360 bytes reached the model
+  as "93 MB". A new test reproduces exactly that figure when the double division
+  is put back.
+
+  The same block told the model "Available: {} MB" from `ram.free`. `RamInfo`
+  carries no "available" figure, and on Linux free excludes reclaimable cache,
+  so it understated what was available. It is now `total - used`, which
+  recovers each platform's own available figure: the Linux reader computes
+  `used` as `MemTotal - MemAvailable`, and Windows as `ullTotalPhys -
+  ullAvailPhys`. `backend::MemoryState::available_bytes` had the same mislabel
+  and is fixed the same way.
+
+  Nine other places in the crate divide a KB figure by 1024 twice; all of them
+  name the result `_gb`, where that is correct.
+
 - **The model is no longer told a 12-core CPU has 24 cores, or that a Mac's
   CPU is idle.** `agent::state::CpuState`, which builds the context
   `agent::engine` hands to the model, set `cores` to `stats.cores.len()` — one
