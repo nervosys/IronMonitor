@@ -10,7 +10,8 @@ edition = "2021"
 # `home@0.5.12`, which declare 1.88 themselves and arrive through
 # eframe/egui_extras. The floor is 1.89 rather than 1.88 because `ironvault`
 # needs it, and every one of its 14 published versions does, so there is nothing
-# to pin back to.
+# to pin back to. (`vault` and the `ironvault` dependency were removed on
+# 2026-09-25; the floor below is set by `iceberg`, and is unaffected.)
 #
 # One value has to cover every feature combination, and the choice was between
 # claiming 1.88 with a footnote for `vault` or claiming what is true of all of
@@ -144,27 +145,11 @@ eframe = { version = "0.33", optional = true, default-features = false, features
 egui = { version = "0.33", optional = true }
 open = { version = "5.3", optional = true }
 
-
-# IronVault — nervosys' secure vault for AI model formats. IronMonitor reads it to
-# report which models are on a machine beside the hardware that would run them;
-# see `src/model_vault.rs`. Read-only: IronMonitor never unlocks a vault and holds no
-# passphrase, which is possible because IronVault's metadata listing does not
-# require a key.
-#
-# `default-features = false` on purpose. The defaults are safetensors, ndarray
-# and sqlite, and sqlite means rusqlite, which means a C library — weight a
-# hardware monitor should not carry for a listing.
-#
-# **This dependency raises the Rust requirement.** IronVault declares
-# `rust-version = "1.89"` against the 1.88 this crate now requires, so the
-# `vault` feature needs 1.89 while every other feature builds on 1.88. It stays
-# optional and off by default for exactly that reason — the same arrangement
-# `deweygui` had in 3.10.0, and the same trap that made 4.0.0 breaking when a
-# GUI dependency's MSRV became the whole crate's.
-ironvault = { version = "8", optional = true, default-features = false }
-# Used to locate an existing IronVault installation *without* creating one —
-# IronVault's own resolver, so the probe and the tool agree on where to look.
-directories = { version = "5", optional = true }
+# No IronVault dependency. The `vault` feature read a model vault to list models
+# beside the hardware; IronVault sits on the model plane and IronMonitor on the
+# substrates layer beneath it, so the edge pointed up through the stack's layers
+# and IronStack's registry checks failed on it. Removed on 2026-09-25 by the stack
+# owner's decision: listing models belongs to IronVault's own surfaces.
 
 # Optional dependencies for remote AI backends
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
@@ -174,7 +159,7 @@ env_logger = { version = "0.11", optional = true }
 
 # Apache Iceberg, for the fleet-scale metric store behind the `fleet-store`
 # feature. Pure Rust the whole way down — arrow and parquet, no C library — which
-# is the bar the `ironvault` note above sets when it refuses rusqlite. It is a
+# is the bar the removed `ironvault` dependency set when it refused rusqlite. It is a
 # large graph even so (~50 crates), which is why the feature is off by default and
 # is not part of `full`.
 iceberg = { version = "0.10", optional = true }
@@ -327,16 +312,13 @@ gui = [
     "remote-backends", # Required for AI backend detection (Ollama, OpenAI, etc.)
 ]
 
-# Read an IronVault model vault and report what it holds. Off by default:
-# requires Rust 1.89, where the rest of the crate needs 1.88.
-vault = ["ironvault", "directories"]
 # Remote AI backend support (OpenAI, Anthropic, Ollama, etc.)
 remote-backends = ["reqwest"]
 
 # Fleet-scale metric store on Apache Iceberg.
 #
-# **Off by default and deliberately not in `full`**, on the same grounds as
-# `vault`: it is a ~50-crate graph (arrow, parquet, tokio, reqwest) for a
+# **Off by default and deliberately not in `full`**, on the grounds the removed
+# `vault` feature set: it is a ~50-crate graph (arrow, parquet, tokio, reqwest) for a
 # capability most users of a hardware monitor do not want compiled in.
 #
 # This is storage the *operator* runs and points at — the same category as the

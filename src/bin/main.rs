@@ -459,13 +459,6 @@ enum AiSubcommand {
     },
     /// Start MCP (Model Context Protocol) server for Claude Desktop integration
     Server,
-    /// List models held in the local IronVault vault (read-only; never unlocks it)
-    #[cfg(feature = "vault")]
-    Models {
-        /// Output format: table or json
-        #[arg(short, long, default_value = "table")]
-        format: String,
-    },
 }
 
 /// CLI subcommands for hardware monitoring
@@ -794,10 +787,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AiSubcommand::Server => {
                 handle_mcp_server()?;
-            }
-            #[cfg(feature = "vault")]
-            AiSubcommand::Models { format } => {
-                handle_vault_models(format)?;
             }
         },
 
@@ -4147,108 +4136,6 @@ fn handle_gui_script_command(source: &str) -> Result<(), Box<dyn std::error::Err
         eprintln!("  {failure}");
     }
     std::process::exit(1);
-}
-
-/// `ironmon ai models` — what the local IronVault vault holds.
-///
-/// Read-only by construction: IronMonitor never unlocks a vault and never asks for a
-/// passphrase. IronVault exposes model metadata without a key, so a locked vault
-/// reports fully — see `ironmonlib::model_vault`.
-#[cfg(feature = "vault")]
-fn handle_vault_models(format: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use ironmonlib::model_vault::{read_vault, VaultStatus};
-
-    let status = read_vault();
-
-    if format.eq_ignore_ascii_case("json") {
-        println!("{}", serde_json::to_string_pretty(&status)?);
-        return Ok(());
-    }
-
-    match status {
-        // Not an error and not an empty table: there is simply no vault here,
-        // and saying so beats printing headers over nothing.
-        VaultStatus::NotInstalled => {
-            println!("IronVault is not installed on this machine.");
-            println!("  IronMonitor reports vaults; it does not create them.");
-        }
-        VaultStatus::Absent { path } => {
-            println!(
-                "IronVault is installed, but holds no vault at {}",
-                path.display()
-            );
-            println!("  (`iv init` would create one; IronMonitor will not)");
-        }
-        VaultStatus::Failed { path, reason } => {
-            eprintln!("Vault at {} could not be read: {reason}", path.display());
-            std::process::exit(1);
-        }
-        VaultStatus::Present(report) => {
-            println!("Vault: {}", report.path.display());
-            if report.models.is_empty() {
-                println!("  no models stored");
-                return Ok(());
-            }
-            println!(
-                "{:<28} {:<14} {:>10} {:>12} {:>4}",
-                "MODEL", "FORMAT", "SIZE", "COMPRESSED", "VERS"
-            );
-            for m in &report.models {
-                println!(
-                    "{:<28} {:<14} {:>10} {:>12} {:>4}",
-                    truncate(&m.name, 28),
-                    truncate(&m.format, 14),
-                    format_bytes_short(m.size_bytes),
-                    format_bytes_short(m.compressed_size_bytes),
-                    m.version_count
-                );
-            }
-            println!();
-            println!(
-                "{} model(s) · {} stored as {} · metadata read without unlocking",
-                report.models.len(),
-                format_bytes_short(report.total_size_bytes),
-                format_bytes_short(report.total_compressed_bytes),
-            );
-            // A field nothing prints is a field that was dropped, just with more
-            // steps. These models exist in the vault and are in neither total.
-            if !report.versionless.is_empty() {
-                println!(
-                    "
-{} model(s) listed with no versions, so nothing about their size was read: {}",
-                    report.versionless.len(),
-                    report.versionless.join(", ")
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "vault")]
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
-}
-
-#[cfg(feature = "vault")]
-fn format_bytes_short(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = bytes as f64;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < UNITS.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{v:.1} {}", UNITS[unit])
-    }
 }
 
 /// `ironmon tune` — classify the workload, recommend a profile, optionally apply.

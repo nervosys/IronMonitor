@@ -683,16 +683,15 @@ fn setting_support(id: &str) -> (BTreeMap<Platform, Support>, Option<&'static st
 
 /// The optional features this binary was built with.
 ///
-/// A capability is per-platform and also per-build: `ironmon ai models` exists
-/// only where the `vault` feature was enabled, and an agent asking what a
-/// binary can do needs to know which binary it is talking to. Reported from
-/// `cfg!`, so it describes the running artefact rather than the manifest.
+/// A capability is per-platform and also per-build: `ironmon gui` exists only
+/// where the `gui` feature was enabled, and an agent asking what a binary can
+/// do needs to know which binary it is talking to. Reported from `cfg!`, so it
+/// describes the running artefact rather than the manifest.
 pub fn enabled_features() -> Vec<&'static str> {
     let mut out = Vec::new();
     for (name, on) in [
         ("cli", cfg!(feature = "cli")),
         ("gui", cfg!(feature = "gui")),
-        ("vault", cfg!(feature = "vault")),
         ("nvidia", cfg!(feature = "nvidia")),
         ("amd", cfg!(feature = "amd")),
         ("intel", cfg!(feature = "intel")),

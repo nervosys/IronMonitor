@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The `vault` feature and `ironmon ai models`.** **Breaking** for builds that
+  enabled `vault`: the feature no longer exists, and `--features vault` fails.
+  IronMonitor sits on the stack's substrates layer and IronVault on the model
+  plane above it, so the dependency pointed up through the layers and
+  IronStack's registry checks failed on it. Removed by the stack owner's
+  decision of 2026-09-25; listing the models a vault holds belongs to
+  IronVault's own surfaces. The `ironvault` and `directories` dependencies go
+  with it, and `enabled_features()` no longer reports `vault`.
+
 ### Changed
 
 - **The minimum supported Rust version is now 1.94, up from 1.89.** This is a

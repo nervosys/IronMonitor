@@ -427,8 +427,8 @@ fn capabilities_with_no_command_are_named() {
 
 /// The feature list describes the binary that reports it.
 ///
-/// A capability is per-platform and also per-build. `ironmon ai models` exists
-/// only where `vault` was enabled, so an agent that knows the platform and not
+/// A capability is per-platform and also per-build. `ironmon gui` exists only
+/// where `gui` was enabled, so an agent that knows the platform and not
 /// the feature set still cannot tell what this binary does. This checks the
 /// two agree: a feature reported as on must have brought its command with it.
 #[test]

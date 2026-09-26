@@ -283,11 +283,6 @@ pub use tui::{AcceleratorInfo, AcceleratorType};
 #[cfg(feature = "gui")]
 pub mod gui; // Graphical UI
 
-// Read-only reporting of an IronVault model vault. Behind `vault` because
-// IronVault requires Rust 1.89 and the rest of this crate requires 1.70.
-#[cfg(feature = "vault")]
-pub mod model_vault;
-
 // Re-export new hardware monitors
 pub use audio::{AudioDevice, AudioDeviceType, AudioMonitor, AudioState};
 pub use bluetooth::{
