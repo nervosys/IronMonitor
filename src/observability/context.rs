@@ -440,8 +440,8 @@ pub struct GpuClocks {
 pub struct MemoryMetrics {
     /// Used memory in MB
     pub used_mb: u64,
-    /// Free memory in MB
-    pub free_mb: u64,
+    /// Free memory in MB, or `None` where it was not read.
+    pub free_mb: Option<u64>,
     /// Total memory in MB
     pub total_mb: u64,
     /// Cached memory in MB

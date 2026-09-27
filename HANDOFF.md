@@ -10001,7 +10001,7 @@ Used 41,110 + Available 54,780 = 95,890 MB, and the TUI's panel agrees
 
 The GUI's JSON and CSV exports also published KB under `bytes`. Both fixed.
 
-#### Open: `RamInfo::free` means different things per platform
+#### ~~Open: `RamInfo::free` means different things per platform~~ Fixed; see "Free memory, twice over, on Windows" at the end
 
 Linux fills `free` with `MemFree`. Windows fills it with `ullAvailPhys`, which is
 *available*, not free. So the GUI's "Free" card has always shown the available
@@ -10255,3 +10255,43 @@ Two callers still take the all-or-nothing path and were left: `hardware_ai`
 (`snapshot_gpus().ok()?` for a power-cap sum, where a partial sum would be the
 worse answer) and `tuning::serve`, which skips GPU input when it fails. Neither
 publishes a reading.
+
+### Free memory, twice over, on Windows
+
+The recorded item said `RamInfo::free` was `ullAvailPhys` on Windows and called
+the fix "a reader fix, not a rendering one". It was worse than a GUI card
+matching its neighbour: the field reaches **agents** (six MCP tool responses
+carry `free_mb` or `free_kb`) and **Prometheus** (`memory_free_bytes`). On this
+machine, with a warm cache, those said 60.9 GB free where
+`\Memory\Free & Zero Page List Bytes` said 31.7 GB.
+
+Fixed at the reader. `platform::windows_pdh::free_and_zero_page_list_bytes`
+reads that counter through `PdhAddEnglishCounterW`, so it works on a
+non-English Windows. It is a gauge, so one collection per call, with the query
+opened once. Checked against `Get-Counter` sampled immediately before and after
+each read: 2,335 / **2,470** / 1,976 MB and 1,633 / **1,857** / 1,839 MB. Free
+memory moves fast enough that the bracket is the honest comparison.
+
+`RamInfo::free` is now `Option<u64>`, so a failed PDH read is `None` rather
+than the available figure under this name. The change runs through
+`ai_api::MemorySummary::free_mb` and `observability::MemoryMetrics::free_mb`
+(both now `Option`; with `RamInfo`, three entries in the partial-correction
+ratchet baseline lost the field, which the ratchet made the commit record), the MCP tools (null), Prometheus (no series), and the GUI's Free
+card (an em dash).
+
+**A sibling on macOS, found reading the constructors.** `parse_vm_stat`'s
+`value` closure ended in `.unwrap_or(0)`, so any missing `vm_stat` line
+parsed as zero pages: without "File-backed pages", cached memory read as none;
+without "Pages speculative", free was understated. It is behind a closure, so
+`tests/discarded_absence.rs` cannot see it -- the blind spot that file
+documents. Every line is now required and a missing one fails the parse, the
+way `/proc/meminfo` is read on Linux.
+
+Controls: `free: Some(avail_kb)` fails
+`free_memory_is_not_the_available_figure` (the old assignment made
+`free == total - used` hold to the kilobyte); restoring the macOS default fails
+`a_vm_stat_missing_a_line_is_rejected_rather_than_read_as_zero`.
+
+`memory_management.rs` still assigns `ullAvailPhys` to its own
+`MemorySummary::free` (a different struct, library API only, and in the
+ratchet baseline). Left with the rest of that baseline.

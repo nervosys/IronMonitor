@@ -852,7 +852,7 @@ mod tests {
         let ram = crate::core::memory::RamInfo {
             total: 98_191_140,
             used: 49_095_570,
-            free: 10_000_000,
+            free: Some(10_000_000),
             buffers: None,
             cached: None,
             shared: None,

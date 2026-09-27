@@ -544,7 +544,7 @@ impl AiDataApi {
                 summary.memory = Some(MemorySummary {
                     total_mb: (mem.ram.total / 1024),
                     used_mb: (mem.ram.used / 1024),
-                    free_mb: (mem.ram.free / 1024),
+                    free_mb: mem.ram.free.map(|v| v / 1024),
                     cached_mb: mem.ram.cached.map(|v| v / 1024),
                     swap_total_mb: mem.swap.total.map(|v| v / 1024),
                     swap_used_mb: mem.swap.used.map(|v| v / 1024),

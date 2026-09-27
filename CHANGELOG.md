@@ -382,6 +382,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Free memory on Windows is free memory.** `RamInfo::free` was the
+  *available* figure on Windows -- the standby cache included -- and reached
+  agents through six MCP tools and Prometheus as `memory_free_bytes`: 60.9 GB
+  "free" on a machine with 31.7 GB free. It now reads
+  `\Memory\Free & Zero Page List Bytes` through PDH's English counter names.
+  **Breaking:** `RamInfo::free`, `ai_api::MemorySummary::free_mb` and
+  `observability::MemoryMetrics::free_mb` are `Option`; an unread figure is
+  null in tool output, absent from Prometheus, and an em dash in the GUI.
+
+- **macOS `vm_stat` parsing no longer reads a missing line as zero pages.** A
+  missing line now fails the parse instead of understating free, used or
+  cached memory.
+
 - **One failing GPU no longer reads as no GPU.** The ontology answered any
   adapter's query failure with `gpu.<none>` -- "this domain enumerated nothing"
   -- and dropped every adapter's readings, and the chat agent's context failed

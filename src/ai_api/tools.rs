@@ -1476,7 +1476,7 @@ impl AiDataApi {
                 "ram": {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
-                    "free_mb": stats.ram.free / 1024,
+                    "free_mb": stats.ram.free.map(|v| v / 1024),
                     "usage_percent": if stats.ram.total > 0 {
                         (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
                     } else { 0.0 },
@@ -1507,7 +1507,7 @@ impl AiDataApi {
                 "ram": {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
-                    "free_mb": stats.ram.free / 1024,
+                    "free_mb": stats.ram.free.map(|v| v / 1024),
                     "usage_percent": if stats.ram.total > 0 {
                         (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
                     } else { 0.0 },
@@ -1548,7 +1548,7 @@ impl AiDataApi {
                 "ram": {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
-                    "free_mb": stats.ram.free / 1024,
+                    "free_mb": stats.ram.free.map(|v| v / 1024),
                     "usage_percent": if stats.ram.total > 0 {
                         (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
                     } else { 0.0 },
@@ -1592,7 +1592,7 @@ impl AiDataApi {
                 "shared_kb": stats.ram.shared,
                 "total_mb": stats.ram.total / 1024,
                 "used_mb": stats.ram.used / 1024,
-                "free_mb": stats.ram.free / 1024,
+                "free_mb": stats.ram.free.map(|v| v / 1024),
                 "buffers_mb": stats.ram.buffers.map(|v| v / 1024),
                 "cached_mb": stats.ram.cached.map(|v| v / 1024),
             }))
@@ -1613,7 +1613,7 @@ impl AiDataApi {
                 "shared_kb": stats.ram.shared,
                 "total_mb": stats.ram.total / 1024,
                 "used_mb": stats.ram.used / 1024,
-                "free_mb": stats.ram.free / 1024,
+                "free_mb": stats.ram.free.map(|v| v / 1024),
                 "buffers_mb": stats.ram.buffers.map(|v| v / 1024),
                 "cached_mb": stats.ram.cached.map(|v| v / 1024),
             }))
@@ -1651,7 +1651,7 @@ impl AiDataApi {
                 "shared_kb": stats.ram.shared,
                 "total_mb": stats.ram.total / 1024,
                 "used_mb": stats.ram.used / 1024,
-                "free_mb": stats.ram.free / 1024,
+                "free_mb": stats.ram.free.map(|v| v / 1024),
                 "buffers_mb": stats.ram.buffers.map(|v| v / 1024),
                 "cached_mb": stats.ram.cached.map(|v| v / 1024),
             }))

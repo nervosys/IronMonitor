@@ -402,7 +402,7 @@ mod tests {
                 ram: RamInfo {
                     total: 1024,
                     used: 512,
-                    free: 512,
+                    free: Some(512),
                     buffers: None,
                     cached: None,
                     shared: None,

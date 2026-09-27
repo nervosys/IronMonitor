@@ -1,4 +1,4 @@
-//! Per-core delivered performance, from the PDH performance counters.
+//! PDH performance counters: per-core delivered performance, and free memory.
 //!
 //! `CallNtPowerInformation`'s `CurrentMhz` is the nominal clock on Windows 10
 //! and later — it reads the same value for every core, idle and under load, so
@@ -31,8 +31,9 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::core::w;
 use windows::Win32::System::Performance::{
-    PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
-    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
+    PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+    PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W,
+    PDH_FMT_DOUBLE, PDH_FMT_LARGE,
 };
 
 /// An open PDH query and the counter within it.
@@ -158,4 +159,53 @@ pub(crate) fn processor_performance_percent() -> Option<Vec<Option<f64>>> {
     }
 
     (!out.is_empty()).then_some(out)
+}
+
+static FREE_PAGE_QUERY: OnceLock<Option<Mutex<PerformanceQuery>>> = OnceLock::new();
+
+/// `\Memory\Free & Zero Page List Bytes`: memory holding nothing at all, in
+/// bytes.
+///
+/// This is what `RamInfo::free` means on Linux (`MemFree`) and macOS (`Pages
+/// free`). Windows filled it with `ullAvailPhys`, which also counts the
+/// standby list -- cached pages the kernel will repurpose on demand. On the
+/// machine this was found on that is 60.9 GB "free" beside 31.7 GB actually
+/// free, published under that name to agents and Prometheus.
+///
+/// A gauge, not a rate, so one collection suffices and there is no interval to
+/// prime. The query is still opened once and kept, because opening one loads
+/// the performance libraries.
+pub(crate) fn free_and_zero_page_list_bytes() -> Option<u64> {
+    let lock = FREE_PAGE_QUERY
+        .get_or_init(|| {
+            let mut query: isize = 0;
+            if unsafe { PdhOpenQueryW(None, 0, &mut query) } != 0 {
+                return None;
+            }
+            let mut counter: isize = 0;
+            // English, for the reason given in `query` above.
+            let added = unsafe {
+                PdhAddEnglishCounterW(
+                    query,
+                    w!("\\Memory\\Free & Zero Page List Bytes"),
+                    0,
+                    &mut counter,
+                )
+            };
+            (added == 0).then(|| Mutex::new(PerformanceQuery { query, counter }))
+        })
+        .as_ref()?;
+    let state = lock.lock().ok()?;
+
+    if unsafe { PdhCollectQueryData(state.query) } != 0 {
+        return None;
+    }
+    let mut value = PDH_FMT_COUNTERVALUE::default();
+    let status =
+        unsafe { PdhGetFormattedCounterValue(state.counter, PDH_FMT_LARGE, None, &mut value) };
+    // `CStatus` is the counter's own validity, separate from the call's.
+    if status != 0 || value.CStatus != 0 {
+        return None;
+    }
+    u64::try_from(unsafe { value.Anonymous.largeValue }).ok()
 }

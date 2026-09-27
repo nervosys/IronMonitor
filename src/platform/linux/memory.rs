@@ -83,7 +83,7 @@ fn parse_ram_info(meminfo: &str) -> Result<RamInfo> {
 
     Ok(RamInfo {
         total,
-        free,
+        free: Some(free),
         // Derived from two readings that are both present by this point.
         used: total.saturating_sub(available),
         buffers,

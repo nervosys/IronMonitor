@@ -668,7 +668,12 @@ pub fn read_memory_stats() -> Result<MemoryStats> {
         ram: RamInfo {
             total: total_kb,
             used: used_kb,
-            free: avail_kb,
+            // Not `avail_kb`: that is the available figure, standby list
+            // included, and it was published here as "free" -- nearly twice
+            // the real figure on the machine it was found on. See
+            // `windows_pdh::free_and_zero_page_list_bytes`.
+            free: crate::platform::windows_pdh::free_and_zero_page_list_bytes()
+                .map(|bytes| bytes / 1024),
             // Windows has no "buffers" figure at all -- it is a Linux
             // `/proc/meminfo` line -- so this is an absence, not a zero.
             buffers: None,
@@ -1351,6 +1356,28 @@ pub fn logical_drives() -> Result<Vec<LogicalDrive>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `free` is free memory, not available memory.
+    ///
+    /// It was `ullAvailPhys`, the same figure `used` is derived from, so
+    /// `free == total - used` held to the kilobyte on every Windows machine.
+    /// The standby list is never empty on a running system, so a true free
+    /// figure is below available, and reading both through different APIs makes
+    /// an exact match between them a sign of the old assignment.
+    #[test]
+    fn free_memory_is_not_the_available_figure() {
+        let stats = super::read_memory_stats().expect("memory stats");
+        let available = stats.ram.total - stats.ram.used;
+        let free = stats
+            .ram
+            .free
+            .expect("the free-page counter is readable on Windows");
+        assert_ne!(free, available, "free is the available figure again");
+        assert!(
+            free <= available + available / 10,
+            "free ({free} KB) exceeds available ({available} KB)"
+        );
+    }
 
     /// The nominal clock must not be reported as the current one.
     ///
