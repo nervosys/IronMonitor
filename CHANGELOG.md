@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Processes Windows will not let IronMonitor open now report their memory.**
+  Unelevated, a third of the processes on a typical machine -- `dwm.exe`,
+  `lsass.exe`, most `svchost` instances -- were listed with zero memory, CPU,
+  handles and I/O, which also left them out of every "largest by memory" list
+  an agent or the ontology reported. Those figures now come from the kernel's
+  process table, which needs no process handle.
+
 - **`ping` output that was not understood is no longer "unreachable".** The
   parser matches English output only; on a localised Windows it recognised
   nothing and reported a reachable host as unreachable with 100% loss. It now

@@ -1880,8 +1880,32 @@ mod windows_impl {
         None
     }
 
+    /// Lifetime-average CPU% and Unix start time from a creation time and
+    /// cumulative CPU time, the same first-sample figure the handle path
+    /// computes from `GetProcessTimes`. `(0.0, None)` without a creation time.
+    fn lifetime_cpu(creation_100ns: u64, cpu_us: u64) -> (f32, Option<u64>) {
+        const UNIX_EPOCH_DIFF: u64 = 116_444_736_000_000_000;
+        if creation_100ns <= UNIX_EPOCH_DIFF {
+            return (0.0, None);
+        }
+        let start_unix = (creation_100ns - UNIX_EPOCH_DIFF) / 10_000_000;
+        let now_ft =
+            unsafe { windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime() };
+        let now_100ns = (now_ft.dwHighDateTime as u64) << 32 | (now_ft.dwLowDateTime as u64);
+        let uptime_secs = now_100ns.saturating_sub(creation_100ns) as f64 / 10_000_000.0;
+        let pct = if uptime_secs > 0.0 {
+            ((cpu_us as f64 / 1_000_000.0 / uptime_secs) * 100.0) as f32
+        } else {
+            0.0
+        };
+        (pct, Some(start_unix))
+    }
+
     pub fn enumerate_processes() -> Result<Vec<ProcessMonitorInfo>> {
         let mut processes = Vec::new();
+        // Memory, handle, I/O and CPU-time figures for every process, including
+        // the ones that cannot be opened below. See `system_process_table`.
+        let table = crate::platform::windows::system_process_table().unwrap_or_default();
 
         unsafe {
             // Take a snapshot of all processes
@@ -1970,6 +1994,10 @@ mod windows_impl {
                                     mem_counters.PagefileUsage as u64,
                                     mem_counters.PrivateUsage as u64,
                                 )
+                            } else if let Some(r) = table.get(&pid) {
+                                // The handle opened but the query was refused; the
+                                // process table has the same figures.
+                                (r.working_set_bytes, r.pagefile_usage_bytes, r.private_bytes)
                             } else {
                                 (0, 0, 0)
                             };
@@ -2114,9 +2142,21 @@ mod windows_impl {
                     // instances). The process count looked plausible, which made the
                     // omission easy to miss.
                     //
-                    // The Toolhelp snapshot entry needs no handle, so emit what is
-                    // genuinely known and leave the privileged metrics at zero rather
-                    // than dropping the row.
+                    // The Toolhelp snapshot entry needs no handle, and neither does
+                    // the kernel's process table, which carries memory, handle, I/O
+                    // and CPU-time figures for every process.
+                    //
+                    // These rows used to leave all of those at zero: on the machine
+                    // it was found on, 167 of 515 processes -- `dwm.exe`, `lsass.exe`
+                    // and `Registry` among them -- reported using no memory, and every
+                    // "largest by memory" list was ranked without them. Zero remains
+                    // only for a process that exited between the two snapshots.
+                    let row = table.get(&pid).copied();
+                    let cpu_time_us = row
+                        .map(|r| (r.user_time_100ns + r.kernel_time_100ns) / 10)
+                        .unwrap_or(0);
+                    let create_100ns = row.map(|r| r.create_time_100ns).unwrap_or(0);
+                    let (cpu_percent, start_time) = lifetime_cpu(create_100ns, cpu_time_us);
                     let null_pos = entry
                         .szExeFile
                         .iter()
@@ -2132,8 +2172,8 @@ mod windows_impl {
                         // user would be wrong, and they are usually SYSTEM.
                         user: None,
                         category,
-                        cpu_percent: 0.0,
-                        memory_bytes: 0,
+                        cpu_percent,
+                        memory_bytes: row.map(|r| r.working_set_bytes).unwrap_or(0),
                         gpu_indices: Vec::new(),
                         gpu_memory_per_device: HashMap::new(),
                         total_gpu_memory_bytes: None,
@@ -2149,14 +2189,14 @@ mod windows_impl {
                         gpu_process_type: ProcessGpuType::Unknown,
                         gpu_memory_percentage: None,
                         parent_pid: Some(entry.th32ParentProcessID),
-                        virtual_memory_bytes: 0,
-                        private_bytes: 0,
+                        virtual_memory_bytes: row.map(|r| r.pagefile_usage_bytes).unwrap_or(0),
+                        private_bytes: row.map(|r| r.private_bytes).unwrap_or(0),
                         thread_count: entry.cntThreads,
-                        handle_count: 0,
-                        io_read_bytes: 0,
-                        io_write_bytes: 0,
-                        start_time: None,
-                        cpu_time_us: 0,
+                        handle_count: row.map(|r| r.handle_count).unwrap_or(0),
+                        io_read_bytes: row.map(|r| r.io_read_bytes).unwrap_or(0),
+                        io_write_bytes: row.map(|r| r.io_write_bytes).unwrap_or(0),
+                        start_time,
+                        cpu_time_us,
                     });
                 }
 
@@ -2413,6 +2453,36 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process that cannot be opened still has a working set, and the
+    /// enumeration must report it.
+    ///
+    /// Unelevated, those rows were emitted with memory at zero: 167 of 515
+    /// processes on the machine this was found on, `dwm.exe` and `lsass.exe`
+    /// among them. The kernel process table reads them without a handle, so any
+    /// process it reports as holding real memory must not be listed with none.
+    /// A working set can legitimately be zero -- an idle process whose pages
+    /// were trimmed -- so the check applies only above 8 MiB.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn processes_that_cannot_be_opened_still_report_their_memory() {
+        let table = crate::platform::windows::system_process_table().expect("process table");
+        let procs = windows_impl::enumerate_processes().expect("processes");
+        let missing: Vec<String> = procs
+            .iter()
+            .filter(|p| p.memory_bytes == 0)
+            .filter(|p| {
+                table
+                    .get(&p.pid)
+                    .is_some_and(|r| r.working_set_bytes >= 8 << 20)
+            })
+            .map(|p| format!("{} {}", p.pid, p.name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "reported with no memory, though the kernel says otherwise: {missing:?}"
+        );
+    }
 
     /// Protected system processes must appear in the listing.
     ///

@@ -10394,3 +10394,48 @@ the bandwidth resolver was removed as redundant.
 running it -- on macOS CI, always memory bandwidth. With the Windows reader
 forced to decline, disabling the inheritance fails it; restoring it passes the
 full suite.
+
+### A third of the processes, reported as using no memory
+
+Triaging the partial-correction baseline from the surfaces inward:
+`ai_api::ProcessSummary::memory_mb`, which the MCP tools publish, comes from
+`ProcessMonitorInfo::memory_bytes`. On Windows, unelevated, **167 of 515
+processes reported zero bytes**: `dwm.exe`, `lsass.exe`, `Registry`, `Secure
+System` and most `svchost` instances. `OpenProcess` is refused for SYSTEM and
+protected processes, and the enumeration emitted those rows from the Toolhelp
+snapshot with memory, CPU, handles and I/O all at zero -- a comment said so,
+"leave the privileged metrics at zero rather than dropping the row". Every
+"largest by memory" list, including the ontology's `process.<truncated>` "the
+10 largest by memory", was ranked without them.
+
+The figures were available all along without a handle.
+`NtQuerySystemInformation(SystemProcessInformation)` -- what Task Manager and
+`Get-Process` read -- carries working set, commit charge, private pages, handle
+count, I/O counts and CPU times for every process.
+`platform::windows::system_process_table` reads it, using the
+`SYSTEM_PROCESS_INFORMATION` layout the `windows` crate generates from
+Microsoft's metadata. The create, user and kernel times and the I/O transfer
+counts sit in fields that layout marks reserved, so
+`the_process_table_agrees_with_the_handle_based_calls` checks them for this
+process against `GetProcessTimes`, `GetProcessMemoryInfo` and
+`GetProcessIoCounters` instead of trusting the offsets. Create time matches
+exactly.
+
+After: 19 of 550 report zero, and `Get-Process` reports a working set of zero
+for them too -- idle processes whose pages were trimmed, which is a reading.
+`dwm.exe` 93 MB against `Get-Process`'s 94, `lsass.exe` 17 against 18,
+`Registry` 28 against 29. The table also fills a handle-opened process whose
+`GetProcessMemoryInfo` call is refused.
+
+`processes_that_cannot_be_opened_still_report_their_memory` fails if any
+process the kernel reports at 8 MiB or more is enumerated with none; restoring
+the zero fails it, naming `lsass.exe`, `dwm.exe` and the rest.
+
+**Not changed, and next:** the Linux reader multiplies `statm` pages by a
+literal 4096 and divides CPU ticks by a literal 100. Both are the common
+values and neither is universal: 16 KiB and 64 KiB pages are real on ARM64.
+
+The rest of the baseline on the agent-facing surfaces was triaged at the same
+time and left: memory totals and network counters that exist only after a
+successful read, timestamps and durations the program produced, a configured
+context length. `ai_api::SensorReading` is constructed nowhere.

@@ -176,6 +176,143 @@ fn query_per_core_times(cpu_count: usize) -> Option<Vec<SystemProcessorPerforman
     Some(buffer)
 }
 
+/// One process's entry in the system process table.
+///
+/// The layout is `SYSTEM_PROCESS_INFORMATION` as the `windows` crate generates
+/// it from Microsoft's metadata (`Win32::System::WindowsProgramming`), copied
+/// here so the existing `ntdll` binding can use it without another crate
+/// feature. Every field named below is documented in `winternl.h` except the
+/// three times, which sit in the first `Reserved1` block; their offsets are
+/// checked against `GetProcessTimes` in this module's tests rather than
+/// trusted.
+#[repr(C)]
+struct SystemProcessInformation {
+    next_entry_offset: u32,
+    number_of_threads: u32,
+    /// `WorkingSetPrivateSize`, `HardFaultCount`, `NumberOfThreadsHighWatermark`
+    /// and `CycleTime` (bytes 0..24), then `CreateTime`, `UserTime` and
+    /// `KernelTime` (24..48), each a 64-bit count of 100 ns units.
+    reserved1: [u8; 48],
+    image_name_length: u16,
+    image_name_maximum_length: u16,
+    image_name_buffer: *mut u16,
+    base_priority: i32,
+    unique_process_id: usize,
+    reserved2: *mut core::ffi::c_void,
+    handle_count: u32,
+    session_id: u32,
+    reserved3: *mut core::ffi::c_void,
+    peak_virtual_size: usize,
+    virtual_size: usize,
+    reserved4: u32,
+    peak_working_set_size: usize,
+    working_set_size: usize,
+    reserved5: *mut core::ffi::c_void,
+    quota_paged_pool_usage: usize,
+    reserved6: *mut core::ffi::c_void,
+    quota_non_paged_pool_usage: usize,
+    pagefile_usage: usize,
+    peak_pagefile_usage: usize,
+    private_page_count: usize,
+    reserved7: [i64; 6],
+}
+
+/// `SystemProcessInformation` information class.
+const SYSTEM_PROCESS_INFORMATION_CLASS: u32 = 5;
+
+/// What the system process table reports for one process, without opening it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessTableEntry {
+    pub working_set_bytes: u64,
+    /// Commit charge, which `GetProcessMemoryInfo` calls `PagefileUsage` and
+    /// `PrivateUsage`.
+    pub pagefile_usage_bytes: u64,
+    pub private_bytes: u64,
+    pub handle_count: u32,
+    pub thread_count: u32,
+    pub create_time_100ns: u64,
+    pub user_time_100ns: u64,
+    pub kernel_time_100ns: u64,
+    pub io_read_bytes: u64,
+    pub io_write_bytes: u64,
+}
+
+/// Every process's memory, handle and CPU-time figures, keyed by PID.
+///
+/// **Why this exists.** An unelevated process cannot open most SYSTEM and
+/// protected processes, so `GetProcessMemoryInfo` and `GetProcessTimes` are
+/// unavailable for them. The enumeration used to emit those rows with memory
+/// and CPU at zero -- on the machine this was found on, 167 of 515 processes,
+/// `dwm.exe`, `lsass.exe` and `Registry` among them, each reported as using no
+/// memory at all, which also reordered every "largest by memory" list. The
+/// kernel's process table carries the same figures for every process and needs
+/// no handle; it is what Task Manager reads.
+pub(crate) fn system_process_table() -> Option<std::collections::HashMap<u32, ProcessTableEntry>> {
+    let mut size: u32 = 1 << 20;
+    let mut buffer: Vec<u64>;
+    loop {
+        // `u64` elements keep the buffer 8-byte aligned, which the records need.
+        buffer = vec![0u64; (size as usize).div_ceil(8)];
+        let mut returned: u32 = 0;
+        // SAFETY: the buffer is `size` bytes long and its length is passed with
+        // it; the kernel writes at most that many bytes and reports how many.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESS_INFORMATION_CLASS,
+                buffer.as_mut_ptr() as *mut core::ffi::c_void,
+                size,
+                &mut returned,
+            )
+        };
+        // STATUS_INFO_LENGTH_MISMATCH: the table grew past the buffer.
+        const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
+        if status == STATUS_INFO_LENGTH_MISMATCH && size < (64 << 20) {
+            size = returned.max(size) * 2;
+            continue;
+        }
+        if status < 0 {
+            return None;
+        }
+        break;
+    }
+
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, buffer.len() * 8) };
+    let record = std::mem::size_of::<SystemProcessInformation>();
+    let read_u64 = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+
+    let mut table = std::collections::HashMap::new();
+    let mut offset = 0usize;
+    while offset + record <= bytes.len() {
+        // SAFETY: bounds checked above; the kernel places each record at an
+        // 8-byte-aligned offset within the buffer.
+        let entry = unsafe { &*(bytes.as_ptr().add(offset) as *const SystemProcessInformation) };
+        let pid = entry.unique_process_id as u32;
+        table.insert(
+            pid,
+            ProcessTableEntry {
+                working_set_bytes: entry.working_set_size as u64,
+                pagefile_usage_bytes: entry.pagefile_usage as u64,
+                private_bytes: entry.private_page_count as u64,
+                handle_count: entry.handle_count,
+                thread_count: entry.number_of_threads,
+                create_time_100ns: read_u64(&entry.reserved1, 24),
+                user_time_100ns: read_u64(&entry.reserved1, 32),
+                kernel_time_100ns: read_u64(&entry.reserved1, 40),
+                // `Reserved7` is an `IO_COUNTERS`: three operation counts, then
+                // read, write and other transfer counts.
+                io_read_bytes: entry.reserved7[3] as u64,
+                io_write_bytes: entry.reserved7[4] as u64,
+            },
+        );
+        if entry.next_entry_offset == 0 {
+            break;
+        }
+        offset += entry.next_entry_offset as usize;
+    }
+    (!table.is_empty()).then_some(table)
+}
+
 /// Per-core `(user, system, idle)` percentages.
 ///
 /// The first call has no previous sample to difference against, so it reports each
@@ -1356,6 +1493,92 @@ pub fn logical_drives() -> Result<Vec<LogicalDrive>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The process table's reserved-field offsets are checked, not trusted:
+    /// for this process, which can be opened, the table must agree with
+    /// `GetProcessTimes` and `GetProcessMemoryInfo`.
+    #[test]
+    fn the_process_table_agrees_with_the_handle_based_calls() {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+        // Burn a little CPU so the times are not trivially zero.
+        let mut x = 0u64;
+        for i in 0..20_000_000u64 {
+            x = x.wrapping_add(i * i);
+        }
+        std::hint::black_box(x);
+
+        let pid = std::process::id();
+        let (mut c, mut e, mut k, mut u) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        let mut mem = PROCESS_MEMORY_COUNTERS_EX::default();
+        let table = super::system_process_table().expect("process table");
+        unsafe {
+            GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u).unwrap();
+            GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                std::ptr::addr_of_mut!(mem) as *mut _,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            )
+            .unwrap();
+        }
+        let ft = |f: FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
+        let row = table.get(&pid).expect("this process is in the table");
+
+        assert_eq!(row.create_time_100ns, ft(c), "create time offset");
+        // Times are read a moment apart, so the table may trail by a little.
+        let near = |a: u64, b: u64| a.abs_diff(b) <= 2_000_000; // 200 ms
+        assert!(
+            near(row.user_time_100ns, ft(u)),
+            "user {} vs {}",
+            row.user_time_100ns,
+            ft(u)
+        );
+        assert!(
+            near(row.kernel_time_100ns, ft(k)),
+            "kernel {} vs {}",
+            row.kernel_time_100ns,
+            ft(k)
+        );
+        assert!(row.user_time_100ns > 0, "user time read as zero");
+        // Working set moves with every allocation; within 16 MiB is agreement.
+        let ws = mem.WorkingSetSize as u64;
+        assert!(
+            row.working_set_bytes.abs_diff(ws) < 16 << 20,
+            "working set {} vs {}",
+            row.working_set_bytes,
+            ws
+        );
+        assert!(row.working_set_bytes > 0);
+        assert!(
+            table.len() > 50,
+            "only {} processes in the table",
+            table.len()
+        );
+
+        // And the I/O counters, whose offsets are also inside a reserved block.
+        let mut io = windows::Win32::System::Threading::IO_COUNTERS::default();
+        unsafe {
+            windows::Win32::System::Threading::GetProcessIoCounters(GetCurrentProcess(), &mut io)
+                .unwrap();
+        }
+        let row = super::system_process_table().unwrap()[&pid];
+        assert!(
+            row.io_read_bytes.abs_diff(io.ReadTransferCount) < 1 << 20,
+            "read {} vs {}",
+            row.io_read_bytes,
+            io.ReadTransferCount
+        );
+        assert!(row.io_read_bytes > 0, "read transfer count read as zero");
+    }
 
     /// `free` is free memory, not available memory.
     ///
