@@ -3703,13 +3703,30 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
     let monitor = match crate::memory_bandwidth::MemoryBandwidthMonitor::new() {
         Ok(m) => m,
         Err(e) => {
+            let why = format!(
+                "the memory configuration needed for an estimate is not readable here: {e}"
+            );
             out.push(Reading::unavailable(
                 "memory.bandwidth.<none>",
                 None,
-                format!(
-                    "the memory configuration needed for an estimate is not readable here: {e}"
-                ),
+                why.clone(),
             ));
+            // Each entity with the same reason. Returning after `<none>` alone
+            // left them to the resolver's catch-all, which filled every one
+            // with "no resolver bound on this build" -- false, since this is
+            // the resolver and it just said why. It surfaced on macOS, which
+            // now always takes this path.
+            for (id, unit) in [
+                ("memory.bandwidth.generation", Unit::Identifier),
+                ("memory.bandwidth.speed", Unit::Count),
+                ("memory.bandwidth.channels", Unit::Count),
+                ("memory.bandwidth.max_channels", Unit::Count),
+                ("memory.bandwidth.peak", Unit::BytesPerSecond),
+                ("memory.bandwidth.achievable", Unit::BytesPerSecond),
+                ("memory.bandwidth.stream_triad", Unit::BytesPerSecond),
+            ] {
+                out.push(Reading::unavailable(id, Some(unit), why.clone()));
+            }
             return;
         }
     };

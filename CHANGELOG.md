@@ -395,6 +395,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as specifications. macOS exposes none of the three, so
   `MemoryBandwidthMonitor::new()` now returns an error with that reason and
   `memory.bandwidth.<none>` carries it.
+  Where the configuration cannot be read, each `memory.bandwidth.*` entity now
+  carries that reason; they read "no resolver bound on this build", which was
+  false. `memory.bandwidth.channels` and `max_channels` are now nullable.
 
 - **Free memory on Windows is free memory.** `RamInfo::free` was the
   *available* figure on Windows -- the standby cache included -- and reached

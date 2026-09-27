@@ -2784,7 +2784,11 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            // Nullable: where the memory configuration cannot be read at all --
+            // every Mac, and a machine without readable SMBIOS -- there is no
+            // channel count, and a null here is that fact rather than a reader
+            // bug.
+            true,
             "Active channel count. The largest single term in the estimate: a \
              dual-channel machine misread as single-channel halves every figure \
              below it.",
@@ -2795,7 +2799,8 @@ impl Ontology {
             K::Limit,
             Some(U::Count),
             P::Specification,
-            false,
+            // Nullable for the same reason as `channels`.
+            true,
             "Channels the controller supports. Above `channels` means the machine \
              is running below the bandwidth its board allows, which is usually a \
              populated-slot problem and worth being able to see.",

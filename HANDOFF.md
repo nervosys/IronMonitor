@@ -10350,3 +10350,34 @@ localisation quoted from memory. Control: forcing `recognised = true` fails it.
 
 Also noticed, not changed: Windows prints `time<1ms` for sub-millisecond
 replies, which the parser records as 1 ms.
+
+#### The decline's first CI run, and a catch-all that lied
+
+The macOS decline failed CI -- not its own test, which passed on the macOS
+runner, but `non_nullable_entities_are_never_null`:
+`memory.bandwidth.channels` and `max_channels` resolved unavailable with the
+note **"no resolver bound on this build"**.
+
+That note was false, and had been on any machine whose memory configuration
+could not be read. `resolve_memory_bandwidth` answered an error with
+`memory.bandwidth.<none>` and returned, leaving the cluster's seven entities to
+the resolver's catch-all for declared-but-unproduced ids, which fills each with
+"no resolver bound". The resolver *was* bound; it had just said why. macOS was
+simply the first platform to take the path every time.
+
+Fixed twice over:
+
+- The error path emits each of the seven with the resolver's own reason.
+- `channels` and `max_channels` are nullable. They were declared never-null,
+  which is a promise that every machine has a readable channel count; a Mac and
+  a machine without SMBIOS do not.
+
+Reproduced on Windows by forcing the reader to decline: without the fix,
+exactly the two CI violations; with it, the conformance suite passes and
+`ironmon get memory.bandwidth.channels` exits 2 with the real reason. Restored
+and rebuilt afterwards, where it reads `specification` again.
+
+**Lesson: a catch-all reason is a claim too.** "No resolver bound" is correct
+for an entity nothing reads, and wrong for one whose resolver returned early.
+Any resolver that returns early after a diagnostic should emit its own entities
+with the diagnostic's reason; this is worth checking in the others.
