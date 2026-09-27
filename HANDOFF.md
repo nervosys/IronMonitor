@@ -10379,5 +10379,18 @@ and rebuilt afterwards, where it reads `specification` again.
 
 **Lesson: a catch-all reason is a claim too.** "No resolver bound" is correct
 for an entity nothing reads, and wrong for one whose resolver returned early.
-Any resolver that returns early after a diagnostic should emit its own entities
-with the diagnostic's reason; this is worth checking in the others.
+
+Checking the others found two more resolvers with the same shape:
+`cpu.microarch` (thirteen identity fields, when the processor cannot be
+identified) and `system.service` (three counts, when the service manager cannot
+be reached). So the fix moved from the one resolver into the catch-all: an
+unproduced entity under a `<prefix>.<none>` diagnostic now inherits that
+diagnostic's reason, the longest matching prefix winning, and only an entity
+with no enclosing diagnostic is told no resolver is bound. The per-site list in
+the bandwidth resolver was removed as redundant.
+
+`entities_under_a_declined_resolver_carry_its_reason` in
+`tests/ontology_conformance.rs` asserts it on whatever declines on the machine
+running it -- on macOS CI, always memory bandwidth. With the Windows reader
+forced to decline, disabling the inheritance fails it; restoring it passes the
+full suite.

@@ -143,6 +143,20 @@ pub fn snapshot() -> Vec<Reading> {
     resolve_settings(&mut out);
 
     // Anything the ontology names but nothing above produced.
+    //
+    // Most of these have no resolver. Some do, and it returned early after a
+    // `<prefix>.<none>` diagnostic saying why -- the processor could not be
+    // identified, the service manager could not be reached. Those entities
+    // used to get the note below too, "no resolver bound", which is false for
+    // them: the resolver ran and gave its reason. They inherit the reason of
+    // the nearest enclosing diagnostic instead.
+    let declined: Vec<(String, String)> = out
+        .iter()
+        .filter_map(|r| {
+            let prefix = r.id.strip_suffix(".<none>")?;
+            Some((format!("{prefix}."), r.note.clone()?))
+        })
+        .collect();
     let produced: std::collections::HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
     let mut unbound: Vec<Reading> = ontology
         .entities
@@ -158,12 +172,19 @@ pub fn snapshot() -> Vec<Reading> {
                 && !produced.contains(e.id.as_str())
         })
         .map(|e| {
-            Reading::unavailable(
-                e.id.clone(),
-                e.unit,
-                "no resolver bound on this build — the entity is defined but ironmon \
-                 does not yet read it here",
-            )
+            let inherited = declined
+                .iter()
+                .filter(|(prefix, _)| e.id.starts_with(prefix.as_str()))
+                .max_by_key(|(prefix, _)| prefix.len());
+            match inherited {
+                Some((_, why)) => Reading::unavailable(e.id.clone(), e.unit, why.clone()),
+                None => Reading::unavailable(
+                    e.id.clone(),
+                    e.unit,
+                    "no resolver bound on this build — the entity is defined but ironmon \
+                     does not yet read it here",
+                ),
+            }
         })
         .collect();
     out.append(&mut unbound);
@@ -3703,30 +3724,15 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
     let monitor = match crate::memory_bandwidth::MemoryBandwidthMonitor::new() {
         Ok(m) => m,
         Err(e) => {
-            let why = format!(
-                "the memory configuration needed for an estimate is not readable here: {e}"
-            );
+            // The cluster's entities inherit this reason in `snapshot`'s
+            // catch-all, rather than being told no resolver is bound.
             out.push(Reading::unavailable(
                 "memory.bandwidth.<none>",
                 None,
-                why.clone(),
+                format!(
+                    "the memory configuration needed for an estimate is not readable here: {e}"
+                ),
             ));
-            // Each entity with the same reason. Returning after `<none>` alone
-            // left them to the resolver's catch-all, which filled every one
-            // with "no resolver bound on this build" -- false, since this is
-            // the resolver and it just said why. It surfaced on macOS, which
-            // now always takes this path.
-            for (id, unit) in [
-                ("memory.bandwidth.generation", Unit::Identifier),
-                ("memory.bandwidth.speed", Unit::Count),
-                ("memory.bandwidth.channels", Unit::Count),
-                ("memory.bandwidth.max_channels", Unit::Count),
-                ("memory.bandwidth.peak", Unit::BytesPerSecond),
-                ("memory.bandwidth.achievable", Unit::BytesPerSecond),
-                ("memory.bandwidth.stream_triad", Unit::BytesPerSecond),
-            ] {
-                out.push(Reading::unavailable(id, Some(unit), why.clone()));
-            }
             return;
         }
     };
