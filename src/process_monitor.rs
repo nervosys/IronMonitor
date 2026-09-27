@@ -1559,7 +1559,11 @@ mod linux {
         let vsize: u64 = stat_fields[20].parse().unwrap_or(0); // virtual memory size in bytes
 
         // Calculate CPU percentage (lifetime average as fallback for first delta sample)
-        let clk_tck: u64 = 100; // SC_CLK_TCK, typically 100
+        let clk_tck = crate::platform::linux::clock_ticks_per_second()
+            .ok_or_else(|| IronError::Other("sysconf(_SC_CLK_TCK) returned no tick rate".into()))?;
+        let page_size = crate::platform::linux::page_size().ok_or_else(|| {
+            IronError::Other("sysconf(_SC_PAGESIZE) returned no page size".into())
+        })?;
         let total_ticks = utime + stime;
         let total_time = total_ticks as f64 / clk_tck as f64;
         let seconds_since_boot = uptime;
@@ -1589,14 +1593,14 @@ mod linux {
             if let Ok(statm_content) = fs::read_to_string(&statm_path) {
                 let parts: Vec<&str> = statm_content.split_whitespace().collect();
                 let rss = if parts.len() > 1 {
-                    // RSS (Resident Set Size) in pages, multiply by page size (typically 4KB)
-                    parts[1].parse::<u64>().unwrap_or(0) * 4096
+                    // RSS (Resident Set Size) in pages.
+                    parts[1].parse::<u64>().unwrap_or(0) * page_size
                 } else {
                     0
                 };
                 let vsize_statm = if !parts.is_empty() {
                     // Total program size in pages
-                    parts[0].parse::<u64>().unwrap_or(0) * 4096
+                    parts[0].parse::<u64>().unwrap_or(0) * page_size
                 } else {
                     0
                 };

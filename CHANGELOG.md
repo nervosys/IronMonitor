@@ -389,6 +389,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an agent or the ontology reported. Those figures now come from the kernel's
   process table, which needs no process handle.
 
+- **Linux process memory and CPU time use the system's page size and tick
+  rate.** They were a literal 4096 bytes and 100 Hz; on an ARM64 kernel with
+  16 KiB or 64 KiB pages, every process's memory read 4x or 16x too small.
+
 - **`ping` output that was not understood is no longer "unreachable".** The
   parser matches English output only; on a localised Windows it recognised
   nothing and reported a reachable host as unreachable with 100% loss. It now

@@ -230,7 +230,8 @@ impl ProcessTree {
                     s.split_whitespace()
                         .nth(1) // RSS field
                         .and_then(|rss| rss.parse::<u64>().ok())
-                        .map(|pages| pages * 4096)
+                        .zip(crate::platform::linux::page_size())
+                        .map(|(pages, page_size)| pages * page_size)
                 })
                 .unwrap_or(0);
 

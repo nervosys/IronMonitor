@@ -46,6 +46,8 @@ absent form. One run on the right machine settles each.
   run. macOS CPU and memory feed the ontology but not yet the pipeline the TUI
   and GUI draw from.
 - **Bare-metal Linux** — RAPL's package power-limit path has never executed.
+- **An ARM64 Linux machine with 16 KiB or 64 KiB pages** — process memory now
+  scales by the system page size; only the 4 KiB case has been run.
 
 ### Waiting on a decision
 

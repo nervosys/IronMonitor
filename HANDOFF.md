@@ -10431,9 +10431,16 @@ for them too -- idle processes whose pages were trimmed, which is a reading.
 process the kernel reports at 8 MiB or more is enumerated with none; restoring
 the zero fails it, naming `lsass.exe`, `dwm.exe` and the rest.
 
-**Not changed, and next:** the Linux reader multiplies `statm` pages by a
-literal 4096 and divides CPU ticks by a literal 100. Both are the common
-values and neither is universal: 16 KiB and 64 KiB pages are real on ARM64.
+**The Linux side, same commit series.** The Linux readers multiplied `statm`
+pages by a literal 4096 and divided CPU ticks by a literal 100 -- in
+`process_monitor`, `process_tree` and `core::process` (which wrote `* 4`,
+"pages to KB"). Both are the common values and neither is universal: ARM64
+kernels ship with 16 KiB and 64 KiB pages, where every process's memory read
+four or sixteen times too small. `platform::linux::page_size` and
+`clock_ticks_per_second` read both from `sysconf`, and a reader that cannot get
+them returns an error rather than assuming. **Unverified on a non-4 KiB
+machine**: WSL2 uses 4 KiB pages, so the fix is checked there only for not
+changing the common case. Add it to the bare-metal Linux list.
 
 The rest of the baseline on the agent-facing surfaces was triaged at the same
 time and left: memory totals and network counters that exist only after a
