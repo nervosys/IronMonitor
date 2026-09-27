@@ -6160,12 +6160,12 @@ impl IronMonitorApp {
                 if let Some(ref result) = self.nettools_nmap_result {
                     // Host info
                     ui.horizontal(|ui| {
-                        let status_color = if result.is_up {
-                            CyberColors::NEON_GREEN
-                        } else {
-                            CyberColors::NEON_RED
+                        let (status_text, status_color) = match result.is_up {
+                            Some(true) => ("UP", CyberColors::NEON_GREEN),
+                            Some(false) => ("DOWN", CyberColors::NEON_RED),
+                            // Ping gave no verdict; not the same as no reply.
+                            None => ("ping unreadable", CyberColors::TEXT_MUTED),
                         };
-                        let status_text = if result.is_up { "UP" } else { "DOWN" };
 
                         ui.label(RichText::new(&result.host).color(CyberColors::CYAN));
                         ui.label(RichText::new(format!("({})", status_text)).color(status_color));

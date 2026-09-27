@@ -148,10 +148,10 @@ fn demo_connectivity() {
     let results = check_connectivity(&hosts);
 
     for (host, reachable) in &results {
-        let status = if *reachable {
-            "✓ Reachable"
-        } else {
-            "✗ Unreachable"
+        let status = match reachable {
+            Some(true) => "✓ Reachable",
+            Some(false) => "✗ Unreachable",
+            None => "? No verdict (ping output not recognised)",
         };
         println!("    {:20} {}", host, status);
     }

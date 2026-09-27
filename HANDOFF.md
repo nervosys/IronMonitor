@@ -10098,7 +10098,7 @@ by no surface at all.
 The 58 unnamed ones reach no one except a direct library caller, and are not
 worth triaging one by one while anything reachable remains.
 
-#### Open: `ping` parsing assumes English output
+#### ~~Open: `ping` parsing assumes English output~~ Fixed by declining; see "A parse that found nothing is not a verdict" at the end
 
 Every parse in `network_tools::ping` matches English text -- `"Minimum = "`,
 `"Received = "`, `"time="`. Windows localizes `ping`'s output. On a
@@ -10322,3 +10322,31 @@ it compiles for `aarch64-apple-darwin` here and runs only on CI's macOS job.
 If the published per-chip bandwidth is ever wanted, it is a different entity:
 a `specification` of peak bandwidth keyed on the exact chip name, with no
 generation or channel count claimed beside it.
+
+### A parse that found nothing is not a verdict
+
+`network_tools::ping` matched only English output, and on output it did not
+recognise every field kept its initial value: `packets_received: 0`,
+`is_reachable: false`, 100% loss. On a localised Windows a reachable host was
+reported unreachable.
+
+The recorded suggestion was to parse the numeric structure or call the ICMP API.
+Both are real fixes and both need localised output to verify against, which
+this project does not have. What does not need it: **the parser now reports
+whether it recognised a statistics line**, and `ping()` returns an error when it
+did not, quoting the first line of output. An English "no reply" still parses
+and still says unreachable; only "found nothing" stops being a verdict.
+
+Two library callers mapped any ping error to `false`, which would have undone
+that: `check_connectivity` now returns `Option<bool>` per host, and
+`NmapScanResult::is_up` is `Option<bool>`, drawn by the GUI as "ping
+unreadable" rather than DOWN. The GUI's Ping button already showed errors as
+errors.
+
+The fixtures are captured output from this machine (Windows 11) and WSL2
+(Ubuntu), reachable and unreachable. The unrecognised case is the Windows
+capture with its labels replaced, stated as such in the test -- not a
+localisation quoted from memory. Control: forcing `recognised = true` fails it.
+
+Also noticed, not changed: Windows prints `time<1ms` for sub-millisecond
+replies, which the parser records as 1 ms.

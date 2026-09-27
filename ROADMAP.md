@@ -57,8 +57,11 @@ absent form. One run on the right machine settles each.
 
 ### Known and recorded, not yet fixed
 
-- `ping` parsing assumes English output; on a localized Windows a reachable
-  host reads as unreachable.
+None at the moment. The four recorded here were fixed or, where a fix needed a
+figure nobody could verify, turned into an honest refusal; HANDOFF has each.
+Two ratchet tests keep the commonest defect shapes from growing back:
+`tests/discarded_absence.rs` and `tests/partial_correction.rs`, whose baseline
+of 76 untriaged structs is the largest body of remaining work.
 
 ## Ideas carried from the 1.x roadmap
 

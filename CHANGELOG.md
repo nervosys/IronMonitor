@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ping` output that was not understood is no longer "unreachable".** The
+  parser matches English output only; on a localised Windows it recognised
+  nothing and reported a reachable host as unreachable with 100% loss. It now
+  returns an error when no statistics line was recognised. **Breaking:**
+  `check_connectivity` returns `HashMap<String, Option<bool>>` and
+  `NmapScanResult::is_up` is `Option<bool>`, `None` where ping gave no verdict.
+
 - **macOS no longer publishes a memory configuration it did not read.** The
   bandwidth estimator looked the memory generation, speed and channel count up
   from the CPU brand string (every M3 variant alike), and the ontology published
