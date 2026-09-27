@@ -1444,14 +1444,13 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         ));
         return;
     };
-    let Ok(gpus) = monitor.snapshot_gpus() else {
-        out.push(Reading::unavailable(
-            "gpu.<none>",
-            None,
-            "GPU snapshot failed",
-        ));
-        return;
-    };
+    // Per adapter, not all-or-nothing. This took `snapshot_gpus()`, which fails
+    // as a whole when any one adapter's query fails, and answered that with
+    // `gpu.<none>` -- the row declared to mean "this domain enumerated nothing".
+    // A machine with two GPUs and one flaky driver was reported as having no
+    // GPU, and the adapter that read fine was dropped with it. The partial
+    // snapshot is index-aligned, so a failure keeps its adapter's number.
+    let gpus = monitor.gpus().snapshot_all_partial();
     if gpus.is_empty() {
         // Absent hardware is a fact, not a failure — and not a zero-valued GPU.
         out.push(Reading::unavailable(
@@ -1516,7 +1515,23 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         "beside it"
     );
 
+    const NO_ADAPTER_UTILIZATION: &str = concat!(
+        "no utilization counter was read for this adapter; the backend that ",
+        "queried it reports none, which is not the same as an idle engine"
+    );
+
     for (i, gpu) in gpus.iter().enumerate() {
+        let gpu = match gpu {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                out.push(Reading::unavailable(
+                    format!("gpu.{i}.<unreadable>"),
+                    None,
+                    format!("this adapter was enumerated but its query failed: {e}"),
+                ));
+                continue;
+            }
+        };
         let base = format!("gpu.{i}");
         push_text(out, format!("{base}.name"), &gpu.static_info.name);
         out.push(Reading::measured(
@@ -1526,14 +1541,18 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         ));
 
         let dynamic = &gpu.dynamic_info;
-        // Not an Option: the collection layer already flattens an absent counter to
-        // zero, so this cannot distinguish "idle" from "not reported" and must not
-        // pretend to.
-        out.push(Reading::measured(
+        // This comment used to say utilization was not an Option, because the
+        // collection layer flattened an absent counter to zero. The field became
+        // `Option<u8>` and this call stayed `Reading::measured`, so an adapter
+        // with no counter was published as a *measured* reading whose value was
+        // null -- neither a number nor an absence with a reason.
+        push_opt(
+            out,
             format!("{base}.utilization"),
-            serde_json::json!(dynamic.utilization),
+            dynamic.utilization.map(|u| serde_json::json!(u)),
             Some(Unit::Percent),
-        ));
+            NO_ADAPTER_UTILIZATION,
+        );
         push_opt(
             out,
             format!("{base}.thermal.temperature"),

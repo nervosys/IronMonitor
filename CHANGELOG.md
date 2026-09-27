@@ -382,6 +382,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One failing GPU no longer reads as no GPU.** The ontology answered any
+  adapter's query failure with `gpu.<none>` -- "this domain enumerated nothing"
+  -- and dropped every adapter's readings, and the chat agent's context failed
+  outright. Both now report each adapter that read, and name each one that did
+  not: a new declared diagnostic, `gpu.{n}.<unreadable>`, carries the error,
+  and `agent::SystemState::unreadable_gpus` tells the model. Indices do not
+  shift.
+
+- **`gpu.{n}.utilization` is never a measured null.** An adapter with no
+  utilisation counter was published as `measured` with a null value; it is now
+  `unavailable` with a reason.
+
 - **The Apple Neural Engine no longer reports a utilisation.** It was the ANE's
   measured power divided by a ceiling from a per-chip table -- 8 W for any chip
   the table did not name -- and reached the TUI's accelerator panel. The same

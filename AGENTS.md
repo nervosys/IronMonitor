@@ -71,6 +71,15 @@ process.<truncated>   unavailable   — 443 processes exist; this snapshot repor
                                       the 10 largest by memory
 ```
 
+And a device that exists but could not be read is reported as that device, not
+folded into "none". The other adapters are reported as usual, and indices do not
+shift:
+
+```
+gpu.1.<unreadable>   unavailable   — this adapter was enumerated but its query
+                                     failed: NVML: driver not loaded
+```
+
 ## Exit codes carry information
 
 `ironmon get` distinguishes the two ways it can fail to give you a number:

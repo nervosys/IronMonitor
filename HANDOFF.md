@@ -10011,7 +10011,7 @@ mismatch. A true free figure on Windows needs the `\Memory\Free & Zero Page
 List Bytes` counter, which the reader does not query. That is a reader fix, not
 a rendering one.
 
-#### Open: one failing GPU fails the whole agent context
+#### ~~Open: one failing GPU fails the whole agent context~~ Fixed; see "One failing GPU, reported as no GPU" at the end
 
 `SystemState::from_monitor` calls `UnifiedMonitor::snapshot_gpus`, which calls
 `GpuCollection::snapshot_all`, which collects every device's `Result` into one.
@@ -10216,3 +10216,42 @@ It shares the Python scan's blind spots, stated in the module doc: multi-line
 field declarations, type aliases, and structs whose fields are all bare. That
 last is the "type that could not say 'not reported'" case, and nothing
 mechanical finds it.
+
+### One failing GPU, reported as no GPU
+
+The open item said one failing GPU failed the agent context, and called it
+"not a fabricated reading, so not fixed in this sweep". Following it to the
+other callers of `snapshot_gpus()` showed that was half right. **The ontology
+resolver did fabricate from it.** It answered a failed snapshot with
+`gpu.<none>`, the row declared as "present only when this domain enumerated
+nothing" -- so a machine with two GPUs and one failing driver was told to every
+agent as a machine with no GPU, and the adapter that read fine was dropped too.
+
+Both now use `snapshot_all_partial`, which is index-aligned:
+
+- The resolver emits the full rows for every adapter that read, and a new
+  declared diagnostic, `gpu.{n}.<unreadable>`, carrying the error, for each one
+  that did not. `gpu.<none>` is left for what it says. AGENTS.md shows the row.
+- `agent::SystemState` gains `unreadable_gpus`, and the context tells the model
+  the adapter is present, unreadable, and not to infer its state from the
+  others. Memory and the readable GPUs reach the model as before.
+  `from_monitor` no longer fails on a GPU error at all.
+
+**And a second defect in the same function.** `gpu.{n}.utilization` was pushed
+with `Reading::measured(json!(dynamic.utilization))`, under a comment saying
+utilisation was not an `Option` because the collection layer flattened an absent
+counter to zero. The field had since become `Option<u8>` and the call had not
+changed, so an adapter with no counter was published as a *measured* reading
+with a null value -- neither a number nor an absence with a reason.
+`agentic_contract.rs` checks exactly this, but only fires on hardware with a
+counterless adapter, which neither this machine nor CI has. It goes through
+`push_opt` with a reason now.
+
+**Lesson: "not a fabricated reading" was a claim about one caller.** The same
+call had four callers; the one this item named was a crash, and the one it did
+not name was a false absence. Grep the callers before classifying the defect.
+
+Two callers still take the all-or-nothing path and were left: `hardware_ai`
+(`snapshot_gpus().ok()?` for a power-cap sum, where a partial sum would be the
+worse answer) and `tuning::serve`, which skips GPU input when it fails. Neither
+publishes a reading.

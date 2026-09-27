@@ -3,7 +3,7 @@
 //! This module extracts relevant system state from the hardware monitor
 //! to provide context for agent responses.
 
-use crate::error::{IronError, Result};
+use crate::error::Result;
 use crate::gpu::GpuInfo;
 use crate::UnifiedMonitor;
 use serde::{Deserialize, Serialize};
@@ -119,8 +119,27 @@ pub struct SystemState {
     /// GPU information (only for queried GPUs)
     pub gpus: Vec<GpuState>,
 
+    /// Queried GPUs that were enumerated but whose query failed.
+    ///
+    /// One failing adapter used to fail the whole state, so the model could
+    /// answer nothing -- not about memory, not about the adapter that read
+    /// fine. Now the others are reported and this one is named, with the
+    /// error, so the model can say which device it cannot see and why.
+    #[serde(default)]
+    pub unreadable_gpus: Vec<UnreadableGpu>,
+
     /// Timestamp of state capture
     pub timestamp: u64,
+}
+
+/// A GPU that was enumerated but could not be read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnreadableGpu {
+    /// The adapter's own index, the same one a readable adapter would have.
+    pub index: usize,
+
+    /// The error its query returned.
+    pub reason: String,
 }
 
 /// Condensed GPU state
@@ -180,30 +199,32 @@ pub struct GpuState {
 impl SystemState {
     /// Extract system state from monitor based on query
     pub fn from_monitor(monitor: &UnifiedMonitor, query: &Query) -> Result<Self> {
-        let gpu_infos = monitor
-            .snapshot_gpus()
-            .map_err(|e| IronError::Other(format!("Failed to get GPU state: {}", e)))?;
+        // Per adapter: the partial snapshot is index-aligned, so a failing
+        // adapter keeps its number and does not take the others with it.
+        let gpu_results = monitor.gpus().snapshot_all_partial();
 
         // Determine which GPUs to include
-        let gpu_states: Vec<GpuState> = if query.all_gpus || query.gpu_indices.is_empty() {
-            // Include all GPUs
-            gpu_infos
-                .into_iter()
-                .enumerate()
-                .map(|(idx, info)| Self::gpu_to_state(idx, info))
-                .collect()
+        let wanted: Vec<usize> = if query.all_gpus || query.gpu_indices.is_empty() {
+            (0..gpu_results.len()).collect()
         } else {
-            // Include only specified GPUs
             query
                 .gpu_indices
                 .iter()
-                .filter_map(|&idx| {
-                    gpu_infos
-                        .get(idx)
-                        .map(|info| Self::gpu_to_state(idx, info.clone()))
-                })
+                .copied()
+                .filter(|&idx| idx < gpu_results.len())
                 .collect()
         };
+        let mut gpu_states = Vec::new();
+        let mut unreadable_gpus = Vec::new();
+        for idx in wanted {
+            match &gpu_results[idx] {
+                Ok(info) => gpu_states.push(Self::gpu_to_state(idx, info.clone())),
+                Err(e) => unreadable_gpus.push(UnreadableGpu {
+                    index: idx,
+                    reason: e.to_string(),
+                }),
+            }
+        }
 
         // Get CPU state (platform-specific)
         let cpu = Self::get_cpu_state();
@@ -215,6 +236,7 @@ impl SystemState {
             cpu,
             memory,
             gpus: gpu_states,
+            unreadable_gpus,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -458,6 +480,16 @@ impl SystemState {
             }
         }
 
+        for gpu in &self.unreadable_gpus {
+            context.push_str(&format!(
+                concat!(
+                    "\nGPU {}: present, but could not be read ({}). Nothing is known ",
+                    "about its state; do not infer it from the other GPUs.\n"
+                ),
+                gpu.index, gpu.reason
+            ));
+        }
+
         // Give the model the same thresholds IronMonitor uses for its own warnings. Without
         // them it substitutes a guess, and the guess runs cold: a 3090 Ti at 52 °C —
         // an ordinary idle-to-light-load reading — was reported to the user as
@@ -677,6 +709,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(50)), gpu(1, Some(36)), gpu(2, None)],
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -715,6 +748,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(52))],
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -733,9 +767,33 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
         assert!(!empty.to_context_string().contains("Reference thresholds"));
+    }
+
+    /// One adapter whose query fails must not blank the others, and the model
+    /// must be told it exists rather than left to believe the machine has one
+    /// GPU fewer.
+    #[test]
+    fn an_unreadable_gpu_is_named_and_does_not_hide_the_others() {
+        let state = SystemState {
+            cpu: None,
+            memory: None,
+            gpus: vec![gpu(0, Some(50))],
+            unreadable_gpus: vec![UnreadableGpu {
+                index: 1,
+                reason: "NVML: driver not loaded".to_string(),
+            }],
+            timestamp: 0,
+        };
+        let context = state.to_context_string();
+        assert!(context.contains("GPU 0:"), "{context}");
+        assert!(
+            context.contains("GPU 1: present, but could not be read (NVML: driver not loaded)"),
+            "{context}"
+        );
     }
 
     /// **The context the model is actually given** must not call logical
@@ -759,6 +817,7 @@ mod tests {
             cpu: Some(c),
             memory: None,
             gpus: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -863,6 +922,7 @@ mod tests {
                     process_count: 1,
                 },
             ],
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 

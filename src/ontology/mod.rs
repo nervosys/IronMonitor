@@ -3111,6 +3111,17 @@ impl Ontology {
             ));
         }
         add(Entity::new(
+            "gpu.{n}.<unreadable>",
+            D::Gpu,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present in place of an adapter's readings when that adapter was \
+             enumerated but its query failed. Carries the error. The other \
+             adapters are reported as usual, and the index stays the adapter's own.",
+        ));
+        add(Entity::new(
             "process.<truncated>",
             D::Process,
             K::Diagnostic,

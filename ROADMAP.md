@@ -23,7 +23,7 @@ The recent work has been less about new domains than about whether the existing
 ones tell the truth. Every value carries a provenance — `measured`,
 `specification`, `derived` or `unavailable` — and a value that could not be read
 is reported as unavailable with a reason, never as a zero or a plausible
-constant. A sweep of the codebase has found and fixed twenty-eight places that
+constant. A sweep of the codebase has found and fixed some thirty places that
 did otherwise. The tests that keep them fixed compare each output path —
 Prometheus, the MCP tools, the chat agent's context, the TUI and the GUI —
 against the ontology.
@@ -58,7 +58,6 @@ absent form. One run on the right machine settles each.
 ### Known and recorded, not yet fixed
 
 - `RamInfo::free` means different things per platform.
-- One failing GPU fails the whole agent context rather than that GPU's rows.
 - `ping` parsing assumes English output; on a localized Windows a reachable
   host reads as unreachable.
 - macOS memory bandwidth comes from a brand-string table.
