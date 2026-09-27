@@ -9653,7 +9653,7 @@ Linux path sees `// Fallback: infer from CPU model` and reasonably concludes
 something was inferred. It is now `memory_config_unreadable`, returns an error,
 and the resolver's existing error path reports it correctly.
 
-### Open: macOS memory bandwidth is a brand-string table
+### ~~Open: macOS memory bandwidth is a brand-string table~~ Fixed by declining; see "macOS memory bandwidth: declined, not rebuilt" at the end
 
 `memory_bandwidth::detect_memory_config` on macOS reads no memory. It matches
 the CPU brand string -- `M4 -> LPDDR5X-8533 x8`, `M3 | M2 -> LPDDR5-6400 x8`,
@@ -10295,3 +10295,30 @@ Controls: `free: Some(avail_kb)` fails
 `memory_management.rs` still assigns `ullAvailPhys` to its own
 `MemorySummary::free` (a different struct, library API only, and in the
 ratchet baseline). Left with the rest of that baseline.
+
+### macOS memory bandwidth: declined, not rebuilt
+
+The recorded fix was to rebuild the brand-string table "from Apple's published
+specifications, keyed on the full chip name". Looking at what Apple publishes
+settled it the other way: its specifications give a **memory bandwidth per
+chip**, not the memory generation, transfer rate and channel count this module
+estimates from. A per-SKU table of those three would be reconstructed, not
+published -- the same defect as the table it replaced, with better numbers.
+
+So macOS now declines, as Linux and Windows do when SMBIOS cannot be read.
+`MemoryBandwidthMonitor::new()` returns `FeatureNotAvailable` with a
+macOS-specific reason, and the resolver's existing error path turns it into
+`memory.bandwidth.<none>` carrying that reason. Before this, the table's
+guesses reached agents as `specification` readings -- generation, speed,
+channels -- and the bandwidth figures derived from them.
+
+`memory_config_unreadable`, whose message names SMBIOS, is no longer compiled
+on macOS, where there is no SMBIOS path to have failed. The dead `hw.memsize`
+read beside the table, parsed and discarded with an `unwrap_or(0)`, went too.
+
+**Not run on a Mac.** A `#[cfg(target_os = "macos")]` test asserts the decline;
+it compiles for `aarch64-apple-darwin` here and runs only on CI's macOS job.
+
+If the published per-chip bandwidth is ever wanted, it is a different entity:
+a `specification` of peak bandwidth keyed on the exact chip name, with no
+generation or channel count claimed beside it.

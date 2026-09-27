@@ -59,7 +59,6 @@ absent form. One run on the right machine settles each.
 
 - `ping` parsing assumes English output; on a localized Windows a reachable
   host reads as unreachable.
-- macOS memory bandwidth comes from a brand-string table.
 
 ## Ideas carried from the 1.x roadmap
 

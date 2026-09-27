@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS no longer publishes a memory configuration it did not read.** The
+  bandwidth estimator looked the memory generation, speed and channel count up
+  from the CPU brand string (every M3 variant alike), and the ontology published
+  them as specifications. macOS exposes none of the three, so
+  `MemoryBandwidthMonitor::new()` now returns an error with that reason and
+  `memory.bandwidth.<none>` carries it.
+
 - **Free memory on Windows is free memory.** `RamInfo::free` was the
   *available* figure on Windows -- the standby cache included -- and reached
   agents through six MCP tools and Prometheus as `memory_free_bytes`: 60.9 GB

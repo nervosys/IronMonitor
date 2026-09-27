@@ -8,7 +8,8 @@
 //!
 //! - **Linux**: `/sys/devices/uncore_imc_*/`, perf events, DIMM config inference
 //! - **Windows**: Performance counters, DIMM config inference
-//! - **macOS**: `sysctl`, DIMM config inference
+//! - **macOS**: none. The memory configuration is not exposed, so
+//!   [`MemoryBandwidthMonitor::new`] returns an error with the reason.
 
 use serde::{Deserialize, Serialize};
 
@@ -465,58 +466,27 @@ impl MemoryBandwidthMonitor {
 
     #[cfg(target_os = "macos")]
     fn detect_memory_config() -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
-        // Apple Silicon uses unified LPDDR
-        let output = std::process::Command::new("sysctl")
-            .arg("-n")
-            .arg("hw.memsize")
-            .output();
-
-        let _total_bytes = output
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<u64>()
-                    .ok()
-            })
-            .unwrap_or(0);
-
-        // Detect Apple Silicon
-        let brand = std::process::Command::new("sysctl")
-            .arg("-n")
-            .arg("machdep.cpu.brand_string")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-
-        if brand.contains("Apple") {
-            let (gen, speed, channels) = if brand.contains("M4") {
-                (MemoryGeneration::LPDDR5X, 8533, 8u32)
-            } else if brand.contains("M3") {
-                (MemoryGeneration::LPDDR5, 6400, 8)
-            } else if brand.contains("M2") {
-                (MemoryGeneration::LPDDR5, 6400, 8)
-            } else {
-                (MemoryGeneration::LPDDR5, 6400, 4)
-            };
-
-            // A per-chip table, not a reading -- see HANDOFF, "macOS memory
-            // bandwidth is a brand-string table". Left as-is rather than
-            // "corrected" from memory, which would be the same defect.
-            return Ok((
-                gen,
-                Some(speed),
-                ChannelConfig {
-                    active_channels: channels,
-                    max_channels: channels,
-                    interleaved: true,
-                    mode: format!("{}-channel unified", channels),
-                },
-            ));
-        }
-
-        Self::memory_config_unreadable()
+        // This matched the CPU brand string -- `M4` to LPDDR5X-8533 on eight
+        // channels, `M3` and `M2` to LPDDR5-6400 on eight, anything else to
+        // LPDDR5-6400 on four -- and the resolver published the result as a
+        // `specification` of this machine. It read no memory. It was also
+        // wrong where it could be checked: `M3` matched the M3, M3 Pro and M3
+        // Max, whose memory buses differ, and the last arm gave the original M1
+        // a memory generation it did not ship with.
+        //
+        // It is not rebuilt as a per-chip table because Apple does not publish
+        // what one would need: its specifications give a bandwidth per chip,
+        // not a generation, transfer rate and channel count. Reconstructing
+        // those three from recall is the defect this replaced, with better
+        // numbers. Declining leaves `memory.bandwidth.<none>` saying why.
+        Err(IronError::FeatureNotAvailable(
+            concat!(
+                "macOS exposes no memory generation, transfer rate or channel ",
+                "count to read; Apple publishes a bandwidth per chip, but not ",
+                "the configuration an estimate is built from"
+            )
+            .into(),
+        ))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -536,6 +506,10 @@ impl MemoryBandwidthMonitor {
     /// An error is the honest answer, and the resolver already has the right
     /// path for one: it reports the configuration as unreadable and publishes
     /// nothing built on it.
+    ///
+    /// Not compiled on macOS, which declines with its own reason: there is no
+    /// SMBIOS path there to have failed.
+    #[cfg(not(target_os = "macos"))]
     fn memory_config_unreadable(
     ) -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         Err(IronError::FeatureNotAvailable(
@@ -637,6 +611,24 @@ impl Default for MemoryBandwidthMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS exposes no memory configuration, so there is nothing to estimate
+    /// from. This used to succeed with a configuration looked up from the CPU
+    /// brand string, which the resolver then published as a specification.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_declines_rather_than_looking_up_a_configuration() {
+        match MemoryBandwidthMonitor::new() {
+            Err(IronError::FeatureNotAvailable(why)) => {
+                assert!(why.contains("macOS"), "{why}")
+            }
+            Err(e) => panic!("expected FeatureNotAvailable, got {e}"),
+            Ok(m) => panic!(
+                "macOS produced a memory configuration it cannot read: {:?}",
+                m.analysis()
+            ),
+        }
+    }
 
     #[test]
     fn test_peak_bandwidth_ddr4() {
