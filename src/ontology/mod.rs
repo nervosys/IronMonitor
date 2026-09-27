@@ -2548,7 +2548,10 @@ impl Ontology {
             Some(U::Percent),
             P::Measured,
             true,
-            "Process CPU share over the last interval.",
+            "Process CPU share over an interval of about 250 ms between two \
+             samples taken for this snapshot, as a share of all logical \
+             processors. A process that started within the interval reports \
+             its average since it started.",
         ));
         add(Entity::new(
             "process.{pid}.memory",

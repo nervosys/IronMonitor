@@ -1907,6 +1907,11 @@ fn lookup_template<'a>(ontology: &'a Ontology, concrete: &str) -> Option<&'a Ent
 /// complete is its own kind of wrong answer.
 const PROCESS_LIMIT: usize = 10;
 
+/// The interval `process.{pid}.cpu` is measured over. Long enough that a
+/// scheduler tick is a small fraction of it, short enough not to dominate a
+/// snapshot.
+const PROCESS_CPU_INTERVAL_MS: u64 = 250;
+
 fn resolve_disk(out: &mut Vec<Reading>) {
     let disks = match crate::disk::enumerate_disks() {
         Ok(d) => d,
@@ -2357,6 +2362,20 @@ fn resolve_process(out: &mut Vec<Reading>) {
             return;
         }
     };
+    // Two samples, so `cpu` is what its entity says: the share over an
+    // interval. One sample from a fresh monitor gave each process's lifetime
+    // average instead -- CPU time since it started, over how long it has run --
+    // published as a measurement of now. A process started days ago and busy
+    // for the last minute read as idle.
+    if let Err(e) = monitor.sample_cpu_times() {
+        out.push(Reading::unavailable(
+            "process.<none>",
+            None,
+            format!("process enumeration failed: {e}"),
+        ));
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(PROCESS_CPU_INTERVAL_MS));
     let procs = match monitor.processes_by_memory() {
         Ok(p) => p,
         Err(e) => {

@@ -1054,6 +1054,26 @@ impl ProcessMonitor {
         })
     }
 
+    /// Record every process's cumulative CPU time without building the full
+    /// listing, so the next [`ProcessMonitor::processes`] call reports CPU% over
+    /// the interval since this one.
+    ///
+    /// Without a previous sample, `processes` can only report each process's
+    /// lifetime average -- its CPU time divided by how long it has existed. For
+    /// a process started days ago that says almost nothing about now. A caller
+    /// that samples once, such as an ontology snapshot, should call this first
+    /// and wait before sampling.
+    pub fn sample_cpu_times(&mut self) -> Result<()> {
+        let now = std::time::Instant::now();
+        let procs = self.get_system_processes()?;
+        self.prev_cpu_times = procs
+            .iter()
+            .filter(|p| p.cpu_time_us > 0)
+            .map(|p| (p.pid, (p.cpu_time_us, now)))
+            .collect();
+        Ok(())
+    }
+
     /// Get all running processes with GPU attribution
     pub fn processes(&mut self) -> Result<Vec<ProcessMonitorInfo>> {
         let now = std::time::Instant::now();

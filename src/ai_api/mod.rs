@@ -248,7 +248,12 @@ impl AiDataApi {
         let gpus = GpuCollection::auto_detect().ok();
 
         // Create process monitor (without GPU integration for now, as GpuCollection doesn't implement Clone)
-        let process_monitor = ProcessMonitor::new().ok();
+        // Primed here, so the first tool call reports CPU% over the interval
+        // since startup rather than each process's lifetime average.
+        let process_monitor = ProcessMonitor::new().ok().map(|mut m| {
+            let _ = m.sample_cpu_times();
+            m
+        });
         let network_monitor = NetworkMonitor::new().ok();
 
         Ok(Self {

@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`process.{pid}.cpu` is the share over an interval, as it says.** Each
+  snapshot sampled processes once, which yields each process's lifetime
+  average; an idle process that had been busy earlier read 2.3% where it was
+  using nothing. The resolver now samples twice, 250 ms apart, and the MCP
+  server primes its process monitor at startup. New:
+  `ProcessMonitor::sample_cpu_times`.
+
 - **Processes Windows will not let IronMonitor open now report their memory.**
   Unelevated, a third of the processes on a typical machine -- `dwm.exe`,
   `lsass.exe`, most `svchost` instances -- were listed with zero memory, CPU,

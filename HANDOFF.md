@@ -10446,3 +10446,38 @@ The rest of the baseline on the agent-facing surfaces was triaged at the same
 time and left: memory totals and network counters that exist only after a
 successful read, timestamps and durations the program produced, a configured
 context length. `ai_api::SensorReading` is constructed nowhere.
+
+### "CPU share over the last interval", with no interval
+
+`process.{pid}.cpu` is declared as "Process CPU share over the last interval"
+with `measured` provenance. The resolver built a fresh `ProcessMonitor` and
+sampled once, and a monitor with no previous sample reports each process's
+**lifetime average** -- CPU time since it started, over how long it has run.
+So every snapshot published lifetime averages under a description promising
+current usage. The earlier triage recorded the first-sample behaviour as
+"documented"; it was, on the library field, and the ontology said the
+opposite.
+
+Measured on a child process that busy-looped for 3 s and then sat idle for
+about 2 s: one sample reported **2.3%** (3 s of one core over its ~5 s life,
+as a share of 24 processors); two samples 250 ms apart reported **0.0%**. A
+process started days ago and busy for the last minute had the opposite error,
+reading as nearly idle.
+
+`ProcessMonitor::sample_cpu_times` records cumulative CPU times without the
+GPU attribution a full listing does. The resolver calls it, waits 250 ms, and
+then enumerates, so the figure is the share over that interval; the entity's
+description now says which interval. The MCP server primes its long-lived
+monitor the same way at startup, so its first tool call measures the interval
+since startup rather than lifetimes.
+
+No automated test: a process's own CPU share is disturbed by every other test
+running in parallel in the same binary, so an assertion on it would be flaky.
+The demonstration above was a throwaway example, not committed.
+
+Cost: `sample_cpu_times` takes 60-170 ms (debug and release alike, since it is
+dominated by system calls), plus the 250 ms wait -- under half a second per
+snapshot. Measuring that exposed something larger and unrelated: **a debug
+`ironmon snapshot` takes 40-50 s on this machine** with or without this change.
+The agent-contract suite runs many of them, which is most of why the local test
+suite is slow. Not investigated; worth a profile before anyone tunes it.
