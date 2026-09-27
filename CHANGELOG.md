@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PowerShell helpers no longer run the user's profile.** Ten spawns lacked
+  `-NoProfile`, costing about 0.8 s each where a profile exists and letting
+  anything it printed corrupt the output being parsed. The boot-duration entity
+  also stopped running the whole boot monitor for one field (new:
+  `BootMonitor::read_boot_time`). A debug snapshot went from about 45 s to
+  28.5 s on the machine measured.
+
 - **`process.{pid}.cpu` is the share over an interval, as it says.** Each
   snapshot sampled processes once, which yields each process's lifetime
   average; an idle process that had been busy earlier read 2.3% where it was

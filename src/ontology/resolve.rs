@@ -3162,19 +3162,21 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
 /// that needs Administrator, while elsewhere it comes from `systemd-analyze`,
 /// which is simply absent on a machine without systemd.
 fn resolve_boot_duration(out: &mut Vec<Reading>) {
-    let monitor = match crate::boot_config::BootMonitor::new() {
-        Ok(m) => m,
+    // Only the timing: a full `BootMonitor` also enumerates the boot
+    // configuration and startup items, none of which this entity uses.
+    let boot_time = match crate::boot_config::BootMonitor::read_boot_time() {
+        Ok(t) => t,
         Err(e) => {
             out.push(Reading::unavailable(
                 "system.boot.duration",
                 Some(Unit::Seconds),
-                format!("the boot configuration could not be read: {e}"),
+                format!("the boot timing could not be read: {e}"),
             ));
             return;
         }
     };
 
-    let secs = monitor.boot_time.total.as_secs_f64();
+    let secs = boot_time.total.as_secs_f64();
     if secs > 0.0 {
         out.push(Reading::measured(
             "system.boot.duration",

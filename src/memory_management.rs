@@ -823,6 +823,7 @@ impl MemoryMonitor {
         if self.swap.devices.is_empty() {
             let output = Command::new("powershell")
                 .args([
+                    "-NoProfile",
                     "-Command",
                     "Get-CimInstance Win32_PageFile | Select-Object Name",
                 ])
@@ -867,7 +868,7 @@ impl MemoryMonitor {
 
         // Use PowerShell to get process memory info
         let output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile", 
                 "-Command",
                 "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 50 Id,Name,WorkingSet64,VirtualMemorySize64,PagedMemorySize64 | ConvertTo-Csv -NoTypeInformation"
             ])
@@ -1095,6 +1096,7 @@ impl MemoryMonitor {
         // Use RAMMap-like command if available, otherwise use PowerShell
         let output = Command::new("powershell")
             .args([
+                "-NoProfile",
                 "-Command",
                 "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()",
             ])

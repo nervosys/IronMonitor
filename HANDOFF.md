@@ -10480,4 +10480,35 @@ dominated by system calls), plus the 250 ms wait -- under half a second per
 snapshot. Measuring that exposed something larger and unrelated: **a debug
 `ironmon snapshot` takes 40-50 s on this machine** with or without this change.
 The agent-contract suite runs many of them, which is most of why the local test
-suite is slow. Not investigated; worth a profile before anyone tunes it.
+suite is slow. Profiled in the next section.
+
+### Where a debug snapshot's 45 seconds went
+
+Timing each resolver in `snapshot()` (temporary instrumentation, not
+committed): `board` 11.9 s, `boot_duration` 9.6 s, `gpu` 9.0 s, and nothing
+else above 2.2 s. Two causes accounted for most of it.
+
+**PowerShell was loading the user's profile.** Ten of the crate's 34
+`powershell` spawns lacked `-NoProfile`; on this machine a profile exists, and
+a start took 1,067 ms with it against 244 ms without. Besides the time, a
+profile that prints anything puts it on stdout, where every caller parses
+numbers or JSON. All ten now pass the flag, and `tests/powershell_spawns.rs`
+fails on a new spawn that does not -- checked by removing it from the
+`services.rs` spawn, which the test then named by line.
+
+**The boot-duration entity ran the whole boot monitor.** `resolve_boot_duration`
+used one field of `BootMonitor::new()`, which also reads the boot configuration
+and every startup item: on Windows four PowerShell sessions and `schtasks`.
+`BootMonitor::read_boot_time()` runs only the platform's timing reader.
+
+After both: `boot_duration` 9.6 s to 1.4 s, and the whole debug snapshot about
+45 s to 28.5 s. `gpu` also fell to 0.9 s, but that first 9.0 s was probably a
+cold driver start rather than anything changed here -- it is not claimed as a
+result. `agentic_contract` ran in 66 s where the previous run took 320 s.
+
+**Next, if anyone wants more:** `board` is now the largest at 9 s, of which the
+TPM reader is 6.2 s and firmware 2.2 s. The TPM reader spawns PowerShell three
+times: a `Win32_Tpm` CIM query, a filtered `Win32_PnPEntity` enumeration, and a
+test of whether one registry key exists. The last needs no process at all, and
+the two queries could share one session or go through the `wmi` crate the rest
+of the crate uses.

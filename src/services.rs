@@ -684,6 +684,7 @@ impl ServiceMonitor {
         // Use PowerShell to get services
         let output = Command::new("powershell")
             .args([
+                "-NoProfile",
                 "-Command",
                 "Get-Service | Select-Object Name, DisplayName, Status, StartType | ConvertTo-Json",
             ])

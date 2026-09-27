@@ -881,6 +881,7 @@ pub fn reverse_dns(ip: &str) -> Result<Option<String>> {
             // Windows: Use nslookup or PowerShell
             let output = Command::new("powershell")
                 .args([
+                    "-NoProfile",
                     "-Command",
                     &format!("[System.Net.Dns]::GetHostEntry('{}').HostName", ip),
                 ])
@@ -1499,7 +1500,7 @@ pub fn list_capture_interfaces() -> Result<Vec<String>> {
 
         // Also try PowerShell for more accurate results
         let ps_output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile", 
                 "-Command",
                 "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -ExpandProperty Name",
             ])
