@@ -208,21 +208,31 @@ impl FirmwareInventory {
             .ok()?
             .as_secs();
 
-        // Very simple date parser
         let (year, month, day) = Self::parse_date(date)?;
-
-        // Approximate days since date
-        let fw_days = year as u64 * 365 + month as u64 * 30 + day as u64;
-        let now_days = now / 86400;
-        // Epoch offset: 1970-01-01
-        let epoch_days = 1970 * 365;
-
-        if fw_days > epoch_days {
-            let age = now_days.saturating_sub(fw_days - epoch_days);
-            Some(age as u32)
-        } else {
-            None
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
         }
+
+        // Exact days since the Unix epoch. This counted every month as 30 days
+        // and every year as 365, which drifted by about two weeks a year -- a
+        // BIOS dated 2025-09-19 read 360 days old on 2026-09-28, when it was
+        // 374, on the other side of `infer_risk`'s 365-day threshold. It did
+        // not show while the Windows date never parsed; it does now.
+        let fw_days = Self::days_from_civil(year as i64, month, day);
+        let now_days = (now / 86400) as i64;
+        (fw_days >= 0 && now_days >= fw_days).then(|| (now_days - fw_days) as u32)
+    }
+
+    /// Days from 1970-01-01 to the given proleptic Gregorian date (Howard
+    /// Hinnant's `days_from_civil`).
+    fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+        let y = if month <= 2 { year - 1 } else { year };
+        let era = (if y >= 0 { y } else { y - 399 }) / 400;
+        let yoe = y - era * 400;
+        let m = month as i64;
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
     }
 
     fn parse_date(date: &str) -> Option<(u32, u32, u32)> {
@@ -518,7 +528,7 @@ impl FirmwareInventory {
         match (bios, storage) {
             (Err(bios_err), Err(storage_err)) => Err(IronError::System(format!(
                 "no firmware source could be read: Win32_BIOS said {bios_err}; \
-                 Get-PhysicalDisk said {storage_err}"
+                 MSFT_PhysicalDisk said {storage_err}"
             ))),
             _ => Ok(()),
         }
@@ -527,40 +537,26 @@ impl FirmwareInventory {
     /// The system BIOS entry, from `Win32_BIOS`.
     #[cfg(target_os = "windows")]
     fn read_windows_bios(&mut self) -> Result<(), IronError> {
-        const QUERY: &str = concat!(
-            "Get-CimInstance Win32_BIOS | Select-Object ",
-            "Manufacturer,SMBIOSBIOSVersion,ReleaseDate | ConvertTo-Json"
-        );
-        let Some(json) =
-            crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])?
-        else {
+        // In-process WMI; each of these reads was a PowerShell session.
+        let rows = crate::platform::windows::wmi_query(
+            "root\\CIMV2",
+            "SELECT Manufacturer, SMBIOSBIOSVersion, ReleaseDate FROM Win32_BIOS",
+        )?;
+        let Some(row) = rows.first() else {
             return Ok(());
         };
-
-        let vendor = json
-            .get("Manufacturer")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let version = json
-            .get("SMBIOSBIOSVersion")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let date = json
-            .get("ReleaseDate")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        // Extract date from WMI format: /Date(1234567890000)/
-        let clean_date = if date.contains("/Date(") {
-            date.trim_start_matches("/Date(")
-                .trim_end_matches(")/")
-                .split(')')
-                .next()
-                .and_then(|ts| ts.parse::<i64>().ok())
-                .map(|ts| format!("{}", ts / 1000))
-                .unwrap_or_default()
+        let vendor = crate::platform::windows::wmi_str(row, "Manufacturer");
+        let version = crate::platform::windows::wmi_str(row, "SMBIOSBIOSVersion");
+        // A CIM datetime, `yyyymmddHHMMSS.mmmmmm+UUU`, kept as `YYYY-MM-DD`.
+        //
+        // Through PowerShell it arrived as `/Date(ms)/` and was stored as Unix
+        // seconds, which `parse_date` does not read -- so `estimated_age_days`
+        // was never computed for a Windows BIOS. This form it does read.
+        let raw = crate::platform::windows::wmi_str(row, "ReleaseDate");
+        let clean_date = if raw.len() >= 8 && raw[..8].bytes().all(|b| b.is_ascii_digit()) {
+            format!("{}-{}-{}", &raw[0..4], &raw[4..6], &raw[6..8])
         } else {
-            date.to_string()
+            String::new()
         };
 
         if !vendor.is_empty() {
@@ -581,29 +577,15 @@ impl FirmwareInventory {
     /// One entry per drive that reports a firmware revision.
     #[cfg(target_os = "windows")]
     fn read_windows_storage_firmware(&mut self) -> Result<(), IronError> {
-        const QUERY: &str = concat!(
-            "Get-PhysicalDisk | Select-Object ",
-            "FriendlyName,Manufacturer,FirmwareVersion | ConvertTo-Json"
-        );
-        let Some(json) =
-            crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])?
-        else {
-            return Ok(());
-        };
-
-        for disk in crate::core::command::json_items(&json) {
-            let name = disk
-                .get("FriendlyName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let vendor = disk
-                .get("Manufacturer")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let fw = disk
-                .get("FirmwareVersion")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+        // `MSFT_PhysicalDisk` is the class `Get-PhysicalDisk` reads.
+        let rows = crate::platform::windows::wmi_query(
+            "root\\Microsoft\\Windows\\Storage",
+            "SELECT FriendlyName, Manufacturer, FirmwareVersion FROM MSFT_PhysicalDisk",
+        )?;
+        for disk in &rows {
+            let name = crate::platform::windows::wmi_str(disk, "FriendlyName");
+            let vendor = crate::platform::windows::wmi_str(disk, "Manufacturer");
+            let fw = crate::platform::windows::wmi_str(disk, "FirmwareVersion");
 
             if !fw.is_empty() {
                 self.entries.push(FirmwareEntry {
@@ -625,21 +607,15 @@ impl FirmwareInventory {
     /// string, which already reads as "not established".
     #[cfg(target_os = "windows")]
     fn read_windows_system_identity(&mut self) {
-        const QUERY: &str =
-            "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model | ConvertTo-Json";
-        if let Ok(Some(json)) =
-            crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])
-        {
-            self.system_vendor = json
-                .get("Manufacturer")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            self.system_product = json
-                .get("Model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        if let Ok(rows) = crate::platform::windows::wmi_query(
+            "root\\CIMV2",
+            "SELECT Manufacturer, Model FROM Win32_ComputerSystem",
+        ) {
+            if let Some(row) = rows.first() {
+                self.system_vendor =
+                    crate::platform::windows::wmi_str(row, "Manufacturer").to_string();
+                self.system_product = crate::platform::windows::wmi_str(row, "Model").to_string();
+            }
         }
     }
 
@@ -651,6 +627,12 @@ impl FirmwareInventory {
     /// is resolved from the registry instead, which is readable unelevated.
     #[cfg(target_os = "windows")]
     fn read_windows_secure_boot(&mut self) {
+        // Refused unelevated, as the comment above says; asking cost a
+        // PowerShell session to learn it. Skipped when the process is known
+        // not to be elevated.
+        if crate::platform::windows::is_elevated() == Some(false) {
+            return;
+        }
         if let Ok(text) = crate::core::command::capture(
             "powershell",
             &["-NoProfile", "-Command", "Confirm-SecureBootUEFI"],
@@ -779,6 +761,24 @@ mod tests {
         let _ = inv.risk_score();
         let _ = inv.average_firmware_age_days();
         let _ = inv.high_risk_entries();
+    }
+
+    /// Checked against Python's `datetime.date` subtraction.
+    #[test]
+    fn days_from_civil_is_exact() {
+        for (y, m, d, days) in [
+            (1970, 1, 1, 0),
+            (2000, 2, 29, 11_016),
+            (2000, 3, 1, 11_017),
+            (2025, 9, 19, 20_350),
+            (1969, 12, 31, -1),
+        ] {
+            assert_eq!(
+                FirmwareInventory::days_from_civil(y, m, d),
+                days,
+                "{y}-{m}-{d}"
+            );
+        }
     }
 
     #[test]

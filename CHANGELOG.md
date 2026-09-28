@@ -394,6 +394,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the refusal took 6.6 s to arrive), and reads the service key and device node
   in-process rather than through PowerShell. Readings are unchanged.
 
+- **The firmware inventory reads in-process: 2.2 s to 76 ms.** Readings are
+  unchanged. A Windows BIOS's `estimated_age_days` is now computed -- its date
+  never parsed before -- and the age is exact rather than counting 30-day months
+  and 365-day years, which was off by two weeks a year.
+
 - **`process.{pid}.cpu` is the share over an interval, as it says.** Each
   snapshot sampled processes once, which yields each process's lifetime
   average; an idle process that had been busy earlier read 2.3% where it was

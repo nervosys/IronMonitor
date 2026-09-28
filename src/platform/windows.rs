@@ -313,6 +313,41 @@ pub(crate) fn system_process_table() -> Option<std::collections::HashMap<u32, Pr
     (!table.is_empty()).then_some(table)
 }
 
+/// Rows of a WMI query, run in-process.
+///
+/// A PowerShell `Get-CimInstance` answering the same query costs a process and
+/// a CIM session -- a quarter of a second at best, several at worst -- and
+/// several readers ran one per property group on every snapshot. COM may
+/// already be initialised on the calling thread in another mode (a GUI thread
+/// is), so this falls back as `disk::windows` does.
+pub(crate) fn wmi_query(
+    namespace: &str,
+    query: &str,
+) -> std::result::Result<
+    Vec<std::collections::HashMap<String, wmi::Variant>>,
+    crate::error::IronError,
+> {
+    use wmi::{COMLibrary, WMIConnection};
+    let com = COMLibrary::new()
+        .or_else(|_| COMLibrary::without_security())
+        .unwrap_or_else(|_| unsafe { COMLibrary::assume_initialized() });
+    let conn = WMIConnection::with_namespace_path(namespace, com)
+        .map_err(|e| crate::error::IronError::System(format!("WMI {namespace}: {e}")))?;
+    conn.raw_query(query)
+        .map_err(|e| crate::error::IronError::System(format!("WMI query `{query}`: {e}")))
+}
+
+/// A string property of a WMI row, or `""` where it is absent or not a string.
+pub(crate) fn wmi_str<'a>(
+    row: &'a std::collections::HashMap<String, wmi::Variant>,
+    key: &str,
+) -> &'a str {
+    match row.get(key) {
+        Some(wmi::Variant::String(s)) => s.as_str(),
+        _ => "",
+    }
+}
+
 /// Whether this process runs elevated, from its token's `TokenElevation`.
 ///
 /// `None` when the token cannot be read. Used to avoid asking questions whose

@@ -98,24 +98,11 @@ pub struct TpmMonitor {
 /// in-process WMI connection.
 #[cfg(target_os = "windows")]
 fn security_device_ids(query: &str) -> Result<String, IronError> {
-    use std::collections::HashMap;
-    use wmi::{COMLibrary, Variant, WMIConnection};
-
-    // COM may already be initialised on this thread in another mode (a GUI
-    // thread is), so fall back as `disk::windows` does.
-    let com = COMLibrary::new()
-        .or_else(|_| COMLibrary::without_security())
-        .unwrap_or_else(|_| unsafe { COMLibrary::assume_initialized() });
-    let conn = WMIConnection::new(com).map_err(|e| IronError::System(e.to_string()))?;
-    let rows: Vec<HashMap<String, Variant>> = conn
-        .raw_query(query)
-        .map_err(|e| IronError::System(e.to_string()))?;
+    let rows = crate::platform::windows::wmi_query("root\\CIMV2", query)?;
     Ok(rows
         .iter()
-        .filter_map(|row| match row.get("PNPDeviceID") {
-            Some(Variant::String(id)) => Some(id.as_str()),
-            _ => None,
-        })
+        .map(|row| crate::platform::windows::wmi_str(row, "PNPDeviceID"))
+        .filter(|id| !id.is_empty())
         .collect::<Vec<_>>()
         .join("\n"))
 }

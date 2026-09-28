@@ -10540,3 +10540,29 @@ went between `version_from_node`'s doc comment and its
 its gate -- visible only as a dead-code warning on Linux, where it now compiled.
 Moved above the doc block. It is the third time; the Linux clippy run is what
 catches it.
+
+### Firmware: 2.2 s to 76 ms, and a BIOS age that was never computed
+
+The firmware inventory ran four PowerShell sessions per snapshot:
+`Win32_BIOS`, `Get-PhysicalDisk`, `Win32_ComputerSystem` and
+`Confirm-SecureBootUEFI`. The first three now go through
+`platform::windows::wmi_query`, a shared in-process WMI helper the TPM reader
+also uses now (`Get-PhysicalDisk` reads `MSFT_PhysicalDisk` in
+`root/Microsoft/Windows/Storage`). The fourth needs elevation and is skipped when
+the process is known not to have it. Every `board.firmware.*` reading was
+compared before and after: identical. `FirmwareInventory::new()` takes 76 ms.
+
+**Moving the BIOS date's source exposed two defects.** Through PowerShell the
+release date arrived as `/Date(ms)/` and was stored as Unix seconds, which
+`parse_date` does not read -- so `estimated_age_days` was *never* computed for a
+Windows BIOS, and `inferred_risk_score` ignored age there. The CIM datetime from
+WMI is now stored as `YYYY-MM-DD`, which parses. And the moment it parsed, the
+age was wrong: `estimate_age` counted 365-day years and 30-day months, putting a
+BIOS dated 2025-09-19 at 360 days old on 2026-09-28 when it was 374 -- on the
+other side of `infer_risk`'s 365-day threshold. It now uses an exact
+days-from-civil calculation, tested against Python's `datetime` including a
+leap day and a pre-epoch date; an off-by-one in its constant fails the test.
+
+**Snapshot time, cumulative:** a debug `ironmon snapshot` on this machine went
+from about 45 s to **17 s** across the `-NoProfile`, boot-timing, TPM and
+firmware changes. `agentic_contract` now runs in 55 s.
