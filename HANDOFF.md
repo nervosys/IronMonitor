@@ -10657,3 +10657,30 @@ ratio 1.0 -- of a reading that was never taken. A new test covers the empty
 case. And `refresh()` moves the peak and the running average only on an interval
 that measured package power; one that measured nothing used to drag the average
 toward zero. Nothing outside `rapl` reads any of these.
+
+### Reach by field, not by name, and zero cores
+
+The baseline triage above judged reach by whether a surface *names* a struct.
+A resolver that iterates a monitor's results reads fields without ever naming
+the type, so the check was redone by field: for each baseline struct, which
+surfaces import its module and read one of its bare fields. Five candidates the
+name check missed; four are sound (`cpu_cache` sizes are pushed only after a
+non-zero read; `pci_devices.numa_node` is guarded in the resolver; codec
+`confidence` is the reader's own score; process I/O is fixed at the source).
+
+The fifth was a defect. `cpu.microarch.physical_cores` and `logical_cores` were
+published as `specification` straight from readers that fill them with
+`.unwrap_or(0)` -- and ARM Linux kernels commonly omit `cpu cores` from
+`/proc/cpuinfo`. So an unread count was a specification of **zero cores**, and
+`cpu.microarch.smt_enabled`, computed as `threads > cores && cores > 0`, a
+*measurement* that SMT was off. The resolver now publishes a zero count as
+unavailable with a reason and decides SMT only when both counts were read; the
+three entities are nullable. `push_microarch` was split out of the resolver so
+a report with an unread count can be tested; removing the guard fails the test
+(`Specification` where `Unavailable` was expected).
+
+The library struct still uses zero for "not read" and stays in the ratchet
+baseline; the fix is at the surface, where it reached anyone.
+
+The old shared build directory, `C:/Users/adamm/.cargo-target`, measured
+**194 GB** once the move to E: was done.

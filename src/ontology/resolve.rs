@@ -3535,7 +3535,12 @@ fn resolve_microarch(out: &mut Vec<Reading>) {
         }
     };
 
-    let report = monitor.report();
+    push_microarch(out, monitor.report());
+}
+
+/// The microarchitecture readings for one report, separate from reading it so
+/// a report with unread fields can be tested.
+fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicroarchReport) {
     let uarch = &report.microarch;
 
     // Field by field. An earlier version pushed `{:?}` of the whole struct,
@@ -3592,21 +3597,32 @@ fn resolve_microarch(out: &mut Vec<Reading>) {
             "the CPUID family/model/stepping triple was not read on this platform",
         );
     }
+    // The readers fill these with `.unwrap_or(0)`, and ARM Linux kernels
+    // commonly omit the `cpu cores` line from /proc/cpuinfo. Published as-is,
+    // an unread count was a specification of **zero cores**, and
+    // `smt_enabled` -- computed as `threads > cores && cores > 0` -- a
+    // measurement that SMT was off. A processor has at least one of each, so
+    // zero is the reader's "not read".
     for (suffix, value) in [
         ("physical_cores", report.physical_cores),
         ("logical_cores", report.logical_cores),
     ] {
-        out.push(Reading::spec(
+        push_spec_opt(
+            out,
             format!("cpu.microarch.{suffix}"),
-            serde_json::json!(value),
+            (value > 0).then(|| serde_json::json!(value)),
             Some(Unit::Count),
-        ));
+            "the platform's processor description did not include this count",
+        );
     }
-    out.push(Reading::measured(
+    push_opt(
+        out,
         "cpu.microarch.smt_enabled",
-        serde_json::json!(report.smt_enabled),
+        (report.physical_cores > 0 && report.logical_cores > 0)
+            .then(|| serde_json::json!(report.smt_enabled)),
         None,
-    ));
+        "SMT is judged by comparing logical to physical cores, and one of the two was not read",
+    );
 
     // Supported only. An extension the processor does not implement is not a
     // property of this machine, and listing it with a false flag invites a
@@ -4026,6 +4042,35 @@ mod tests {
 
     /// The invariant the whole module exists for: a missing value is never a zero,
     /// and never silent about why.
+    /// Zero is how the microarch readers say a core count was not read, and
+    /// it was published as a specification of zero cores -- with SMT
+    /// "measured" off, since that is computed from the two counts.
+    #[test]
+    fn unread_core_counts_are_not_zero_cores_and_do_not_decide_smt() {
+        use crate::cpu_microarch::{CpuMicroarchMonitor, CpuVendor};
+        let mut report = CpuMicroarchMonitor::default().report().clone();
+        report.microarch.vendor = CpuVendor::Unknown;
+        report.physical_cores = 0;
+        report.logical_cores = 16;
+        report.smt_enabled = false;
+
+        let mut out = Vec::new();
+        push_microarch(&mut out, &report);
+        let get = |id: &str| out.iter().find(|r| r.id == id).cloned().expect(id);
+
+        let physical = get("cpu.microarch.physical_cores");
+        assert_eq!(physical.provenance, Provenance::Unavailable);
+        assert!(physical.value.is_none());
+        let logical = get("cpu.microarch.logical_cores");
+        assert_eq!(logical.value, Some(serde_json::json!(16)));
+        let smt = get("cpu.microarch.smt_enabled");
+        assert_eq!(
+            smt.provenance,
+            Provenance::Unavailable,
+            "SMT was decided from an unread count"
+        );
+    }
+
     #[test]
     fn unavailable_readings_carry_no_value_and_state_a_reason() {
         for r in snapshot() {

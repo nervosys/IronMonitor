@@ -881,7 +881,7 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            true,
             "Physical core count. Below `logical_cores` when SMT is on, and the \
              right denominator for anything that scales with execution \
              resources rather than with schedulable threads.",
@@ -892,7 +892,7 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            true,
             "Logical processor count, SMT threads included. The right denominator \
              for a thread pool.",
         ));
@@ -902,7 +902,7 @@ impl Ontology {
             K::Identity,
             None,
             P::Measured,
-            false,
+            true,
             "Whether simultaneous multithreading is on right now. Measured rather \
              than declared: the silicon supports it or does not, but firmware \
              and the kernel both get a say, and this is the state as found.",

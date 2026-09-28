@@ -382,6 +382,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unread core count is no longer "zero cores".** `cpu.microarch.physical_cores`
+  and `logical_cores` were published as specifications of 0 when the platform
+  did not report them (common on ARM Linux), and `cpu.microarch.smt_enabled`
+  as a measurement that SMT was off. They are now unavailable with a reason,
+  and the three entities are nullable.
+
 - **RAPL power totals can say nothing was measured.** **Breaking:**
   `PowerSnapshot`'s three totals are `Option<f64>`, `None` when no domain of
   that class produced a delta rather than `0.0`; `RaplMonitor::efficiency()`
