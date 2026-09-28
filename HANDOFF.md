@@ -10566,3 +10566,29 @@ leap day and a pre-epoch date; an off-by-one in its constant fails the test.
 **Snapshot time, cumulative:** a debug `ironmon snapshot` on this machine went
 from about 45 s to **17 s** across the `-NoProfile`, boot-timing, TPM and
 firmware changes. `agentic_contract` now runs in 55 s.
+
+### The partial-correction baseline: every entry a surface reaches, triaged
+
+Re-ranked the ratchet's baseline against every surface: the CLI, TUI, GUI,
+ontology resolver, HTTP server, Prometheus exporters and the MCP tools. Ten
+structs are named by one. Two were defects and are fixed above
+(`ProcessMonitorInfo`'s Windows zeros; the CPU interval). The rest:
+
+| Struct | Verdict |
+| --- | --- |
+| `connections::ConnectionInfo::local_port` | an identifier, present in every row |
+| `core::memory::RamInfo` total, used | exist only after a successful read |
+| `hwmon::HwSensor::value` | every constructor pushes a sensor only after its value parsed; `min`/`max` are thresholds, a separate question |
+| `memory_management::MemorySummary` | name collision with `ai_api::MemorySummary`; library only |
+| `network_monitor::NetworkInterfaceInfo` counters | clean (triaged in task 1.4) |
+| `network_tools::{PingResult, NmapScanResult, CaptureConfig}` | triaged in 1.4; ping's no-verdict case fixed above |
+| `tsdb::ProcessSnapshot` | carries `process_monitor`'s figures, fixed at the source |
+
+**About 60 baseline entries remain, and none reaches a user.** They are
+library API that nothing in the crate reads. Fixing them is legitimate but
+changes nothing anyone sees; the ratchet keeps them from spreading meanwhile.
+
+Also noticed while profiling: `resolve_gpu` measured 9-10 s in two whole
+snapshots and 1.4-1.7 s in isolation and in a later instrumented snapshot. The
+process list showed WMI's host among the busiest; this is contention on a
+loaded machine, not code, and nothing was changed for it.
