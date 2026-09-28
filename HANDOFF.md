@@ -10611,6 +10611,14 @@ Asked and answered, recorded so they are not re-asked:
   repeat that. The narrower change -- a private target directory for this repo
   alone -- is what was put back to the user.
 
+  **Answer: move the shared directory to E:.** `~/.cargo/config.toml` now sets
+  `target-dir = "E:/cargo-target"` (E: is an NVMe SSD with 2 TB free), with a
+  comment saying why. This fixes the disk, not the contention: builds from
+  different projects still serialise on one lock. The old
+  `C:/Users/adamm/.cargo-target` is no longer written to and is left for the
+  user to delete once nothing is building from it. Every earlier note in this
+  file that names that path describes where artifacts *were*.
+
 ### DIMM presence from evidence
 
 `DimmInfo::capacity_bytes` was a `u64` documented "0 means empty slot", and
