@@ -389,6 +389,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BootMonitor::read_boot_time`). A debug snapshot went from about 45 s to
   28.5 s on the machine measured.
 
+- **The TPM reader takes 30 ms instead of 6 s unelevated.** It no longer asks
+  the Administrators-only `Win32_Tpm` class when the process is not elevated
+  (the refusal took 6.6 s to arrive), and reads the service key and device node
+  in-process rather than through PowerShell. Readings are unchanged.
+
 - **`process.{pid}.cpu` is the share over an interval, as it says.** Each
   snapshot sampled processes once, which yields each process's lifetime
   average; an idle process that had been busy earlier read 2.3% where it was

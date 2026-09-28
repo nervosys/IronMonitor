@@ -313,6 +313,39 @@ pub(crate) fn system_process_table() -> Option<std::collections::HashMap<u32, Pr
     (!table.is_empty()).then_some(table)
 }
 
+/// Whether this process runs elevated, from its token's `TokenElevation`.
+///
+/// `None` when the token cannot be read. Used to avoid asking questions whose
+/// answer is already known to be "access denied": an unelevated query of the
+/// Administrators-only `root/cimv2/Security/MicrosoftTpm` namespace took 6.6 s
+/// to be refused on the machine this was measured on.
+pub(crate) fn is_elevated() -> Option<bool> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo-handle from `GetCurrentProcess` needs no closing; the
+    // token handle is closed below on every path that opened it.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0u32;
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::addr_of_mut!(elevation) as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    let _ = unsafe { CloseHandle(token) };
+    read.ok()?;
+    Some(elevation.TokenIsElevated != 0)
+}
+
 /// Per-core `(user, system, idle)` percentages.
 ///
 /// The first call has no previous sample to difference against, so it reports each

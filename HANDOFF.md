@@ -10507,8 +10507,36 @@ cold driver start rather than anything changed here -- it is not claimed as a
 result. `agentic_contract` ran in 66 s where the previous run took 320 s.
 
 **Next, if anyone wants more:** `board` is now the largest at 9 s, of which the
-TPM reader is 6.2 s and firmware 2.2 s. The TPM reader spawns PowerShell three
+TPM reader is 6.2 s and firmware 2.2 s. *(TPM done; see the next section.)* The TPM reader spawns PowerShell three
 times: a `Win32_Tpm` CIM query, a filtered `Win32_PnPEntity` enumeration, and a
 test of whether one registry key exists. The last needs no process at all, and
 the two queries could share one session or go through the `wmi` crate the rest
 of the crate uses.
+
+### The TPM reader: 6.2 s to 30 ms
+
+Timed per query, the cost was one query: `Win32_Tpm` in the
+`root/cimv2/Security/MicrosoftTpm` namespace, which grants Administrators only,
+**took 6.6 s to be refused** to an unelevated process. The registry check took
+1.1 s -- a PowerShell session spent on `Test-Path` -- and the device-node query
+about 1 s.
+
+- `platform::windows::is_elevated()` reads the token's `TokenElevation`. An
+  unelevated process now carries the refusal it would have received -- "readable
+  only by Administrators, and this process is not elevated" -- without making
+  the query. Elevated, or with elevation unreadable, it still asks. If some
+  organisation grants the namespace to ordinary users, this loses the richer
+  answer for them; the fallback still reports presence and version.
+- The TPM service key is read with `winreg`.
+- The device node is read through an in-process WMI connection.
+
+Readings before and after are identical: present, version 2.0 (which is the
+device-node query working), status unavailable with its reason, measured boot
+true. `TpmMonitor::new()` takes 30-50 ms.
+
+**Tripped on the attribute trap this file already describes.** The new function
+went between `version_from_node`'s doc comment and its
+`#[cfg(target_os = "windows")]`, so it took both, and `version_from_node` lost
+its gate -- visible only as a dead-code warning on Linux, where it now compiled.
+Moved above the doc block. It is the third time; the Linux clippy run is what
+catches it.

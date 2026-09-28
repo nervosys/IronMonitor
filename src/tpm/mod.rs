@@ -94,6 +94,32 @@ pub struct TpmMonitor {
     tpm_info: Option<TpmInfo>,
 }
 
+/// The `PNPDeviceID`s `query` returns, one per line, read through an
+/// in-process WMI connection.
+#[cfg(target_os = "windows")]
+fn security_device_ids(query: &str) -> Result<String, IronError> {
+    use std::collections::HashMap;
+    use wmi::{COMLibrary, Variant, WMIConnection};
+
+    // COM may already be initialised on this thread in another mode (a GUI
+    // thread is), so fall back as `disk::windows` does.
+    let com = COMLibrary::new()
+        .or_else(|_| COMLibrary::without_security())
+        .unwrap_or_else(|_| unsafe { COMLibrary::assume_initialized() });
+    let conn = WMIConnection::new(com).map_err(|e| IronError::System(e.to_string()))?;
+    let rows: Vec<HashMap<String, Variant>> = conn
+        .raw_query(query)
+        .map_err(|e| IronError::System(e.to_string()))?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| match row.get("PNPDeviceID") {
+            Some(Variant::String(id)) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// The TPM specification a Windows security device node declares.
 ///
 /// The ACPI hardware id is the declaration: `MSFT0101` is the TPM 2.0 device
@@ -284,14 +310,25 @@ impl TpmMonitor {
         // registry check below is what decides -- and only both failing is an
         // error. This is the same rule as `usb::refresh_windows`.
         const WMI_TPM: &str = "Get-CimInstance -Namespace 'root/cimv2/Security/MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction SilentlyContinue | Select-Object IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, ManufacturerIdTxt, ManufacturerVersion, SpecVersion, PhysicalPresenceVersionInfo | ConvertTo-Json -Compress";
-        const TPM_SERVICE: &str = r#"if (Test-Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\TPM') { 'present' } else { 'absent' }"#;
         // The security device's own node, which an ordinary account can read.
         // Its ACPI hardware id names the specification: `MSFT0101` is the
         // TPM 2.0 device and `PNP0C31` the TPM 1.2 one. See `version_from_node`.
-        const TPM_DEVICE_NODE: &str = "Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='SecurityDevices'\" | Select-Object -ExpandProperty PNPDeviceID";
+        const TPM_DEVICE_NODE: &str =
+            "SELECT PNPDeviceID FROM Win32_PnPEntity WHERE PNPClass = 'SecurityDevices'";
 
-        let wmi =
-            crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", WMI_TPM]);
+        // `MicrosoftTpm` grants Administrators only by default. Asked
+        // unelevated, it took 6.6 s to say so on the machine this was measured
+        // on -- most of a snapshot's TPM cost -- so an unelevated process
+        // carries the refusal it would have received without making the
+        // query. An elevated one, or one whose elevation cannot be read, asks.
+        let wmi = if crate::platform::windows::is_elevated() == Some(false) {
+            Err(IronError::PermissionDenied(
+                "Win32_Tpm is readable only by Administrators, and this process is not elevated"
+                    .into(),
+            ))
+        } else {
+            crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", WMI_TPM])
+        };
         if let Ok(Some(val)) = &wmi {
             let spec = val["SpecVersion"].as_str().unwrap_or("");
             let version = if spec.starts_with("2.0") || spec.contains("2.0") {
@@ -337,11 +374,20 @@ impl TpmMonitor {
             return Ok(());
         }
 
-        // Fallback: check registry for TPM existence
-        let registry =
-            crate::core::command::capture("powershell", &["-NoProfile", "-Command", TPM_SERVICE]);
+        // Fallback: whether the TPM service is registered. Read directly; this
+        // was a PowerShell process spent on `Test-Path`, about a second.
+        let registry = {
+            use winreg::enums::HKEY_LOCAL_MACHINE;
+            match winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey(r"SYSTEM\CurrentControlSet\Services\TPM")
+            {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e),
+            }
+        };
         let present = match (&registry, wmi) {
-            (Ok(text), _) => text.trim() == "present",
+            (Ok(present), _) => *present,
             (Err(registry_err), Err(wmi_err)) => {
                 return Err(IronError::System(format!(
                     "no TPM detection succeeded: the WMI class said {wmi_err}; the registry check \
@@ -366,13 +412,12 @@ impl TpmMonitor {
             // the ontology saying "a TPM is present but its specification
             // version could not be determined" -- while `ACPI\MSFT0101\1` sat
             // in the device tree, readable, saying 2.0.
-            let version = crate::core::command::capture(
-                "powershell",
-                &["-NoProfile", "-Command", TPM_DEVICE_NODE],
-            )
-            .ok()
-            .and_then(|text| version_from_node(&text))
-            .unwrap_or(TpmVersion::Unknown);
+            // Queried through WMI in-process; it was a PowerShell session, about
+            // a second of every snapshot.
+            let version = security_device_ids(TPM_DEVICE_NODE)
+                .ok()
+                .and_then(|text| version_from_node(&text))
+                .unwrap_or(TpmVersion::Unknown);
 
             self.tpm_info = Some(TpmInfo {
                 device: "tpm0".into(),
