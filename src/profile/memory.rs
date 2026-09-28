@@ -42,7 +42,7 @@ impl ProfileProvider for MemoryProfileProvider {
         };
         for dimm in monitor.populated_dimms() {
             let label = format!(
-                "{} — {} {} ({:.2} GiB {:?})",
+                "{} — {} {} ({} {:?})",
                 dimm.locator,
                 if dimm.manufacturer.is_empty() {
                     "Unknown"
@@ -54,7 +54,8 @@ impl ProfileProvider for MemoryProfileProvider {
                 } else {
                     &dimm.part_number
                 },
-                dimm.capacity_gib(),
+                dimm.capacity_gib()
+                    .map_or_else(|| "size not read".to_string(), |g| format!("{g:.2} GiB")),
                 dimm.memory_type,
             );
             let mut g = ProfileGroup::new(

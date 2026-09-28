@@ -382,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A DIMM whose size could not be read is no longer reported as an empty
+  slot.** Presence now comes from evidence -- a module row, a status field, a
+  size that parsed, a part number -- and is unknown when there is none.
+  **Breaking:** `DimmInfo::capacity_bytes` is `Option<u64>`, `populated` is
+  `Option<bool>` and `capacity_gib()` returns `Option<f64>`;
+  `memory.dimm.{n}.populated` is nullable.
+
 - **PowerShell helpers no longer run the user's profile.** Ten spawns lacked
   `-NoProfile`, costing about 0.8 s each where a profile exists and letting
   anything it printed corrupt the output being parsed. The boot-duration entity

@@ -49,13 +49,11 @@ absent form. One run on the right machine settles each.
 - **An ARM64 Linux machine with 16 KiB or 64 KiB pages** — process memory now
   scales by the system page size; only the 4 KiB case has been run.
 
-### Waiting on a decision
+### Decided
 
-- Whether `fleet-store` ships in the next release. It is what raised the MSRV
-  to 1.94, and `src/consent.rs` should be re-read against it if it does.
-- What a DIMM's `capacity_bytes` and `populated` mean for an empty slot.
-- Whether `PowerSnapshot`'s totals become `Option`, so "nothing measured" is
-  expressible.
+- `fleet-store` ships in the next release, and the MSRV stays 1.94.
+- A DIMM's presence comes from evidence, not from its size (done).
+- `PowerSnapshot`'s totals become `Option`.
 
 ### Known and recorded, not yet fixed
 

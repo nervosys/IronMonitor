@@ -241,7 +241,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/interconnect/mod.rs", "ChipletTopology", "compute_dies io_dies on_package_bandwidth_gbs"),
     ("src/memory_bandwidth/mod.rs", "BandwidthAnalysis", "estimated_latency_ns"),
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
-    ("src/memory_topology/mod.rs", "DimmInfo", "capacity_bytes"),
     ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
     ("src/network_monitor.rs", "NetworkInterfaceInfo", "rx_bytes rx_packets rx_errors rx_drops tx_bytes tx_packets tx_errors tx_drops"),
     ("src/network_tools.rs", "CaptureConfig", "timeout_secs"),

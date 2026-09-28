@@ -9597,6 +9597,8 @@ above.
 
 ### Open: DIMM capacity, and a lookup table presented as a speed
 
+*(Decided and fixed 2026-09-28; see "DIMM presence from evidence" at the end.)*
+
 Two things found while fixing instance twenty-two and deliberately not fixed in
 that commit.
 
@@ -10592,3 +10594,42 @@ Also noticed while profiling: `resolve_gpu` measured 9-10 s in two whole
 snapshots and 1.4-1.7 s in isolation and in a later instrumented snapshot. The
 process list showed WMI's host among the busiest; this is contention on a
 loaded machine, not code, and nothing was changed for it.
+
+### Decisions taken 2026-09-28
+
+Asked and answered, recorded so they are not re-asked:
+
+- **`fleet-store` ships, with the Rust floor at 1.94.** The consent wording the
+  earlier note said must be narrowed first already had been, in `4d3ae92`
+  ("who chose the destination"); that note was stale.
+- **DIMM presence comes from evidence, not from the size.** Done below.
+- **`PowerSnapshot`'s totals become `Option`.** Next commit.
+- **Per-project target directories: held, pending a second question.**
+  `~/.cargo/config.toml` records why the shared directory exists: 649 GB across
+  50 per-project directories, and a disk that twice reached 50 MB free, once
+  corrupting a git ref. With 42 GB free, reverting it machine-wide would likely
+  repeat that. The narrower change -- a private target directory for this repo
+  alone -- is what was put back to the user.
+
+### DIMM presence from evidence
+
+`DimmInfo::capacity_bytes` was a `u64` documented "0 means empty slot", and
+the macOS and Windows readers set `populated = capacity > 0`: a module whose
+size did not read was reported as an empty slot. Linux counted a `Size:
+Unknown` as empty too.
+
+Now `capacity_bytes: Option<u64>` (`None` = no size read, including every empty
+slot) and `populated: Option<bool>`, set only from evidence:
+
+| Reader | Present | Absent | Unknown |
+| --- | --- | --- | --- |
+| Linux `dmidecode` | a size parsed, or a real part number | "No Module Installed" | anything else |
+| Windows `Win32_PhysicalMemory` | every row (the class lists installed modules only) | -- | -- |
+| macOS `system_profiler` | `dimm_status: ok`, or a size parsed | `dimm_status: empty` or size "Empty" | anything else |
+
+`memory.dimm.{n}.populated` is now nullable, and an unknown presence is
+published unavailable with its reason. Analysis sums only the sizes that were
+read. Tests on both pure parsers cover each row of the table; restoring the
+macOS `capacity > 0` rule fails the macOS one with exactly the old defect,
+`Some(false)` for a module whose size did not parse. `DimmInfo` leaves the
+ratchet baseline. This machine's readings are unchanged.

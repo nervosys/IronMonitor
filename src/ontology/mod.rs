@@ -1089,9 +1089,11 @@ impl Ontology {
             K::Identity,
             None,
             P::Specification,
-            false,
+            true,
             "Whether this slot holds a module. False is a reading, and the reason \
-             the fields below may be absent for a slot that genuinely exists.",
+             the fields below may be absent for a slot that genuinely exists. Null \
+             where nothing the platform reported establishes presence either way: \
+             an unreadable size is not an empty slot.",
         ));
         add(Entity::new(
             "memory.dimm.{n}.capacity",

@@ -95,8 +95,15 @@ pub struct DimmInfo {
     pub locator: String,
     /// Bank locator.
     pub bank: String,
-    /// Capacity in bytes (0 means empty slot).
-    pub capacity_bytes: u64,
+    /// Capacity in bytes, or `None` where no size was read -- including every
+    /// empty slot.
+    ///
+    /// This was a `u64` documented "0 means empty slot", and the macOS and
+    /// Windows readers derived `populated` from it as `capacity > 0`. So a
+    /// module whose size string did not parse was reported as an **empty
+    /// slot**: an unread value became a claim about the hardware. Size and
+    /// presence are now separate facts with separate sources.
+    pub capacity_bytes: Option<u64>,
     /// Rated speed in MT/s, or `None` where it was not read.
     ///
     /// `parse_mts` returned `0` for anything it could not parse, and the
@@ -139,8 +146,13 @@ pub struct DimmInfo {
     pub part_number: String,
     /// Serial number.
     pub serial_number: String,
-    /// Whether this slot is populated.
-    pub populated: bool,
+    /// Whether this slot holds a module, or `None` where nothing established
+    /// it either way.
+    ///
+    /// Set only from evidence of presence or absence -- a module row that
+    /// exists, a status field, a size that parsed, a part number -- and never
+    /// inferred from a size that could not be read.
+    pub populated: Option<bool>,
     /// Operating voltage in volts, or `None` where the firmware reported
     /// none.
     ///
@@ -154,9 +166,10 @@ pub struct DimmInfo {
 }
 
 impl DimmInfo {
-    /// Capacity in GiB.
-    pub fn capacity_gib(&self) -> f64 {
-        self.capacity_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+    /// Capacity in GiB, where the size was read.
+    pub fn capacity_gib(&self) -> Option<f64> {
+        self.capacity_bytes
+            .map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 
     /// Whether this DIMM has ECC, or `None` when either width is unknown.
@@ -247,7 +260,11 @@ impl MemoryTopologyMonitor {
 
     /// Get populated DIMMs only.
     pub fn populated_dimms(&self) -> Vec<&DimmInfo> {
-        self.topology.dimms.iter().filter(|d| d.populated).collect()
+        self.topology
+            .dimms
+            .iter()
+            .filter(|d| d.populated == Some(true))
+            .collect()
     }
 
     /// Get empty slots.
@@ -255,20 +272,23 @@ impl MemoryTopologyMonitor {
         self.topology
             .dimms
             .iter()
-            .filter(|d| !d.populated)
+            .filter(|d| d.populated == Some(false))
             .collect()
     }
 
     /// Analyze memory configuration.
     fn analyze(dimms: &[DimmInfo]) -> MemoryAnalysis {
-        let populated: Vec<&DimmInfo> = dimms.iter().filter(|d| d.populated).collect();
-        let total_capacity: u64 = populated.iter().map(|d| d.capacity_bytes).sum();
+        let populated: Vec<&DimmInfo> =
+            dimms.iter().filter(|d| d.populated == Some(true)).collect();
+        // Sums the sizes that were read; a module whose size was not is left
+        // out rather than counted as zero.
+        let total_capacity: u64 = populated.iter().filter_map(|d| d.capacity_bytes).sum();
         let populated_count = populated.len();
         let total_slots = dimms.len();
 
         // Check matched speeds and capacities
         let speeds: Vec<u32> = populated.iter().filter_map(|d| d.speed_mts).collect();
-        let capacities: Vec<u64> = populated.iter().map(|d| d.capacity_bytes).collect();
+        let capacities: Vec<u64> = populated.iter().filter_map(|d| d.capacity_bytes).collect();
         let matched_speeds = speeds.windows(2).all(|w| w[0] == w[1]) || speeds.len() <= 1;
         let matched_capacities =
             capacities.windows(2).all(|w| w[0] == w[1]) || capacities.len() <= 1;
@@ -539,14 +559,14 @@ impl MemoryTopologyMonitor {
         let bank = fields.get("Bank Locator").cloned().unwrap_or_default();
 
         let size_str = fields.get("Size").cloned().unwrap_or_default();
-        let populated = !size_str.contains("No Module Installed")
-            && !size_str.is_empty()
-            && size_str != "Unknown";
-
-        let capacity_bytes = if populated {
-            Self::parse_size_to_bytes(&size_str)
+        // "No Module Installed" is SMBIOS saying the slot is empty. Anything
+        // else is a size, or a size nobody could read -- and "Unknown" used to
+        // count as empty too, which is a claim the firmware did not make.
+        let slot_empty = size_str.contains("No Module Installed");
+        let capacity_bytes = if slot_empty {
+            None
         } else {
-            0
+            Some(Self::parse_size_to_bytes(&size_str)).filter(|&b| b > 0)
         };
 
         let speed_str = fields.get("Speed").cloned().unwrap_or_default();
@@ -587,6 +607,13 @@ impl MemoryTopologyMonitor {
         let manufacturer = fields.get("Manufacturer").cloned().unwrap_or_default();
         let part_number = fields.get("Part Number").cloned().unwrap_or_default();
         let serial_number = fields.get("Serial Number").cloned().unwrap_or_default();
+        let populated = if slot_empty {
+            Some(false)
+        } else if capacity_bytes.is_some() || Self::names_a_part(&part_number) {
+            Some(true)
+        } else {
+            None
+        };
 
         let voltage = fields
             .get("Configured Voltage")
@@ -619,6 +646,15 @@ impl MemoryTopologyMonitor {
             populated,
             voltage,
         })
+    }
+
+    /// Whether a SMBIOS part-number field names a part rather than a
+    /// placeholder, which is evidence that a module is present.
+    fn names_a_part(part: &str) -> bool {
+        let p = part.trim();
+        !p.is_empty()
+            && !["not specified", "unknown", "none", "[empty]", "no dimm"]
+                .contains(&p.to_ascii_lowercase().as_str())
     }
 
     fn parse_size_to_bytes(s: &str) -> u64 {
@@ -718,7 +754,7 @@ impl MemoryTopologyMonitor {
                 let capacity = item["Capacity"]
                     .as_u64()
                     .or_else(|| item["Capacity"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0);
+                    .filter(|&c| c > 0);
                 // WMI uses 0 for "unknown" here as SMBIOS does, so a zero is
                 // absent too. `ConfiguredClockSpeed` falling back to `Speed`
                 // asserted the DIMM runs at its rating.
@@ -771,7 +807,11 @@ impl MemoryTopologyMonitor {
                         .unwrap_or("")
                         .trim()
                         .to_string(),
-                    populated: capacity > 0,
+                    // `Win32_PhysicalMemory` lists installed modules only, so
+                    // the row is the evidence. This was `capacity > 0`, which
+                    // reported a module with an unreadable `Capacity` as an
+                    // empty slot.
+                    populated: Some(true),
                     // `ConfiguredVoltage` is in millivolts. A zero there means
                     // the firmware filled the field with nothing, which is not
                     // an operating voltage of zero.
@@ -797,8 +837,23 @@ impl MemoryTopologyMonitor {
             for item in items {
                 if let Some(slots) = item["_items"].as_array() {
                     for slot in slots {
-                        let size_str = slot["dimm_size"].as_str().unwrap_or("0");
-                        let capacity_bytes = Self::parse_size_to_bytes(size_str);
+                        let size_str = slot["dimm_size"].as_str().unwrap_or("");
+                        let capacity_bytes =
+                            Some(Self::parse_size_to_bytes(size_str)).filter(|&b| b > 0);
+                        // `dimm_status` says "empty" or "ok" where it is
+                        // present, and "Empty" appears as the size of an empty
+                        // slot. A size that parsed is a module. Anything else
+                        // establishes nothing.
+                        let status = slot["dimm_status"].as_str().unwrap_or("");
+                        let populated = if status.eq_ignore_ascii_case("empty")
+                            || size_str.eq_ignore_ascii_case("empty")
+                        {
+                            Some(false)
+                        } else if status.eq_ignore_ascii_case("ok") || capacity_bytes.is_some() {
+                            Some(true)
+                        } else {
+                            None
+                        };
                         let speed_mts = slot["dimm_speed"].as_str().and_then(Self::parse_mts);
                         let type_str = slot["dimm_type"].as_str().unwrap_or("Unknown");
 
@@ -831,7 +886,7 @@ impl MemoryTopologyMonitor {
                                 .as_str()
                                 .unwrap_or("")
                                 .to_string(),
-                            populated: capacity_bytes > 0,
+                            populated,
                             // `system_profiler` reports no DIMM voltage.
                             voltage: None,
                         });
@@ -884,7 +939,7 @@ mod tests {
         let dimm = DimmInfo {
             locator: "DIMM_A1".into(),
             bank: "BANK 0".into(),
-            capacity_bytes: 16 * 1024 * 1024 * 1024,
+            capacity_bytes: Some(16 * 1024 * 1024 * 1024),
             speed_mts: Some(3200),
             configured_speed_mts: Some(3200),
             memory_type: MemoryType::DDR4,
@@ -895,10 +950,10 @@ mod tests {
             manufacturer: "Samsung".into(),
             part_number: "M378A2G43AB3-CWE".into(),
             serial_number: "12345678".into(),
-            populated: true,
+            populated: Some(true),
             voltage: Some(1.2),
         };
-        assert!((dimm.capacity_gib() - 16.0).abs() < 0.01);
+        assert!((dimm.capacity_gib().unwrap() - 16.0).abs() < 0.01);
         assert_eq!(dimm.is_ecc(), Some(false));
     }
 
@@ -917,7 +972,7 @@ mod tests {
         let mut dimm = DimmInfo {
             locator: "DIMM_A1".into(),
             bank: String::new(),
-            capacity_bytes: 0,
+            capacity_bytes: None,
             speed_mts: Some(0),
             configured_speed_mts: Some(0),
             memory_type: MemoryType::Unknown,
@@ -928,7 +983,7 @@ mod tests {
             manufacturer: String::new(),
             part_number: String::new(),
             serial_number: String::new(),
-            populated: true,
+            populated: Some(true),
             voltage: None,
         };
         assert_eq!(dimm.is_ecc(), None, "neither width read");
@@ -948,7 +1003,7 @@ mod tests {
         let dimm = DimmInfo {
             locator: "DIMM_A1".into(),
             bank: "".into(),
-            capacity_bytes: 32 * 1024 * 1024 * 1024,
+            capacity_bytes: Some(32 * 1024 * 1024 * 1024),
             speed_mts: Some(3200),
             configured_speed_mts: Some(3200),
             memory_type: MemoryType::DDR4,
@@ -959,7 +1014,7 @@ mod tests {
             manufacturer: "SK Hynix".into(),
             part_number: "".into(),
             serial_number: "".into(),
-            populated: true,
+            populated: Some(true),
             voltage: Some(1.2),
         };
         assert_eq!(dimm.is_ecc(), Some(true));
@@ -998,7 +1053,7 @@ mod tests {
             DimmInfo {
                 locator: "DIMM_A1".into(),
                 bank: "BANK 0".into(),
-                capacity_bytes: 8 * 1024 * 1024 * 1024,
+                capacity_bytes: Some(8 * 1024 * 1024 * 1024),
                 speed_mts: Some(3200),
                 configured_speed_mts: Some(3200),
                 memory_type: MemoryType::DDR4,
@@ -1009,13 +1064,13 @@ mod tests {
                 manufacturer: "Samsung".into(),
                 part_number: "".into(),
                 serial_number: "".into(),
-                populated: true,
+                populated: Some(true),
                 voltage: Some(1.2),
             },
             DimmInfo {
                 locator: "DIMM_B1".into(),
                 bank: "BANK 1".into(),
-                capacity_bytes: 8 * 1024 * 1024 * 1024,
+                capacity_bytes: Some(8 * 1024 * 1024 * 1024),
                 speed_mts: Some(3200),
                 configured_speed_mts: Some(3200),
                 memory_type: MemoryType::DDR4,
@@ -1026,7 +1081,7 @@ mod tests {
                 manufacturer: "Samsung".into(),
                 part_number: "".into(),
                 serial_number: "".into(),
-                populated: true,
+                populated: Some(true),
                 voltage: Some(1.2),
             },
         ];
@@ -1041,6 +1096,63 @@ mod tests {
                 .expect("both DIMM speeds were read")
                 > 40.0
         );
+    }
+
+    /// An unreadable size is not an empty slot.
+    ///
+    /// macOS derived `populated` from `capacity > 0`, so a module whose
+    /// `dimm_size` did not parse was reported as an empty slot. Presence now
+    /// comes from the status field or a size that parsed, and neither here
+    /// means unknown.
+    #[test]
+    fn macos_unreadable_size_is_unknown_presence_not_an_empty_slot() {
+        let json = r#"{"SPMemoryDataType":[{"_items":[
+            {"_name":"DIMM0","dimm_size":"16 GB","dimm_status":"ok"},
+            {"_name":"DIMM1","dimm_size":"sixteen gigs"},
+            {"_name":"DIMM2","dimm_size":"Empty","dimm_status":"empty"}
+        ]}]}"#;
+        let dimms = MemoryTopologyMonitor::parse_macos_profiler(json);
+        assert_eq!(dimms.len(), 3);
+        assert_eq!(dimms[0].populated, Some(true));
+        assert_eq!(dimms[0].capacity_bytes, Some(16 * 1024 * 1024 * 1024));
+        assert_eq!(
+            dimms[1].populated, None,
+            "an unparsed size is not a reading of absence"
+        );
+        assert_eq!(dimms[1].capacity_bytes, None);
+        assert_eq!(dimms[2].populated, Some(false));
+        assert_eq!(dimms[2].capacity_bytes, None);
+    }
+
+    /// SMBIOS "Unknown" is not "No Module Installed", and a real part number is
+    /// evidence of a module even when the size did not read.
+    #[test]
+    fn linux_presence_comes_from_evidence_not_from_the_size() {
+        let fields = |size: &str, part: &str| -> HashMap<String, String> {
+            [
+                ("Locator".to_string(), "DIMM_A1".to_string()),
+                ("Size".to_string(), size.to_string()),
+                ("Part Number".to_string(), part.to_string()),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let d = |size, part| MemoryTopologyMonitor::dimm_from_fields(&fields(size, part)).unwrap();
+
+        let empty = d("No Module Installed", "Not Specified");
+        assert_eq!((empty.populated, empty.capacity_bytes), (Some(false), None));
+
+        let sized = d("32 GB", "Not Specified");
+        assert_eq!(sized.populated, Some(true));
+        assert_eq!(sized.capacity_bytes, Some(32 * 1024 * 1024 * 1024));
+
+        let unknown_size_real_part = d("Unknown", "F5-6000J3038F16G");
+        assert_eq!(unknown_size_real_part.populated, Some(true));
+        assert_eq!(unknown_size_real_part.capacity_bytes, None);
+
+        // "Unknown" used to count as an empty slot.
+        let nothing_known = d("Unknown", "Not Specified");
+        assert_eq!(nothing_known.populated, None);
     }
 
     #[test]

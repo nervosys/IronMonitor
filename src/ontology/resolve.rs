@@ -1268,16 +1268,21 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         push_spec_text(out, format!("{base}.locator"), &dimm.locator);
         // Firmware-declared like the rest of the cluster: the board says the
         // slot is filled, and ironmon did not look inside the case.
-        out.push(Reading::spec(
+        push_spec_opt(
+            out,
             format!("{base}.populated"),
-            serde_json::json!(dimm.populated),
+            dimm.populated.map(|p| serde_json::json!(p)),
             None,
-        ));
+            concat!(
+                "nothing the platform reported establishes whether this slot holds a ",
+                "module: no size could be read, and no status or part number says"
+            ),
+        );
 
         // An empty slot is a real slot with nothing in it. Reporting zeros for its
         // capacity and speed would describe a module of no size running at no
         // speed, which is not what the board is telling us.
-        if !dimm.populated {
+        if dimm.populated == Some(false) {
             for suffix in PER_SLOT {
                 out.push(Reading::unavailable(
                     format!("{base}.{suffix}"),
@@ -1291,9 +1296,9 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         push_spec_opt(
             out,
             format!("{base}.capacity"),
-            (dimm.capacity_bytes > 0).then(|| serde_json::json!(dimm.capacity_bytes)),
+            dimm.capacity_bytes.map(|b| serde_json::json!(b)),
             Some(Unit::Bytes),
-            "SMBIOS reported no capacity for a slot it marked populated",
+            "no module size was read for this slot",
         );
         push_spec_opt(
             out,
