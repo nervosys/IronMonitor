@@ -9735,7 +9735,7 @@ now skips the domain for that interval, since no delta is recoverable.
 Worth noting: `energy_uj` beside it was already correct, using `?` to drop the
 whole reading when the counter itself could not be read.
 
-#### Open: `PowerSnapshot`'s totals cannot say "nothing measured"
+#### ~~Open: `PowerSnapshot`'s totals cannot say "nothing measured"~~ Decided and fixed 2026-09-28; see "RAPL totals that can say nothing was measured" at the end
 
 `total_package_watts`, `total_core_watts` and `total_dram_watts` are bare `f64`
 accumulators starting at `0.0`. They read `0.0` when the machine is genuinely
@@ -10633,3 +10633,19 @@ read. Tests on both pure parsers cover each row of the table; restoring the
 macOS `capacity > 0` rule fails the macOS one with exactly the old defect,
 `Some(false)` for a module whose size did not parse. `DimmInfo` leaves the
 ratchet baseline. This machine's readings are unchanged.
+
+### RAPL totals that can say nothing was measured
+
+`PowerSnapshot::total_package_watts`, `total_core_watts` and `total_dram_watts`
+are `Option<f64>`: `Some` once at least one domain of that class produced a
+delta, `None` otherwise. Idle is `Some(0.0)` now, and "nothing to sum" is not.
+The wrap test that could only assert `< 1.0` now asserts `None`; seeding the
+core total with `Some(0.0)` again fails it.
+
+The same shape one level up: **`RaplMonitor::efficiency()` returns
+`Option<PowerEfficiency>`**. With no package total it used `0.0` as the current
+draw and returned a whole analysis -- within TDP, all of it headroom, efficiency
+ratio 1.0 -- of a reading that was never taken. A new test covers the empty
+case. And `refresh()` moves the peak and the running average only on an interval
+that measured package power; one that measured nothing used to drag the average
+toward zero. Nothing outside `rapl` reads any of these.

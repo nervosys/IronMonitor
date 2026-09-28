@@ -382,6 +382,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RAPL power totals can say nothing was measured.** **Breaking:**
+  `PowerSnapshot`'s three totals are `Option<f64>`, `None` when no domain of
+  that class produced a delta rather than `0.0`; `RaplMonitor::efficiency()`
+  returns `Option<PowerEfficiency>`, `None` until package power is measured,
+  instead of analysing a zero it assumed.
+
 - **A DIMM whose size could not be read is no longer reported as an empty
   slot.** Presence now comes from evidence -- a module row, a status field, a
   size that parsed, a part number -- and is unknown when there is none.

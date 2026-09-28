@@ -53,7 +53,7 @@ absent form. One run on the right machine settles each.
 
 - `fleet-store` ships in the next release, and the MSRV stays 1.94.
 - A DIMM's presence comes from evidence, not from its size (done).
-- `PowerSnapshot`'s totals become `Option`.
+- `PowerSnapshot`'s totals become `Option` (done).
 
 ### Known and recorded, not yet fixed
 
