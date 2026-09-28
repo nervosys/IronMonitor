@@ -97,7 +97,12 @@ fn is_produced(name: &str) -> bool {
         "entries",
         "processes",
     ];
+    // The wall-clock span between two samples the program itself took. Named
+    // exactly, not by a `_secs` or `duration` pattern, because a duration the
+    // program *reads* -- a boot time, an uptime -- can be missing.
+    const MEASURED_BY_THE_PROGRAM: [&str; 1] = ["measurement_duration_secs"];
     EXACT.contains(&name)
+        || MEASURED_BY_THE_PROGRAM.contains(&name)
         || name.ends_with("_count")
         || name.ends_with("_len")
         || name.starts_with("num_")
