@@ -10809,5 +10809,10 @@ the shared in-process WMI helper and preferred. All four now match to the byte.
 Where the Storage namespace is missing (before Windows 8) the geometric figure
 remains, documented as a slight undercount.
 
-Noticed and left: the Windows disk *type* is partly inferred from model-name
-substrings ("990 PRO" means NVMe) with a default of NVMe for anything on SCSI.
+The Windows disk *type* was inferred from model-name substrings ("990 PRO"
+meant NVMe) with anything on a SCSI interface defaulting to an NVMe SSD -- so a
+hard disk behind a RAID or SAS controller was published as `nvme_ssd`. It is now
+read from the same `MSFT_PhysicalDisk` row's `BusType` and `MediaType`
+(`kind_from_bus_and_media`, tested), and without that class only an interface
+Windows names USB says anything; the rest is `unknown`. This machine's four
+drives read the same kinds as before, now from the source.

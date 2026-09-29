@@ -386,6 +386,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Win32_DiskDrive.Size`, a geometric figure that drops the last partial
   cylinder -- 2.6 MB short on every drive measured. It now reads
   `MSFT_PhysicalDisk.Size`, matching `Get-PhysicalDisk` to the byte.
+  The disk kind comes from the same class's `BusType` and `MediaType`
+  instead of the model name, which classified any SCSI-attached drive,
+  hard disks included, as an NVMe SSD.
 
 - **A Linux snapshot no longer waits on missing daemons: 150 s to 23 s.**
   `fwupdmgr` is bounded at 8 s and no longer runs twice (Secure Boot reads its

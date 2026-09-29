@@ -36,6 +36,30 @@ fn create_wmi_connection() -> Result<WMIConnection, Error> {
         .map_err(|e| Error::InitializationFailed(e.to_string()))
 }
 
+/// What `MSFT_PhysicalDisk` reports about one drive.
+struct PhysicalDiskFacts {
+    size: Option<u64>,
+    kind: DiskType,
+}
+
+/// The drive's kind from `MSFT_PhysicalDisk.BusType` and `MediaType`.
+///
+/// BusType: 1 SCSI, 3 ATA, 7 USB, 8 RAID, 10 SAS, 11 SATA, 14 Virtual,
+/// 15 File-backed virtual, 17 NVMe. MediaType: 3 HDD, 4 SSD, 0 unspecified.
+/// A SATA or ATA drive whose medium is unspecified is `Unknown` -- which of
+/// the two it is, is exactly the question.
+fn kind_from_bus_and_media(bus: Option<u64>, media: Option<u64>) -> DiskType {
+    match (bus, media) {
+        (Some(17), _) => DiskType::NvmeSsd,
+        (Some(3 | 11), Some(4)) => DiskType::SataSsd,
+        (Some(3 | 11), Some(3)) => DiskType::SataHdd,
+        (Some(7), _) => DiskType::Usb,
+        (Some(1 | 8 | 10), _) => DiskType::Scsi,
+        (Some(14 | 15), _) => DiskType::Virtual,
+        _ => DiskType::Unknown,
+    }
+}
+
 /// Windows disk device implementation
 pub struct WindowsDisk {
     name: String,
@@ -811,9 +835,15 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
     // measurement. `MSFT_PhysicalDisk.Size`, what `Get-PhysicalDisk` reads, is
     // the length. Where that class is unavailable (before Windows 8) the
     // geometric figure remains, and is a slight undercount.
-    let true_sizes: HashMap<u32, u64> = crate::platform::windows::wmi_query(
+    //
+    // The same class carries `BusType` and `MediaType`, which say what the
+    // drive is. The kind used to be inferred from the model string -- "990
+    // PRO" meant NVMe -- and anything on a SCSI interface defaulted to an NVMe
+    // SSD, so a hard disk behind a RAID or SAS controller was published as
+    // `nvme_ssd`.
+    let physical: HashMap<u32, PhysicalDiskFacts> = crate::platform::windows::wmi_query(
         "root\\Microsoft\\Windows\\Storage",
-        "SELECT DeviceId, Size FROM MSFT_PhysicalDisk",
+        "SELECT DeviceId, Size, BusType, MediaType FROM MSFT_PhysicalDisk",
     )
     .map(|rows| {
         rows.iter()
@@ -821,13 +851,25 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
                 let index = crate::platform::windows::wmi_str(row, "DeviceId")
                     .parse::<u32>()
                     .ok()?;
-                let size = match row.get("Size")? {
-                    wmi::Variant::UI8(v) => *v,
-                    wmi::Variant::I8(v) => u64::try_from(*v).ok()?,
-                    wmi::Variant::String(s) => s.parse().ok()?,
-                    _ => return None,
+                let number = |key: &str| -> Option<u64> {
+                    match row.get(key)? {
+                        wmi::Variant::UI8(v) => Some(*v),
+                        wmi::Variant::I8(v) => u64::try_from(*v).ok(),
+                        wmi::Variant::UI4(v) => Some(*v as u64),
+                        wmi::Variant::I4(v) => u64::try_from(*v).ok(),
+                        wmi::Variant::UI2(v) => Some(*v as u64),
+                        wmi::Variant::I2(v) => u64::try_from(*v).ok(),
+                        wmi::Variant::String(s) => s.parse().ok(),
+                        _ => None,
+                    }
                 };
-                Some((index, size))
+                Some((
+                    index,
+                    PhysicalDiskFacts {
+                        size: number("Size"),
+                        kind: kind_from_bus_and_media(number("BusType"), number("MediaType")),
+                    },
+                ))
             })
             .collect()
     })
@@ -843,67 +885,15 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
 
         for wmi_disk in wmi_disks {
             // Determine disk type - check multiple sources for best accuracy
-            let disk_type = {
-                let model_upper = wmi_disk.model.as_ref().map(|m| m.to_uppercase());
-                let interface_upper = wmi_disk.interface_type.as_ref().map(|i| i.to_uppercase());
-
-                // Check model name first (most reliable for SSDs)
-                if let Some(ref model) = model_upper {
-                    if model.contains("NVME")
-                        || model.contains("990 PRO")
-                        || model.contains("9100 PRO")
-                        || model.contains("980 PRO")
-                        || model.contains("970 EVO PLUS")
-                    {
-                        DiskType::NvmeSsd
-                    } else if model.contains("SSD") || model.contains("970 EVO") {
-                        // Could be SATA or NVMe SSD - check interface
-                        if interface_upper.as_deref() == Some("SCSI") {
-                            DiskType::NvmeSsd // SCSI interface on SSD = NVMe
-                        } else {
-                            DiskType::SataSsd
-                        }
-                    } else {
-                        // Model doesn't clearly indicate SSD type
-                        // Check if interface is SCSI (modern NVMe) vs IDE (SATA)
-                        if interface_upper.as_deref() == Some("SCSI") {
-                            // SCSI interface on modern systems usually means NVMe
-                            // Check media type for additional hints
-                            match wmi_disk.media_type.as_deref() {
-                                Some(media) if media.contains("Fixed") => {
-                                    // Fixed disk on SCSI - likely NVMe SSD
-                                    DiskType::NvmeSsd
-                                }
-                                Some(media) if media.contains("Removable") => DiskType::Usb,
-                                _ => DiskType::NvmeSsd, // Default SCSI to NVMe
-                            }
-                        } else {
-                            // IDE interface or other
-                            match wmi_disk.media_type.as_deref() {
-                                Some(media) if media.contains("SSD") || media.contains("Solid") => {
-                                    DiskType::SataSsd
-                                }
-                                Some(media) if media.contains("NVMe") => DiskType::NvmeSsd,
-                                Some(media) if media.contains("Removable") => DiskType::Usb,
-                                Some(media) if media.contains("Fixed") => DiskType::SataHdd,
-                                _ => DiskType::Unknown,
-                            }
-                        }
-                    }
-                } else {
-                    // No model - use interface and media type
-                    if interface_upper.as_deref() == Some("SCSI") {
-                        DiskType::NvmeSsd // SCSI without model = likely NVMe
-                    } else {
-                        match wmi_disk.media_type.as_deref() {
-                            Some(media) if media.contains("SSD") => DiskType::SataSsd,
-                            Some(media) if media.contains("NVMe") => DiskType::NvmeSsd,
-                            Some(media) if media.contains("Removable") => DiskType::Usb,
-                            Some(media) if media.contains("Fixed") => DiskType::SataHdd,
-                            _ => DiskType::Unknown,
-                        }
-                    }
-                }
+            // Read, not inferred. Without `MSFT_PhysicalDisk` only an interface
+            // Windows names as USB says anything; the rest is unknown rather
+            // than guessed from a model string.
+            let disk_type = match physical.get(&wmi_disk.index) {
+                Some(facts) => facts.kind,
+                None => match wmi_disk.interface_type.as_deref() {
+                    Some(iface) if iface.eq_ignore_ascii_case("USB") => DiskType::Usb,
+                    _ => DiskType::Unknown,
+                },
             };
 
             // Format interface type for display
@@ -931,7 +921,10 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
                 wmi_disk.model,
                 wmi_disk.serial_number.map(|s| s.trim().to_string()),
                 // WMI already answers `Option`; this used to discard it.
-                true_sizes.get(&wmi_disk.index).copied().or(wmi_disk.size),
+                physical
+                    .get(&wmi_disk.index)
+                    .and_then(|f| f.size)
+                    .or(wmi_disk.size),
                 wmi_disk.index,
                 interface_type,
             );
@@ -1019,5 +1012,35 @@ impl Default for WindowsDiskMonitor {
         Self::new().unwrap_or(Self {
             disks: HashMap::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    /// The kind is what Windows reports, and an unreported medium stays
+    /// unknown -- not the NVMe SSD the old heuristic defaulted to.
+    #[test]
+    fn disk_kind_comes_from_bus_and_media() {
+        assert_eq!(
+            kind_from_bus_and_media(Some(17), Some(4)),
+            DiskType::NvmeSsd
+        );
+        assert_eq!(
+            kind_from_bus_and_media(Some(11), Some(3)),
+            DiskType::SataHdd
+        );
+        assert_eq!(
+            kind_from_bus_and_media(Some(11), Some(4)),
+            DiskType::SataSsd
+        );
+        assert_eq!(
+            kind_from_bus_and_media(Some(11), Some(0)),
+            DiskType::Unknown
+        );
+        assert_eq!(kind_from_bus_and_media(Some(8), Some(3)), DiskType::Scsi);
+        assert_eq!(kind_from_bus_and_media(Some(7), Some(0)), DiskType::Usb);
+        assert_eq!(kind_from_bus_and_media(None, None), DiskType::Unknown);
     }
 }
