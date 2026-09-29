@@ -382,6 +382,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The TUI no longer draws an unread GPU figure as zero.** An adapter with no
+  source for its clocks, temperature or power -- the AMD iGPU on Windows --
+  showed "0 MHz", "0°C" and "0/0W"; these are dashes now. The memory
+  percentage, which printed as an empty "(%)" on every card, prints.
+
 - **Windows disk capacity is the drive's length.** It came from
   `Win32_DiskDrive.Size`, a geometric figure that drops the last partial
   cylinder -- 2.6 MB short on every drive measured. It now reads

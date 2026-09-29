@@ -10864,3 +10864,21 @@ compared with the figures already cross-checked:
   clock -- the base, on current parts -- and the ontology already describes it
   so ("a boosting core can and does exceed it"); the CLI's label said "max".
   It now says "rated".
+
+### The TUI's accelerator line: zeros for the unread, and a percentage that never printed
+
+Rendering `ironmon tui --frame --tab Accelerators` against the verified GPU
+figures: the NVIDIA cards agreed, but the AMD iGPU was drawn at `@ 0 MHz`,
+`0°C` and `0/0W` -- all three published by the snapshot as unavailable.
+`draw_single_accelerator` (and its deprecated twin `draw_single_gpu`) passed
+clocks, temperature and power through `.unwrap_or(0)`. They now go through
+`mhz_opt`, `celsius_opt` and `watts_opt`, which dash what was not read.
+
+The same line printed `MEM: 3.4G/24.0G (%)` on every card. The percentage was
+formatted `({:.0}%)` over `pct_opt(..)`, which returns a `String` -- and on a
+string, `.0` is a precision of zero characters. It now reads `(98%)`.
+`unread_gpu_figures_are_dashes_and_percentages_print` covers both.
+
+The memory pane's renderer-agreement test would not have caught either: it
+parses the Memory tab only. The accelerator line is now the second tab read
+against the ontology by hand; neither of these is covered by an agreement test.
