@@ -10816,3 +10816,18 @@ read from the same `MSFT_PhysicalDisk` row's `BusType` and `MediaType`
 (`kind_from_bus_and_media`, tested), and without that class only an interface
 Windows names USB says anything; the rest is `unknown`. This machine's four
 drives read the same kinds as before, now from the source.
+
+### GPUs and displays, cross-checked
+
+Against `nvidia-smi` for both RTX 3090 Tis: total memory (24,564 MiB), clocks,
+maximum clock, power limit and names agree; power draw and temperature differ
+by a few percent on the card under full load, which moves between reads.
+Against `Win32_VideoController` and `Screen.AllScreens`: one 3440x1440 display,
+primary, 60 Hz (WMI rounds 59.94 down); the second card's 1920x1080 mode has no
+screen behind it, and ironmon correctly reports one display.
+
+One difference is definitional: an idle card reads **251 MiB used** where
+`nvidia-smi` shows 0. NVML's `memory_info` counts the driver's own reservation
+as used; recent `nvidia-smi` subtracts it. Both are measurements; the entity's
+description now says which this is, so an agent comparing the two is not left
+to conclude one of them is wrong.

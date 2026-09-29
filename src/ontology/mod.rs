@@ -532,7 +532,12 @@ impl Ontology {
             Some(U::Bytes),
             P::Measured,
             true,
-            "Video memory in use. Null on unified-memory parts that report none.",
+            concat!(
+                "Video memory in use, including what the driver reserves for itself ",
+                "-- about 250 MB on an RTX 3090 Ti -- so an idle discrete card does ",
+                "not read zero. Recent `nvidia-smi` excludes the reservation, and ",
+                "reads lower by that much. Null on unified-memory parts that report none."
+            ),
         ));
         add(Entity::new(
             "gpu.{n}.memory.total",
