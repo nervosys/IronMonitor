@@ -10880,5 +10880,10 @@ string, `.0` is a precision of zero characters. It now reads `(98%)`.
 `unread_gpu_figures_are_dashes_and_percentages_print` covers both.
 
 The memory pane's renderer-agreement test would not have caught either: it
-parses the Memory tab only. The accelerator line is now the second tab read
-against the ontology by hand; neither of these is covered by an agreement test.
+parses the Memory tab only. `the_tui_accelerator_line_draws_absent_gpu_figures_as_dashes`
+in `tests/renderer_agreement.rs` now reads the Accelerators tab against the
+snapshot: every GPU temperature, power draw and graphics clock the ontology calls
+unavailable must be a dash, and no memory percentage may print empty. Drawing
+`0°C` for a missing temperature fails it on this machine's iGPU. The GUI's
+accelerator tab was read too and was already right -- it omits what it has not
+got rather than zeroing it.

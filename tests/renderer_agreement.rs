@@ -167,6 +167,78 @@ fn the_gui_memory_tab_agrees_with_the_ontology() {
     );
 }
 
+/// Every GPU figure the ontology calls unavailable is drawn as a dash on the
+/// TUI's Accelerators tab, never as zero.
+///
+/// The AMD iGPU on Windows has no source for its clocks, temperature or power,
+/// and the tab drew it at "0 MHz", "0°C" and "0/0W" -- values the ontology
+/// publishes as unavailable. The same line printed its memory percentage as an
+/// empty "(%)". Neither was visible to the Memory-tab test above.
+#[test]
+fn the_tui_accelerator_line_draws_absent_gpu_figures_as_dashes() {
+    if !platform_has_hardware_readers() {
+        return;
+    }
+    let (stdout, stderr, code) = run(&[
+        "tui",
+        "--frame",
+        "--tab",
+        "Accelerators",
+        "--width",
+        "200",
+        "--height",
+        "60",
+    ]);
+    assert_eq!(code, 0, "rendering the Accelerators tab failed:\n{stderr}");
+    if stderr.contains(TUI_GAVE_UP) {
+        return;
+    }
+
+    let (snap, _, snap_code) = run(&["snapshot", "--format", "json"]);
+    assert_eq!(snap_code, 0);
+    let snap: serde_json::Value = serde_json::from_str(&snap).expect("snapshot json");
+    let unavailable = |id: &str| {
+        snap["readings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == id && r["provenance"] == "unavailable")
+    };
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    for n in 0.. {
+        let title = format!("GPU {n} │");
+        let Some(at) = lines.iter().position(|l| l.contains(&title)) else {
+            break;
+        };
+        let Some(line) = lines.get(at + 1) else {
+            break;
+        };
+        assert!(
+            !line.contains("(%)"),
+            "GPU {n}'s memory percentage printed empty:\n{line}"
+        );
+        if unavailable(&format!("gpu.{n}.thermal.temperature")) {
+            assert!(
+                line.contains("-°C"),
+                "the ontology has no temperature for GPU {n}; the TUI drew one:\n{line}"
+            );
+        }
+        if unavailable(&format!("gpu.{n}.power.draw")) {
+            assert!(
+                line.contains("-/"),
+                "the ontology has no power draw for GPU {n}; the TUI drew one:\n{line}"
+            );
+        }
+        if unavailable(&format!("gpu.{n}.clocks.graphics")) {
+            assert!(
+                line.contains("@ - MHz"),
+                "the ontology has no graphics clock for GPU {n}; the TUI drew one:\n{line}"
+            );
+        }
+    }
+}
+
 /// The give-up messages these tests key on must still be what the binary
 /// prints.
 ///
