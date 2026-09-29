@@ -10615,7 +10615,7 @@ Asked and answered, recorded so they are not re-asked:
   `target-dir = "E:/cargo-target"` (E: is an NVMe SSD with 2 TB free), with a
   comment saying why. This fixes the disk, not the contention: builds from
   different projects still serialise on one lock. The old
-  `C:/Users/adamm/.cargo-target` is no longer written to and is left for the
+  `~/.cargo-target` is no longer written to and is left for the
   user to delete once nothing is building from it. Every earlier note in this
   file that names that path describes where artifacts *were*.
 
@@ -10682,5 +10682,5 @@ a report with an unread count can be tested; removing the guard fails the test
 The library struct still uses zero for "not read" and stays in the ratchet
 baseline; the fix is at the surface, where it reached anyone.
 
-The old shared build directory, `C:/Users/adamm/.cargo-target`, measured
+The old shared build directory, `~/.cargo-target`, measured
 **194 GB** once the move to E: was done.
