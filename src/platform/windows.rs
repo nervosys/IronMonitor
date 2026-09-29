@@ -1633,6 +1633,12 @@ mod tests {
         );
 
         // And the I/O counters, whose offsets are also inside a reserved block.
+        // Read a file first: an offset check against two zeros passes whatever
+        // the offset is, and a test process is not guaranteed to have read
+        // anything yet -- this assertion failed once on exactly that.
+        let manifest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("read Cargo.toml");
+        assert!(!manifest.is_empty());
         let mut io = windows::Win32::System::Threading::IO_COUNTERS::default();
         unsafe {
             windows::Win32::System::Threading::GetProcessIoCounters(GetCurrentProcess(), &mut io)

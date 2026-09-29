@@ -1821,12 +1821,17 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         })
                     } else {
                         // Total I/O (read + write) for display
-                        let total_io = p.io_read_bytes + p.io_write_bytes;
-                        let io_color = if total_io > 1024 * 1024 * 1024 {
+                        // `None` where the counters could not be read -- other
+                        // users' processes on an unprivileged Linux run. Shown
+                        // as `?`, not as the `-` of a process that did no I/O.
+                        let total_io = p.io_read_bytes.zip(p.io_write_bytes).map(|(r, w)| r + w);
+                        let io_color = if total_io.is_none() {
+                            Color::DarkGray
+                        } else if total_io.unwrap_or(0) > 1024 * 1024 * 1024 {
                             glances_colors::WARNING // > 1GB total I/O
-                        } else if total_io > 100 * 1024 * 1024 {
+                        } else if total_io.unwrap_or(0) > 100 * 1024 * 1024 {
                             glances_colors::CAREFUL // > 100MB
-                        } else if total_io > 0 {
+                        } else if total_io.unwrap_or(0) > 0 {
                             glances_colors::OK
                         } else {
                             Color::DarkGray
@@ -1882,10 +1887,10 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                                 Style::default().fg(thread_color),
                             ),
                             Span::styled(
-                                if total_io > 0 {
-                                    format!("{:>6}", auto_unit(total_io))
-                                } else {
-                                    "     -".to_string()
+                                match total_io {
+                                    Some(t) if t > 0 => format!("{:>6}", auto_unit(t)),
+                                    Some(_) => "     -".to_string(),
+                                    None => "     ?".to_string(),
                                 },
                                 Style::default().fg(io_color),
                             ),

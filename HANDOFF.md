@@ -10684,3 +10684,30 @@ baseline; the fix is at the surface, where it reached anyone.
 
 The old shared build directory, `~/.cargo-target`, measured
 **194 GB** once the move to E: was done.
+
+### Process I/O and handles, zero where they were refused
+
+`ProcessMonitorInfo::io_read_bytes`, `io_write_bytes` and `handle_count` are
+`Option`. Linux read them from `/proc/<pid>/io` and `/proc/<pid>/fd`, which an
+unprivileged process cannot open for other users' processes -- **51 of 72
+processes** under WSL2 -- and recorded zero; macOS set all three to zero beside
+comments saying they were not read; Windows fell to zero when
+`GetProcessIoCounters` or `GetProcessHandleCount` was refused, and now uses the
+kernel process table instead. The TUI's I/O column shows `?` for unknown and
+keeps `-` for a real zero.
+
+`unreadable_io_counters_are_not_zero_io` (Linux) reads this process, whose
+counters are readable, and pid 1, whose are not when unprivileged; mapping the
+refusal back to `Some(0)` fails it. The ratchet shrank `ProcessMonitorInfo`'s
+entry by two fields. `private_bytes` on macOS is still a literal zero beside a
+comment -- left, since nothing reads it there.
+
+Placing this test tripped the attribute trap a fourth time: it went between
+the Windows test's `#[cfg]`/`#[test]` and its `fn`. Caught before compiling by
+reading the result back; the Linux build would have caught it too.
+
+Also fixed in passing: `the_process_table_agrees_with_the_handle_based_calls`
+asserted that this test process's own read-transfer count was non-zero, which
+it is only if something in the process has read a file. It failed once, in a
+run of 30 tests. It now reads `Cargo.toml` before sampling, so the offset check
+compares real figures rather than two zeros, which would pass for any offset.

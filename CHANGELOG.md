@@ -382,6 +382,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A process whose I/O counters were refused no longer shows zero I/O.**
+  On Linux, unprivileged, most other users' processes; on macOS, all of them.
+  **Breaking:** `ProcessMonitorInfo::io_read_bytes`, `io_write_bytes` and
+  `handle_count` are `Option`. The TUI shows `?` for unknown.
+
 - **An unread core count is no longer "zero cores".** `cpu.microarch.physical_cores`
   and `logical_cores` were published as specifications of 0 when the platform
   did not report them (common on ARM Linux), and `cpu.microarch.smt_enabled`

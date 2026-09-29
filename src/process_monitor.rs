@@ -838,12 +838,20 @@ pub struct ProcessMonitorInfo {
     pub private_bytes: u64,
     /// Number of threads
     pub thread_count: u32,
-    /// Number of open handles (Windows) or file descriptors (Unix)
-    pub handle_count: u32,
-    /// I/O read bytes (total since process start)
-    pub io_read_bytes: u64,
-    /// I/O write bytes (total since process start)
-    pub io_write_bytes: u64,
+    /// Number of open handles (Windows) or file descriptors (Unix), or `None`
+    /// where it could not be read.
+    ///
+    /// These three were `u64`/`u32` set to `0` whenever the source was
+    /// unavailable: on Linux `/proc/<pid>/io` and `/proc/<pid>/fd` are
+    /// unreadable for other users' processes without privilege -- 51 of 72
+    /// processes under WSL2 when this was written -- and macOS set all three
+    /// to `0` beside comments saying they were not read. The TUI drew those
+    /// processes as having done no I/O.
+    pub handle_count: Option<u32>,
+    /// I/O read bytes since process start, or `None` where not read.
+    pub io_read_bytes: Option<u64>,
+    /// I/O write bytes since process start, or `None` where not read.
+    pub io_write_bytes: Option<u64>,
     /// Process start time (Unix timestamp in seconds)
     pub start_time: Option<u64>,
     /// GPU indices this process is using
@@ -1524,7 +1532,7 @@ mod linux {
         Ok(processes)
     }
 
-    fn read_uptime() -> Result<f64> {
+    pub(super) fn read_uptime() -> Result<f64> {
         let uptime_str = fs::read_to_string("/proc/uptime")?;
         let uptime: f64 = uptime_str
             .split_whitespace()
@@ -1535,7 +1543,7 @@ mod linux {
         Ok(uptime)
     }
 
-    fn read_process_info(pid: u32, uptime: f64) -> Result<ProcessMonitorInfo> {
+    pub(super) fn read_process_info(pid: u32, uptime: f64) -> Result<ProcessMonitorInfo> {
         let proc_path = format!("/proc/{}", pid);
         let proc_dir = Path::new(&proc_path);
 
@@ -1637,26 +1645,26 @@ mod linux {
         };
 
         // Read /proc/[pid]/io for I/O stats (may require privileges)
-        let (io_read_bytes, io_write_bytes) =
-            if let Ok(io_content) = fs::read_to_string(format!("{}/io", proc_path)) {
-                let mut read_bytes = 0u64;
-                let mut write_bytes = 0u64;
-                for line in io_content.lines() {
-                    if let Some(val) = line.strip_prefix("read_bytes: ") {
-                        read_bytes = val.trim().parse().unwrap_or(0);
-                    } else if let Some(val) = line.strip_prefix("write_bytes: ") {
-                        write_bytes = val.trim().parse().unwrap_or(0);
-                    }
-                }
-                (read_bytes, write_bytes)
-            } else {
-                (0, 0)
-            };
+        let (io_read_bytes, io_write_bytes) = match fs::read_to_string(format!("{}/io", proc_path))
+        {
+            Ok(io_content) => {
+                let field = |name: &str| {
+                    io_content
+                        .lines()
+                        .find_map(|line| line.strip_prefix(name))
+                        .and_then(|v| v.trim().parse().ok())
+                };
+                (field("read_bytes: "), field("write_bytes: "))
+            }
+            // Refused for other users' processes without privilege: not read,
+            // which is not "did no I/O".
+            Err(_) => (None, None),
+        };
 
         // Count file descriptors in /proc/[pid]/fd for handle_count
-        let handle_count: u32 = fs::read_dir(format!("{}/fd", proc_path))
-            .map(|entries| entries.count() as u32)
-            .unwrap_or(0);
+        let handle_count: Option<u32> = fs::read_dir(format!("{}/fd", proc_path))
+            .ok()
+            .map(|entries| entries.count() as u32);
 
         // Try to read user
         let user = read_process_user(pid);
@@ -2027,19 +2035,29 @@ mod windows_impl {
                             };
 
                         // Get handle count
-                        let mut handle_count: u32 = 0;
-                        let _ = GetProcessHandleCount(handle, &mut handle_count);
+                        // Either call may be refused on a handle that opened;
+                        // the kernel process table has the same figures.
+                        let table_row = table.get(&pid);
+                        let mut handles: u32 = 0;
+                        let handle_count = if GetProcessHandleCount(handle, &mut handles).is_ok() {
+                            Some(handles)
+                        } else {
+                            table_row.map(|r| r.handle_count)
+                        };
 
                         // Get I/O counters
                         let mut io_counters = IO_COUNTERS::default();
                         let (io_read_bytes, io_write_bytes) =
                             if GetProcessIoCounters(handle, &mut io_counters).is_ok() {
                                 (
-                                    io_counters.ReadTransferCount,
-                                    io_counters.WriteTransferCount,
+                                    Some(io_counters.ReadTransferCount),
+                                    Some(io_counters.WriteTransferCount),
                                 )
                             } else {
-                                (0, 0)
+                                (
+                                    table_row.map(|r| r.io_read_bytes),
+                                    table_row.map(|r| r.io_write_bytes),
+                                )
                             };
 
                         // Get priority class
@@ -2216,9 +2234,9 @@ mod windows_impl {
                         virtual_memory_bytes: row.map(|r| r.pagefile_usage_bytes).unwrap_or(0),
                         private_bytes: row.map(|r| r.private_bytes).unwrap_or(0),
                         thread_count: entry.cntThreads,
-                        handle_count: row.map(|r| r.handle_count).unwrap_or(0),
-                        io_read_bytes: row.map(|r| r.io_read_bytes).unwrap_or(0),
-                        io_write_bytes: row.map(|r| r.io_write_bytes).unwrap_or(0),
+                        handle_count: row.map(|r| r.handle_count),
+                        io_read_bytes: row.map(|r| r.io_read_bytes),
+                        io_write_bytes: row.map(|r| r.io_write_bytes),
                         start_time,
                         cpu_time_us,
                     });
@@ -2447,9 +2465,11 @@ mod macos {
                     virtual_memory_bytes: task_info.ptinfo.pti_virtual_size,
                     private_bytes: 0, // Not easily available on macOS
                     thread_count: task_info.ptinfo.pti_threadnum as u32,
-                    handle_count: 0,  // Not available on macOS
-                    io_read_bytes: 0, // Would need ioreg
-                    io_write_bytes: 0,
+                    // None of the three is read here; `proc_pid_rusage`
+                    // carries disk I/O and is the place to start.
+                    handle_count: None,
+                    io_read_bytes: None,
+                    io_write_bytes: None,
                     start_time: Some(task_info.pbsd.pbi_start_tvsec),
                     gpu_indices: Vec::new(),
                     gpu_memory_per_device: HashMap::new(),
@@ -2477,6 +2497,34 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process whose `/proc/<pid>/io` is refused has not done no I/O.
+    ///
+    /// Unprivileged, init's counters are unreadable, and the reader recorded
+    /// them as zero bytes read and written. Its own process is readable, so
+    /// the same reader must return figures there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_io_counters_are_not_zero_io() {
+        let uptime = linux::read_uptime().expect("uptime");
+        let own = linux::read_process_info(std::process::id(), uptime).expect("own process");
+        assert!(
+            own.io_read_bytes.is_some(),
+            "this process's own counters are readable"
+        );
+        assert!(own.handle_count.is_some());
+
+        if unsafe { libc::geteuid() } != 0 {
+            let init = linux::read_process_info(1, uptime).expect("pid 1");
+            if std::fs::read_to_string("/proc/1/io").is_err() {
+                assert_eq!(
+                    init.io_read_bytes, None,
+                    "refused counters read as a figure"
+                );
+                assert_eq!(init.io_write_bytes, None);
+            }
+        }
+    }
 
     /// A process that cannot be opened still has a working set, and the
     /// enumeration must report it.
@@ -2602,9 +2650,9 @@ mod tests {
             virtual_memory_bytes: 1024 * 1024 * 1024,
             private_bytes: 1024 * 1024 * 256,
             thread_count: 4,
-            handle_count: 100,
-            io_read_bytes: 0,
-            io_write_bytes: 0,
+            handle_count: Some(100),
+            io_read_bytes: Some(0),
+            io_write_bytes: Some(0),
             start_time: None,
             gpu_indices: vec![],
             gpu_memory_per_device: HashMap::new(),

@@ -268,7 +268,7 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/pipeline/mod.rs", "NetSnapshot", "rx_bytes tx_bytes"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
     ("src/process_monitor.rs", "CategoryStats", "total_cpu_percent total_memory_bytes"),
-    ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes private_bytes io_read_bytes io_write_bytes cpu_time_us"),
+    ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes private_bytes cpu_time_us"),
     ("src/rapl/mod.rs", "EnergyReading", "socket energy_uj"),
     ("src/scheduler/mod.rs", "PressureInfo", "some_avg10 some_avg60 some_avg300 some_total_us"),
     ("src/silicon/mod.rs", "NetworkSilicon", "rx_bandwidth_mbps tx_bandwidth_mbps packet_rate"),
