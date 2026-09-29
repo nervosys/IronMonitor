@@ -1665,7 +1665,7 @@ impl Ontology {
             K::Measurement,
             None,
             P::Measured,
-            false,
+            true,
             "Whether the radio is on. A measurement: it is a runtime state, and it \
              is the field that answers whether the adapter is usable now.",
         ));

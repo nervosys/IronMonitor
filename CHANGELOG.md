@@ -382,6 +382,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Linux snapshot no longer waits on missing daemons: 150 s to 23 s.**
+  `fwupdmgr` is bounded at 8 s and no longer runs twice (Secure Boot reads its
+  efivar alone); the Bluetooth device walk is skipped when no adapter exists,
+  instead of waiting out `bluetoothctl`'s 30 s timeout.
+
+- **Bluetooth stops claiming what it did not read.** **Breaking:**
+  `BluetoothAdapter::powered` is `Option<bool>` -- an unreadable Linux file was
+  "on", and Windows reported PnP health as radio state. Windows no longer
+  reports paired peripherals as connected, and `set_adapter_power`, which
+  changed only a struct field, now returns `NotImplemented`.
+
 - **Linux NUMA node memory is the node's memory, not its id.** The parser took
   the first number on `Node 0 MemTotal: 48111256 kB`, so node 0 reported 0
   bytes and node 1 reported 1 kB. `memory.numa.{n}.memory` now reads the

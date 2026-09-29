@@ -3270,8 +3270,10 @@ fn resolve_secure_boot(out: &mut Vec<Reading>) {
 fn resolve_secure_boot_from_firmware(out: &mut Vec<Reading>) {
     use crate::firmware::SecureBootStatus;
 
-    let monitor = match crate::firmware::FirmwareInventory::new() {
-        Ok(m) => m,
+    // Only the flag: the full inventory also runs `fwupdmgr`, which cost this
+    // entity 25 s on a machine without a reachable fwupd daemon.
+    let status = match crate::firmware::FirmwareInventory::read_secure_boot() {
+        Ok(s) => s,
         Err(e) => {
             out.push(Reading::unavailable(
                 "system.boot.secure_boot",
@@ -3282,7 +3284,7 @@ fn resolve_secure_boot_from_firmware(out: &mut Vec<Reading>) {
         }
     };
 
-    match monitor.secure_boot_status() {
+    match status {
         SecureBootStatus::Enabled => out.push(Reading::measured(
             "system.boot.secure_boot",
             serde_json::json!(true),
@@ -3506,11 +3508,13 @@ fn resolve_bluetooth(out: &mut Vec<Reading>) {
     for (i, a) in adapters.iter().enumerate() {
         let base = format!("network.bluetooth.{i}");
         push_text(out, format!("{base}.name"), &a.name);
-        out.push(Reading::measured(
+        push_opt(
+            out,
             format!("{base}.powered"),
-            serde_json::json!(a.powered),
+            a.powered.map(|p| serde_json::json!(p)),
             None,
-        ));
+            "the platform's adapter record carries no radio power state",
+        );
     }
 }
 

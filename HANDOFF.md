@@ -10750,3 +10750,42 @@ real line format fails with `Some(0)` when the old parser is restored.
 This is the cheapest audit in the file and the most productive per minute: run
 a snapshot, list every zero, check each against a second source. Still owed on
 a Mac.
+
+### A Linux snapshot: 150 s to 23 s, and three Bluetooth claims
+
+Cross-checking the Linux snapshot against `/proc`, `nproc`, `lscpu`, `lsblk` and
+`/sys/class/net` found every figure right -- memory, swap, core counts, model,
+six disk sizes, interface counters. What it found instead was that one
+`ironmon get` took about 95 s. Profiled (temporary instrumentation, then
+`strace -e execve`):
+
+- **`fwupdmgr get-devices` takes 25 s and fails** on a host with the binary but
+  no reachable fwupd daemon -- it waits out a D-Bus activation. The firmware
+  inventory ran it with no bound, **twice per snapshot**: once for
+  `board.firmware`, once more because `system.boot.secure_boot` built a whole
+  inventory to read one efivar. Secure Boot now reads only that
+  (`FirmwareInventory::read_secure_boot`), and `fwupdmgr` goes through
+  `core::command::capture_with_timeout` with 8 s.
+- **`bluetoothctl devices` hit the helper's 30 s timeout** because `bluetoothd`
+  is not running. With no adapter registered with the kernel there is no device
+  list to ask for; the walk is now skipped with a note.
+
+Result: a debug Linux snapshot in 23 s. `board` is the largest resolver left,
+at about 10 s -- mostly that 8 s bound on this host.
+
+**Reading the Bluetooth module to fix the timeout turned up three claims:**
+
+- `BluetoothAdapter::powered` defaulted an unreadable Linux `powered` file to
+  **on**, and on Windows was the PnP node's `Status == "OK"` -- which says the
+  device works, not that its radio is on. It is `Option<bool>`; Windows now
+  reports `None`, macOS keeps `controller_powerState`. The entity is nullable.
+- Windows reported every paired peripheral whose PnP status was OK as
+  **Connected**. A paired device's node has that status connected or not; it is
+  now `Paired`, which is what is known.
+- `set_adapter_power` set the struct's field and returned `Ok` -- reporting a
+  radio switched that nothing touched. It returns `NotImplemented`, and a test
+  checks the field is unchanged.
+
+Whether Linux sysfs publishes a per-adapter `powered` file at all was not
+verified: WSL has no adapter. A bare-metal Linux machine with Bluetooth settles
+it.

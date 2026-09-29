@@ -312,6 +312,44 @@ impl FirmwareInventory {
         risk.min(100)
     }
 
+    /// Boot mode and Secure Boot from sysfs alone -- no helper processes.
+    #[cfg(target_os = "linux")]
+    fn linux_boot_mode_and_secure_boot() -> (BootMode, SecureBootStatus) {
+        if !std::path::Path::new("/sys/firmware/efi").exists() {
+            return (BootMode::Legacy, SecureBootStatus::NotSupported);
+        }
+        let sb_path = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+        let secure_boot = match std::fs::read(sb_path) {
+            // Last byte: 1 = enabled, 0 = disabled. An efivar that reads back
+            // empty is neither, and the `else` used to call it disabled --
+            // `SecureBootStatus::Unknown` exists for this.
+            Ok(data) => match data.last() {
+                Some(1) => SecureBootStatus::Enabled,
+                Some(0) => SecureBootStatus::Disabled,
+                _ => SecureBootStatus::Unknown,
+            },
+            Err(_) => SecureBootStatus::Unknown,
+        };
+        (BootMode::UEFI, secure_boot)
+    }
+
+    /// Only the Secure Boot state, without the rest of the inventory.
+    ///
+    /// On Linux that is one efivar. The full inventory also runs `fwupdmgr`,
+    /// which on a machine without a reachable fwupd daemon waits 25 s for a
+    /// D-Bus activation that never comes -- and the Secure Boot entity was
+    /// paying that, a second time after `board.firmware`, on every snapshot.
+    pub fn read_secure_boot() -> Result<SecureBootStatus, IronError> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self::linux_boot_mode_and_secure_boot().1)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Self::new()?.secure_boot_status().clone())
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn refresh_linux(&mut self) {
         let dmi = std::path::Path::new("/sys/class/dmi/id");
@@ -358,24 +396,9 @@ impl FirmwareInventory {
         }
 
         // Secure boot check
-        if std::path::Path::new("/sys/firmware/efi").exists() {
-            self.boot_mode = BootMode::UEFI;
-            let sb_path =
-                "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
-            if let Ok(data) = std::fs::read(sb_path) {
-                // Last byte: 1 = enabled, 0 = disabled. An efivar that reads
-                // back empty is neither, and the `else` used to call it
-                // disabled -- `SecureBootStatus::Unknown` exists for this.
-                self.secure_boot = match data.last() {
-                    Some(1) => SecureBootStatus::Enabled,
-                    Some(0) => SecureBootStatus::Disabled,
-                    _ => SecureBootStatus::Unknown,
-                };
-            }
-        } else {
-            self.boot_mode = BootMode::Legacy;
-            self.secure_boot = SecureBootStatus::NotSupported;
-        }
+        let (boot_mode, secure_boot) = Self::linux_boot_mode_and_secure_boot();
+        self.boot_mode = boot_mode;
+        self.secure_boot = secure_boot;
 
         // CPU microcode
         if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
@@ -436,12 +459,14 @@ impl FirmwareInventory {
             }
         }
 
-        // Try fwupdmgr for additional firmware
-        if let Ok(output) = std::process::Command::new("fwupdmgr")
-            .args(["get-devices", "--json"])
-            .output()
-        {
-            let text = String::from_utf8(output.stdout).unwrap_or_default();
+        // Try fwupdmgr for additional firmware. Bounded: without a reachable
+        // fwupd daemon it waits 25 s on D-Bus activation and then fails, and a
+        // running daemon answers in well under the limit.
+        if let Ok(text) = crate::core::command::capture_with_timeout(
+            "fwupdmgr",
+            &["get-devices", "--json"],
+            std::time::Duration::from_secs(8),
+        ) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(devices) = json.get("Devices").and_then(|d| d.as_array()) {
                     for dev in devices {

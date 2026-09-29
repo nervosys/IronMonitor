@@ -35,7 +35,12 @@ pub struct BluetoothAdapter {
     pub id: String,
     pub name: String,
     pub address: String,
-    pub powered: bool,
+    /// Whether the radio is on, or `None` where it was not read.
+    ///
+    /// Linux defaulted an unreadable `powered` file to on; Windows reported
+    /// the PnP node's `Status == "OK"`, which says the device is working, not
+    /// that its radio is on. Only macOS reads a power state.
+    pub powered: Option<bool>,
 }
 
 // These four are used only by `refresh_windows`, so they are dead code on
@@ -247,7 +252,6 @@ impl BluetoothMonitor {
         for entry in &entries {
             let id = entry.get("Id").and_then(|v| v.as_str()).unwrap_or("");
             let name = entry.get("Name").and_then(|v| v.as_str()).unwrap_or("");
-            let powered = entry.get("Status").and_then(|v| v.as_str()) == Some("OK");
 
             match classify_pnp_entry(name, id) {
                 BtEntry::Adapter => {
@@ -256,7 +260,8 @@ impl BluetoothMonitor {
                         id: format!("bt{idx}"),
                         name: name.to_string(),
                         address: id.to_string(),
-                        powered,
+                        // PnP status is not radio state; nothing here reads it.
+                        powered: None,
                     });
                 }
                 BtEntry::Peripheral => {
@@ -265,11 +270,10 @@ impl BluetoothMonitor {
                             .unwrap_or_else(|| "00:00:00:00:00:00".to_string()),
                         name: (!name.is_empty()).then(|| name.to_string()),
                         device_type: device_type_from_name(name),
-                        state: if powered {
-                            BluetoothState::Connected
-                        } else {
-                            BluetoothState::Paired
-                        },
+                        // A peripheral's PnP node exists, with status OK, once it
+                        // is paired, connected or not. This reported every
+                        // paired device as connected. `Paired` is what is known.
+                        state: BluetoothState::Paired,
                         battery_percent: None,
                     });
                 }
@@ -310,12 +314,16 @@ impl BluetoothMonitor {
                         .trim()
                         .to_string();
 
-                    // Check power state
+                    // Power state, where the kernel publishes one. An
+                    // unreadable file defaulted to "1" -- powered on.
                     let powered =
                         fs::read_to_string(format!("/sys/class/bluetooth/{}/powered", name))
-                            .unwrap_or_else(|_| "1".to_string())
-                            .trim()
-                            == "1";
+                            .ok()
+                            .and_then(|s| match s.trim() {
+                                "1" => Some(true),
+                                "0" => Some(false),
+                                _ => None,
+                            });
 
                     self.adapters.push(BluetoothAdapter {
                         id: name.clone(),
@@ -325,6 +333,17 @@ impl BluetoothMonitor {
                     });
                 }
             }
+        }
+
+        // No adapter, no paired devices -- and asking `bluetoothctl` anyway
+        // cost 30 s on a host with the binary but no `bluetoothd` (WSL2), the
+        // helper's full timeout, on every snapshot.
+        if self.adapters.is_empty() {
+            self.record_note(
+                "no Bluetooth adapter is registered with the kernel, so no device list was requested"
+                    .to_string(),
+            );
+            return Ok(());
         }
 
         // Use bluetoothctl to list paired/connected devices.
@@ -421,7 +440,7 @@ impl BluetoothMonitor {
                                     id: "bt0".to_string(),
                                     name,
                                     address,
-                                    powered,
+                                    powered: Some(powered),
                                 });
                             }
 
@@ -526,9 +545,14 @@ impl BluetoothMonitor {
         adapter_id: &str,
         enabled: bool,
     ) -> Result<(), crate::error::IronError> {
-        if let Some(adapter) = self.adapters.iter_mut().find(|a| a.id == adapter_id) {
-            adapter.powered = enabled;
-            Ok(())
+        // This set the struct's field and returned `Ok` -- reporting a radio
+        // switched that nothing had touched. No platform power control is
+        // implemented, so it says so.
+        if self.adapters.iter().any(|a| a.id == adapter_id) {
+            let _ = enabled;
+            Err(crate::error::IronError::NotImplemented(
+                "Bluetooth radio power control is not implemented on any platform".into(),
+            ))
         } else {
             Err(crate::error::IronError::NotFound(format!(
                 "Bluetooth adapter '{}' not found",
@@ -663,6 +687,28 @@ mod tests {
         }
     }
 
+    /// Setting a field is not switching a radio. This returned `Ok` having
+    /// changed only the struct, so a caller was told the radio was off.
+    #[test]
+    fn setting_adapter_power_does_not_claim_success_it_did_not_have() {
+        let mut monitor = BluetoothMonitor {
+            adapters: vec![BluetoothAdapter {
+                id: "bt0".into(),
+                name: "Test".into(),
+                address: String::new(),
+                powered: Some(true),
+            }],
+            devices: Vec::new(),
+            last_note: None,
+        };
+        assert!(monitor.set_adapter_power("bt0", false).is_err());
+        assert_eq!(
+            monitor.adapters[0].powered,
+            Some(true),
+            "nothing was switched"
+        );
+    }
+
     #[test]
     fn test_bluetooth_monitor_availability() {
         let monitor = BluetoothMonitor::new().unwrap();
@@ -691,12 +737,12 @@ mod tests {
             id: "hci0".to_string(),
             name: "Test Adapter".to_string(),
             address: "11:22:33:44:55:66".to_string(),
-            powered: true,
+            powered: Some(true),
         };
         let json = serde_json::to_string(&adapter).unwrap();
         let deserialized: BluetoothAdapter = serde_json::from_str(&json).unwrap();
         assert_eq!(adapter.id, deserialized.id);
-        assert!(deserialized.powered);
+        assert_eq!(deserialized.powered, Some(true));
     }
 }
 
