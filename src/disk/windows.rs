@@ -801,6 +801,38 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
 
     let mut disks: Vec<Box<dyn DiskDevice>> = Vec::new();
 
+    // Each drive's real length, keyed by disk index.
+    //
+    // `Win32_DiskDrive.Size` is not the drive's length: Windows computes it
+    // from a legacy geometry -- cylinders x 255 heads x 63 sectors x 512 bytes
+    // -- and drops the partial cylinder at the end. On the machine this was
+    // measured on every drive read 2,612,736 bytes short (a 4 TB 990 PRO as
+    // 4,000,784,417,280 against 4,000,787,030,016), published as a
+    // measurement. `MSFT_PhysicalDisk.Size`, what `Get-PhysicalDisk` reads, is
+    // the length. Where that class is unavailable (before Windows 8) the
+    // geometric figure remains, and is a slight undercount.
+    let true_sizes: HashMap<u32, u64> = crate::platform::windows::wmi_query(
+        "root\\Microsoft\\Windows\\Storage",
+        "SELECT DeviceId, Size FROM MSFT_PhysicalDisk",
+    )
+    .map(|rows| {
+        rows.iter()
+            .filter_map(|row| {
+                let index = crate::platform::windows::wmi_str(row, "DeviceId")
+                    .parse::<u32>()
+                    .ok()?;
+                let size = match row.get("Size")? {
+                    wmi::Variant::UI8(v) => *v,
+                    wmi::Variant::I8(v) => u64::try_from(*v).ok()?,
+                    wmi::Variant::String(s) => s.parse().ok()?,
+                    _ => return None,
+                };
+                Some((index, size))
+            })
+            .collect()
+    })
+    .unwrap_or_default();
+
     // Use robust WMI connection that handles GUI context
     if let Ok(wmi_con) = create_wmi_connection() {
         let wmi_disks: Vec<Win32DiskDrive> = wmi_con
@@ -899,7 +931,7 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
                 wmi_disk.model,
                 wmi_disk.serial_number.map(|s| s.trim().to_string()),
                 // WMI already answers `Option`; this used to discard it.
-                wmi_disk.size,
+                true_sizes.get(&wmi_disk.index).copied().or(wmi_disk.size),
                 wmi_disk.index,
                 interface_type,
             );

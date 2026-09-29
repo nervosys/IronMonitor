@@ -10789,3 +10789,25 @@ at about 10 s -- mostly that 8 s bound on this host.
 Whether Linux sysfs publishes a per-adapter `powered` file at all was not
 verified: WSL has no adapter. A bare-metal Linux machine with Bluetooth settles
 it.
+
+### Windows cross-check: one geometric lie
+
+The Linux cross-check, repeated on Windows against `Win32_ComputerSystem`,
+`Win32_Processor`, `Win32_OperatingSystem`, `Get-PhysicalDisk`,
+`Win32_VideoController`, `Get-NetAdapterStatistics`, `Win32_PhysicalMemory`
+and `Win32_PageFileUsage`: memory, swap (86,016 MiB exactly), cores, model, OS
+build, three GPUs, both DIMMs' rated and configured speeds, network counters
+and uptime all agree.
+
+Disk capacity did not. Every internal drive read **2,612,736 bytes short** --
+a 4 TB 990 PRO as 4,000,784,417,280 against `Get-PhysicalDisk`'s
+4,000,787,030,016. `disk.{n}.capacity` came from `Win32_DiskDrive.Size`, which
+Windows computes from a legacy geometry (cylinders x 255 x 63 x 512) and which
+drops the partial cylinder at the end; the table of `TotalCylinders` confirms
+it for all four drives. `MSFT_PhysicalDisk.Size` is the length, read through
+the shared in-process WMI helper and preferred. All four now match to the byte.
+Where the Storage namespace is missing (before Windows 8) the geometric figure
+remains, documented as a slight undercount.
+
+Noticed and left: the Windows disk *type* is partly inferred from model-name
+substrings ("990 PRO" means NVMe) with a default of NVMe for anything on SCSI.

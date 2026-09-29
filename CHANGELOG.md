@@ -382,6 +382,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows disk capacity is the drive's length.** It came from
+  `Win32_DiskDrive.Size`, a geometric figure that drops the last partial
+  cylinder -- 2.6 MB short on every drive measured. It now reads
+  `MSFT_PhysicalDisk.Size`, matching `Get-PhysicalDisk` to the byte.
+
 - **A Linux snapshot no longer waits on missing daemons: 150 s to 23 s.**
   `fwupdmgr` is bounded at 8 s and no longer runs twice (Secure Boot reads its
   efivar alone); the Bluetooth device walk is skipped when no adapter exists,
