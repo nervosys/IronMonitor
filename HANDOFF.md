@@ -10831,3 +10831,18 @@ One difference is definitional: an idle card reads **251 MiB used** where
 as used; recent `nvidia-smi` subtracts it. Both are measurements; the entity's
 description now says which this is, so an agent comparing the two is not left
 to conclude one of them is wrong.
+
+### Caches agree; NVMe health cannot be checked unelevated
+
+CPU caches against `Win32_Processor`: 48 KB L1 data, 32 KB L1 instruction and
+1 MB L2 per core -- 12 MB of L2, as WMI reports -- and two 32 MB L3 slices
+shared by processors 0-11 and 12-23, 64 MB, as WMI reports.
+
+NVMe health (power-on hours, power cycles, data units, percentage used,
+critical warnings) has no unelevated second source on Windows:
+`Get-StorageReliabilityCounter` returns nothing without Administrator. The
+figures are plausible -- 2,252 to 3,466 hours, 1-4 % of rated life, no
+warnings, no media errors -- and plausible is all that can be said. **An
+elevated `Get-StorageReliabilityCounter`, or `smartctl -a` on each drive,
+settles it in a minute**; the NVMe parser has had an offset bug before, so
+this is worth doing once.
