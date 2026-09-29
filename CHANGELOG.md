@@ -382,6 +382,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux NUMA node memory is the node's memory, not its id.** The parser took
+  the first number on `Node 0 MemTotal: 48111256 kB`, so node 0 reported 0
+  bytes and node 1 reported 1 kB. `memory.numa.{n}.memory` now reads the
+  figure.
+
 - **A process whose I/O counters were refused no longer shows zero I/O.**
   On Linux, unprivileged, most other users' processes; on macOS, all of them.
   **Breaking:** `ProcessMonitorInfo::io_read_bytes`, `io_write_bytes` and

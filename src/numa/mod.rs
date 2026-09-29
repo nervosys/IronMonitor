@@ -401,9 +401,16 @@ impl NumaMonitor {
         (total, free, used)
     }
 
+    /// The kB figure after the field's colon.
+    ///
+    /// A node's `meminfo` lines begin with the node id -- `Node 0 MemTotal:
+    /// 48111256 kB` -- and this took the *first* number on the line, which is
+    /// that id. Node 0 reported 0 bytes of memory and node 1 reported 1 kB, on
+    /// every Linux machine; found by checking every zero in a live snapshot.
     #[cfg(target_os = "linux")]
     fn extract_kb(line: &str) -> Option<u64> {
-        line.split_whitespace().find_map(|w| w.parse::<u64>().ok())
+        let (_, value) = line.split_once(':')?;
+        value.split_whitespace().next()?.parse().ok()
     }
 
     #[cfg(target_os = "windows")]
@@ -635,6 +642,27 @@ mod tests {
         };
         let json = serde_json::to_string(&node).unwrap();
         let _: NumaNode = serde_json::from_str(&json).unwrap();
+    }
+
+    /// The real format, from WSL2's `/sys/devices/system/node/node0/meminfo`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn node_meminfo_reads_the_figure_not_the_node_id() {
+        let text = concat!(
+            "Node 0 MemTotal:       48111256 kB\n",
+            "Node 0 MemFree:          410056 kB\n",
+            "Node 0 MemUsed:        47701200 kB\n",
+        );
+        let (total, free, used) = NumaMonitor::parse_node_meminfo(text);
+        assert_eq!(total, Some(48_111_256 * 1024));
+        assert_eq!(free, Some(410_056 * 1024));
+        assert_eq!(used, Some((48_111_256 - 410_056) * 1024));
+
+        let node1 = "Node 1 MemTotal:       16000000 kB\n";
+        assert_eq!(
+            NumaMonitor::parse_node_meminfo(node1).0,
+            Some(16_000_000 * 1024)
+        );
     }
 
     #[cfg(target_os = "linux")]

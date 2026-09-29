@@ -10711,3 +10711,42 @@ asserted that this test process's own read-transfer count was non-zero, which
 it is only if something in the process has read a file. It failed once, in a
 run of 30 tests. It now reads `Cargo.toml` before sampling, so the offset check
 compares real figures rather than two zeros, which would pass for any offset.
+
+### Every zero in a live snapshot, checked (Windows, 2026-09-28)
+
+From the output side rather than the source: a debug `ironmon snapshot` on the
+development machine published 1,816 readings. Every one whose provenance is
+`measured`, `specification` or `derived` and whose value is `0`, `false` or
+empty was listed -- about sixty, in twenty entities -- and checked:
+
+- **Booleans that are correctly false**: audio `default`/`muted`, camera
+  `active`, printer `color`/`default`, power-profile `active`, display
+  `primary`, `memory.dimm.{n}.ecc` (non-ECC DDR5, from the widths),
+  `memory.numa.is_numa`, `cpu.microarch.hybrid`, `system.service.{n}.failed`.
+- **`system.boot.secure_boot = false`**: the registry's
+  `UEFISecureBootEnabled` is `0` on this machine. Real.
+- **`cpu.microarch.stepping = 0`**: `Win32_Processor.Description` reads
+  "Family 26 Model 68 Stepping 0". Real.
+- **An audio endpoint at volume 0**: the same endpoint reads `muted = true`.
+- **NVMe `critical_warnings`/`power_state` and SMART `uncorrectable_sectors`
+  at 0** on three healthy drives: the log fields, read.
+- **Fifteen network interfaces at 0 bytes**: every one is Disconnected or Not
+  Present, or a hidden miniport that is up and unused; `Get-NetAdapterStatistics`
+  agrees for Wi-Fi.
+- **`gpu.{n}.utilization = 0`, one `process.{n}.cpu = 0`**: idle.
+
+**No fabricated zero reaches an agent on this machine.**
+
+**The same audit on Linux (WSL2) found one immediately.** 651 readings; the
+zeros were idle processes, `numa_node = 0` on five PCI devices (sysfs says 0),
+`tpm.present = false` (WSL exposes no `/dev/tpm*`), and
+**`memory.numa.0.memory = 0`, measured** -- beside a node whose sysfs `meminfo`
+reads `Node 0 MemTotal: 48111256 kB`. `extract_kb` took the *first* number on
+the line, which is the node id: node 0 reported 0 bytes and node 1 would report
+1 kB, on every Linux machine. It now reads the figure after the colon; the live
+reading is 49,265,926,144 bytes, which is that line times 1024. A test on the
+real line format fails with `Some(0)` when the old parser is restored.
+
+This is the cheapest audit in the file and the most productive per minute: run
+a snapshot, list every zero, check each against a second source. Still owed on
+a Mac.
