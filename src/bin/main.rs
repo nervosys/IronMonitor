@@ -1471,9 +1471,13 @@ fn print_cpu_identity(cpu: &ironmonlib::core::cpu::CpuStats) {
             Some(mhz) => format!("{mhz} MHz"),
             None => "not read — Windows reports the nominal clock, not the current one".to_string(),
         };
-        // Only worth stating a ceiling when it differs from what the core is doing.
+        // Only worth stating when it differs from what the core is doing.
+        //
+        // "rated", not "max": this is the firmware's rated clock -- the base
+        // on current AMD and Intel parts -- and a boosting core exceeds it.
+        // "5367 MHz (max 4400 MHz)" read as a contradiction.
         if let Some(max) = freq.max.filter(|m| *m > 0 && Some(*m) != freq.current) {
-            clock.push_str(&format!(" (max {max} MHz)"));
+            clock.push_str(&format!(" (rated {max} MHz)"));
         }
         println!("  {} {}", "Clock:".white().bold(), clock.green());
     }

@@ -10846,3 +10846,21 @@ warnings, no media errors -- and plausible is all that can be said. **An
 elevated `Get-StorageReliabilityCounter`, or `smartctl -a` on each drive,
 settles it in a minute**; the NVMe parser has had an offset bug before, so
 this is worth doing once.
+
+### The CLI views, read against the verified snapshot
+
+`ironmon status` and `cli gpu | memory | cpu | power | temperature | board`,
+compared with the figures already cross-checked:
+
+- `status`: 93.6 GiB, 12 cores / 24 threads, three GPUs -- agrees.
+- `cli gpu` once showed both RTX cards at exactly 26.0 % load while one was at
+  285 MHz and the other at 2010 MHz. Three further samples against
+  `nvidia-smi` gave different, tracking figures each time (48/27 against
+  20/43 a moment later, and so on); the workload was moving between the cards
+  faster than the two tools sample. A coincidence, not a mapping bug.
+- `power.battery.percentage = 100` on a desktop is an APC Back-UPS on USB,
+  which Windows reports through `Win32_Battery`. Real.
+- `cli cpu` printed `Clock: 5367 MHz (max 4400 MHz)`. The 4400 is the rated
+  clock -- the base, on current parts -- and the ontology already describes it
+  so ("a boosting core can and does exceed it"); the CLI's label said "max".
+  It now says "rated".
