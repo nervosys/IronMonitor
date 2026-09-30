@@ -488,6 +488,41 @@ mod app_tab_tests {
         (app, ctx)
     }
 
+    #[test]
+    fn header_controls_do_not_overlap_or_leave_the_window() {
+        let (mut app, ctx) = app_and_ctx();
+        for width in [800.0, 1100.0, 1400.0] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 600.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input.clone(), |ctx| app.draw_top_panel(ctx));
+            let output = ctx.run(input, |ctx| app.draw_top_panel(ctx));
+            let mut labels = Vec::new();
+            for clipped in &output.shapes {
+                collect_shape_text_rects(&clipped.shape, &mut labels);
+            }
+            assert!(labels.iter().any(|(text, _)| text.contains('@')));
+            assert!(labels.iter().any(|(text, _)| text.ends_with(" AI")));
+            for (index, (text, rect)) in labels.iter().enumerate() {
+                assert!(
+                    rect.min.x >= 0.0 && rect.max.x <= width,
+                    "header label {text:?} is outside a {width}px window: {rect:?}"
+                );
+                for (other, other_rect) in &labels[index + 1..] {
+                    assert!(
+                        !rect.intersects(*other_rect),
+                        "header labels {text:?} and {other:?} overlap at {width}px: \
+                         {rect:?} and {other_rect:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The reported bug was "AI backends do not work". The CLI path answered a
     /// question correctly against Ollama, which located the fault in the GUI — but
     /// screenshots could never confirm what the tab actually drew.

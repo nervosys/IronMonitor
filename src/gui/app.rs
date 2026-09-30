@@ -1910,14 +1910,112 @@ impl eframe::App for IronMonitorApp {
             .unwrap_or(DATA_POLL_INTERVAL);
         ctx.request_repaint_after(tick * 3);
 
+        self.draw_top_panel(ctx);
+
+        // Bottom status bar
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                // Quick stats
+                let cpu_usage = self.cpu_usage();
+                ui.label(
+                    RichText::new(format!("CPU: {:.1}%", cpu_usage))
+                        .color(theme::utilization_color(cpu_usage)),
+                );
+                ui.separator();
+
+                let mem_usage = self.memory_usage();
+                ui.label(
+                    RichText::new(format!("RAM: {:.1}%", mem_usage))
+                        .color(theme::utilization_color(mem_usage)),
+                );
+                ui.separator();
+
+                for (i, gpu) in self.gpu_dynamic_info.iter().enumerate() {
+                    ui.label(
+                        RichText::new(match gpu.utilization {
+                            Some(u) => format!("GPU{i}: {u}%"),
+                            None => format!("GPU{i}: -"),
+                        })
+                        .color(theme::utilization_color(gpu.utilization.unwrap_or(0) as f32)),
+                    );
+                    if let Some(temp) = gpu.thermal.temperature {
+                        ui.label(
+                            RichText::new(format!("{}°C", temp))
+                                .color(theme::temperature_color(temp as u32)),
+                        );
+                    }
+                    ui.separator();
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Export buttons
+                    if ui.small_button("CSV").clicked() {
+                        let csv = self.export_to_csv();
+                        ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(csv)));
+                    }
+                    ui.add_space(4.0);
+                    if ui.small_button("JSON").clicked() {
+                        if let Ok(json) = self.export_to_json() {
+                            ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(json)));
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("F1=Help")
+                            .color(CyberColors::TEXT_MUTED)
+                            .small(),
+                    );
+                });
+            });
+            ui.add_space(2.0);
+        });
+
+        // Main content area
+        egui::CentralPanel::default().show(ctx, |ui| self.draw_current_tab(ui));
+
+        // After the panel, because the fit measures what that panel just drew.
+        let _ = self.autofit_to_overview_once(ctx);
+
+        // Settings window (floating)
+        self.draw_settings_window(ctx);
+    }
+}
+
+impl IronMonitorApp {
+    /// Draw the title, navigation, and host controls in the native window header.
+    pub(super) fn draw_top_panel(&mut self, ctx: &egui::Context) {
         // Top panel with title and tabs
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 // Logo/Title
                 ui.heading(RichText::new("⚡ IronMonitor").color(CyberColors::CYAN));
-                ui.separator();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let settings_btn = ui.add(
+                        egui::Button::new(RichText::new("⚙").size(16.0))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE),
+                    );
+                    if settings_btn.clicked() {
+                        self.show_settings = !self.show_settings;
+                    }
+                    settings_btn.on_hover_text("Settings");
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{}@{}", self.hostname, self.os_info))
+                                .color(CyberColors::TEXT_SECONDARY)
+                                .small(),
+                        )
+                        .truncate(),
+                    );
+                });
+            });
 
+            // Navigation gets its own wrapping row so the right-aligned host
+            // controls cannot paint over the final tab in a narrow window.
+            ui.horizontal_wrapped(|ui| {
                 // Tabs - use local variable to avoid borrow issues
                 let current = self.current_tab;
                 let tab_color = |tab: Tab| {
@@ -1993,103 +2091,11 @@ impl eframe::App for IronMonitorApp {
                     Tab::AIAssistant,
                     RichText::new("🤖 AI").color(tab_color(Tab::AIAssistant)),
                 );
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Settings gear icon
-                    let settings_btn = ui.add(
-                        egui::Button::new(RichText::new("⚙").size(16.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
-                    );
-                    if settings_btn.clicked() {
-                        self.show_settings = !self.show_settings;
-                    }
-                    if settings_btn.hovered() {
-                        settings_btn.on_hover_text("Settings");
-                    }
-
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("{}@{}", self.hostname, self.os_info))
-                            .color(CyberColors::TEXT_SECONDARY)
-                            .small(),
-                    );
-                });
             });
             ui.add_space(4.0);
         });
-
-        // Bottom status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                // Quick stats
-                let cpu_usage = self.cpu_usage();
-                ui.label(
-                    RichText::new(format!("CPU: {:.1}%", cpu_usage))
-                        .color(theme::utilization_color(cpu_usage)),
-                );
-                ui.separator();
-
-                let mem_usage = self.memory_usage();
-                ui.label(
-                    RichText::new(format!("RAM: {:.1}%", mem_usage))
-                        .color(theme::utilization_color(mem_usage)),
-                );
-                ui.separator();
-
-                for (i, gpu) in self.gpu_dynamic_info.iter().enumerate() {
-                    ui.label(
-                        RichText::new(match gpu.utilization {
-                            Some(u) => format!("GPU{i}: {u}%"),
-                            None => format!("GPU{i}: -"),
-                        })
-                        .color(theme::utilization_color(gpu.utilization.unwrap_or(0) as f32)),
-                    );
-                    if let Some(temp) = gpu.thermal.temperature {
-                        ui.label(
-                            RichText::new(format!("{}°C", temp))
-                                .color(theme::temperature_color(temp as u32)),
-                        );
-                    }
-                    ui.separator();
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Export buttons
-                    if ui.small_button("CSV").clicked() {
-                        let csv = self.export_to_csv();
-                        ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(csv)));
-                    }
-                    ui.add_space(4.0);
-                    if ui.small_button("JSON").clicked() {
-                        if let Ok(json) = self.export_to_json() {
-                            ui.output_mut(|o| o.commands.push(egui::OutputCommand::CopyText(json)));
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("F1=Help")
-                            .color(CyberColors::TEXT_MUTED)
-                            .small(),
-                    );
-                });
-            });
-            ui.add_space(2.0);
-        });
-
-        // Main content area
-        egui::CentralPanel::default().show(ctx, |ui| self.draw_current_tab(ui));
-
-        // After the panel, because the fit measures what that panel just drew.
-        let _ = self.autofit_to_overview_once(ctx);
-
-        // Settings window (floating)
-        self.draw_settings_window(ctx);
     }
-}
 
-impl IronMonitorApp {
     /// Draw whichever tab is selected.
     ///
     /// Split out of `update` so that `ironmon gui --frame` and the headless tests can

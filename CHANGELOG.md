@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The GUI hostname and settings controls occupy a separate row above the tabs,
+  preventing the hostname from overlapping the AI button. Navigation wraps at
+  narrow window widths instead of extending past the window edge.
+
 - A failed GPU query no longer prevents the chat agent from receiving CPU,
   memory, and readable GPU state. Failed selected devices appear as unavailable
   with their original index and error reason, rather than disappearing or

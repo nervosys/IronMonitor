@@ -3,6 +3,23 @@
 Current as of 6.0.0. This file is excluded from the published crate
 (`Cargo.toml`'s `exclude` list) and is for whoever picks the work up next.
 
+## GUI header overlap fixed (2026-09-29)
+
+The native header placed the title, thirteen tabs, and right-aligned host
+controls on one fixed row. `heimdall@windows` painted over the AI tab; at
+800 logical pixels the host label was not painted at all. The title and host
+controls now have their own row, and navigation uses `horizontal_wrapped`.
+Long host labels truncate within the available title-row space.
+
+`draw_top_panel` is shared by the native update and a headless regression
+check. The check requires the hostname and AI labels to be painted, then
+checks every header text rectangle for horizontal overflow and intersections
+at 800, 1100, and 1400 pixels. It failed on the original header and passes
+with the new layout. Earlier overflow tests rendered tab bodies only.
+
+Validation on Windows: the full library suite passed (932 passed, one ignored),
+and `cargo clippy --features full -- -D warnings` and `git diff --check` passed.
+
 ## Read this first: 6.0.0 is shipped
 
 Merged to `master` as a fast-forward and tagged **`v6.0.0`** at `1947426`, with
