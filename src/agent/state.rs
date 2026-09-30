@@ -3,7 +3,7 @@
 //! This module extracts relevant system state from the hardware monitor
 //! to provide context for agent responses.
 
-use crate::error::{IronError, Result};
+use crate::error::Result;
 use crate::gpu::GpuInfo;
 use crate::UnifiedMonitor;
 use serde::{Deserialize, Serialize};
@@ -119,8 +119,21 @@ pub struct SystemState {
     /// GPU information (only for queried GPUs)
     pub gpus: Vec<GpuState>,
 
+    /// Selected GPUs whose query failed, with the original collection index.
+    #[serde(default)]
+    pub gpu_errors: Vec<GpuQueryError>,
+
     /// Timestamp of state capture
     pub timestamp: u64,
+}
+
+/// A detected GPU whose current state could not be read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuQueryError {
+    /// Index in the detected GPU collection, unaffected by other query failures.
+    pub index: usize,
+    /// Error returned by the device query; no sensor values were obtained.
+    pub reason: String,
 }
 
 /// Condensed GPU state
@@ -180,30 +193,8 @@ pub struct GpuState {
 impl SystemState {
     /// Extract system state from monitor based on query
     pub fn from_monitor(monitor: &UnifiedMonitor, query: &Query) -> Result<Self> {
-        let gpu_infos = monitor
-            .snapshot_gpus()
-            .map_err(|e| IronError::Other(format!("Failed to get GPU state: {}", e)))?;
-
-        // Determine which GPUs to include
-        let gpu_states: Vec<GpuState> = if query.all_gpus || query.gpu_indices.is_empty() {
-            // Include all GPUs
-            gpu_infos
-                .into_iter()
-                .enumerate()
-                .map(|(idx, info)| Self::gpu_to_state(idx, info))
-                .collect()
-        } else {
-            // Include only specified GPUs
-            query
-                .gpu_indices
-                .iter()
-                .filter_map(|&idx| {
-                    gpu_infos
-                        .get(idx)
-                        .map(|info| Self::gpu_to_state(idx, info.clone()))
-                })
-                .collect()
-        };
+        let (gpu_states, gpu_errors) =
+            Self::select_gpu_states(monitor.gpus().snapshot_all_partial(), query);
 
         // Get CPU state (platform-specific)
         let cpu = Self::get_cpu_state();
@@ -215,11 +206,36 @@ impl SystemState {
             cpu,
             memory,
             gpus: gpu_states,
+            gpu_errors,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
         })
+    }
+
+    fn select_gpu_states(
+        snapshots: Vec<std::result::Result<GpuInfo, crate::Error>>,
+        query: &Query,
+    ) -> (Vec<GpuState>, Vec<GpuQueryError>) {
+        let indices: Vec<usize> = if query.all_gpus || query.gpu_indices.is_empty() {
+            (0..snapshots.len()).collect()
+        } else {
+            query.gpu_indices.clone()
+        };
+        let mut gpus = Vec::new();
+        let mut errors = Vec::new();
+        for index in indices {
+            match snapshots.get(index) {
+                Some(Ok(info)) => gpus.push(Self::gpu_to_state(index, info.clone())),
+                Some(Err(error)) => errors.push(GpuQueryError {
+                    index,
+                    reason: error.to_string(),
+                }),
+                None => {}
+            }
+        }
+        (gpus, errors)
     }
 
     /// Get CPU state from platform-specific APIs
@@ -458,6 +474,13 @@ impl SystemState {
             }
         }
 
+        for error in &self.gpu_errors {
+            context.push_str(&format!(
+                "\nGPU {}: unavailable (query failed: {})\n",
+                error.index, error.reason
+            ));
+        }
+
         // Give the model the same thresholds IronMonitor uses for its own warnings. Without
         // them it substitutes a guess, and the guess runs cold: a 3090 Ti at 52 °C —
         // an ordinary idle-to-light-load reading — was reported to the user as
@@ -618,6 +641,102 @@ impl GpuState {
 mod tests {
     use super::*;
 
+    fn gpu_snapshot() -> GpuInfo {
+        serde_json::from_value(serde_json::json!({
+            "static_info": {
+                "index": 99, "vendor": "Nvidia", "name": "Test GPU",
+                "integrated": false
+            },
+            "dynamic_info": {
+                "utilization": 40,
+                "memory": {}, "clocks": {}, "power": {"draw": 100000},
+                "thermal": {"temperature": 50}, "pcie": {},
+                "engines": {"vendor_specific": []}, "processes": []
+            }
+        }))
+        .unwrap()
+    }
+
+    fn mixed_snapshots() -> Vec<std::result::Result<GpuInfo, crate::Error>> {
+        vec![
+            Ok(gpu_snapshot()),
+            Err(crate::Error::GpuError("device disconnected".to_string())),
+            Ok(gpu_snapshot()),
+        ]
+    }
+
+    #[test]
+    fn failed_gpu_preserves_other_readings_and_collection_indices() {
+        let (gpus, gpu_errors) =
+            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("all GPUs"));
+        assert_eq!(gpus.iter().map(|g| g.index).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(gpu_errors.len(), 1);
+        assert_eq!(gpu_errors[0].index, 1);
+        let state = SystemState {
+            cpu: None,
+            memory: Some(MemoryState {
+                total_mb: 32768,
+                used_mb: 16384,
+                available_mb: 16384,
+                utilization: 50.0,
+            }),
+            gpus,
+            gpu_errors,
+            timestamp: 0,
+        };
+        let context = state.to_context_string();
+        assert!(context.contains("Memory: 16384 / 32768 MB"), "{context}");
+        assert!(context.contains("GPU 2: Test GPU"), "{context}");
+        assert!(
+            context.contains("GPU 1: unavailable (query failed:"),
+            "{context}"
+        );
+        assert!(context.contains("device disconnected"), "{context}");
+        assert_eq!(state.total_power_w(), Some(200.0));
+        assert_eq!(state.avg_utilization(), Some(40.0));
+        assert_eq!(state.avg_temperature(), Some(50.0));
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json["gpu_errors"][0].get("value").is_none());
+    }
+
+    #[test]
+    fn specific_gpu_query_keeps_its_failure_and_excludes_other_devices() {
+        let (gpus, errors) =
+            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("GPU 1"));
+        assert!(gpus.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].index, 1);
+        let (gpus, errors) =
+            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("GPU 2"));
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].index, 2);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn every_gpu_can_fail_without_becoming_an_empty_machine() {
+        let (gpus, gpu_errors) = SystemState::select_gpu_states(
+            vec![Err(crate::Error::GpuError(
+                "driver unavailable".to_string(),
+            ))],
+            &Query::parse("all GPUs"),
+        );
+        let state = SystemState {
+            cpu: None,
+            memory: None,
+            gpus,
+            gpu_errors,
+            timestamp: 0,
+        };
+        assert!(state.to_context_string().contains("GPU 0: unavailable"));
+        assert_eq!(state.total_power_w(), None);
+        assert_eq!(state.avg_utilization(), None);
+        assert_eq!(state.avg_temperature(), None);
+        let (gpus, errors) = SystemState::select_gpu_states(Vec::new(), &Query::parse("all GPUs"));
+        assert!(gpus.is_empty());
+        assert!(errors.is_empty());
+    }
+
     #[test]
     fn test_gpu_state_calculations() {
         let gpu = GpuState {
@@ -677,6 +796,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(50)), gpu(1, Some(36)), gpu(2, None)],
+            gpu_errors: Vec::new(),
             timestamp: 0,
         };
 
@@ -715,6 +835,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(52))],
+            gpu_errors: Vec::new(),
             timestamp: 0,
         };
 
@@ -733,6 +854,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: Vec::new(),
+            gpu_errors: Vec::new(),
             timestamp: 0,
         };
         assert!(!empty.to_context_string().contains("Reference thresholds"));
@@ -759,6 +881,7 @@ mod tests {
             cpu: Some(c),
             memory: None,
             gpus: Vec::new(),
+            gpu_errors: Vec::new(),
             timestamp: 0,
         };
 
@@ -863,6 +986,7 @@ mod tests {
                     process_count: 1,
                 },
             ],
+            gpu_errors: Vec::new(),
             timestamp: 0,
         };
 

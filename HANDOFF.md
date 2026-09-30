@@ -10015,14 +10015,25 @@ mismatch. A true free figure on Windows needs the `\Memory\Free & Zero Page
 List Bytes` counter, which the reader does not query. That is a reader fix, not
 a rendering one.
 
-#### Open: one failing GPU fails the whole agent context
+#### Resolved: one failing GPU failed the whole agent context
 
 `SystemState::from_monitor` calls `UnifiedMonitor::snapshot_gpus`, which calls
 `GpuCollection::snapshot_all`, which collects every device's `Result` into one.
 A single GPU whose query errors therefore makes the whole call fail, and the
-chat agent cannot answer anything. `snapshot_all_partial`, directly beside it,
-preserves per-device results for exactly this case. Not a fabricated reading,
-so not fixed in this sweep.
+chat agent could not answer anything. Resumed on 2026-09-29: it now uses
+`snapshot_all_partial`, preserving collection indices and readable devices.
+Selected failures are retained in `SystemState::gpu_errors` and rendered to
+the model as unavailable with the query's error reason. CPU and memory
+collection proceeds even when every GPU fails. Older serialized state without
+`gpu_errors` defaults to an empty list.
+
+Hardware-independent regression tests cover a failure between two readable
+devices, queries selecting the failed or surviving device, all devices failing,
+and an empty collection. Aggregates use only successful readings.
+
+Validation on Windows: all nine agent-state tests passed; the full library
+suite passed (931 passed, one ignored); both `agent_agreement` tests passed;
+`cargo clippy --features full -- -D warnings` and `git diff --check` passed.
 
 ### A skip that could never fire
 

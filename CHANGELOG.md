@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed GPU query no longer prevents the chat agent from receiving CPU,
+  memory, and readable GPU state. Failed selected devices appear as unavailable
+  with their original index and error reason, rather than disappearing or
+  contributing invented zeros to aggregates. Serialized agent state adds
+  `gpu_errors`; older state without that field still deserializes.
+
 ### Removed
 
 - **The `vault` feature and `ironmon ai models`.** **Breaking** for builds that
