@@ -1212,3 +1212,87 @@ mod overview_extent {
         );
     }
 }
+
+#[cfg(test)]
+mod monochrome_tests {
+    use super::*;
+    use crate::gui::{
+        app::ColorTheme,
+        theme,
+        widgets::{CyberProgressBar, MetricCard, SparklineChart, ThresholdLegend},
+    };
+
+    fn assert_grayscale(ctx: &Context, output: egui::FullOutput, label: &str) {
+        let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let mut vertices = 0;
+        for primitive in primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                for vertex in mesh.vertices {
+                    let color = vertex.color;
+                    vertices += 1;
+                    assert!(
+                        color.r() == color.g() && color.g() == color.b(),
+                        "{label} painted a colored vertex: {color:?}"
+                    );
+                }
+            }
+        }
+        assert!(vertices > 0, "{label} painted nothing");
+    }
+
+    #[test]
+    fn dark_monochrome_covers_every_tab_and_custom_charts() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        theme::apply_theme(&ctx, ColorTheme::Monochrome);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        for tab in [
+            "overview",
+            "cpu",
+            "accelerators",
+            "memory",
+            "disk",
+            "processes",
+            "network",
+            "tools",
+            "connections",
+            "system",
+            "peripherals",
+            "profiles",
+            "ai",
+        ] {
+            app.select_tab_by_name(tab).unwrap();
+            // Loading latency depends on hardware and parallel WMI queries. It
+            // is not a palette failure: check the loading state's colors too,
+            // and exercise custom chart fills with deterministic data below.
+            if !settle(&mut app, &ctx, Duration::from_secs(30)) {
+                eprintln!("{tab}: hardware still loading; checking loading-state colors");
+            }
+            let mut output = None;
+            for _ in 0..2 {
+                output = Some(ctx.run(input.clone(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.draw_current_tab(ui));
+                }));
+            }
+            assert_grayscale(&ctx, output.unwrap(), tab);
+        }
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.add(CyberProgressBar::new(0.85).with_threshold_color());
+                ui.add(MetricCard::new("Metric", "42").color(theme::CyberColors::NEON_GREEN));
+                ui.add(
+                    SparklineChart::new(vec![10.0, 30.0, 20.0, 40.0])
+                        .color(theme::CyberColors::MAGENTA),
+                );
+                ui.add(ThresholdLegend);
+            });
+        });
+        assert_grayscale(&ctx, output, "custom charts and widgets");
+    }
+}

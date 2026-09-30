@@ -532,10 +532,16 @@ impl AiBackendSelection {
 pub enum ColorTheme {
     #[default]
     Cyber, // Default neon cyber theme (dark)
-    Light,      // Clean light theme
-    Ocean,      // Blue/teal oceanic theme
-    Forest,     // Green nature theme
-    Sunset,     // Orange/red warm theme
+    Light,  // Clean light theme
+    Ocean,  // Blue/teal oceanic theme
+    Forest, // Green nature theme
+    Sunset, // Orange/red warm theme
+    Amethyst,
+    Rose,
+    Ember,
+    Ice,
+    Aurora,
+    Amber,
     Monochrome, // Grayscale minimalist
 }
 
@@ -547,7 +553,13 @@ impl ColorTheme {
             ColorTheme::Ocean => "Ocean",
             ColorTheme::Forest => "Forest",
             ColorTheme::Sunset => "Sunset",
-            ColorTheme::Monochrome => "Monochrome",
+            ColorTheme::Amethyst => "Amethyst",
+            ColorTheme::Rose => "Rose",
+            ColorTheme::Ember => "Ember",
+            ColorTheme::Ice => "Ice",
+            ColorTheme::Aurora => "Aurora",
+            ColorTheme::Amber => "Amber",
+            ColorTheme::Monochrome => "Dark Monochrome",
         }
     }
 
@@ -558,6 +570,12 @@ impl ColorTheme {
             ColorTheme::Ocean,
             ColorTheme::Forest,
             ColorTheme::Sunset,
+            ColorTheme::Amethyst,
+            ColorTheme::Rose,
+            ColorTheme::Ember,
+            ColorTheme::Ice,
+            ColorTheme::Aurora,
+            ColorTheme::Amber,
             ColorTheme::Monochrome,
         ]
     }
@@ -570,6 +588,12 @@ impl ColorTheme {
             ColorTheme::Ocean => egui::Color32::from_rgb(64, 224, 208), // Turquoise
             ColorTheme::Forest => egui::Color32::from_rgb(34, 197, 94), // Green
             ColorTheme::Sunset => egui::Color32::from_rgb(251, 146, 60), // Orange
+            ColorTheme::Amethyst => egui::Color32::from_rgb(186, 132, 255),
+            ColorTheme::Rose => egui::Color32::from_rgb(255, 112, 177),
+            ColorTheme::Ember => egui::Color32::from_rgb(255, 103, 87),
+            ColorTheme::Ice => egui::Color32::from_rgb(111, 210, 255),
+            ColorTheme::Aurora => egui::Color32::from_rgb(137, 245, 139),
+            ColorTheme::Amber => egui::Color32::from_rgb(255, 202, 88),
             ColorTheme::Monochrome => egui::Color32::from_rgb(200, 200, 200), // Light gray
         }
     }
@@ -583,6 +607,12 @@ impl ColorTheme {
             ColorTheme::Ocean => egui::Color32::from_rgb(56, 189, 248), // Sky blue
             ColorTheme::Forest => egui::Color32::from_rgb(74, 222, 128), // Light green
             ColorTheme::Sunset => egui::Color32::from_rgb(248, 113, 113), // Red
+            ColorTheme::Amethyst => egui::Color32::from_rgb(255, 123, 205),
+            ColorTheme::Rose => egui::Color32::from_rgb(181, 145, 255),
+            ColorTheme::Ember => egui::Color32::from_rgb(255, 192, 101),
+            ColorTheme::Ice => egui::Color32::from_rgb(165, 178, 255),
+            ColorTheme::Aurora => egui::Color32::from_rgb(195, 139, 255),
+            ColorTheme::Amber => egui::Color32::from_rgb(255, 139, 94),
             ColorTheme::Monochrome => egui::Color32::from_rgb(150, 150, 150), // Medium gray
         }
     }
@@ -1847,15 +1877,13 @@ impl IronMonitorApp {
 
 impl eframe::App for IronMonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let palette_ctx = ctx.clone();
         // Apply theme only when it actually changes. `apply_*_theme` calls
         // `ctx.set_fonts()` which rebuilds the font atlas — doing that every
         // frame causes ~100ms paint stalls and ruins tab-switch latency.
         let want = self.settings.color_theme;
         if self.applied_color_theme != Some(want) {
-            match want {
-                ColorTheme::Light => theme::apply_light_theme(ctx),
-                _ => theme::apply_cyber_theme(ctx),
-            }
+            theme::apply_theme(ctx, want);
             self.applied_color_theme = Some(want);
         }
 
@@ -1919,15 +1947,19 @@ impl eframe::App for IronMonitorApp {
                 // Quick stats
                 let cpu_usage = self.cpu_usage();
                 ui.label(
-                    RichText::new(format!("CPU: {:.1}%", cpu_usage))
-                        .color(theme::utilization_color(cpu_usage)),
+                    RichText::new(format!("CPU: {:.1}%", cpu_usage)).color(theme::color(
+                        &palette_ctx,
+                        theme::utilization_color(cpu_usage),
+                    )),
                 );
                 ui.separator();
 
                 let mem_usage = self.memory_usage();
                 ui.label(
-                    RichText::new(format!("RAM: {:.1}%", mem_usage))
-                        .color(theme::utilization_color(mem_usage)),
+                    RichText::new(format!("RAM: {:.1}%", mem_usage)).color(theme::color(
+                        &palette_ctx,
+                        theme::utilization_color(mem_usage),
+                    )),
                 );
                 ui.separator();
 
@@ -1937,13 +1969,16 @@ impl eframe::App for IronMonitorApp {
                             Some(u) => format!("GPU{i}: {u}%"),
                             None => format!("GPU{i}: -"),
                         })
-                        .color(theme::utilization_color(gpu.utilization.unwrap_or(0) as f32)),
+                        .color(theme::color(
+                            ui.ctx(),
+                            theme::utilization_color(gpu.utilization.unwrap_or(0) as f32),
+                        )),
                     );
                     if let Some(temp) = gpu.thermal.temperature {
-                        ui.label(
-                            RichText::new(format!("{}°C", temp))
-                                .color(theme::temperature_color(temp as u32)),
-                        );
+                        ui.label(RichText::new(format!("{}°C", temp)).color(theme::color(
+                            ui.ctx(),
+                            theme::temperature_color(temp as u32),
+                        )));
                     }
                     ui.separator();
                 }
@@ -1963,7 +1998,7 @@ impl eframe::App for IronMonitorApp {
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new("F1=Help")
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .small(),
                     );
                 });
@@ -1985,12 +2020,16 @@ impl eframe::App for IronMonitorApp {
 impl IronMonitorApp {
     /// Draw the title, navigation, and host controls in the native window header.
     pub(super) fn draw_top_panel(&mut self, ctx: &egui::Context) {
+        let palette_ctx = ctx.clone();
         // Top panel with title and tabs
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 // Logo/Title
-                ui.heading(RichText::new("⚡ IronMonitor").color(CyberColors::CYAN));
+                ui.heading(
+                    RichText::new("⚡ IronMonitor")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let settings_btn = ui.add(
                         egui::Button::new(RichText::new("⚙").size(16.0))
@@ -2005,7 +2044,7 @@ impl IronMonitorApp {
                     ui.add(
                         egui::Label::new(
                             RichText::new(format!("{}@{}", self.hostname, self.os_info))
-                                .color(CyberColors::TEXT_SECONDARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .small(),
                         )
                         .truncate(),
@@ -2020,76 +2059,88 @@ impl IronMonitorApp {
                 let current = self.current_tab;
                 let tab_color = |tab: Tab| {
                     if current == tab {
-                        CyberColors::CYAN
+                        theme::color(&palette_ctx, CyberColors::CYAN)
                     } else {
-                        CyberColors::TEXT_SECONDARY
+                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                     }
                 };
 
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Overview,
-                    RichText::new("📊 Overview").color(tab_color(Tab::Overview)),
+                    RichText::new("📊 Overview")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Overview))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Cpu,
-                    RichText::new("🔲 CPU").color(tab_color(Tab::Cpu)),
+                    RichText::new("🔲 CPU").color(theme::color(&palette_ctx, tab_color(Tab::Cpu))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Accelerators,
-                    RichText::new("⚡ Accelerators").color(tab_color(Tab::Accelerators)),
+                    RichText::new("⚡ Accelerators")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Accelerators))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Memory,
-                    RichText::new("💾 Memory").color(tab_color(Tab::Memory)),
+                    RichText::new("💾 Memory")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Memory))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Disk,
-                    RichText::new("💿 Disk").color(tab_color(Tab::Disk)),
+                    RichText::new("💿 Disk")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Disk))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Processes,
-                    RichText::new("📋 Processes").color(tab_color(Tab::Processes)),
+                    RichText::new("📋 Processes")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Processes))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Network,
-                    RichText::new("🌐 Network").color(tab_color(Tab::Network)),
+                    RichText::new("🌐 Network")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Network))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Connections,
-                    RichText::new("🔌 Sockets").color(tab_color(Tab::Connections)),
+                    RichText::new("🔌 Sockets")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Connections))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::NetworkTools,
-                    RichText::new("🔧 Tools").color(tab_color(Tab::NetworkTools)),
+                    RichText::new("🔧 Tools")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::NetworkTools))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Peripherals,
-                    RichText::new("🔌 Peripherals").color(tab_color(Tab::Peripherals)),
+                    RichText::new("🔌 Peripherals")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Peripherals))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::SystemInfo,
-                    RichText::new("🖥️ System").color(tab_color(Tab::SystemInfo)),
+                    RichText::new("🖥️ System")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::SystemInfo))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Profiles,
-                    RichText::new("🛠 Profiles").color(tab_color(Tab::Profiles)),
+                    RichText::new("🛠 Profiles")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::Profiles))),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::AIAssistant,
-                    RichText::new("🤖 AI").color(tab_color(Tab::AIAssistant)),
+                    RichText::new("🤖 AI")
+                        .color(theme::color(&palette_ctx, tab_color(Tab::AIAssistant))),
                 );
             });
             ui.add_space(4.0);
@@ -2311,16 +2362,21 @@ impl IronMonitorApp {
     /// assistant: a question asked here appears in the AI tab's transcript and vice
     /// versa, and both honour the backend and model selected there.
     pub(super) fn draw_overview_chat_bar(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         let can_answer = self.agent_can_answer();
         let mut submit = false;
 
         egui::Frame::NONE
-            .fill(CyberColors::SURFACE)
+            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
             .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Ask").color(CyberColors::CYAN).strong());
+                    ui.label(
+                        RichText::new("Ask")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .strong(),
+                    );
 
                     // Measure the button instead of reserving a guess for it.
                     //
@@ -2372,7 +2428,7 @@ impl IronMonitorApp {
                         ui.label(
                             RichText::new("thinking…")
                                 .small()
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                     });
                 } else if !can_answer {
@@ -2382,7 +2438,7 @@ impl IronMonitorApp {
                     ui.label(
                         RichText::new("no model selected — see the AI tab")
                             .small()
-                            .color(CyberColors::TEXT_SECONDARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                     );
                 }
 
@@ -2407,7 +2463,10 @@ impl IronMonitorApp {
                     } else {
                         text.to_string()
                     };
-                    ui.label(RichText::new(shown).color(CyberColors::TEXT_PRIMARY));
+                    ui.label(
+                        RichText::new(shown)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                    );
                     if let Some(ms) = entry.inference_time_ms {
                         ui.label(
                             RichText::new(format!(
@@ -2416,7 +2475,7 @@ impl IronMonitorApp {
                                 if entry.from_cache { " · cached" } else { "" }
                             ))
                             .small()
-                            .color(CyberColors::TEXT_SECONDARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                     }
                 }
@@ -2428,6 +2487,7 @@ impl IronMonitorApp {
     }
 
     fn draw_overview(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         let scrolled = ScrollArea::vertical().show(ui, |ui| {
             self.draw_overview_chat_bar(ui);
             ui.add_space(6.0);
@@ -2492,7 +2552,7 @@ impl IronMonitorApp {
                 let seconds = uptime.as_secs() % 60;
                 ui.label(
                     RichText::new(format!("⏱ {:02}:{:02}:{:02}", hours, minutes, seconds))
-                        .color(CyberColors::CYAN),
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                 );
                 ui.separator();
 
@@ -2505,7 +2565,7 @@ impl IronMonitorApp {
 
                 ui.label(
                     RichText::new(format!("Tasks: {}", self.process_list.len()))
-                        .color(CyberColors::TEXT_PRIMARY),
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                 );
                 // Platforms that do not report per-process scheduling state mark it
                 // 'U'. Showing "0R 0S" there would be as wrong as the "420R 0S" this
@@ -2514,27 +2574,30 @@ impl IronMonitorApp {
                     > 0
                 {
                     ui.label(
-                        RichText::new(format!("{}R", running_count)).color(CyberColors::NEON_GREEN),
+                        RichText::new(format!("{}R", running_count))
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                     );
                     ui.label(
-                        RichText::new(format!("{}S", sleeping_count)).color(CyberColors::CYAN),
+                        RichText::new(format!("{}S", sleeping_count))
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                     );
                 }
                 if zombie_count > 0 {
                     ui.label(
-                        RichText::new(format!("{}Z", zombie_count)).color(CyberColors::NEON_RED),
+                        RichText::new(format!("{}Z", zombie_count))
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
                     );
                 }
                 if disk_wait_count > 0 {
                     ui.label(
                         RichText::new(format!("{}D", disk_wait_count))
-                            .color(CyberColors::NEON_YELLOW),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                     );
                 }
                 if stopped_count > 0 {
                     ui.label(
                         RichText::new(format!("{}T", stopped_count))
-                            .color(CyberColors::NEON_ORANGE),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                     );
                 }
                 ui.separator();
@@ -2542,7 +2605,7 @@ impl IronMonitorApp {
                 // Connections count
                 ui.label(
                     RichText::new(format!("🔌 {} Conn", self.connections.len()))
-                        .color(CyberColors::NEON_PURPLE),
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
                 );
                 ui.separator();
 
@@ -2550,7 +2613,7 @@ impl IronMonitorApp {
                 if !self.gpu_static_info.is_empty() {
                     ui.label(
                         RichText::new(format!("⚡ {} Accel", self.gpu_static_info.len()))
-                            .color(CyberColors::NEON_ORANGE),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                     );
                 }
             });
@@ -2566,7 +2629,7 @@ impl IronMonitorApp {
                 ui.add(
                     MetricCard::new("CPU Usage", format!("{:.1}", cpu_usage))
                         .unit("%")
-                        .color(theme::cpu_color(cpu_usage)),
+                        .color(theme::color(&palette_ctx, theme::cpu_color(cpu_usage))),
                 );
 
                 // Memory Card
@@ -2579,7 +2642,7 @@ impl IronMonitorApp {
                     ui.add(
                         MetricCard::new("Memory", format!("{:.1}", used_gb))
                             .unit("GB")
-                            .color(theme::memory_color(usage)),
+                            .color(theme::color(&palette_ctx, theme::memory_color(usage))),
                     );
                 }
 
@@ -2605,8 +2668,9 @@ impl IronMonitorApp {
                                 .map_or_else(|| "-".to_string(), |u| u.to_string()),
                         )
                         .unit("%")
-                        .color(theme::accel_color(
-                            dynamic_info.utilization.unwrap_or(0) as f32,
+                        .color(theme::color(
+                            ui.ctx(),
+                            theme::accel_color(dynamic_info.utilization.unwrap_or(0) as f32),
                         )),
                     );
 
@@ -2620,7 +2684,10 @@ impl IronMonitorApp {
                                 temp,
                             )
                             .unit("°C")
-                            .color(theme::temperature_color(temp as u32)),
+                            .color(theme::color(
+                                ui.ctx(),
+                                theme::temperature_color(temp as u32),
+                            )),
                         );
                     }
 
@@ -2636,8 +2703,11 @@ impl IronMonitorApp {
                             // No reading, no threshold colour: 0% would paint
                             // the card the "plenty free" colour for a device
                             // whose memory nobody could read.
-                            .color(theme::memory_color(
-                                dynamic_info.memory.utilization.unwrap_or(0) as f32,
+                            .color(theme::color(
+                                ui.ctx(),
+                                theme::memory_color(
+                                    dynamic_info.memory.utilization.unwrap_or(0) as f32
+                                ),
                             )),
                     );
                 }
@@ -2650,7 +2720,7 @@ impl IronMonitorApp {
                 // CPU Chart
                 columns[0].add(
                     SparklineChart::new(self.cpu_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::CPU)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
                         .height(100.0)
                         .title("CPU Usage")
                         .unit("%")
@@ -2662,7 +2732,7 @@ impl IronMonitorApp {
                 // Memory Chart
                 columns[1].add(
                     SparklineChart::new(self.memory_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::MEMORY)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
                         .height(100.0)
                         .title("Memory Usage")
                         .unit("%")
@@ -2684,7 +2754,7 @@ impl IronMonitorApp {
                         if i < columns.len() {
                             columns[i].add(
                                 SparklineChart::new(hist.iter().cloned().collect())
-                                    .color(DeviceTitleColors::ACCEL)
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::ACCEL))
                                     .height(80.0)
                                     .title(format!("GPU {}", i))
                                     .unit("%")
@@ -2714,7 +2784,7 @@ impl IronMonitorApp {
                                 "⚖ Load: {:.2}, {:.2}, {:.2}",
                                 load.one, load.five, load.fifteen
                             ))
-                            .color(CyberColors::CYAN),
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.separator();
                     }
@@ -2729,7 +2799,10 @@ impl IronMonitorApp {
                         } else {
                             format!("🖥 Uptime: {:02}h {:02}m", hours, mins)
                         };
-                        ui.label(RichText::new(uptime_str).color(CyberColors::NEON_GREEN));
+                        ui.label(
+                            RichText::new(uptime_str)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                        );
                         ui.separator();
                     }
 
@@ -2745,7 +2818,10 @@ impl IronMonitorApp {
                         (None, None) => None,
                     };
                     if let Some(tasks) = tasks {
-                        ui.label(RichText::new(tasks).color(CyberColors::NEON_PURPLE));
+                        ui.label(
+                            RichText::new(tasks)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                        );
                         ui.separator();
                     }
 
@@ -2753,7 +2829,7 @@ impl IronMonitorApp {
                     if stats.num_cpus > 0 {
                         ui.label(
                             RichText::new(format!("💻 {} CPUs", stats.num_cpus))
-                                .color(CyberColors::NEON_ORANGE),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
                     }
                 }
@@ -2767,13 +2843,16 @@ impl IronMonitorApp {
                     let total = cpu_time.total() as f32;
                     if total > 0.0 {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("CPU Time: ").color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new("CPU Time: ")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.label(
                                 RichText::new(format!(
                                     "us:{:.1}%",
                                     (cpu_time.user as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::NEON_GREEN)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                                 .small(),
                             );
                             ui.label(
@@ -2781,7 +2860,7 @@ impl IronMonitorApp {
                                     "sy:{:.1}%",
                                     (cpu_time.system as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::NEON_ORANGE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                 .small(),
                             );
                             ui.label(
@@ -2789,7 +2868,7 @@ impl IronMonitorApp {
                                     "ni:{:.1}%",
                                     (cpu_time.nice as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::CYAN)
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                 .small(),
                             );
                             ui.label(
@@ -2797,7 +2876,7 @@ impl IronMonitorApp {
                                     "id:{:.1}%",
                                     (cpu_time.idle as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .small(),
                             );
                             ui.label(
@@ -2805,7 +2884,7 @@ impl IronMonitorApp {
                                     "wa:{:.1}%",
                                     (cpu_time.iowait as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::NEON_RED)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_RED))
                                 .small(),
                             );
                             ui.label(
@@ -2813,7 +2892,7 @@ impl IronMonitorApp {
                                     "hi:{:.1}%",
                                     (cpu_time.irq as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::MAGENTA)
+                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
                                 .small(),
                             );
                             ui.label(
@@ -2821,7 +2900,7 @@ impl IronMonitorApp {
                                     "si:{:.1}%",
                                     (cpu_time.softirq as f32 / total) * 100.0
                                 ))
-                                .color(CyberColors::NEON_PURPLE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
                                 .small(),
                             );
                             if cpu_time.steal > 0 {
@@ -2830,7 +2909,7 @@ impl IronMonitorApp {
                                         "st:{:.1}%",
                                         (cpu_time.steal as f32 / total) * 100.0
                                     ))
-                                    .color(CyberColors::NEON_YELLOW)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
                                     .small(),
                                 );
                             }
@@ -2841,41 +2920,44 @@ impl IronMonitorApp {
                 // VMstat info (context switches, interrupts, etc.)
                 if let Some(ref vm) = stats.vm_stats {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("VMstat: ").color(CyberColors::TEXT_PRIMARY));
+                        ui.label(
+                            RichText::new("VMstat: ")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                        );
                         // Show rates per second
                         let ctx_rate = self.context_switches_history.back().unwrap_or(&0.0);
                         let int_rate = self.interrupts_history.back().unwrap_or(&0.0);
                         ui.label(
                             RichText::new(format!("ctx/s:{:.0}", ctx_rate))
-                                .color(CyberColors::CYAN)
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                 .small(),
                         );
                         ui.label(
                             RichText::new(format!("int/s:{:.0}", int_rate))
-                                .color(CyberColors::NEON_GREEN)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                                 .small(),
                         );
                         if vm.processes_blocked > 0 {
                             ui.label(
                                 RichText::new(format!("blocked:{}", vm.processes_blocked))
-                                    .color(CyberColors::NEON_RED)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_RED))
                                     .small(),
                             );
                         }
                         ui.label(
                             RichText::new(format!("pgpgin:{}", vm.pages_in))
-                                .color(CyberColors::NEON_PURPLE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
                                 .small(),
                         );
                         ui.label(
                             RichText::new(format!("pgpgout:{}", vm.pages_out))
-                                .color(CyberColors::NEON_ORANGE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                 .small(),
                         );
                         if vm.swap_in > 0 || vm.swap_out > 0 {
                             ui.label(
                                 RichText::new(format!("swin:{} swout:{}", vm.swap_in, vm.swap_out))
-                                    .color(CyberColors::NEON_YELLOW)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
                                     .small(),
                             );
                         }
@@ -2902,7 +2984,7 @@ impl IronMonitorApp {
                         SparklineChart::new(
                             self.context_switches_history.iter().cloned().collect(),
                         )
-                        .color(CyberColors::CYAN)
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
                         .height(70.0)
                         .title("Context Switches")
                         .unit("/s")
@@ -2911,7 +2993,7 @@ impl IronMonitorApp {
 
                     columns[1].add(
                         SparklineChart::new(self.interrupts_history.iter().cloned().collect())
-                            .color(CyberColors::NEON_GREEN)
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                             .height(70.0)
                             .title("Interrupts")
                             .unit("/s")
@@ -2923,7 +3005,7 @@ impl IronMonitorApp {
                     RichText::new(
                         "Context switch and interrupt counters are not exposed by this platform",
                     )
-                    .color(CyberColors::TEXT_SECONDARY)
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                     .small(),
                 );
             }
@@ -2936,7 +3018,7 @@ impl IronMonitorApp {
             ui.columns(2, |columns| {
                 columns[0].add(
                     SparklineChart::new(self.network_rx_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::NETWORK)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .height(70.0)
                         .title("Download")
                         .unit("KB/s")
@@ -2945,7 +3027,7 @@ impl IronMonitorApp {
 
                 columns[1].add(
                     SparklineChart::new(self.network_tx_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::NETWORK)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .height(70.0)
                         .title("Upload")
                         .unit("KB/s")
@@ -2961,6 +3043,7 @@ impl IronMonitorApp {
     }
 
     fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         ScrollArea::vertical().show(ui, |ui| {
             let cpu_title = super::widgets::domain_section_title("cpu", "Overview");
             ui.add(SectionHeader::new(&cpu_title).icon("🔲"));
@@ -2991,7 +3074,7 @@ impl IronMonitorApp {
                 // CPU History
                 ui.add(
                     SparklineChart::new(self.cpu_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::CPU)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
                         .height(120.0)
                         .title("CPU History")
                         .unit("%")
@@ -3016,7 +3099,10 @@ impl IronMonitorApp {
                                 let core_usage = hist.back().copied().unwrap_or(0.0);
                                 columns[col].add(
                                     SparklineChart::new(hist.iter().cloned().collect())
-                                        .color(theme::cpu_color(core_usage))
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            theme::cpu_color(core_usage),
+                                        ))
                                         .height(60.0)
                                         .title(format!("Core {}", i))
                                         .unit("%")
@@ -3038,62 +3124,78 @@ impl IronMonitorApp {
                     .num_columns(2)
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Cores:").color(CyberColors::TEXT_SECONDARY));
                         ui.label(
-                            RichText::new(format!("{}", cores.len())).color(DeviceTitleColors::CPU),
+                            RichText::new("Cores:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{}", cores.len()))
+                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
                         );
                         ui.end_row();
 
-                        ui.label(RichText::new("Online:").color(CyberColors::TEXT_SECONDARY));
+                        ui.label(
+                            RichText::new("Online:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                        );
                         ui.label(
                             RichText::new(format!("{}", cpu.online_count()))
-                                .color(DeviceTitleColors::CPU),
+                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
                         );
                         ui.end_row();
 
                         if let Some(core) = cores.first() {
                             if let Some(ref freq) = core.frequency {
-                                ui.label(
-                                    RichText::new("Frequency:").color(CyberColors::TEXT_SECONDARY),
-                                );
+                                ui.label(RichText::new("Frequency:").color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 ui.label(
                                     RichText::new(match freq.current {
                                         Some(mhz) => format!("{mhz} MHz"),
                                         None => "not read".to_string(),
                                     })
-                                    .color(DeviceTitleColors::CPU),
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
                                 );
                                 ui.end_row();
                             }
 
                             if !core.model.is_empty() {
+                                ui.label(RichText::new("Model:").color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 ui.label(
-                                    RichText::new("Model:").color(CyberColors::TEXT_SECONDARY),
+                                    RichText::new(&core.model)
+                                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
                                 );
-                                ui.label(RichText::new(&core.model).color(DeviceTitleColors::CPU));
                                 ui.end_row();
                             }
                         }
                     });
             } else {
-                ui.label(RichText::new("Unable to read CPU statistics").color(CyberColors::ERROR));
+                ui.label(
+                    RichText::new("Unable to read CPU statistics")
+                        .color(theme::color(&palette_ctx, CyberColors::ERROR)),
+                );
             }
         });
     }
 
     fn draw_accelerators_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         if self.gpu_static_info.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
                 ui.label(RichText::new("⚡").size(48.0));
                 ui.label(
                     RichText::new("No Accelerators Detected")
-                        .color(CyberColors::TEXT_SECONDARY)
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                         .size(24.0),
                 );
                 ui.label(
                     RichText::new("No GPUs, NPUs, FPGAs, or other accelerators found.\nInstall drivers or check hardware connection.")
-                        .color(CyberColors::TEXT_MUTED),
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                 );
             });
             return;
@@ -3127,12 +3229,14 @@ impl IronMonitorApp {
                 .zip(self.gpu_dynamic_info.iter())
                 .enumerate()
             {
-                let accel_color = DeviceTitleColors::ACCEL;
+                let accel_color = theme::color(&palette_ctx, DeviceTitleColors::ACCEL);
 
                 // Device pane frame - compact
                 let frame = egui::Frame::NONE
-                    .fill(CyberColors::SURFACE)
-                    .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        theme::color(&palette_ctx, CyberColors::BORDER),
+                    ))
                     .corner_radius(4)
                     .inner_margin(8.0);
 
@@ -3141,10 +3245,14 @@ impl IronMonitorApp {
 
                     // Header row: Icon + Name + Live Metrics
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("⚡").color(accel_color).size(20.0));
+                        ui.label(
+                            RichText::new("⚡")
+                                .color(theme::color(&palette_ctx, accel_color))
+                                .size(20.0),
+                        );
                         ui.label(
                             RichText::new(&static_info.name)
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .strong()
                                 .size(18.0),
                         );
@@ -3181,11 +3289,14 @@ impl IronMonitorApp {
                         if let Some(power) = dynamic_info.power.draw {
                             metrics.push((
                                 format!("{:.0}W", power as f64 / 1000.0),
-                                CyberColors::NEON_ORANGE,
+                                theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
                             ));
                         }
                         if let Some(clock) = dynamic_info.clocks.graphics {
-                            metrics.push((format!("{} MHz", clock), CyberColors::NEON_BLUE));
+                            metrics.push((
+                                format!("{} MHz", clock),
+                                theme::color(&palette_ctx, CyberColors::NEON_BLUE),
+                            ));
                         }
 
                         if !metrics.is_empty() {
@@ -3202,7 +3313,11 @@ impl IronMonitorApp {
                                 + ui.spacing().item_spacing.x * (metrics.len() - 1) as f32;
                             ui.add_space((ui.available_width() - width).max(0.0));
                             for (text, colour) in metrics {
-                                ui.label(RichText::new(text).color(colour).size(METRIC_SIZE));
+                                ui.label(
+                                    RichText::new(text)
+                                        .color(theme::color(&palette_ctx, colour))
+                                        .size(METRIC_SIZE),
+                                );
                             }
                         }
                     });
@@ -3221,7 +3336,7 @@ impl IronMonitorApp {
                                     Some(u) => format!("Utilization {u}%"),
                                     None => "Utilization -".to_string(),
                                 })
-                                .color(CyberColors::TEXT_SECONDARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .size(13.0),
                             );
                             // No reading, no bar: an empty bar and a bar at
@@ -3229,7 +3344,7 @@ impl IronMonitorApp {
                             if let Some(util) = dynamic_info.utilization {
                                 ui.add(
                                     CyberProgressBar::new(util as f32 / 100.0)
-                                        .color(accel_color)
+                                        .color(theme::color(&palette_ctx, accel_color))
                                         .height(bar_height),
                                 );
                             }
@@ -3246,7 +3361,7 @@ impl IronMonitorApp {
                                     mb(dynamic_info.memory.used),
                                     mb(dynamic_info.memory.total)
                                 ))
-                                .color(CyberColors::TEXT_SECONDARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .size(13.0),
                             );
                             // The bar is drawn only when there is a fraction to
@@ -3255,7 +3370,10 @@ impl IronMonitorApp {
                             if let Some(pct) = dynamic_info.memory.utilization {
                                 ui.add(
                                     CyberProgressBar::new(pct as f32 / 100.0)
-                                        .color(DeviceTitleColors::MEMORY)
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            DeviceTitleColors::MEMORY,
+                                        ))
                                         .height(bar_height),
                                 );
                             }
@@ -3264,13 +3382,13 @@ impl IronMonitorApp {
                             ui.add_space(4.0);
                             ui.label(
                                 RichText::new(format!("{:?}", static_info.vendor))
-                                    .color(accel_color)
+                                    .color(theme::color(&palette_ctx, accel_color))
                                     .size(12.0),
                             );
                             if let Some(ref driver) = static_info.driver_version {
                                 ui.label(
                                     RichText::new(format!("Driver: {}", driver))
-                                        .color(CyberColors::TEXT_MUTED)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                         .size(12.0),
                                 );
                             }
@@ -3287,7 +3405,7 @@ impl IronMonitorApp {
                                     SparklineChart::new(
                                         self.gpu_history[i].iter().cloned().collect(),
                                     )
-                                    .color(accel_color)
+                                    .color(theme::color(&palette_ctx, accel_color))
                                     .height(chart_height)
                                     .title("Utilization")
                                     .unit("%")
@@ -3303,7 +3421,7 @@ impl IronMonitorApp {
                                     SparklineChart::new(
                                         self.gpu_temp_history[i].iter().cloned().collect(),
                                     )
-                                    .color(CyberColors::NEON_YELLOW)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
                                     .height(chart_height)
                                     .title("Temperature")
                                     .unit("°C")
@@ -3324,6 +3442,7 @@ impl IronMonitorApp {
     }
 
     fn draw_memory_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref mem) = self.memory_stats {
                 let usage = mem.ram_usage_percent();
@@ -3384,22 +3503,22 @@ impl IronMonitorApp {
                     ui.add(
                         MetricCard::new("Total", format!("{:.0}", total_mb))
                             .unit("MB")
-                            .color(DeviceTitleColors::MEMORY),
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
                     );
                     ui.add(
                         MetricCard::new("Used", format!("{:.0}", used_mb))
                             .unit("MB")
-                            .color(threshold_color(usage)),
+                            .color(theme::color(&palette_ctx, threshold_color(usage))),
                     );
                     ui.add(
                         MetricCard::new("Free", card(free_mb))
                             .unit("MB")
-                            .color(CyberColors::THRESHOLD_OK),
+                            .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
                     );
                     ui.add(
                         MetricCard::new("Shared", card(shared_mb))
                             .unit("MB")
-                            .color(CyberColors::NEON_PURPLE),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
                     );
                 });
 
@@ -3409,29 +3528,32 @@ impl IronMonitorApp {
                     ui.add(
                         MetricCard::new("Buffers", card(buffers_mb))
                             .unit("MB")
-                            .color(CyberColors::NEON_ORANGE),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                     );
                     ui.add(
                         MetricCard::new("Cached", card(cached_mb))
                             .unit("MB")
-                            .color(CyberColors::NEON_YELLOW),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                     );
                     ui.add(
                         MetricCard::new("Available", format!("{:.0}", available_mb))
                             .unit("MB")
-                            .color(CyberColors::THRESHOLD_OK),
+                            .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
                     );
                     ui.add(
                         MetricCard::new("Usage", format!("{:.1}", usage))
                             .unit("%")
-                            .color(threshold_color(usage)),
+                            .color(theme::color(&palette_ctx, threshold_color(usage))),
                     );
                 });
 
                 // Visual breakdown bar (stacked)
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Memory Map: ").color(CyberColors::TEXT_PRIMARY));
+                    ui.label(
+                        RichText::new("Memory Map: ")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                    );
                     // Show proportional bar
                     if total_mb > 0.0 {
                         // The bar segments an unreported quantity at zero
@@ -3448,22 +3570,22 @@ impl IronMonitorApp {
 
                         ui.label(
                             RichText::new(format!("█{:.0}%", used_pct * 100.0))
-                                .color(CyberColors::MAGENTA)
+                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
                                 .small(),
                         );
                         ui.label(
                             RichText::new(format!("█{:.0}%", buffers_pct * 100.0))
-                                .color(CyberColors::NEON_ORANGE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                 .small(),
                         );
                         ui.label(
                             RichText::new(format!("█{:.0}%", cached_pct * 100.0))
-                                .color(CyberColors::NEON_YELLOW)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
                                 .small(),
                         );
                         ui.label(
                             RichText::new(format!("█{:.0}%", free_pct * 100.0))
-                                .color(CyberColors::THRESHOLD_OK)
+                                .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK))
                                 .small(),
                         );
 
@@ -3475,10 +3597,14 @@ impl IronMonitorApp {
                         let galley = ui.painter().layout_no_wrap(
                             LEGEND.to_owned(),
                             egui::TextStyle::Small.resolve(ui.style()),
-                            CyberColors::TEXT_MUTED,
+                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                         );
                         ui.add_space((ui.available_width() - galley.size().x).max(0.0));
-                        ui.label(RichText::new(LEGEND).color(CyberColors::TEXT_MUTED).small());
+                        ui.label(
+                            RichText::new(LEGEND)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .small(),
+                        );
                     }
                 });
 
@@ -3487,7 +3613,7 @@ impl IronMonitorApp {
                 // Memory history
                 ui.add(
                     SparklineChart::new(self.memory_history.iter().cloned().collect())
-                        .color(DeviceTitleColors::MEMORY)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
                         .height(150.0)
                         .title("Memory Usage History")
                         .unit("%")
@@ -3520,7 +3646,7 @@ impl IronMonitorApp {
                 if swap_total_mb.is_some_and(|t| t > 0.0) {
                     ui.add(
                         CyberProgressBar::new(swap_usage.unwrap_or(0.0) / 100.0)
-                            .color(CyberColors::NEON_PURPLE)
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
                             .label(format!(
                                 "Swap: {} MB / {} MB",
                                 mb(swap_used_mb),
@@ -3534,45 +3660,50 @@ impl IronMonitorApp {
                         ui.add(
                             MetricCard::new("Swap Total", mb(swap_total_mb))
                                 .unit("MB")
-                                .color(DeviceTitleColors::MEMORY),
+                                .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
                         );
                         ui.add(
                             MetricCard::new("Swap Used", mb(swap_used_mb))
                                 .unit("MB")
-                                .color(CyberColors::MAGENTA),
+                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
                         );
                         ui.add(
                             MetricCard::new("Swap Free", mb(swap_free_mb))
                                 .unit("MB")
-                                .color(CyberColors::NEON_GREEN),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         if swap_cached_mb.is_some_and(|c| c > 0.0) {
                             ui.add(
                                 MetricCard::new("Swap Cached", mb(swap_cached_mb))
                                     .unit("MB")
-                                    .color(CyberColors::NEON_YELLOW),
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
                         }
                     });
                 } else if swap_total_mb.is_some() {
-                    ui.label(RichText::new("No swap configured").color(CyberColors::TEXT_MUTED));
+                    ui.label(
+                        RichText::new("No swap configured")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
                 } else {
                     // Not the same sentence. One is a fact about the machine,
                     // the other about this reading of it.
                     ui.label(
                         RichText::new("Swap not reported by this platform")
-                            .color(CyberColors::TEXT_MUTED),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 }
             } else {
                 ui.label(
-                    RichText::new("Unable to read memory statistics").color(CyberColors::ERROR),
+                    RichText::new("Unable to read memory statistics")
+                        .color(theme::color(&palette_ctx, CyberColors::ERROR)),
                 );
             }
         });
     }
 
     fn draw_processes_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         ui.add(SectionHeader::new("Running Processes (htop-style)").icon("📋"));
 
         // Task summary (htop-style: "Tasks: 150, 43 thr; 1 running")
@@ -3592,32 +3723,46 @@ impl IronMonitorApp {
             .count();
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Tasks:").color(CyberColors::TEXT_PRIMARY));
             ui.label(
-                RichText::new(format!("{}", self.process_list.len())).color(CyberColors::CYAN),
+                RichText::new("Tasks:")
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+            );
+            ui.label(
+                RichText::new(format!("{}", self.process_list.len()))
+                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
             );
             ui.separator();
-            ui.label(RichText::new(format!("{} running", running)).color(CyberColors::NEON_GREEN));
             ui.label(
-                RichText::new(format!("{} sleeping", sleeping)).color(CyberColors::TEXT_MUTED),
+                RichText::new(format!("{} running", running))
+                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+            );
+            ui.label(
+                RichText::new(format!("{} sleeping", sleeping))
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
             );
             if disk_wait > 0 {
                 ui.label(
-                    RichText::new(format!("{} D-wait", disk_wait)).color(CyberColors::NEON_ORANGE),
+                    RichText::new(format!("{} D-wait", disk_wait))
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                 );
             }
             if zombie > 0 {
-                ui.label(RichText::new(format!("{} zombie", zombie)).color(CyberColors::NEON_RED));
+                ui.label(
+                    RichText::new(format!("{} zombie", zombie))
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
+                );
             }
             if stopped > 0 {
                 ui.label(
-                    RichText::new(format!("{} stopped", stopped)).color(CyberColors::NEON_PURPLE),
+                    RichText::new(format!("{} stopped", stopped))
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
                 );
             }
             ui.separator();
             if gpu_procs > 0 {
                 ui.label(
-                    RichText::new(format!("🎮 {} GPU", gpu_procs)).color(CyberColors::NEON_ORANGE),
+                    RichText::new(format!("🎮 {} GPU", gpu_procs))
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                 );
             }
         });
@@ -3626,7 +3771,9 @@ impl IronMonitorApp {
 
         // Filter bar
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🔍").color(CyberColors::TEXT_SECONDARY));
+            ui.label(
+                RichText::new("🔍").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.process_filter)
                     .hint_text("Filter processes...")
@@ -3636,7 +3783,10 @@ impl IronMonitorApp {
             ui.separator();
 
             // Sort options
-            ui.label(RichText::new("Sort by:").color(CyberColors::TEXT_SECONDARY));
+            ui.label(
+                RichText::new("Sort by:")
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+            );
             if ui
                 .selectable_label(self.process_sort_column == ProcessSortColumn::Name, "Name")
                 .clicked()
@@ -3678,7 +3828,7 @@ impl IronMonitorApp {
 
             ui.label(
                 RichText::new(format!("Total: {}", self.process_list.len()))
-                    .color(CyberColors::TEXT_MUTED),
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
             );
         });
 
@@ -3745,19 +3895,47 @@ impl IronMonitorApp {
             // Table header (htop-style)
             ui.horizontal(|ui| {
                 ui.set_min_height(24.0);
-                ui.label(RichText::new("PID").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("PID")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
                 ui.add_space(40.0);
-                ui.label(RichText::new("ST").color(CyberColors::CYAN).strong()); // State
+                ui.label(
+                    RichText::new("ST")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                ); // State
                 ui.add_space(8.0);
-                ui.label(RichText::new("PRI").color(CyberColors::CYAN).strong()); // Priority
+                ui.label(
+                    RichText::new("PRI")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                ); // Priority
                 ui.add_space(8.0);
-                ui.label(RichText::new("Name").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("Name")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
                 ui.add_space(160.0);
-                ui.label(RichText::new("CPU %").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("CPU %")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
                 ui.add_space(30.0);
-                ui.label(RichText::new("Memory").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("Memory")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
                 ui.add_space(40.0);
-                ui.label(RichText::new("GPU Mem").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("GPU Mem")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
             });
             ui.separator();
 
@@ -3771,26 +3949,26 @@ impl IronMonitorApp {
 
                 // State color coding like htop
                 let state_color = match process.state {
-                    'R' => CyberColors::NEON_GREEN,        // Running
-                    'S' | 'I' => CyberColors::TEXT_MUTED,  // Sleeping/Idle
-                    'D' => CyberColors::NEON_ORANGE,       // Disk wait (uninterruptible)
-                    'Z' => CyberColors::NEON_RED,          // Zombie
-                    'T' | 't' => CyberColors::NEON_PURPLE, // Stopped/Traced
-                    _ => CyberColors::TEXT_SECONDARY,
+                    'R' => theme::color(&palette_ctx, CyberColors::NEON_GREEN), // Running
+                    'S' | 'I' => theme::color(&palette_ctx, CyberColors::TEXT_MUTED), // Sleeping/Idle
+                    'D' => theme::color(&palette_ctx, CyberColors::NEON_ORANGE), // Disk wait (uninterruptible)
+                    'Z' => theme::color(&palette_ctx, CyberColors::NEON_RED),    // Zombie
+                    'T' | 't' => theme::color(&palette_ctx, CyberColors::NEON_PURPLE), // Stopped/Traced
+                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                 };
 
                 ui.horizontal(|ui| {
                     ui.set_min_height(20.0);
                     ui.label(
                         RichText::new(format!("{:>6}", process.pid))
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .monospace(),
                     );
                     ui.add_space(20.0);
                     // State column
                     ui.label(
                         RichText::new(format!("{}", process.state))
-                            .color(state_color)
+                            .color(theme::color(&palette_ctx, state_color))
                             .monospace(),
                     );
                     ui.add_space(8.0);
@@ -3801,7 +3979,7 @@ impl IronMonitorApp {
                         .unwrap_or_else(|| "  -".to_string());
                     ui.label(
                         RichText::new(pri_str)
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .monospace(),
                     );
                     ui.add_space(8.0);
@@ -3809,20 +3987,21 @@ impl IronMonitorApp {
                     ui.add_sized(
                         Vec2::new(200.0, 20.0),
                         egui::Label::new(
-                            RichText::new(&process.name).color(CyberColors::TEXT_PRIMARY),
+                            RichText::new(&process.name)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         ),
                     );
                     // CPU
                     ui.label(
                         RichText::new(format!("{:>5.1}%", process.cpu_percent))
-                            .color(cpu_color)
+                            .color(theme::color(&palette_ctx, cpu_color))
                             .monospace(),
                     );
                     ui.add_space(10.0);
                     // Memory
                     ui.label(
                         RichText::new(format!("{:>8.1} MB", mem_mb))
-                            .color(CyberColors::MAGENTA)
+                            .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
                             .monospace(),
                     );
                     ui.add_space(20.0);
@@ -3830,13 +4009,13 @@ impl IronMonitorApp {
                     if let Some(mb) = gpu_mem_mb.filter(|m| *m > 0.1) {
                         ui.label(
                             RichText::new(format!("{mb:>6.0} MB"))
-                                .color(CyberColors::NEON_ORANGE)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                 .monospace(),
                         );
                     } else {
                         ui.label(
                             RichText::new("     -   ")
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .monospace(),
                         );
                     }
@@ -3846,6 +4025,7 @@ impl IronMonitorApp {
     }
 
     fn draw_network_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         // Clone the rates to avoid borrow conflict
         let rates = self.network_rates.clone();
 
@@ -3860,15 +4040,18 @@ impl IronMonitorApp {
 
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                ui.label(RichText::new("Total Bandwidth:").color(CyberColors::TEXT_MUTED));
+                ui.label(
+                    RichText::new("Total Bandwidth:")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                );
                 ui.label(
                     RichText::new(format!("↓ {}/s", format_bytes(total_rx_rate)))
-                        .color(DeviceTitleColors::NETWORK)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .strong(),
                 );
                 ui.label(
                     RichText::new(format!("↑ {}/s", format_bytes(total_tx_rate)))
-                        .color(DeviceTitleColors::NETWORK)
+                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .strong(),
                 );
             });
@@ -3877,7 +4060,7 @@ impl IronMonitorApp {
             // Network charts - stacked vertically, left-aligned
             ui.add(
                 SparklineChart::new(self.network_rx_history.iter().cloned().collect())
-                    .color(DeviceTitleColors::NETWORK)
+                    .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                     .height(80.0)
                     .title("Download (Total MB)")
                     .unit("MB")
@@ -3889,7 +4072,7 @@ impl IronMonitorApp {
 
             ui.add(
                 SparklineChart::new(self.network_tx_history.iter().cloned().collect())
-                    .color(DeviceTitleColors::NETWORK)
+                    .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                     .height(80.0)
                     .title("Upload (Total MB)")
                     .unit("MB")
@@ -3907,11 +4090,11 @@ impl IronMonitorApp {
                             || iface.name.contains("en")
                             || iface.name.contains("Ethernet")
                         {
-                            CyberColors::NEON_BLUE
+                            theme::color(&palette_ctx, CyberColors::NEON_BLUE)
                         } else if iface.name.contains("wl") || iface.name.contains("Wi") {
-                            CyberColors::NEON_PURPLE
+                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
                         } else {
-                            CyberColors::CYAN
+                            theme::color(&palette_ctx, CyberColors::CYAN)
                         };
 
                         // Get bandwidth rates for this interface
@@ -3928,23 +4111,29 @@ impl IronMonitorApp {
                         // Bandwidth rate row
                         ui.horizontal(|ui| {
                             ui.add_space(20.0);
-                            ui.label(RichText::new("Rate:").color(CyberColors::TEXT_MUTED));
+                            ui.label(
+                                RichText::new("Rate:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
                             ui.label(
                                 RichText::new(format!("↓ {}", fmt(rx_rate)))
-                                    .color(CyberColors::NEON_GREEN)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                                     .monospace(),
                             );
                             ui.label(
                                 RichText::new(format!("↑ {}", fmt(tx_rate)))
-                                    .color(CyberColors::NEON_ORANGE)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                     .monospace(),
                             );
                             if let Some(speed) = iface.speed_mbps {
                                 ui.separator();
-                                ui.label(RichText::new("Link:").color(CyberColors::TEXT_MUTED));
+                                ui.label(
+                                    RichText::new("Link:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
                                 ui.label(
                                     RichText::new(format!("{} Mbps", speed))
-                                        .color(iface_color)
+                                        .color(theme::color(&palette_ctx, iface_color))
                                         .monospace(),
                                 );
                             }
@@ -3957,7 +4146,7 @@ impl IronMonitorApp {
                                     format!("{:.1}", iface.rx_bytes as f64 / 1024.0 / 1024.0),
                                 )
                                 .unit("MB")
-                                .color(CyberColors::NEON_GREEN),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                             );
 
                             ui.add(
@@ -3966,36 +4155,51 @@ impl IronMonitorApp {
                                     format!("{:.1}", iface.tx_bytes as f64 / 1024.0 / 1024.0),
                                 )
                                 .unit("MB")
-                                .color(CyberColors::NEON_ORANGE),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                             );
 
                             ui.add(
-                                MetricCard::new("Packets In", iface.rx_packets).color(iface_color),
+                                MetricCard::new("Packets In", iface.rx_packets)
+                                    .color(theme::color(&palette_ctx, iface_color)),
                             );
 
                             ui.add(
-                                MetricCard::new("Packets Out", iface.tx_packets).color(iface_color),
+                                MetricCard::new("Packets Out", iface.tx_packets)
+                                    .color(theme::color(&palette_ctx, iface_color)),
                             );
                         });
 
                         // Status and IP addresses
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Status:").color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new("Status:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.label(
                                 RichText::new(if iface.is_up { "UP" } else { "DOWN" }).color(
-                                    if iface.is_up {
-                                        CyberColors::NEON_GREEN
-                                    } else {
-                                        CyberColors::ERROR
-                                    },
+                                    theme::color(
+                                        ui.ctx(),
+                                        if iface.is_up {
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                        } else {
+                                            theme::color(&palette_ctx, CyberColors::ERROR)
+                                        },
+                                    ),
                                 ),
                             );
 
                             if !iface.ipv4_addresses.is_empty() {
                                 ui.separator();
-                                ui.label(RichText::new("IPv4:").color(CyberColors::TEXT_SECONDARY));
+                                ui.label(RichText::new("IPv4:").color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 for ip in &iface.ipv4_addresses {
-                                    ui.label(RichText::new(ip).color(iface_color).monospace());
+                                    ui.label(
+                                        RichText::new(ip)
+                                            .color(theme::color(&palette_ctx, iface_color))
+                                            .monospace(),
+                                    );
                                 }
                             }
                         });
@@ -4005,13 +4209,15 @@ impl IronMonitorApp {
                 }
             } else {
                 ui.label(
-                    RichText::new("Unable to read network information").color(CyberColors::ERROR),
+                    RichText::new("Unable to read network information")
+                        .color(theme::color(&palette_ctx, CyberColors::ERROR)),
                 );
             }
         });
     }
 
     fn draw_disk_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         // Trigger lazy loading of disk data
         self.start_disk_loading();
 
@@ -4022,7 +4228,7 @@ impl IronMonitorApp {
                 ui.spinner();
                 ui.label(
                     RichText::new("Loading disk information...")
-                        .color(CyberColors::TEXT_SECONDARY)
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                         .size(18.0),
                 );
             });
@@ -4036,12 +4242,12 @@ impl IronMonitorApp {
                 ui.add_space(16.0);
                 ui.label(
                     RichText::new("No Disks Detected")
-                        .color(CyberColors::TEXT_SECONDARY)
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                         .size(24.0),
                 );
                 ui.label(
                     RichText::new("Unable to enumerate storage devices")
-                        .color(CyberColors::TEXT_MUTED),
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                 );
             });
             return;
@@ -4075,7 +4281,7 @@ impl IronMonitorApp {
                     egui::Align2::LEFT_CENTER,
                     "Device",
                     egui::FontId::proportional(13.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                 );
             }
 
@@ -4090,7 +4296,7 @@ impl IronMonitorApp {
                     egui::Align2::CENTER_CENTER,
                     "Interface",
                     egui::FontId::proportional(13.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                 );
             }
 
@@ -4105,7 +4311,7 @@ impl IronMonitorApp {
                     egui::Align2::CENTER_CENTER,
                     "Capacity",
                     egui::FontId::proportional(13.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                 );
             }
 
@@ -4118,7 +4324,7 @@ impl IronMonitorApp {
                     egui::Align2::CENTER_CENTER,
                     "📥 Read",
                     egui::FontId::proportional(13.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                 );
             }
 
@@ -4131,7 +4337,7 @@ impl IronMonitorApp {
                     egui::Align2::CENTER_CENTER,
                     "📤 Write",
                     egui::FontId::proportional(13.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                 );
             }
 
@@ -4146,12 +4352,12 @@ impl IronMonitorApp {
                     let galley = ui.painter().layout_no_wrap(
                         LABEL.to_owned(),
                         egui::FontId::proportional(13.0),
-                        CyberColors::TEXT_MUTED,
+                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                     );
                     ui.add_space((cols.health - galley.size().x - CARD_LEFT_OFFSET).max(0.0));
                     ui.label(
                         RichText::new(LABEL)
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .size(13.0),
                     );
                 },
@@ -4171,7 +4377,8 @@ impl IronMonitorApp {
     }
 
     fn draw_disk_row_cached(ui: &mut egui::Ui, _index: usize, cached: &CachedDiskData) {
-        let disk_color = DeviceTitleColors::DISK;
+        let palette_ctx = ui.ctx().clone();
+        let disk_color = theme::color(&palette_ctx, DeviceTitleColors::DISK);
         let disk_name = cached.name.clone();
         let disk_type = cached.disk_type;
 
@@ -4240,7 +4447,6 @@ impl IronMonitorApp {
             .unwrap_or_else(|| "N/A".to_string());
 
         egui::Frame::NONE
-            .fill(CyberColors::SURFACE)
             .stroke(egui::Stroke::new(1.0_f32, disk_color.gamma_multiply(0.4)))
             .corner_radius(6)
             .inner_margin(12.0)
@@ -4268,7 +4474,7 @@ impl IronMonitorApp {
                             egui::Align2::LEFT_CENTER,
                             type_icon,
                             egui::FontId::proportional(28.0),
-                            CyberColors::TEXT_PRIMARY,
+                            theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
                         );
 
                         // Draw model name
@@ -4288,7 +4494,7 @@ impl IronMonitorApp {
                             egui::Align2::LEFT_CENTER,
                             &disk_name,
                             egui::FontId::monospace(13.0),
-                            CyberColors::TEXT_MUTED,
+                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                         );
                     }
 
@@ -4303,7 +4509,7 @@ impl IronMonitorApp {
                             egui::Align2::CENTER_CENTER,
                             &interface,
                             egui::FontId::proportional(16.0),
-                            CyberColors::NEON_PURPLE,
+                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
                         );
                     }
 
@@ -4318,7 +4524,7 @@ impl IronMonitorApp {
                             egui::Align2::CENTER_CENTER,
                             &capacity,
                             egui::FontId::proportional(18.0),
-                            CyberColors::CYAN,
+                            theme::color(&palette_ctx, CyberColors::CYAN),
                         );
                     }
 
@@ -4333,7 +4539,7 @@ impl IronMonitorApp {
                             egui::Align2::CENTER_CENTER,
                             &read_bytes,
                             egui::FontId::proportional(16.0),
-                            CyberColors::NEON_GREEN,
+                            theme::color(&palette_ctx, CyberColors::NEON_GREEN),
                         );
                     }
 
@@ -4348,7 +4554,7 @@ impl IronMonitorApp {
                             egui::Align2::CENTER_CENTER,
                             &write_bytes,
                             egui::FontId::proportional(16.0),
-                            CyberColors::NEON_ORANGE,
+                            theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
                         );
                     }
 
@@ -4365,19 +4571,23 @@ impl IronMonitorApp {
                         |ui| {
                             if let Some(h) = &health {
                                 let (text, color) = match h {
-                                    crate::disk::DiskHealth::Healthy => {
-                                        ("✓ Healthy", CyberColors::NEON_GREEN)
-                                    }
-                                    crate::disk::DiskHealth::Warning => {
-                                        ("⚠ Warning", CyberColors::NEON_ORANGE)
-                                    }
+                                    crate::disk::DiskHealth::Healthy => (
+                                        "✓ Healthy",
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                    ),
+                                    crate::disk::DiskHealth::Warning => (
+                                        "⚠ Warning",
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                    ),
                                     crate::disk::DiskHealth::Critical
-                                    | crate::disk::DiskHealth::Failed => {
-                                        ("✗ Critical", CyberColors::NEON_RED)
-                                    }
-                                    crate::disk::DiskHealth::Unknown => {
-                                        ("Unknown", CyberColors::TEXT_MUTED)
-                                    }
+                                    | crate::disk::DiskHealth::Failed => (
+                                        "✗ Critical",
+                                        theme::color(&palette_ctx, CyberColors::NEON_RED),
+                                    ),
+                                    crate::disk::DiskHealth::Unknown => (
+                                        "Unknown",
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                    ),
                                 };
                                 // Right-aligned by measuring and padding, not by
                                 // a right-to-left layout.
@@ -4409,7 +4619,11 @@ impl IronMonitorApp {
                                     .corner_radius(4)
                                     .inner_margin(BADGE_MARGIN)
                                     .show(ui, |ui| {
-                                        ui.label(RichText::new(text).color(color).size(14.0));
+                                        ui.label(
+                                            RichText::new(text)
+                                                .color(theme::color(&palette_ctx, color))
+                                                .size(14.0),
+                                        );
                                     });
                             }
                         },
@@ -4430,10 +4644,14 @@ impl IronMonitorApp {
                         // there is nothing here to judge.
                         let pct = fs.usage_percent();
                         let color = match pct {
-                            Some(p) if p > 90.0 => CyberColors::NEON_RED,
-                            Some(p) if p > 75.0 => CyberColors::NEON_ORANGE,
-                            Some(_) => CyberColors::NEON_GREEN,
-                            None => CyberColors::TEXT_SECONDARY,
+                            Some(p) if p > 90.0 => {
+                                theme::color(&palette_ctx, CyberColors::NEON_RED)
+                            }
+                            Some(p) if p > 75.0 => {
+                                theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
+                            }
+                            Some(_) => theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                            None => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                         };
                         let bar_fraction = pct.unwrap_or(0.0);
                         let pct_label = match pct {
@@ -4449,7 +4667,10 @@ impl IronMonitorApp {
                                 let mount = fs.mount_point.to_string_lossy();
                                 ui.label(
                                     RichText::new(mount.as_ref())
-                                        .color(CyberColors::TEXT_PRIMARY)
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_PRIMARY,
+                                        ))
                                         .size(15.0)
                                         .monospace(),
                                 );
@@ -4459,7 +4680,7 @@ impl IronMonitorApp {
                             ui.allocate_ui(egui::vec2(60.0, 22.0), |ui| {
                                 ui.label(
                                     RichText::new(&fs.fs_type)
-                                        .color(CyberColors::TEXT_MUTED)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                         .size(13.0),
                                 );
                             });
@@ -4472,8 +4693,11 @@ impl IronMonitorApp {
                                 egui::Sense::hover(),
                             );
                             if ui.is_rect_visible(rect) {
-                                ui.painter()
-                                    .rect_filled(rect, 3.0, CyberColors::BACKGROUND_DARK);
+                                ui.painter().rect_filled(
+                                    rect,
+                                    3.0,
+                                    theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK),
+                                );
                                 let w = rect.width() * bar_fraction / 100.0;
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
@@ -4488,7 +4712,7 @@ impl IronMonitorApp {
                                     egui::Align2::CENTER_CENTER,
                                     pct_label.clone(),
                                     egui::FontId::proportional(12.0),
-                                    CyberColors::TEXT_PRIMARY,
+                                    theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
                                 );
                             }
 
@@ -4500,7 +4724,7 @@ impl IronMonitorApp {
                                         format_bytes_opt(fs.used_size),
                                         format_bytes_opt(fs.total_size)
                                     ))
-                                    .color(CyberColors::TEXT_SECONDARY)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                     .size(14.0),
                                 );
                             });
@@ -4510,7 +4734,7 @@ impl IronMonitorApp {
                     if filesystems.len() > 3 {
                         ui.label(
                             RichText::new(format!("+{} more partitions", filesystems.len() - 3))
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .size(12.0),
                         );
                     }
@@ -4519,12 +4743,15 @@ impl IronMonitorApp {
     }
 
     fn draw_connections_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         let t = super::widgets::domain_section_title("network", "Connections (netstat)");
         ui.add(SectionHeader::new(&t).icon("📡"));
 
         // Filter bar
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🔍").color(CyberColors::TEXT_SECONDARY));
+            ui.label(
+                RichText::new("🔍").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.connection_filter)
                     .hint_text("Filter by address or process...")
@@ -4534,7 +4761,10 @@ impl IronMonitorApp {
             ui.separator();
 
             // Protocol filter
-            ui.label(RichText::new("Protocol:").color(CyberColors::TEXT_SECONDARY));
+            ui.label(
+                RichText::new("Protocol:")
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+            );
             if ui
                 .selectable_label(self.connection_protocol_filter.is_none(), "All")
                 .clicked()
@@ -4563,7 +4793,10 @@ impl IronMonitorApp {
             ui.separator();
 
             // State filter
-            ui.label(RichText::new("State:").color(CyberColors::TEXT_SECONDARY));
+            ui.label(
+                RichText::new("State:")
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+            );
             if ui
                 .selectable_label(self.connection_state_filter.is_none(), "All")
                 .clicked()
@@ -4591,7 +4824,7 @@ impl IronMonitorApp {
 
             ui.label(
                 RichText::new(format!("Total: {}", self.connections.len()))
-                    .color(CyberColors::TEXT_MUTED),
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
             );
         });
 
@@ -4636,13 +4869,17 @@ impl IronMonitorApp {
                 ui.set_min_height(24.0);
                 ui.add_sized(
                     Vec2::new(60.0, 20.0),
-                    egui::Label::new(RichText::new("Proto").color(CyberColors::CYAN).strong()),
+                    egui::Label::new(
+                        RichText::new("Proto")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .strong(),
+                    ),
                 );
                 ui.add_sized(
                     Vec2::new(200.0, 20.0),
                     egui::Label::new(
                         RichText::new("Local Address")
-                            .color(CyberColors::CYAN)
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
                             .strong(),
                     ),
                 );
@@ -4650,37 +4887,57 @@ impl IronMonitorApp {
                     Vec2::new(200.0, 20.0),
                     egui::Label::new(
                         RichText::new("Remote Address")
-                            .color(CyberColors::CYAN)
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
                             .strong(),
                     ),
                 );
                 ui.add_sized(
                     Vec2::new(100.0, 20.0),
-                    egui::Label::new(RichText::new("State").color(CyberColors::CYAN).strong()),
+                    egui::Label::new(
+                        RichText::new("State")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .strong(),
+                    ),
                 );
                 ui.add_sized(
                     Vec2::new(60.0, 20.0),
-                    egui::Label::new(RichText::new("PID").color(CyberColors::CYAN).strong()),
+                    egui::Label::new(
+                        RichText::new("PID")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .strong(),
+                    ),
                 );
-                ui.label(RichText::new("Process").color(CyberColors::CYAN).strong());
+                ui.label(
+                    RichText::new("Process")
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .strong(),
+                );
             });
             ui.separator();
 
             // Connection rows
             for conn in connections.iter().take(200) {
                 let proto_color = match conn.protocol {
-                    Protocol::Tcp | Protocol::Tcp6 => CyberColors::NEON_BLUE,
-                    Protocol::Udp | Protocol::Udp6 => CyberColors::NEON_PURPLE,
+                    Protocol::Tcp | Protocol::Tcp6 => {
+                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                    }
+                    Protocol::Udp | Protocol::Udp6 => {
+                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                    }
                 };
 
                 let state_color = match conn.state {
-                    ConnectionState::Established => CyberColors::NEON_GREEN,
-                    ConnectionState::Listen => CyberColors::CYAN,
-                    ConnectionState::TimeWait | ConnectionState::CloseWait => {
-                        CyberColors::NEON_YELLOW
+                    ConnectionState::Established => {
+                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                     }
-                    ConnectionState::Stateless => CyberColors::TEXT_MUTED,
-                    _ => CyberColors::NEON_ORANGE,
+                    ConnectionState::Listen => theme::color(&palette_ctx, CyberColors::CYAN),
+                    ConnectionState::TimeWait | ConnectionState::CloseWait => {
+                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
+                    }
+                    ConnectionState::Stateless => {
+                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
+                    }
+                    _ => theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
                 };
 
                 ui.horizontal(|ui| {
@@ -4691,7 +4948,7 @@ impl IronMonitorApp {
                         Vec2::new(60.0, 18.0),
                         egui::Label::new(
                             RichText::new(format!("{}", conn.protocol))
-                                .color(proto_color)
+                                .color(theme::color(&palette_ctx, proto_color))
                                 .monospace(),
                         ),
                     );
@@ -4701,7 +4958,7 @@ impl IronMonitorApp {
                         Vec2::new(200.0, 18.0),
                         egui::Label::new(
                             RichText::new(&conn.local_address)
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .monospace(),
                         ),
                     );
@@ -4712,7 +4969,7 @@ impl IronMonitorApp {
                         Vec2::new(200.0, 18.0),
                         egui::Label::new(
                             RichText::new(remote)
-                                .color(CyberColors::TEXT_SECONDARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .monospace(),
                         ),
                     );
@@ -4722,7 +4979,7 @@ impl IronMonitorApp {
                         Vec2::new(100.0, 18.0),
                         egui::Label::new(
                             RichText::new(format!("{}", conn.state))
-                                .color(state_color)
+                                .color(theme::color(&palette_ctx, state_color))
                                 .monospace(),
                         ),
                     );
@@ -4736,14 +4993,17 @@ impl IronMonitorApp {
                         Vec2::new(60.0, 18.0),
                         egui::Label::new(
                             RichText::new(pid_str)
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .monospace(),
                         ),
                     );
 
                     // Process name
                     let proc_name = conn.process_name.as_deref().unwrap_or("-");
-                    ui.label(RichText::new(proc_name).color(CyberColors::MAGENTA));
+                    ui.label(
+                        RichText::new(proc_name)
+                            .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
+                    );
                 });
             }
 
@@ -4753,13 +5013,14 @@ impl IronMonitorApp {
                         "... and {} more connections",
                         connections.len() - 200
                     ))
-                    .color(CyberColors::TEXT_MUTED),
+                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                 );
             }
         });
     }
 
     fn draw_system_info_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         // Trigger lazy loading of system info data
         self.start_system_info_loading();
 
@@ -4773,7 +5034,7 @@ impl IronMonitorApp {
                     ui.spinner();
                     ui.label(
                         RichText::new("Loading detailed system information...")
-                            .color(CyberColors::TEXT_MUTED),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 });
                 ui.add_space(8.0);
@@ -4785,18 +5046,36 @@ impl IronMonitorApp {
                 .spacing([40.0, 8.0])
                 .show(ui, |ui| {
                     // Hostname
-                    ui.label(RichText::new("Hostname:").color(CyberColors::TEXT_MUTED));
-                    ui.label(RichText::new(&self.hostname).color(CyberColors::CYAN));
+                    ui.label(
+                        RichText::new("Hostname:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
+                    ui.label(
+                        RichText::new(&self.hostname)
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                    );
                     ui.end_row();
 
                     // OS from environment
-                    ui.label(RichText::new("Platform:").color(CyberColors::TEXT_MUTED));
-                    ui.label(RichText::new(std::env::consts::OS).color(CyberColors::NEON_GREEN));
+                    ui.label(
+                        RichText::new("Platform:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
+                    ui.label(
+                        RichText::new(std::env::consts::OS)
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                    );
                     ui.end_row();
 
                     // Architecture
-                    ui.label(RichText::new("Architecture:").color(CyberColors::TEXT_MUTED));
-                    ui.label(RichText::new(std::env::consts::ARCH).color(CyberColors::NEON_GREEN));
+                    ui.label(
+                        RichText::new("Architecture:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
+                    ui.label(
+                        RichText::new(std::env::consts::ARCH)
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                    );
                     ui.end_row();
 
                     // Uptime
@@ -4804,10 +5083,13 @@ impl IronMonitorApp {
                     let hours = uptime.as_secs() / 3600;
                     let mins = (uptime.as_secs() % 3600) / 60;
                     let secs = uptime.as_secs() % 60;
-                    ui.label(RichText::new("App Uptime:").color(CyberColors::TEXT_MUTED));
+                    ui.label(
+                        RichText::new("App Uptime:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
                     ui.label(
                         RichText::new(format!("{:02}:{:02}:{:02}", hours, mins, secs))
-                            .color(CyberColors::TEXT_PRIMARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                     );
                     ui.end_row();
                 });
@@ -4822,24 +5104,37 @@ impl IronMonitorApp {
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
                         // OS Information
-                        ui.label(RichText::new("Operating System:").color(CyberColors::TEXT_MUTED));
+                        ui.label(
+                            RichText::new("Operating System:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
                         ui.label(
                             RichText::new(format!("{} {}", info.os_name, info.os_version))
-                                .color(CyberColors::CYAN),
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.end_row();
 
                         if let Some(ref kernel) = info.kernel_version {
-                            ui.label(RichText::new("Kernel:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(kernel).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new("Kernel:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(kernel)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref hostname) = info.hostname {
                             ui.label(
-                                RichText::new("Computer Name:").color(CyberColors::TEXT_MUTED),
+                                RichText::new("Computer Name:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
-                            ui.label(RichText::new(hostname).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new(hostname)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.end_row();
                         }
                     });
@@ -4852,56 +5147,99 @@ impl IronMonitorApp {
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
                         if let Some(ref manufacturer) = info.manufacturer {
-                            ui.label(RichText::new("Manufacturer:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(manufacturer).color(CyberColors::NEON_PURPLE));
+                            ui.label(
+                                RichText::new("Manufacturer:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(manufacturer)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref product) = info.product_name {
-                            ui.label(RichText::new("Product:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(product).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new("Product:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(product)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref serial) = info.serial_number {
-                            ui.label(RichText::new("Serial:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(serial).color(CyberColors::TEXT_MUTED));
+                            ui.label(
+                                RichText::new("Serial:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(serial)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
                             ui.end_row();
                         }
 
                         // Motherboard
                         if let Some(ref vendor) = info.board_vendor {
-                            ui.label(RichText::new("Board Vendor:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(vendor).color(CyberColors::NEON_ORANGE));
+                            ui.label(
+                                RichText::new("Board Vendor:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(vendor)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref name) = info.board_name {
-                            ui.label(RichText::new("Board Model:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(name).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new("Board Model:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(name)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref version) = info.board_version {
                             ui.label(
-                                RichText::new("Board Version:").color(CyberColors::TEXT_MUTED),
+                                RichText::new("Board Version:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
-                            ui.label(RichText::new(version).color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new(version)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.end_row();
                         }
 
                         // CPU
                         if let Some(ref cpu_name) = info.cpu_name {
-                            ui.label(RichText::new("CPU:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(cpu_name).color(CyberColors::CYAN));
+                            ui.label(
+                                RichText::new("CPU:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(cpu_name)
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            );
                             ui.end_row();
                         }
 
                         if let (Some(cores), Some(threads)) = (info.cpu_cores, info.cpu_threads) {
-                            ui.label(RichText::new("CPU Config:").color(CyberColors::TEXT_MUTED));
+                            ui.label(
+                                RichText::new("CPU Config:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
                             ui.label(
                                 RichText::new(format!("{} Cores / {} Threads", cores, threads))
-                                    .color(CyberColors::TEXT_PRIMARY),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                             );
                             ui.end_row();
                         }
@@ -4917,39 +5255,69 @@ impl IronMonitorApp {
                     .show(ui, |ui| {
                         let bios = &info.bios;
 
-                        ui.label(RichText::new("Firmware Type:").color(CyberColors::TEXT_MUTED));
+                        ui.label(
+                            RichText::new("Firmware Type:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
                         ui.label(
                             RichText::new(format!("{:?}", bios.firmware_type))
-                                .color(CyberColors::NEON_GREEN),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         ui.end_row();
 
                         if let Some(ref vendor) = bios.vendor {
-                            ui.label(RichText::new("BIOS Vendor:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(vendor).color(CyberColors::NEON_PURPLE));
+                            ui.label(
+                                RichText::new("BIOS Vendor:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(vendor)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref version) = bios.version {
-                            ui.label(RichText::new("BIOS Version:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(version).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new("BIOS Version:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(version)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(ref date) = bios.release_date {
-                            ui.label(RichText::new("Release Date:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(date).color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new("Release Date:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(date)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.end_row();
                         }
 
                         if let Some(secure_boot) = bios.secure_boot {
-                            ui.label(RichText::new("Secure Boot:").color(CyberColors::TEXT_MUTED));
+                            ui.label(
+                                RichText::new("Secure Boot:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
                             let (text, color) = if secure_boot {
-                                ("Enabled", CyberColors::NEON_GREEN)
+                                (
+                                    "Enabled",
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                )
                             } else {
-                                ("Disabled", CyberColors::NEON_ORANGE)
+                                (
+                                    "Disabled",
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                )
                             };
-                            ui.label(RichText::new(text).color(color));
+                            ui.label(RichText::new(text).color(theme::color(&palette_ctx, color)));
                             ui.end_row();
                         }
                     });
@@ -4958,7 +5326,7 @@ impl IronMonitorApp {
                 ui.add_space(16.0);
                 ui.label(
                     RichText::new("⚠ Detailed system information not available (WMI query failed)")
-                        .color(CyberColors::NEON_ORANGE),
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                 );
             }
 
@@ -5012,13 +5380,13 @@ impl IronMonitorApp {
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new("No temperature sensors detected")
-                                .color(CyberColors::TEXT_MUTED),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                         ui.label(
                             RichText::new(
                                 "Windows WMI doesn't expose CPU temperatures on most systems.",
                             )
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .small(),
                         );
                     });
@@ -5030,16 +5398,17 @@ impl IronMonitorApp {
                     ui.label(RichText::new("💡").size(14.0));
                     ui.label(
                         RichText::new("For full sensor support, run ")
-                            .color(CyberColors::TEXT_SECONDARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                     );
                     ui.hyperlink_to(
-                        RichText::new("LibreHardwareMonitor").color(CyberColors::CYAN),
+                        RichText::new("LibreHardwareMonitor")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
                     );
                 });
                 ui.label(
                     RichText::new("IronMonitor will auto-detect LHM sensors when it's running.")
-                        .color(CyberColors::TEXT_MUTED)
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                         .small(),
                 );
             } else {
@@ -5049,15 +5418,21 @@ impl IronMonitorApp {
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
                         for (name, temp, source) in &all_temps {
-                            ui.label(RichText::new(name).color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new(name)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.label(
                                 RichText::new(format!("{:.1}°C", temp))
-                                    .color(theme::temperature_color(*temp as u32))
+                                    .color(theme::color(
+                                        ui.ctx(),
+                                        theme::temperature_color(*temp as u32),
+                                    ))
                                     .strong(),
                             );
                             ui.label(
                                 RichText::new(*source)
-                                    .color(CyberColors::TEXT_MUTED)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                     .small(),
                             );
                             ui.end_row();
@@ -5071,12 +5446,12 @@ impl IronMonitorApp {
                         ui.label(RichText::new("💡").size(14.0));
                         ui.label(
                             RichText::new("CPU temps: Install ")
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .small(),
                         );
                         ui.hyperlink_to(
                             RichText::new("LibreHardwareMonitor")
-                                .color(CyberColors::CYAN)
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                 .small(),
                             "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
                         );
@@ -5093,7 +5468,7 @@ impl IronMonitorApp {
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new("⚡ Voltages")
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .strong(),
                     );
                     egui::Grid::new(format!("volts_{}", sensor_device.name()))
@@ -5101,15 +5476,16 @@ impl IronMonitorApp {
                         .spacing([20.0, 4.0])
                         .show(ui, |ui| {
                             for volt in &voltages {
-                                ui.label(
-                                    RichText::new(&volt.label).color(CyberColors::TEXT_SECONDARY),
-                                );
+                                ui.label(RichText::new(&volt.label).color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 ui.label(
                                     RichText::new(match volt.voltage {
                                         Some(v) => format!("{v:.3}V"),
                                         None => "unavailable".to_string(),
                                     })
-                                    .color(CyberColors::NEON_YELLOW),
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                                 );
                                 ui.end_row();
                             }
@@ -5120,7 +5496,7 @@ impl IronMonitorApp {
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new("🌀 Fans")
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .strong(),
                     );
                     egui::Grid::new(format!("fans_{}", sensor_device.name()))
@@ -5128,15 +5504,28 @@ impl IronMonitorApp {
                         .spacing([20.0, 4.0])
                         .show(ui, |ui| {
                             for fan in &fans {
-                                ui.label(
-                                    RichText::new(&fan.label).color(CyberColors::TEXT_SECONDARY),
-                                );
+                                ui.label(RichText::new(&fan.label).color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 let (rpm_text, rpm_color) = match fan.rpm {
-                                    Some(0) => ("Stopped".to_string(), CyberColors::TEXT_MUTED),
-                                    Some(rpm) => (format!("{} RPM", rpm), CyberColors::NEON_GREEN),
-                                    None => ("N/A".to_string(), CyberColors::TEXT_MUTED),
+                                    Some(0) => (
+                                        "Stopped".to_string(),
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                    ),
+                                    Some(rpm) => (
+                                        format!("{} RPM", rpm),
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                    ),
+                                    None => (
+                                        "N/A".to_string(),
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                    ),
                                 };
-                                ui.label(RichText::new(rpm_text).color(rpm_color));
+                                ui.label(
+                                    RichText::new(rpm_text)
+                                        .color(theme::color(&palette_ctx, rpm_color)),
+                                );
                                 ui.end_row();
                             }
                         });
@@ -5154,21 +5543,44 @@ impl IronMonitorApp {
                     .striped(true)
                     .show(ui, |ui| {
                         // Header
-                        ui.label(RichText::new("Device").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Model").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Capacity").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Interface").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Type").color(CyberColors::CYAN).strong());
+                        ui.label(
+                            RichText::new("Device")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Model")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Capacity")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Interface")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Type")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
                         ui.end_row();
 
                         for device in &self.sata_devices {
                             // Device name
-                            ui.label(RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new(&device.name)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
 
                             // Model
                             ui.label(
                                 RichText::new(device.model.as_deref().unwrap_or("-"))
-                                    .color(CyberColors::TEXT_SECONDARY),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                             );
 
                             // Capacity
@@ -5182,25 +5594,34 @@ impl IronMonitorApp {
                                     }
                                 })
                                 .unwrap_or_else(|| "-".to_string());
-                            ui.label(RichText::new(capacity).color(CyberColors::NEON_YELLOW));
+                            ui.label(
+                                RichText::new(capacity)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                            );
 
                             // Interface
                             ui.label(
                                 RichText::new(device.interface_speed.as_deref().unwrap_or("-"))
-                                    .color(CyberColors::NEON_BLUE),
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)),
                             );
 
                             // Media type
                             let (type_str, type_color) = match device.media_type {
-                                motherboard::SataMediaType::Ssd => ("SSD", CyberColors::NEON_GREEN),
+                                motherboard::SataMediaType::Ssd => {
+                                    ("SSD", theme::color(&palette_ctx, CyberColors::NEON_GREEN))
+                                }
                                 motherboard::SataMediaType::Hdd => {
-                                    ("HDD", CyberColors::NEON_ORANGE)
+                                    ("HDD", theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
                                 }
-                                motherboard::SataMediaType::Unknown => {
-                                    ("Unknown", CyberColors::TEXT_MUTED)
-                                }
+                                motherboard::SataMediaType::Unknown => (
+                                    "Unknown",
+                                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                ),
                             };
-                            ui.label(RichText::new(type_str).color(type_color));
+                            ui.label(
+                                RichText::new(type_str)
+                                    .color(theme::color(&palette_ctx, type_color)),
+                            );
                             ui.end_row();
                         }
                     });
@@ -5217,31 +5638,68 @@ impl IronMonitorApp {
                     .striped(true)
                     .show(ui, |ui| {
                         // Header
-                        ui.label(RichText::new("Class").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Device").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Vendor").color(CyberColors::CYAN).strong());
+                        ui.label(
+                            RichText::new("Class")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Device")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Vendor")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
                         ui.end_row();
 
                         for device in &self.pcie_devices {
                             // Device class with color coding
                             let (class_str, class_color) = match device.device_class.as_deref() {
-                                Some("Display") => ("Display", CyberColors::NEON_GREEN),
-                                Some("Network") => ("Network", CyberColors::NEON_BLUE),
-                                Some("Storage") => ("Storage", CyberColors::NEON_PURPLE),
-                                Some("Audio") => ("Audio", CyberColors::NEON_ORANGE),
-                                Some("USB") => ("USB", CyberColors::NEON_YELLOW),
-                                Some(other) => (other, CyberColors::TEXT_SECONDARY),
-                                None => ("Other", CyberColors::TEXT_MUTED),
+                                Some("Display") => (
+                                    "Display",
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                ),
+                                Some("Network") => (
+                                    "Network",
+                                    theme::color(&palette_ctx, CyberColors::NEON_BLUE),
+                                ),
+                                Some("Storage") => (
+                                    "Storage",
+                                    theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
+                                ),
+                                Some("Audio") => (
+                                    "Audio",
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                ),
+                                Some("USB") => {
+                                    ("USB", theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
+                                }
+                                Some(other) => (
+                                    other,
+                                    theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                ),
+                                None => {
+                                    ("Other", theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                }
                             };
-                            ui.label(RichText::new(class_str).color(class_color));
+                            ui.label(
+                                RichText::new(class_str)
+                                    .color(theme::color(&palette_ctx, class_color)),
+                            );
 
                             // Device name
-                            ui.label(RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(
+                                RichText::new(&device.name)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
 
                             // Vendor
                             ui.label(
                                 RichText::new(device.vendor.as_deref().unwrap_or("-"))
-                                    .color(CyberColors::TEXT_SECONDARY),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                             );
                             ui.end_row();
                         }
@@ -5259,30 +5717,57 @@ impl IronMonitorApp {
                     .striped(true)
                     .show(ui, |ui| {
                         // Header
-                        ui.label(RichText::new("Type").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Name").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Version").color(CyberColors::CYAN).strong());
-                        ui.label(RichText::new("Vendor").color(CyberColors::CYAN).strong());
+                        ui.label(
+                            RichText::new("Type")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Name")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Version")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Vendor")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
                         ui.end_row();
 
                         for driver in &self.driver_info {
                             let type_color = match driver.driver_type {
-                                crate::motherboard::DriverType::Gpu => CyberColors::NEON_GREEN,
-                                crate::motherboard::DriverType::Network => CyberColors::NEON_BLUE,
-                                crate::motherboard::DriverType::Storage => CyberColors::NEON_PURPLE,
-                                _ => CyberColors::TEXT_SECONDARY,
+                                crate::motherboard::DriverType::Gpu => {
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                }
+                                crate::motherboard::DriverType::Network => {
+                                    theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                }
+                                crate::motherboard::DriverType::Storage => {
+                                    theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                }
+                                _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                             };
 
                             ui.label(
-                                RichText::new(format!("{}", driver.driver_type)).color(type_color),
+                                RichText::new(format!("{}", driver.driver_type))
+                                    .color(theme::color(&palette_ctx, type_color)),
                             );
-                            ui.label(RichText::new(&driver.name).color(CyberColors::TEXT_PRIMARY));
                             ui.label(
-                                RichText::new(&driver.version).color(CyberColors::NEON_YELLOW),
+                                RichText::new(&driver.name)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
+                            ui.label(
+                                RichText::new(&driver.version)
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
                             ui.label(
                                 RichText::new(driver.vendor.as_deref().unwrap_or("-"))
-                                    .color(CyberColors::TEXT_MUTED),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
                             ui.end_row();
                         }
@@ -5292,6 +5777,7 @@ impl IronMonitorApp {
     }
 
     fn draw_peripherals_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         // Trigger background loading if not started (same as System tab)
         // Check for results from background loading
         if let Some(receiver) = self.system_info_receiver.take() {
@@ -5350,7 +5836,7 @@ impl IronMonitorApp {
                     ui.spinner();
                     ui.label(
                         RichText::new("Loading peripheral information...")
-                            .color(CyberColors::TEXT_MUTED),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 });
                 ui.add_space(8.0);
@@ -5402,40 +5888,70 @@ impl IronMonitorApp {
                         .striped(true)
                         .show(ui, |ui| {
                             // Header
-                            ui.label(RichText::new("Version").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Device").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Class").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Status").color(CyberColors::CYAN).strong());
+                            ui.label(
+                                RichText::new("Version")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Device")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Class")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Status")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
                             ui.end_row();
 
                             // USB 3.x devices first (fastest)
                             for device in &usb3_devices {
                                 let version_color = match device.usb_version {
-                                    motherboard::UsbVersion::Usb4 => CyberColors::NEON_PURPLE,
-                                    motherboard::UsbVersion::Usb3_2 => CyberColors::NEON_GREEN,
-                                    motherboard::UsbVersion::Usb3_1 => CyberColors::NEON_GREEN,
-                                    motherboard::UsbVersion::Usb3_0 => CyberColors::NEON_BLUE,
-                                    _ => CyberColors::TEXT_SECONDARY,
+                                    motherboard::UsbVersion::Usb4 => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                    }
+                                    motherboard::UsbVersion::Usb3_2 => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    }
+                                    motherboard::UsbVersion::Usb3_1 => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    }
+                                    motherboard::UsbVersion::Usb3_0 => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                    }
+                                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                                 };
                                 ui.label(
                                     RichText::new(format!("{}", device.usb_version))
-                                        .color(version_color),
+                                        .color(theme::color(&palette_ctx, version_color)),
                                 );
                                 ui.label(
-                                    RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_SECONDARY),
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        )),
                                 );
                                 let status_color = if device.status.as_deref() == Some("OK") {
-                                    CyberColors::NEON_GREEN
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                 } else {
-                                    CyberColors::NEON_ORANGE
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
                                 };
                                 ui.label(
                                     RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(status_color),
+                                        .color(theme::color(&palette_ctx, status_color)),
                                 );
                                 ui.end_row();
                             }
@@ -5443,24 +5959,31 @@ impl IronMonitorApp {
                             // USB 2.0 devices
                             for device in &usb2_devices {
                                 ui.label(
-                                    RichText::new(format!("{}", device.usb_version))
-                                        .color(CyberColors::NEON_YELLOW),
+                                    RichText::new(format!("{}", device.usb_version)).color(
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                    ),
                                 );
                                 ui.label(
-                                    RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_SECONDARY),
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        )),
                                 );
                                 let status_color = if device.status.as_deref() == Some("OK") {
-                                    CyberColors::NEON_GREEN
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                 } else {
-                                    CyberColors::NEON_ORANGE
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
                                 };
                                 ui.label(
                                     RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(status_color),
+                                        .color(theme::color(&palette_ctx, status_color)),
                                 );
                                 ui.end_row();
                             }
@@ -5469,23 +5992,29 @@ impl IronMonitorApp {
                             for device in &other_usb {
                                 ui.label(
                                     RichText::new(format!("{}", device.usb_version))
-                                        .color(CyberColors::TEXT_MUTED),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
-                                    RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_SECONDARY),
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        )),
                                 );
                                 let status_color = if device.status.as_deref() == Some("OK") {
-                                    CyberColors::NEON_GREEN
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                 } else {
-                                    CyberColors::NEON_ORANGE
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
                                 };
                                 ui.label(
                                     RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(status_color),
+                                        .color(theme::color(&palette_ctx, status_color)),
                                 );
                                 ui.end_row();
                             }
@@ -5502,7 +6031,7 @@ impl IronMonitorApp {
                                 usb2_devices.len(),
                                 other_usb.len()
                             ))
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .small(),
                         );
                     });
@@ -5519,46 +6048,69 @@ impl IronMonitorApp {
                         .striped(true)
                         .show(ui, |ui| {
                             // Header
-                            ui.label(RichText::new("Type").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Name").color(CyberColors::CYAN).strong());
                             ui.label(
-                                RichText::new("Resolution")
-                                    .color(CyberColors::CYAN)
+                                RichText::new("Type")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                     .strong(),
                             );
-                            ui.label(RichText::new("Refresh").color(CyberColors::CYAN).strong());
+                            ui.label(
+                                RichText::new("Name")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Resolution")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Refresh")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
                             ui.end_row();
 
                             for output in &peripherals.display_outputs {
                                 let type_color = match output.output_type {
                                     motherboard::DisplayOutputType::Hdmi => {
-                                        CyberColors::NEON_PURPLE
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
                                     }
                                     motherboard::DisplayOutputType::DisplayPort => {
-                                        CyberColors::NEON_GREEN
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                     }
                                     motherboard::DisplayOutputType::Thunderbolt => {
-                                        CyberColors::NEON_YELLOW
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
                                     }
-                                    motherboard::DisplayOutputType::UsbC => CyberColors::NEON_BLUE,
-                                    _ => CyberColors::TEXT_SECONDARY,
+                                    motherboard::DisplayOutputType::UsbC => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                    }
+                                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                                 };
                                 ui.label(
                                     RichText::new(format!("{}", output.output_type))
-                                        .color(type_color),
+                                        .color(theme::color(&palette_ctx, type_color)),
                                 );
                                 ui.label(
-                                    RichText::new(&output.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&output.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(output.resolution.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::NEON_YELLOW),
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::NEON_YELLOW,
+                                        )),
                                 );
                                 let refresh = output
                                     .refresh_rate
                                     .map(|r| format!("{} Hz", r))
                                     .unwrap_or_else(|| "-".to_string());
-                                ui.label(RichText::new(refresh).color(CyberColors::TEXT_SECONDARY));
+                                ui.label(RichText::new(refresh).color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
                                 ui.end_row();
                             }
                         });
@@ -5575,46 +6127,68 @@ impl IronMonitorApp {
                         .striped(true)
                         .show(ui, |ui| {
                             // Header
-                            ui.label(RichText::new("Type").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Device").color(CyberColors::CYAN).strong());
                             ui.label(
-                                RichText::new("Manufacturer")
-                                    .color(CyberColors::CYAN)
+                                RichText::new("Type")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                     .strong(),
                             );
-                            ui.label(RichText::new("Status").color(CyberColors::CYAN).strong());
+                            ui.label(
+                                RichText::new("Device")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Manufacturer")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Status")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
                             ui.end_row();
 
                             for device in &peripherals.audio_devices {
                                 let type_color = match device.device_type {
-                                    motherboard::AudioDeviceType::Output => CyberColors::NEON_GREEN,
-                                    motherboard::AudioDeviceType::Input => CyberColors::NEON_BLUE,
+                                    motherboard::AudioDeviceType::Output => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    }
+                                    motherboard::AudioDeviceType::Input => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                    }
                                     motherboard::AudioDeviceType::OutputInput => {
-                                        CyberColors::NEON_PURPLE
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
                                     }
                                     motherboard::AudioDeviceType::Unknown => {
-                                        CyberColors::TEXT_MUTED
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
                                     }
                                 };
                                 ui.label(
                                     RichText::new(format!("{}", device.device_type))
-                                        .color(type_color),
+                                        .color(theme::color(&palette_ctx, type_color)),
                                 );
                                 ui.label(
-                                    RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(device.manufacturer.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_SECONDARY),
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        )),
                                 );
                                 let status_color = if device.status.as_deref() == Some("OK") {
-                                    CyberColors::NEON_GREEN
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                 } else {
-                                    CyberColors::NEON_ORANGE
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
                                 };
                                 ui.label(
                                     RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(status_color),
+                                        .color(theme::color(&palette_ctx, status_color)),
                                 );
                                 ui.end_row();
                             }
@@ -5632,39 +6206,64 @@ impl IronMonitorApp {
                         .striped(true)
                         .show(ui, |ui| {
                             // Header
-                            ui.label(RichText::new("Type").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Adapter").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Speed").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("MAC").color(CyberColors::CYAN).strong());
+                            ui.label(
+                                RichText::new("Type")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Adapter")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Speed")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("MAC")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
                             ui.end_row();
 
                             for port in &peripherals.network_ports {
                                 let type_color = match port.port_type {
                                     motherboard::NetworkPortType::Ethernet => {
-                                        CyberColors::NEON_BLUE
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
                                     }
-                                    motherboard::NetworkPortType::WiFi => CyberColors::NEON_GREEN,
+                                    motherboard::NetworkPortType::WiFi => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    }
                                     motherboard::NetworkPortType::Bluetooth => {
-                                        CyberColors::NEON_PURPLE
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
                                     }
                                     motherboard::NetworkPortType::Thunderbolt => {
-                                        CyberColors::NEON_YELLOW
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
                                     }
-                                    motherboard::NetworkPortType::Other => CyberColors::TEXT_MUTED,
+                                    motherboard::NetworkPortType::Other => {
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
+                                    }
                                 };
                                 ui.label(
-                                    RichText::new(format!("{}", port.port_type)).color(type_color),
+                                    RichText::new(format!("{}", port.port_type))
+                                        .color(theme::color(&palette_ctx, type_color)),
                                 );
                                 ui.label(
-                                    RichText::new(&port.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&port.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
-                                    RichText::new(port.speed.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::NEON_YELLOW),
+                                    RichText::new(port.speed.as_deref().unwrap_or("-")).color(
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                    ),
                                 );
                                 ui.label(
                                     RichText::new(port.mac_address.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_MUTED)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                         .small(),
                                 );
                                 ui.end_row();
@@ -5682,18 +6281,33 @@ impl IronMonitorApp {
                         .spacing([20.0, 4.0])
                         .striped(true)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Device").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Address").color(CyberColors::CYAN).strong());
-                            ui.label(RichText::new("Status").color(CyberColors::CYAN).strong());
+                            ui.label(
+                                RichText::new("Device")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Address")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Status")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
                             ui.end_row();
 
                             for device in &peripherals.bluetooth_devices {
                                 ui.label(
-                                    RichText::new(&device.name).color(CyberColors::TEXT_PRIMARY),
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.label(
                                     RichText::new(device.address.as_deref().unwrap_or("-"))
-                                        .color(CyberColors::TEXT_MUTED),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 let status = if device.connected {
                                     "Connected"
@@ -5703,11 +6317,14 @@ impl IronMonitorApp {
                                     "Available"
                                 };
                                 let status_color = if device.connected {
-                                    CyberColors::NEON_GREEN
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                 } else {
-                                    CyberColors::TEXT_SECONDARY
+                                    theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                                 };
-                                ui.label(RichText::new(status).color(status_color));
+                                ui.label(
+                                    RichText::new(status)
+                                        .color(theme::color(&palette_ctx, status_color)),
+                                );
                                 ui.end_row();
                             }
                         });
@@ -5716,13 +6333,14 @@ impl IronMonitorApp {
                 ui.add_space(16.0);
                 ui.label(
                     RichText::new("⚠ Peripheral information not available")
-                        .color(CyberColors::NEON_ORANGE),
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                 );
             }
         });
     }
 
     fn draw_network_tools_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -5730,13 +6348,13 @@ impl IronMonitorApp {
                 ui.add(SectionHeader::new("🔧 Network Diagnostic Tools"));
                 ui.label(
                     RichText::new("nmap • traceroute • ping • netcat style utilities")
-                        .color(CyberColors::TEXT_SECONDARY),
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                 );
                 ui.add_space(10.0);
 
                 // Target Host Input
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Target:").color(CyberColors::CYAN));
+                    ui.label(RichText::new("Target:").color(theme::color(&palette_ctx, CyberColors::CYAN)));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.nettools_target_host)
                             .desired_width(200.0)
@@ -5746,7 +6364,7 @@ impl IronMonitorApp {
 
                     // Ping button
                     if ui
-                        .button(RichText::new("🔔 Ping").color(CyberColors::NEON_GREEN))
+                        .button(RichText::new("🔔 Ping").color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5764,7 +6382,7 @@ impl IronMonitorApp {
 
                     // Traceroute button
                     if ui
-                        .button(RichText::new("🗺️ Traceroute").color(CyberColors::NEON_BLUE))
+                        .button(RichText::new("🗺️ Traceroute").color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5782,7 +6400,7 @@ impl IronMonitorApp {
 
                     // DNS Lookup button
                     if ui
-                        .button(RichText::new("📖 DNS").color(CyberColors::NEON_YELLOW))
+                        .button(RichText::new("📖 DNS").color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5802,7 +6420,7 @@ impl IronMonitorApp {
                 // Port Scan Section
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Port Range:").color(CyberColors::CYAN));
+                    ui.label(RichText::new("Port Range:").color(theme::color(&palette_ctx, CyberColors::CYAN)));
                     let mut start = self.nettools_port_range_start as i32;
                     let mut end = self.nettools_port_range_end as i32;
                     ui.add(egui::DragValue::new(&mut start).range(1..=65535).prefix("Start: "));
@@ -5812,7 +6430,7 @@ impl IronMonitorApp {
 
                     // Common ports button (parallel scan)
                     if ui
-                        .button(RichText::new("🔍 Scan Common").color(CyberColors::NEON_PURPLE))
+                        .button(RichText::new("🔍 Scan Common").color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5831,7 +6449,7 @@ impl IronMonitorApp {
 
                     // Scan range button (parallel)
                     if ui
-                        .button(RichText::new("🔎 Scan Range").color(CyberColors::NEON_ORANGE))
+                        .button(RichText::new("🔎 Scan Range").color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5854,11 +6472,11 @@ impl IronMonitorApp {
                 // Nmap-style scan section
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Nmap-Style Scans:").color(CyberColors::CYAN));
+                    ui.label(RichText::new("Nmap-Style Scans:").color(theme::color(&palette_ctx, CyberColors::CYAN)));
 
                     // Quick scan button
                     if ui
-                        .button(RichText::new("⚡ Quick Scan").color(CyberColors::NEON_GREEN))
+                        .button(RichText::new("⚡ Quick Scan").color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5876,7 +6494,7 @@ impl IronMonitorApp {
 
                     // Full scan button
                     if ui
-                        .button(RichText::new("🔬 Full Scan").color(CyberColors::NEON_BLUE))
+                        .button(RichText::new("🔬 Full Scan").color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)))
                         .clicked()
                         && !self.nettools_is_running
                     {
@@ -5899,7 +6517,7 @@ impl IronMonitorApp {
                     ui.add_space(5.0);
                     ui.label(
                         RichText::new(&self.nettools_operation)
-                            .color(CyberColors::TEXT_SECONDARY)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                             .italics(),
                     );
                 }
@@ -5914,22 +6532,22 @@ impl IronMonitorApp {
                     if let Some(ref result) = self.nettools_ping_result {
                         columns[0].horizontal(|ui| {
                             let status_color = if result.is_reachable {
-                                CyberColors::NEON_GREEN
+                                theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                             } else {
-                                CyberColors::NEON_RED
+                                theme::color(&palette_ctx, CyberColors::NEON_RED)
                             };
                             let status_text = if result.is_reachable {
                                 "✓ REACHABLE"
                             } else {
                                 "✗ UNREACHABLE"
                             };
-                            ui.label(RichText::new(&result.host).color(CyberColors::CYAN));
-                            ui.label(RichText::new(status_text).color(status_color).strong());
+                            ui.label(RichText::new(&result.host).color(theme::color(&palette_ctx, CyberColors::CYAN)));
+                            ui.label(RichText::new(status_text).color(theme::color(&palette_ctx, status_color)).strong());
                         });
 
                         if let Some(ref ip) = result.ip_address {
                             columns[0].label(
-                                RichText::new(format!("  IP: {}", ip)).color(CyberColors::TEXT_SECONDARY),
+                                RichText::new(format!("  IP: {}", ip)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                             );
                         }
 
@@ -5938,7 +6556,7 @@ impl IronMonitorApp {
                                 "  Packets: {} sent, {} received, {:.0}% loss",
                                 result.packets_sent, result.packets_received, result.packet_loss_percent
                             ))
-                            .color(CyberColors::TEXT_PRIMARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
 
                         if result.is_reachable {
@@ -5947,7 +6565,7 @@ impl IronMonitorApp {
                                     "  RTT: min={:.2}ms avg={:.2}ms max={:.2}ms",
                                     result.rtt_min_ms, result.rtt_avg_ms, result.rtt_max_ms
                                 ))
-                                .color(CyberColors::NEON_YELLOW),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
 
                             // RTT visualization
@@ -5956,12 +6574,12 @@ impl IronMonitorApp {
                                 .filter_map(|t| t.map(|v| v as f32))
                                 .collect();
                             if !rtt_data.is_empty() {
-                                columns[0].add(SparklineChart::new(rtt_data).color(CyberColors::CYAN));
+                                columns[0].add(SparklineChart::new(rtt_data).color(theme::color(&palette_ctx, CyberColors::CYAN)));
                             }
                         }
                     } else {
                         columns[0].label(
-                            RichText::new("No ping results yet").color(CyberColors::TEXT_MUTED),
+                            RichText::new("No ping results yet").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                     }
 
@@ -5971,17 +6589,17 @@ impl IronMonitorApp {
                     if !self.nettools_dns_results.is_empty() {
                         for addr in &self.nettools_dns_results {
                             let addr_color = if addr.is_ipv4() {
-                                CyberColors::NEON_GREEN
+                                theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                             } else {
-                                CyberColors::NEON_BLUE
+                                theme::color(&palette_ctx, CyberColors::NEON_BLUE)
                             };
                             columns[0].label(
-                                RichText::new(format!("  → {}", addr)).color(addr_color),
+                                RichText::new(format!("  → {}", addr)).color(theme::color(&palette_ctx, addr_color)),
                             );
                         }
                     } else {
                         columns[0].label(
-                            RichText::new("No DNS results yet").color(CyberColors::TEXT_MUTED),
+                            RichText::new("No DNS results yet").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                     }
 
@@ -5994,20 +6612,20 @@ impl IronMonitorApp {
                                 result.target,
                                 result.hops.len()
                             ))
-                            .color(CyberColors::CYAN),
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
 
                         let status_color = if result.destination_reached {
-                            CyberColors::NEON_GREEN
+                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                         } else {
-                            CyberColors::NEON_YELLOW
+                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
                         };
                         let status_text = if result.destination_reached {
                             "✓ Destination reached"
                         } else {
                             "⚠ Destination not reached"
                         };
-                        columns[1].label(RichText::new(status_text).color(status_color));
+                        columns[1].label(RichText::new(status_text).color(theme::color(&palette_ctx, status_color)));
 
                         columns[1].add_space(5.0);
                         ScrollArea::vertical()
@@ -6022,30 +6640,30 @@ impl IronMonitorApp {
                                         .unwrap_or_else(|| "*".to_string());
 
                                     let addr_color = if hop.responded {
-                                        CyberColors::NEON_GREEN
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                     } else {
-                                        CyberColors::TEXT_MUTED
+                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
                                     };
 
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             RichText::new(format!("{:>2}", hop.ttl))
-                                                .color(CyberColors::CYAN),
+                                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                                         );
                                         ui.label(
                                             RichText::new(format!("{:>15}", addr))
-                                                .color(addr_color)
+                                                .color(theme::color(&palette_ctx, addr_color))
                                                 .monospace(),
                                         );
                                         ui.label(
                                             RichText::new(format!("{:>10}", rtt))
-                                                .color(CyberColors::NEON_YELLOW)
+                                                .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
                                                 .monospace(),
                                         );
                                         if let Some(ref hostname) = hop.hostname {
                                             ui.label(
                                                 RichText::new(hostname)
-                                                    .color(CyberColors::TEXT_SECONDARY),
+                                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                                             );
                                         }
                                     });
@@ -6053,7 +6671,7 @@ impl IronMonitorApp {
                             });
                     } else {
                         columns[1].label(
-                            RichText::new("No traceroute results yet").color(CyberColors::TEXT_MUTED),
+                            RichText::new("No traceroute results yet").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                     }
                 });
@@ -6078,19 +6696,19 @@ impl IronMonitorApp {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("Scanned {} ports: ", self.nettools_port_scan_results.len()))
-                                .color(CyberColors::TEXT_PRIMARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         ui.label(
                             RichText::new(format!("{} open", open_count))
-                                .color(CyberColors::NEON_GREEN),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         ui.label(
                             RichText::new(format!("{} closed", closed_count))
-                                .color(CyberColors::NEON_RED),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
                         );
                         ui.label(
                             RichText::new(format!("{} filtered", filtered_count))
-                                .color(CyberColors::NEON_YELLOW),
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                         );
                     });
 
@@ -6107,10 +6725,10 @@ impl IronMonitorApp {
                                 .striped(true)
                                 .show(ui, |ui| {
                                     // Header
-                                    ui.label(RichText::new("PORT").color(CyberColors::CYAN).strong());
-                                    ui.label(RichText::new("STATE").color(CyberColors::CYAN).strong());
-                                    ui.label(RichText::new("SERVICE").color(CyberColors::CYAN).strong());
-                                    ui.label(RichText::new("CONNECT").color(CyberColors::CYAN).strong());
+                                    ui.label(RichText::new("PORT").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                    ui.label(RichText::new("STATE").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                    ui.label(RichText::new("SERVICE").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                    ui.label(RichText::new("CONNECT").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
                                     ui.end_row();
 
                                     for result in &self.nettools_port_scan_results {
@@ -6120,23 +6738,23 @@ impl IronMonitorApp {
                                         }
 
                                         let status_color = match result.status {
-                                            PortStatus::Open => CyberColors::NEON_GREEN,
-                                            PortStatus::Closed => CyberColors::NEON_RED,
-                                            PortStatus::Filtered => CyberColors::NEON_YELLOW,
-                                            PortStatus::Error => CyberColors::TEXT_MUTED,
+                                            PortStatus::Open => theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                            PortStatus::Closed => theme::color(&palette_ctx, CyberColors::NEON_RED),
+                                            PortStatus::Filtered => theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                            PortStatus::Error => theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                                         };
 
                                         ui.label(
                                             RichText::new(format!("{}/tcp", result.port))
-                                                .color(CyberColors::TEXT_PRIMARY),
+                                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                                         );
                                         ui.label(
                                             RichText::new(format!("{}", result.status))
-                                                .color(status_color),
+                                                .color(theme::color(&palette_ctx, status_color)),
                                         );
                                         ui.label(
                                             RichText::new(result.service.as_deref().unwrap_or("-"))
-                                                .color(CyberColors::TEXT_SECONDARY),
+                                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                                         );
                                         ui.label(
                                             RichText::new(
@@ -6145,7 +6763,7 @@ impl IronMonitorApp {
                                                     .map(|t| format!("{:.1}ms", t))
                                                     .unwrap_or_else(|| "-".to_string()),
                                             )
-                                            .color(CyberColors::NEON_YELLOW),
+                                            .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                                         );
                                         ui.end_row();
                                     }
@@ -6154,7 +6772,7 @@ impl IronMonitorApp {
                 } else {
                     ui.label(
                         RichText::new("No port scan results yet. Use 'Scan Common' or 'Scan Range' to scan ports.")
-                            .color(CyberColors::TEXT_MUTED),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 }
 
@@ -6167,25 +6785,25 @@ impl IronMonitorApp {
                     // Host info
                     ui.horizontal(|ui| {
                         let (status_text, status_color) = match result.is_up {
-                            Some(true) => ("UP", CyberColors::NEON_GREEN),
-                            Some(false) => ("DOWN", CyberColors::NEON_RED),
+                            Some(true) => ("UP", theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                            Some(false) => ("DOWN", theme::color(&palette_ctx, CyberColors::NEON_RED)),
                             // Ping gave no verdict; not the same as no reply.
-                            None => ("ping unreadable", CyberColors::TEXT_MUTED),
+                            None => ("ping unreadable", theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         };
 
-                        ui.label(RichText::new(&result.host).color(CyberColors::CYAN));
-                        ui.label(RichText::new(format!("({})", status_text)).color(status_color));
+                        ui.label(RichText::new(&result.host).color(theme::color(&palette_ctx, CyberColors::CYAN)));
+                        ui.label(RichText::new(format!("({})", status_text)).color(theme::color(&palette_ctx, status_color)));
                         if let Some(latency) = result.latency_ms {
-                            ui.label(RichText::new(format!("{:.2}ms latency", latency)).color(CyberColors::NEON_YELLOW));
+                            ui.label(RichText::new(format!("{:.2}ms latency", latency)).color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)));
                         }
                     });
 
                     // IP addresses
                     if !result.ip_addresses.is_empty() {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("IP(s):").color(CyberColors::TEXT_MUTED));
+                            ui.label(RichText::new("IP(s):").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                             for ip in &result.ip_addresses {
-                                ui.label(RichText::new(ip).color(CyberColors::NEON_GREEN));
+                                ui.label(RichText::new(ip).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
                             }
                         });
                     }
@@ -6193,32 +6811,32 @@ impl IronMonitorApp {
                     // Hostname
                     if let Some(ref hostname) = result.hostname {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Hostname:").color(CyberColors::TEXT_MUTED));
-                            ui.label(RichText::new(hostname).color(CyberColors::TEXT_PRIMARY));
+                            ui.label(RichText::new("Hostname:").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
+                            ui.label(RichText::new(hostname).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)));
                         });
                     }
 
                     // OS fingerprint
                     if let Some(ref os) = result.os_fingerprint {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("OS Guess:").color(CyberColors::TEXT_MUTED));
+                            ui.label(RichText::new("OS Guess:").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                             let os_text = match (&os.os_family, &os.os_gen) {
                                 (Some(family), Some(gen)) => format!("{} {}", family, gen),
                                 (Some(family), None) => family.clone(),
                                 _ => "Unknown".to_string(),
                             };
-                            ui.label(RichText::new(os_text).color(CyberColors::NEON_PURPLE));
-                            ui.label(RichText::new(format!("({}% confidence)", os.confidence)).color(CyberColors::TEXT_SECONDARY));
+                            ui.label(RichText::new(os_text).color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)));
+                            ui.label(RichText::new(format!("({}% confidence)", os.confidence)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
                         });
                     }
 
                     ui.add_space(5.0);
-                    ui.label(RichText::new(format!("Scan completed in {:.2}s", result.scan_duration_secs)).color(CyberColors::TEXT_SECONDARY));
+                    ui.label(RichText::new(format!("Scan completed in {:.2}s", result.scan_duration_secs)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
 
                     // Services table
                     if !result.services.is_empty() {
                         ui.add_space(10.0);
-                        ui.label(RichText::new(format!("{} open port(s) detected:", result.services.len())).color(CyberColors::CYAN));
+                        ui.label(RichText::new(format!("{} open port(s) detected:", result.services.len())).color(theme::color(&palette_ctx, CyberColors::CYAN)));
 
                         ScrollArea::vertical()
                             .id_salt("nmap_services_scroll")
@@ -6230,15 +6848,15 @@ impl IronMonitorApp {
                                     .striped(true)
                                     .show(ui, |ui| {
                                         // Header
-                                        ui.label(RichText::new("PORT").color(CyberColors::CYAN).strong());
-                                        ui.label(RichText::new("SERVICE").color(CyberColors::CYAN).strong());
-                                        ui.label(RichText::new("VERSION").color(CyberColors::CYAN).strong());
-                                        ui.label(RichText::new("BANNER").color(CyberColors::CYAN).strong());
+                                        ui.label(RichText::new("PORT").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                        ui.label(RichText::new("SERVICE").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                        ui.label(RichText::new("VERSION").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
+                                        ui.label(RichText::new("BANNER").color(theme::color(&palette_ctx, CyberColors::CYAN)).strong());
                                         ui.end_row();
 
                                         for svc in &result.services {
-                                            ui.label(RichText::new(format!("{}/tcp", svc.port)).color(CyberColors::TEXT_PRIMARY));
-                                            ui.label(RichText::new(&svc.service).color(CyberColors::NEON_GREEN));
+                                            ui.label(RichText::new(format!("{}/tcp", svc.port)).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)));
+                                            ui.label(RichText::new(&svc.service).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
 
                                             let version = match (&svc.product, &svc.version) {
                                                 (Some(p), Some(v)) => format!("{} {}", p, v),
@@ -6246,23 +6864,23 @@ impl IronMonitorApp {
                                                 (None, Some(v)) => v.clone(),
                                                 _ => "-".to_string(),
                                             };
-                                            ui.label(RichText::new(version).color(CyberColors::NEON_PURPLE));
+                                            ui.label(RichText::new(version).color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)));
 
                                             let banner = svc.banner.as_ref()
                                                 .map(|b| if b.len() > 40 { format!("{}...", &b[..40]) } else { b.clone() })
                                                 .unwrap_or_else(|| "-".to_string());
-                                            ui.label(RichText::new(banner).color(CyberColors::TEXT_SECONDARY));
+                                            ui.label(RichText::new(banner).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
                                             ui.end_row();
                                         }
                                     });
                             });
                     } else {
-                        ui.label(RichText::new("No open ports found on scanned target.").color(CyberColors::TEXT_MUTED));
+                        ui.label(RichText::new("No open ports found on scanned target.").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                     }
                 } else {
                     ui.label(
                         RichText::new("No nmap scan results yet. Use 'Quick Scan' or 'Full Scan' for service detection.")
-                            .color(CyberColors::TEXT_MUTED),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 }
 
@@ -6277,11 +6895,11 @@ impl IronMonitorApp {
                 if !capture_available {
                     ui.label(
                         RichText::new("⚠️ No packet capture tool found. Install Wireshark (tshark) or tcpdump.")
-                            .color(CyberColors::WARNING),
+                            .color(theme::color(&palette_ctx, CyberColors::WARNING)),
                     );
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Protocol:").color(CyberColors::CYAN));
+                        ui.label(RichText::new("Protocol:").color(theme::color(&palette_ctx, CyberColors::CYAN)));
                         egui::ComboBox::from_id_salt("capture_protocol")
                             .selected_text(format!("{}", self.nettools_capture_protocol))
                             .show_ui(ui, |ui| {
@@ -6296,14 +6914,14 @@ impl IronMonitorApp {
                             });
 
                         ui.add_space(10.0);
-                        ui.label(RichText::new("Packets:").color(CyberColors::CYAN));
+                        ui.label(RichText::new("Packets:").color(theme::color(&palette_ctx, CyberColors::CYAN)));
                         let mut count = self.nettools_capture_count as i32;
                         ui.add(egui::DragValue::new(&mut count).range(10..=1000));
                         self.nettools_capture_count = count as u32;
 
                         ui.add_space(10.0);
                         if ui
-                            .button(RichText::new("📡 Capture").color(CyberColors::NEON_GREEN))
+                            .button(RichText::new("📡 Capture").color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)))
                             .clicked()
                             && !self.nettools_is_running
                         {
@@ -6337,32 +6955,32 @@ impl IronMonitorApp {
 
                         // Summary stats
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{} packets", result.total_packets)).color(CyberColors::NEON_GREEN));
-                            ui.label(RichText::new(format!("({:.1} pkt/s)", result.packets_per_sec)).color(CyberColors::TEXT_SECONDARY));
-                            ui.label(RichText::new(format!("{} bytes", result.total_bytes)).color(CyberColors::CYAN));
-                            ui.label(RichText::new(format!("in {:.2}s", result.duration_secs)).color(CyberColors::TEXT_MUTED));
+                            ui.label(RichText::new(format!("{} packets", result.total_packets)).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
+                            ui.label(RichText::new(format!("({:.1} pkt/s)", result.packets_per_sec)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
+                            ui.label(RichText::new(format!("{} bytes", result.total_bytes)).color(theme::color(&palette_ctx, CyberColors::CYAN)));
+                            ui.label(RichText::new(format!("in {:.2}s", result.duration_secs)).color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                         });
 
                         // Protocol breakdown
                         if !result.protocol_stats.is_empty() {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("Protocols:").color(CyberColors::TEXT_MUTED));
+                                ui.label(RichText::new("Protocols:").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                                 for (proto, count) in &result.protocol_stats {
-                                    ui.label(RichText::new(format!("{}: {}", proto, count)).color(CyberColors::NEON_YELLOW));
+                                    ui.label(RichText::new(format!("{}: {}", proto, count)).color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)));
                                 }
                             });
                         }
 
                         // Top talkers
                         ui.columns(2, |cols| {
-                            cols[0].label(RichText::new("Top Sources:").color(CyberColors::CYAN).small());
+                            cols[0].label(RichText::new("Top Sources:").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
                             for (addr, count) in result.top_sources.iter().take(5) {
-                                cols[0].label(RichText::new(format!("  {} ({})", addr, count)).color(CyberColors::TEXT_SECONDARY).small());
+                                cols[0].label(RichText::new(format!("  {} ({})", addr, count)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)).small());
                             }
 
-                            cols[1].label(RichText::new("Top Destinations:").color(CyberColors::CYAN).small());
+                            cols[1].label(RichText::new("Top Destinations:").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
                             for (addr, count) in result.top_destinations.iter().take(5) {
-                                cols[1].label(RichText::new(format!("  {} ({})", addr, count)).color(CyberColors::TEXT_SECONDARY).small());
+                                cols[1].label(RichText::new(format!("  {} ({})", addr, count)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)).small());
                             }
                         });
 
@@ -6378,21 +6996,21 @@ impl IronMonitorApp {
                                     .striped(true)
                                     .show(ui, |ui| {
                                         // Header
-                                        ui.label(RichText::new("#").color(CyberColors::CYAN).small());
-                                        ui.label(RichText::new("TIME").color(CyberColors::CYAN).small());
-                                        ui.label(RichText::new("SOURCE").color(CyberColors::CYAN).small());
-                                        ui.label(RichText::new("DEST").color(CyberColors::CYAN).small());
-                                        ui.label(RichText::new("PROTO").color(CyberColors::CYAN).small());
-                                        ui.label(RichText::new("LEN").color(CyberColors::CYAN).small());
+                                        ui.label(RichText::new("#").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
+                                        ui.label(RichText::new("TIME").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
+                                        ui.label(RichText::new("SOURCE").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
+                                        ui.label(RichText::new("DEST").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
+                                        ui.label(RichText::new("PROTO").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
+                                        ui.label(RichText::new("LEN").color(theme::color(&palette_ctx, CyberColors::CYAN)).small());
                                         ui.end_row();
 
                                         for pkt in result.packets.iter().take(100) {
-                                            ui.label(RichText::new(format!("{}", pkt.number)).color(CyberColors::TEXT_MUTED).small());
-                                            ui.label(RichText::new(&pkt.timestamp).color(CyberColors::TEXT_SECONDARY).small());
-                                            ui.label(RichText::new(&pkt.source).color(CyberColors::NEON_GREEN).small());
-                                            ui.label(RichText::new(&pkt.destination).color(CyberColors::NEON_BLUE).small());
-                                            ui.label(RichText::new(&pkt.protocol).color(CyberColors::NEON_YELLOW).small());
-                                            ui.label(RichText::new(format!("{}", pkt.length)).color(CyberColors::TEXT_PRIMARY).small());
+                                            ui.label(RichText::new(format!("{}", pkt.number)).color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)).small());
+                                            ui.label(RichText::new(&pkt.timestamp).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)).small());
+                                            ui.label(RichText::new(&pkt.source).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)).small());
+                                            ui.label(RichText::new(&pkt.destination).color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)).small());
+                                            ui.label(RichText::new(&pkt.protocol).color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)).small());
+                                            ui.label(RichText::new(format!("{}", pkt.length)).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)).small());
                                             ui.end_row();
                                         }
                                     });
@@ -6400,11 +7018,11 @@ impl IronMonitorApp {
                     } else {
                         ui.label(
                             RichText::new("No capture results yet. Click 'Capture' to start packet capture.")
-                                .color(CyberColors::TEXT_MUTED),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                         ui.label(
                             RichText::new("Note: Requires administrator/root privileges.")
-                                .color(CyberColors::WARNING)
+                                .color(theme::color(&palette_ctx, CyberColors::WARNING))
                                 .small(),
                         );
                     }
@@ -6413,7 +7031,7 @@ impl IronMonitorApp {
                 // Help/Info section
                 ui.add_space(15.0);
                 ui.separator();
-                ui.collapsing(RichText::new("ℹ️ About Network Tools").color(CyberColors::CYAN), |ui| {
+                ui.collapsing(RichText::new("ℹ️ About Network Tools").color(theme::color(&palette_ctx, CyberColors::CYAN)), |ui| {
                     ui.label(RichText::new(
                         "This tab provides network diagnostic tools similar to popular CLI utilities:\n\n\
                         • Ping - ICMP echo test (like 'ping' command)\n\
@@ -6423,12 +7041,13 @@ impl IronMonitorApp {
                         • Nmap Scan - Service detection with banner grabbing\n\
                         • Packet Capture - Network traffic capture (like 'tcpdump/tshark')\n\n\
                         Note: Some operations may require administrator privileges or be blocked by firewalls."
-                    ).color(CyberColors::TEXT_SECONDARY));
+                    ).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
                 });
             });
     }
 
     pub(super) fn draw_ai_assistant_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         // Show loading state while agent is being initialized in background
         // But timeout after 3 seconds to show the UI anyway
         let loading_timeout =
@@ -6441,13 +7060,13 @@ impl IronMonitorApp {
                 ui.add_space(10.0);
                 ui.label(
                     RichText::new("🔍 Detecting AI backends...")
-                        .color(CyberColors::CYAN)
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
                         .size(18.0),
                 );
                 ui.add_space(10.0);
                 ui.label(
                     RichText::new("Checking for Ollama, OpenAI, Anthropic, LM Studio...")
-                        .color(CyberColors::TEXT_SECONDARY),
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                 );
             });
             return;
@@ -6525,7 +7144,7 @@ impl IronMonitorApp {
                 }
 
                 egui::ComboBox::from_id_salt("ai_model_select")
-                    .selected_text(RichText::new(&display_model).color(CyberColors::NEON_GREEN))
+                    .selected_text(RichText::new(&display_model).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)))
                     .width(220.0)
                     .show_ui(ui, |ui| {
                         let provider = self.ai_selected_backend;
@@ -6547,7 +7166,7 @@ impl IronMonitorApp {
                                     ui.spinner();
                                     ui.label(
                                         RichText::new("Loading models…")
-                                            .color(CyberColors::TEXT_MUTED),
+                                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                     );
                                 });
                             }
@@ -6564,12 +7183,12 @@ impl IronMonitorApp {
                                             }
                                             _ => "No models listed — is the server running?",
                                         })
-                                        .color(CyberColors::TEXT_MUTED),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                     );
                                 } else {
                                     ui.label(
                                         RichText::new("Not listed by provider:")
-                                            .color(CyberColors::TEXT_MUTED)
+                                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                             .small(),
                                     );
                                     for model in fallback {
@@ -6584,7 +7203,7 @@ impl IronMonitorApp {
                         }
                     });
 
-                ui.label(RichText::new("Model:").color(CyberColors::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new("Model:").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)).size(12.0));
 
                 ui.add_space(12.0);
 
@@ -6592,7 +7211,7 @@ impl IronMonitorApp {
                 egui::ComboBox::from_id_salt("ai_provider_select")
                     .selected_text(
                         RichText::new(self.ai_selected_backend.menu_label())
-                            .color(CyberColors::CYAN),
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                     )
                     .width(200.0)
                     .show_ui(ui, |ui| {
@@ -6605,7 +7224,7 @@ impl IronMonitorApp {
                         }
                     });
 
-                ui.label(RichText::new("Provider:").color(CyberColors::TEXT_SECONDARY).size(12.0));
+                ui.label(RichText::new("Provider:").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)).size(12.0));
             });
         });
 
@@ -6640,12 +7259,12 @@ impl IronMonitorApp {
         // still running this must report that, not a failure it has not established.
         if !agent_available || detection_in_flight || detection_found_nothing {
             let accent = if agent_available {
-                CyberColors::CYAN
+                theme::color(&palette_ctx, CyberColors::CYAN)
             } else {
-                CyberColors::NEON_YELLOW
+                theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
             };
             egui::Frame::NONE
-                .fill(CyberColors::SURFACE)
+                .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
                 .stroke(egui::Stroke::new(1.0_f32, accent))
                 .corner_radius(6)
                 .inner_margin(10.0)
@@ -6653,25 +7272,25 @@ impl IronMonitorApp {
                     ui.horizontal(|ui| {
                         if detection_in_flight {
                             ui.spinner();
-                            ui.label(RichText::new("Detecting AI backends…").color(accent));
+                            ui.label(RichText::new("Detecting AI backends…").color(theme::color(&palette_ctx, accent)));
                             return;
                         }
                         if !agent_available {
-                            ui.label(RichText::new("⚠").color(accent).size(16.0));
+                            ui.label(RichText::new("⚠").color(theme::color(&palette_ctx, accent)).size(16.0));
                             ui.label(RichText::new(
                                 "No Ollama models installed. Run: ollama pull llama3.2",
-                            ).color(accent));
+                            ).color(theme::color(&palette_ctx, accent)));
                         } else {
                             // Detection came up empty, but nothing is broken: sending
                             // uses the provider selected above and will report its own
                             // error if that provider is not actually there.
-                            ui.label(RichText::new("ⓘ").color(accent).size(16.0));
+                            ui.label(RichText::new("ⓘ").color(theme::color(&palette_ctx, accent)).size(16.0));
                             ui.label(RichText::new(format!(
                                 "No backend detected on the usual local ports. Sending will still try {}.",
                                 self.ai_selected_backend.display_name(),
-                            )).color(accent));
+                            )).color(theme::color(&palette_ctx, accent)));
                         }
-                        if ui.button(RichText::new("🔄 Retry").color(CyberColors::CYAN)).clicked() {
+                        if ui.button(RichText::new("🔄 Retry").color(theme::color(&palette_ctx, CyberColors::CYAN))).clicked() {
                             refresh_models = true;
                             retry_detection = true;
                         }
@@ -6684,8 +7303,8 @@ impl IronMonitorApp {
         let chat_height = ui.available_height() - 80.0; // Leave room for input area
 
         egui::Frame::NONE
-            .fill(CyberColors::BACKGROUND)
-            .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
+            .fill(theme::color(&palette_ctx, CyberColors::BACKGROUND))
+            .stroke(egui::Stroke::new(1.0_f32, theme::color(&palette_ctx, CyberColors::BORDER)))
             .corner_radius(6)
             .inner_margin(12.0)
             .show(ui, |ui| {
@@ -6696,24 +7315,24 @@ impl IronMonitorApp {
                         ui.add_space(20.0);
                         ui.label(
                             RichText::new("👋 Welcome to the AI Assistant!")
-                                .color(CyberColors::CYAN)
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
                                 .size(20.0),
                         );
                         ui.add_space(12.0);
                         ui.label(
                             RichText::new("Ask questions about your system's performance, GPU status, or get optimization suggestions.")
-                                .color(CyberColors::TEXT_SECONDARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .size(14.0),
                         );
                         ui.add_space(24.0);
 
                         // Example questions
                         egui::Frame::NONE
-                            .fill(CyberColors::SURFACE)
+                            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
                             .corner_radius(6)
                             .inner_margin(12.0)
                             .show(ui, |ui| {
-                                ui.label(RichText::new("💡 Try asking:").color(CyberColors::TEXT_PRIMARY).size(13.0));
+                                ui.label(RichText::new("💡 Try asking:").color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)).size(13.0));
                                 ui.add_space(8.0);
                                 let examples = [
                                     "What is my GPU utilization?",
@@ -6722,7 +7341,7 @@ impl IronMonitorApp {
                                     "What's using my GPU memory?",
                                 ];
                                 for example in examples {
-                                    ui.label(RichText::new(format!("  • {}", example)).color(CyberColors::CYAN_DIM).size(12.0));
+                                    ui.label(RichText::new(format!("  • {}", example)).color(theme::color(&palette_ctx, CyberColors::CYAN_DIM)).size(12.0));
                                 }
                             });
                     });
@@ -6740,9 +7359,9 @@ impl IronMonitorApp {
                         let is_user = entry.role == ChatRole::User;
 
                         let (bg_color, border_color, text_color, icon) = if is_user {
-                            (CyberColors::SURFACE, CyberColors::CYAN_DIM, CyberColors::TEXT_PRIMARY, "👤")
+                            (theme::color(&palette_ctx, CyberColors::SURFACE), theme::color(&palette_ctx, CyberColors::CYAN_DIM), theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY), "👤")
                         } else {
-                            (CyberColors::BACKGROUND_DARK, CyberColors::NEON_GREEN, CyberColors::TEXT_PRIMARY, "🤖")
+                            (theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK), theme::color(&palette_ctx, CyberColors::NEON_GREEN), theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY), "🤖")
                         };
 
                         // Message bubble - left aligned for assistant, right padding for user
@@ -6763,7 +7382,7 @@ impl IronMonitorApp {
                                     ui.label(RichText::new(icon).size(14.0));
                                     ui.label(
                                         RichText::new(if is_user { "You" } else { "Assistant" })
-                                            .color(if is_user { CyberColors::CYAN } else { CyberColors::NEON_GREEN })
+                                            .color(theme::color(&palette_ctx, if is_user { theme::color(&palette_ctx, CyberColors::CYAN) } else { theme::color(&palette_ctx, CyberColors::NEON_GREEN) }))
                                             .strong()
                                             .size(12.0),
                                     );
@@ -6779,7 +7398,7 @@ impl IronMonitorApp {
                                                 String::new()
                                             };
                                             if !meta.is_empty() {
-                                                ui.label(RichText::new(meta).color(CyberColors::TEXT_MUTED).size(10.0));
+                                                ui.label(RichText::new(meta).color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)).size(10.0));
                                             }
                                         });
                                     }
@@ -6790,7 +7409,7 @@ impl IronMonitorApp {
                                 // Message content with text wrapping
                                 ui.label(
                                     RichText::new(&entry.content)
-                                        .color(text_color)
+                                        .color(theme::color(&palette_ctx, text_color))
                                         .size(13.0),
                                 );
                             });
@@ -6805,8 +7424,8 @@ impl IronMonitorApp {
 
         // Input area with improved styling
         egui::Frame::NONE
-            .fill(CyberColors::SURFACE)
-            .stroke(egui::Stroke::new(1.0_f32, CyberColors::BORDER))
+            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
+            .stroke(egui::Stroke::new(1.0_f32, theme::color(&palette_ctx, CyberColors::BORDER)))
             .corner_radius(6)
             .inner_margin(8.0)
             .show(ui, |ui| {
@@ -6826,7 +7445,7 @@ impl IronMonitorApp {
                         send_enabled,
                         egui::Button::new(
                             RichText::new(if self.agent_is_processing { "⏳" } else { "➤ Send" })
-                                .color(if send_enabled { CyberColors::CYAN } else { CyberColors::TEXT_MUTED })
+                                .color(theme::color(&palette_ctx, if send_enabled { theme::color(&palette_ctx, CyberColors::CYAN) } else { theme::color(&palette_ctx, CyberColors::TEXT_MUTED) }))
                                 .size(14.0)
                         )
                         .min_size(Vec2::new(70.0, 28.0)),
@@ -6844,7 +7463,7 @@ impl IronMonitorApp {
         // Bottom toolbar
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button(RichText::new("🗑️ Clear").color(CyberColors::TEXT_MUTED).size(12.0)).clicked() {
+            if ui.button(RichText::new("🗑️ Clear").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)).size(12.0)).clicked() {
                 self.agent_history.clear();
             }
 
@@ -6854,14 +7473,14 @@ impl IronMonitorApp {
                 ui.spinner();
                 ui.label(
                     RichText::new("Thinking...")
-                        .color(CyberColors::CYAN)
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
                         .italics()
                         .size(12.0),
                 );
             } else {
                 ui.label(
                     RichText::new(format!("{} messages", self.agent_history.len()))
-                        .color(CyberColors::TEXT_MUTED)
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                         .size(11.0),
                 );
             }
@@ -6934,18 +7553,22 @@ impl IronMonitorApp {
     /// Draw the AI setup panel when no backend is available
     #[allow(dead_code)]
     fn draw_ai_setup_panel(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
         ui.add_space(10.0);
 
         // Show status message if any
         if let Some((msg, is_error)) = &self.ai_status_message {
             let color = if *is_error {
-                CyberColors::NEON_RED
+                theme::color(&palette_ctx, CyberColors::NEON_RED)
             } else {
-                CyberColors::NEON_GREEN
+                theme::color(&palette_ctx, CyberColors::NEON_GREEN)
             };
             ui.horizontal(|ui| {
-                ui.label(RichText::new(if *is_error { "❌" } else { "✓" }).color(color));
-                ui.label(RichText::new(msg.as_str()).color(color));
+                ui.label(
+                    RichText::new(if *is_error { "❌" } else { "✓" })
+                        .color(theme::color(&palette_ctx, color)),
+                );
+                ui.label(RichText::new(msg.as_str()).color(theme::color(&palette_ctx, color)));
             });
             ui.add_space(10.0);
         }
@@ -6954,24 +7577,28 @@ impl IronMonitorApp {
         let available = crate::agent::AgentConfig::list_available_backends();
         if !available.is_empty() {
             egui::Frame::NONE
-                .fill(CyberColors::SURFACE)
+                .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
                 .corner_radius(8)
                 .inner_margin(15.0)
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new("✓ Available Backends")
-                            .color(CyberColors::NEON_GREEN)
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                             .size(16.0),
                     );
                     ui.add_space(5.0);
                     for backend in &available {
                         ui.label(
-                            RichText::new(format!("  • {:?}", backend)).color(CyberColors::CYAN),
+                            RichText::new(format!("  • {:?}", backend))
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
                     }
                     ui.add_space(10.0);
                     if ui
-                        .button(RichText::new("🔄 Retry Connection").color(CyberColors::CYAN))
+                        .button(
+                            RichText::new("🔄 Retry Connection")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                        )
                         .clicked()
                     {
                         self.retry_agent_connection();
@@ -6982,13 +7609,13 @@ impl IronMonitorApp {
 
         // Setup options
         egui::Frame::NONE
-            .fill(CyberColors::SURFACE)
+            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
             .corner_radius(8)
             .inner_margin(15.0)
             .show(ui, |ui| {
                 ui.label(
                     RichText::new("🔧 Configure AI Backend")
-                        .color(CyberColors::CYAN)
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
                         .size(18.0),
                 );
                 ui.add_space(15.0);
@@ -6999,57 +7626,62 @@ impl IronMonitorApp {
                     ui.selectable_value(
                         &mut self.ai_selected_backend,
                         AiBackendSelection::Ollama,
-                        RichText::new("🦙 Ollama").color(
+                        RichText::new("🦙 Ollama").color(theme::color(
+                            ui.ctx(),
                             if current_backend == AiBackendSelection::Ollama {
-                                CyberColors::CYAN
+                                theme::color(&palette_ctx, CyberColors::CYAN)
                             } else {
-                                CyberColors::TEXT_SECONDARY
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                             },
-                        ),
+                        )),
                     );
                     ui.selectable_value(
                         &mut self.ai_selected_backend,
                         AiBackendSelection::OpenAi,
-                        RichText::new("🤖 OpenAI").color(
+                        RichText::new("🤖 OpenAI").color(theme::color(
+                            ui.ctx(),
                             if current_backend == AiBackendSelection::OpenAi {
-                                CyberColors::CYAN
+                                theme::color(&palette_ctx, CyberColors::CYAN)
                             } else {
-                                CyberColors::TEXT_SECONDARY
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                             },
-                        ),
+                        )),
                     );
                     ui.selectable_value(
                         &mut self.ai_selected_backend,
                         AiBackendSelection::Anthropic,
-                        RichText::new("🧠 Anthropic").color(
+                        RichText::new("🧠 Anthropic").color(theme::color(
+                            ui.ctx(),
                             if current_backend == AiBackendSelection::Anthropic {
-                                CyberColors::CYAN
+                                theme::color(&palette_ctx, CyberColors::CYAN)
                             } else {
-                                CyberColors::TEXT_SECONDARY
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                             },
-                        ),
+                        )),
                     );
                     ui.selectable_value(
                         &mut self.ai_selected_backend,
                         AiBackendSelection::GitHub,
-                        RichText::new("🐙 GitHub").color(
+                        RichText::new("🐙 GitHub").color(theme::color(
+                            ui.ctx(),
                             if current_backend == AiBackendSelection::GitHub {
-                                CyberColors::CYAN
+                                theme::color(&palette_ctx, CyberColors::CYAN)
                             } else {
-                                CyberColors::TEXT_SECONDARY
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                             },
-                        ),
+                        )),
                     );
                     ui.selectable_value(
                         &mut self.ai_selected_backend,
                         AiBackendSelection::LmStudio,
-                        RichText::new("📦 LM Studio").color(
+                        RichText::new("📦 LM Studio").color(theme::color(
+                            ui.ctx(),
                             if current_backend == AiBackendSelection::LmStudio {
-                                CyberColors::CYAN
+                                theme::color(&palette_ctx, CyberColors::CYAN)
                             } else {
-                                CyberColors::TEXT_SECONDARY
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
                             },
-                        ),
+                        )),
                     );
                 });
                 ui.add_space(15.0);
@@ -7060,7 +7692,7 @@ impl IronMonitorApp {
                     AiBackendSelection::Ollama => {
                         ui.label(
                             RichText::new("Ollama - Local AI (Recommended)")
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
@@ -7068,7 +7700,7 @@ impl IronMonitorApp {
                             RichText::new(
                                 "Run AI models locally on your machine. Free and private.",
                             )
-                            .color(CyberColors::TEXT_SECONDARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(15.0);
 
@@ -7076,13 +7708,17 @@ impl IronMonitorApp {
                             if self.ai_ollama_starting {
                                 ui.spinner();
                                 ui.label(
-                                    RichText::new("Starting Ollama...").color(CyberColors::CYAN),
+                                    RichText::new("Starting Ollama...")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                                 );
                             } else {
                                 if ui
                                     .button(
                                         RichText::new("▶ Start Ollama")
-                                            .color(CyberColors::NEON_GREEN)
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::NEON_GREEN,
+                                            ))
                                             .size(14.0),
                                     )
                                     .clicked()
@@ -7091,8 +7727,10 @@ impl IronMonitorApp {
                                 }
                                 if ui
                                     .button(
-                                        RichText::new("📥 Install Ollama")
-                                            .color(CyberColors::TEXT_SECONDARY),
+                                        RichText::new("📥 Install Ollama").color(theme::color(
+                                            ui.ctx(),
+                                            CyberColors::TEXT_SECONDARY,
+                                        )),
                                     )
                                     .clicked()
                                 {
@@ -7103,25 +7741,28 @@ impl IronMonitorApp {
                         ui.add_space(10.0);
                         ui.label(
                             RichText::new("After starting Ollama, click 'Retry Connection' above.")
-                                .color(CyberColors::TEXT_MUTED)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                 .small(),
                         );
                     }
                     AiBackendSelection::OpenAi => {
                         ui.label(
                             RichText::new("OpenAI API")
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
                         ui.label(
                             RichText::new("Use GPT models via OpenAI API. Requires API key.")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(15.0);
 
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("API Key:").color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new("API Key:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.ai_api_key_input)
                                     .password(true)
@@ -7131,7 +7772,10 @@ impl IronMonitorApp {
                         });
                         ui.add_space(10.0);
                         if ui
-                            .button(RichText::new("💾 Set API Key").color(CyberColors::CYAN))
+                            .button(
+                                RichText::new("💾 Set API Key")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            )
                             .clicked()
                         {
                             self.set_api_key("OPENAI_API_KEY");
@@ -7140,7 +7784,7 @@ impl IronMonitorApp {
                         if ui
                             .link(
                                 RichText::new("Get an API key from OpenAI →")
-                                    .color(CyberColors::TEXT_MUTED)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                     .small(),
                             )
                             .clicked()
@@ -7151,18 +7795,21 @@ impl IronMonitorApp {
                     AiBackendSelection::Anthropic => {
                         ui.label(
                             RichText::new("Anthropic Claude API")
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
                         ui.label(
                             RichText::new("Use Claude models via Anthropic API. Requires API key.")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(15.0);
 
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("API Key:").color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new("API Key:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.ai_api_key_input)
                                     .password(true)
@@ -7172,7 +7819,10 @@ impl IronMonitorApp {
                         });
                         ui.add_space(10.0);
                         if ui
-                            .button(RichText::new("💾 Set API Key").color(CyberColors::CYAN))
+                            .button(
+                                RichText::new("💾 Set API Key")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            )
                             .clicked()
                         {
                             self.set_api_key("ANTHROPIC_API_KEY");
@@ -7181,7 +7831,7 @@ impl IronMonitorApp {
                         if ui
                             .link(
                                 RichText::new("Get an API key from Anthropic →")
-                                    .color(CyberColors::TEXT_MUTED)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                     .small(),
                             )
                             .clicked()
@@ -7192,18 +7842,21 @@ impl IronMonitorApp {
                     AiBackendSelection::GitHub => {
                         ui.label(
                             RichText::new("GitHub Models")
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
                         ui.label(
                             RichText::new("Use AI models via GitHub. Requires GitHub token.")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(15.0);
 
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Token:").color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new("Token:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.ai_api_key_input)
                                     .password(true)
@@ -7213,7 +7866,10 @@ impl IronMonitorApp {
                         });
                         ui.add_space(10.0);
                         if ui
-                            .button(RichText::new("💾 Set Token").color(CyberColors::CYAN))
+                            .button(
+                                RichText::new("💾 Set Token")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            )
                             .clicked()
                         {
                             self.set_api_key("GITHUB_TOKEN");
@@ -7222,7 +7878,7 @@ impl IronMonitorApp {
                         if ui
                             .link(
                                 RichText::new("Create a GitHub token →")
-                                    .color(CyberColors::TEXT_MUTED)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                                     .small(),
                             )
                             .clicked()
@@ -7233,7 +7889,7 @@ impl IronMonitorApp {
                     AiBackendSelection::LmStudio => {
                         ui.label(
                             RichText::new("LM Studio - Local AI")
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
@@ -7241,26 +7897,29 @@ impl IronMonitorApp {
                             RichText::new(
                                 "Run local models with LM Studio's OpenAI-compatible API.",
                             )
-                            .color(CyberColors::TEXT_SECONDARY),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(15.0);
 
                         ui.label(
                             RichText::new("1. Download and install LM Studio")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.label(
                             RichText::new("2. Download a model (e.g., Llama 3.2, Mistral)")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.label(
                             RichText::new("3. Start the local server on port 1234")
-                                .color(CyberColors::TEXT_SECONDARY),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.add_space(10.0);
 
                         if ui
-                            .button(RichText::new("📥 Download LM Studio").color(CyberColors::CYAN))
+                            .button(
+                                RichText::new("📥 Download LM Studio")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            )
                             .clicked()
                         {
                             let _ = open::that("https://lmstudio.ai/");
@@ -7270,7 +7929,7 @@ impl IronMonitorApp {
                             RichText::new(
                                 "After starting the server, click 'Retry Connection' above.",
                             )
-                            .color(CyberColors::TEXT_MUTED)
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .small(),
                         );
                     }
@@ -7279,7 +7938,7 @@ impl IronMonitorApp {
                     other => {
                         ui.label(
                             RichText::new(other.display_name())
-                                .color(CyberColors::TEXT_PRIMARY)
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
@@ -7304,7 +7963,10 @@ impl IronMonitorApp {
                             _ => "",
                         };
                         if !detail.is_empty() {
-                            ui.label(RichText::new(detail).color(CyberColors::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new(detail)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
                         }
                     }
                 }
@@ -7582,6 +8244,7 @@ impl IronMonitorApp {
 
     /// Draw the settings window
     fn draw_settings_window(&mut self, ctx: &egui::Context) {
+        let palette_ctx = ctx.clone();
         if !self.show_settings {
             return;
         }
@@ -7596,7 +8259,10 @@ impl IronMonitorApp {
 
                 // Close button in corner
                 ui.horizontal(|ui| {
-                    ui.heading(RichText::new("Appearance").color(CyberColors::CYAN));
+                    ui.heading(
+                        RichText::new("Appearance")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("✕").clicked() {
                             self.show_settings = false;
@@ -7609,7 +8275,10 @@ impl IronMonitorApp {
                 ui.add_space(8.0);
 
                 // Color Theme Selection
-                ui.label(RichText::new("Color Theme").color(CyberColors::TEXT_PRIMARY));
+                ui.label(
+                    RichText::new("Color Theme")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                );
                 ui.add_space(4.0);
 
                 egui::ComboBox::from_id_salt("theme_selector")
@@ -7636,7 +8305,10 @@ impl IronMonitorApp {
                 ui.add_space(16.0);
 
                 // Graph Line Thickness
-                ui.label(RichText::new("Graph Line Thickness").color(CyberColors::TEXT_PRIMARY));
+                ui.label(
+                    RichText::new("Graph Line Thickness")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                );
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
@@ -7659,7 +8331,7 @@ impl IronMonitorApp {
                 let rect = response.rect;
 
                 // Draw preview background
-                painter.rect_filled(rect, 4.0, CyberColors::SURFACE);
+                painter.rect_filled(rect, 4.0, theme::color(&palette_ctx, CyberColors::SURFACE));
 
                 // Draw sample sine wave with current thickness
                 let points: Vec<egui::Pos2> = (0..50)
@@ -7684,13 +8356,17 @@ impl IronMonitorApp {
                 // Show Grid Lines
                 ui.checkbox(
                     &mut self.settings.show_grid_lines,
-                    RichText::new("Show Grid Lines").color(CyberColors::TEXT_PRIMARY),
+                    RichText::new("Show Grid Lines")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                 );
 
                 ui.add_space(8.0);
 
                 // Animation Speed
-                ui.label(RichText::new("Animation Speed").color(CyberColors::TEXT_PRIMARY));
+                ui.label(
+                    RichText::new("Animation Speed")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                );
                 ui.add_space(4.0);
                 ui.add(
                     egui::Slider::new(&mut self.settings.animation_speed, 0.5..=2.0)

@@ -3,7 +3,7 @@
 //! Cyber-styled widgets for displaying hardware metrics
 //! Now with Glances-style threshold colors and quicklook panel
 
-use super::theme::{threshold_color, CyberColors};
+use super::theme::{self, threshold_color, CyberColors};
 use egui::epaint::PathShape;
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, Widget};
 
@@ -80,6 +80,7 @@ impl CyberProgressBar {
 
 impl Widget for CyberProgressBar {
     fn ui(self, ui: &mut Ui) -> Response {
+        let widget_color = theme::color(ui.ctx(), self.color);
         let desired_size = Vec2::new(ui.available_width(), self.height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
@@ -89,13 +90,17 @@ impl Widget for CyberProgressBar {
 
             // Use threshold color if enabled, otherwise use provided color
             let bar_color = if self.use_threshold_color {
-                threshold_color(self.progress * 100.0)
+                theme::color(ui.ctx(), threshold_color(self.progress * 100.0))
             } else {
-                self.color
+                widget_color
             };
 
             // Background with gradient effect
-            painter.rect_filled(rect, 4.0, CyberColors::BACKGROUND_DARK);
+            painter.rect_filled(
+                rect,
+                4.0,
+                theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK),
+            );
 
             // Subtle inner shadow
             let inner_shadow = Rect::from_min_size(
@@ -195,12 +200,12 @@ impl Widget for CyberProgressBar {
             painter.rect_stroke(
                 rect,
                 4.0,
-                Stroke::new(1.0_f32, CyberColors::BORDER),
+                Stroke::new(1.0_f32, theme::color(ui.ctx(), CyberColors::BORDER)),
                 egui::StrokeKind::Middle,
             );
 
             // Label and percentage with trend indicator
-            let text_color = CyberColors::TEXT_PRIMARY;
+            let text_color = theme::color(ui.ctx(), CyberColors::TEXT_PRIMARY);
 
             if let Some(label) = &self.label {
                 // Add trend indicator to label if present
@@ -303,6 +308,7 @@ impl<'a> MetricCard<'a> {
 
 impl Widget for MetricCard<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
+        let widget_color = theme::color(ui.ctx(), self.color);
         let desired_size = Vec2::new(140.0, 70.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
@@ -310,7 +316,7 @@ impl Widget for MetricCard<'_> {
             let painter = ui.painter();
 
             // Card background
-            painter.rect_filled(rect, 6.0, CyberColors::SURFACE);
+            painter.rect_filled(rect, 6.0, theme::color(ui.ctx(), CyberColors::SURFACE));
 
             // Accent border on left
             let accent_rect = Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
@@ -322,7 +328,7 @@ impl Widget for MetricCard<'_> {
                     ne: 0,
                     se: 0,
                 },
-                self.color,
+                widget_color,
             );
 
             // Title
@@ -331,7 +337,7 @@ impl Widget for MetricCard<'_> {
                 egui::Align2::LEFT_TOP,
                 self.title,
                 egui::FontId::proportional(11.0),
-                CyberColors::TEXT_SECONDARY,
+                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
             );
 
             // Value with unit
@@ -346,7 +352,7 @@ impl Widget for MetricCard<'_> {
                 egui::Align2::LEFT_BOTTOM,
                 value_text,
                 egui::FontId::proportional(18.0),
-                self.color,
+                widget_color,
             );
         }
 
@@ -461,6 +467,7 @@ impl SparklineChart {
 
 impl Widget for SparklineChart {
     fn ui(self, ui: &mut Ui) -> Response {
+        let widget_color = theme::color(ui.ctx(), self.color);
         // Reserve space for Y-axis labels on left
         let y_axis_width = if self.show_scale { 45.0 } else { 0.0 };
         let title_height = if self.title.is_some() { 20.0 } else { 0.0 };
@@ -491,7 +498,7 @@ impl Widget for SparklineChart {
                         egui::Align2::LEFT_CENTER,
                         title,
                         egui::FontId::proportional(13.0),
-                        CyberColors::TEXT_SECONDARY,
+                        theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
                     );
 
                     // Min/max info (if enabled and data has variance)
@@ -502,7 +509,7 @@ impl Widget for SparklineChart {
                             egui::Align2::LEFT_CENTER,
                             min_max_text,
                             egui::FontId::proportional(10.0),
-                            CyberColors::TEXT_MUTED,
+                            theme::color(ui.ctx(), CyberColors::TEXT_MUTED),
                         );
                     }
 
@@ -513,7 +520,7 @@ impl Widget for SparklineChart {
                         egui::Align2::RIGHT_CENTER,
                         value_text,
                         egui::FontId::proportional(14.0),
-                        self.color,
+                        widget_color,
                     );
                 }
 
@@ -522,8 +529,8 @@ impl Widget for SparklineChart {
                 rect
             };
 
-            // Background - slightly lighter for better contrast
-            let muted_bg = Color32::from_rgba_unmultiplied(8, 12, 18, 200);
+            // Deep backdrop keeps the chart line in focus.
+            let muted_bg = theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK);
             painter.rect_filled(graph_rect, 6.0, muted_bg);
 
             // Very subtle inner shadow for depth
@@ -542,7 +549,7 @@ impl Widget for SparklineChart {
 
             // Draw Y-axis scale labels
             if self.show_scale {
-                let scale_color = CyberColors::TEXT_MUTED;
+                let scale_color = theme::color(ui.ctx(), CyberColors::TEXT_MUTED);
                 let font = egui::FontId::proportional(10.0);
 
                 // Max value at top
@@ -594,7 +601,8 @@ impl Widget for SparklineChart {
 
             // Simple static grid lines
             if self.show_grid {
-                let grid_color = Color32::from_rgba_unmultiplied(60, 70, 80, 40);
+                let grid_color =
+                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(60, 70, 80, 40));
 
                 // Horizontal grid lines (4 lines = 5 zones for 0%, 25%, 50%, 75%, 100%)
                 for i in 1..4 {
@@ -652,10 +660,10 @@ impl Widget for SparklineChart {
 
                     // Layer 1: Dark base
                     let fill_color_dark = Color32::from_rgba_unmultiplied(
-                        self.color.r(),
-                        self.color.g(),
-                        self.color.b(),
-                        15,
+                        widget_color.r(),
+                        widget_color.g(),
+                        widget_color.b(),
+                        8,
                     );
                     painter.add(egui::Shape::convex_polygon(
                         fill_points.clone(),
@@ -666,7 +674,7 @@ impl Widget for SparklineChart {
                     // Layer 2: Gradient bands (simulated)
                     for layer in 0..3 {
                         let _band_height = plot_rect.height() * (0.3 - layer as f32 * 0.1);
-                        let alpha = 20 - layer * 5;
+                        let alpha = 10 - layer * 3;
                         let band_points: Vec<Pos2> = smooth_points
                             .iter()
                             .map(|p| {
@@ -680,9 +688,9 @@ impl Widget for SparklineChart {
                         band_fill.push(Pos2::new(plot_rect.min.x, plot_rect.max.y));
 
                         let band_color = Color32::from_rgba_unmultiplied(
-                            self.color.r(),
-                            self.color.g(),
-                            self.color.b(),
+                            widget_color.r(),
+                            widget_color.g(),
+                            widget_color.b(),
                             alpha as u8,
                         );
                         painter.add(egui::Shape::convex_polygon(
@@ -698,9 +706,9 @@ impl Widget for SparklineChart {
                     for offset in 1..=3 {
                         let glow_alpha = (40 - offset * 12) as u8;
                         let glow_color = Color32::from_rgba_unmultiplied(
-                            self.color.r(),
-                            self.color.g(),
-                            self.color.b(),
+                            widget_color.r(),
+                            widget_color.g(),
+                            widget_color.b(),
                             glow_alpha,
                         );
 
@@ -717,13 +725,8 @@ impl Widget for SparklineChart {
                     }
                 }
 
-                // Main line - bright color for visibility
-                let line_color = Color32::from_rgba_unmultiplied(
-                    (self.color.r() as f32 * 0.9) as u8,
-                    (self.color.g() as f32 * 0.9) as u8,
-                    (self.color.b() as f32 * 0.9) as u8,
-                    240,
-                );
+                // Full saturation and opacity give a crisp line on the dark fill.
+                let line_color = widget_color;
                 let main_path = PathShape::line(
                     smooth_points.clone(),
                     Stroke::new(self.line_thickness, line_color),
@@ -745,9 +748,9 @@ impl Widget for SparklineChart {
                                     *point,
                                     dot_size + r as f32 * 2.0,
                                     Color32::from_rgba_unmultiplied(
-                                        self.color.r(),
-                                        self.color.g(),
-                                        self.color.b(),
+                                        widget_color.r(),
+                                        widget_color.g(),
+                                        widget_color.b(),
                                         alpha,
                                     ),
                                 );
@@ -755,7 +758,7 @@ impl Widget for SparklineChart {
                         }
 
                         // Inner dot
-                        painter.circle_filled(*point, dot_size, self.color);
+                        painter.circle_filled(*point, dot_size, widget_color);
 
                         // Bright center
                         if is_last {
@@ -773,7 +776,10 @@ impl Widget for SparklineChart {
             painter.rect_stroke(
                 rect,
                 4.0,
-                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(60, 70, 80, 80)),
+                Stroke::new(
+                    1.0_f32,
+                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(60, 70, 80, 80)),
+                ),
                 egui::StrokeKind::Middle,
             );
         }
@@ -864,7 +870,7 @@ impl Widget for SectionHeader<'_> {
                 egui::Align2::LEFT_CENTER,
                 title_text,
                 egui::FontId::proportional(14.0),
-                CyberColors::CYAN,
+                theme::color(ui.ctx(), CyberColors::CYAN),
             );
 
             // Decorative line
@@ -873,7 +879,7 @@ impl Widget for SectionHeader<'_> {
                     .layout_no_wrap(
                         self.title.to_string(),
                         egui::FontId::proportional(14.0),
-                        CyberColors::CYAN,
+                        theme::color(ui.ctx(), CyberColors::CYAN),
                     )
                     .rect
                     .width()
@@ -882,7 +888,7 @@ impl Widget for SectionHeader<'_> {
             painter.hline(
                 line_start..=rect.max.x,
                 rect.center().y,
-                Stroke::new(1.0_f32, CyberColors::BORDER),
+                Stroke::new(1.0_f32, theme::color(ui.ctx(), CyberColors::BORDER)),
             );
         }
 
@@ -933,7 +939,7 @@ impl Widget for QuickLookPanel {
             let painter = ui.painter();
 
             // Background
-            painter.rect_filled(rect, 4.0, CyberColors::SURFACE);
+            painter.rect_filled(rect, 4.0, theme::color(ui.ctx(), CyberColors::SURFACE));
 
             // Calculate bar widths (4 equal sections)
             let section_width = rect.width() / 4.0 - 8.0;
@@ -968,7 +974,7 @@ impl Widget for QuickLookPanel {
                     egui::Align2::LEFT_CENTER,
                     &label_text,
                     egui::FontId::proportional(10.0),
-                    CyberColors::TEXT_SECONDARY,
+                    theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
                 );
 
                 // Mini bar
@@ -976,7 +982,11 @@ impl Widget for QuickLookPanel {
                     Pos2::new(x_start, y_center + 2.0),
                     Vec2::new(section_width * 0.6, bar_height * 0.5),
                 );
-                painter.rect_filled(bar_rect, 2.0, CyberColors::BACKGROUND_DARK);
+                painter.rect_filled(
+                    bar_rect,
+                    2.0,
+                    theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK),
+                );
 
                 if let Some(pct) = percent {
                     let fill_width = bar_rect.width() * (pct / 100.0);
@@ -985,7 +995,11 @@ impl Widget for QuickLookPanel {
                             bar_rect.min,
                             Vec2::new(fill_width, bar_rect.height()),
                         );
-                        painter.rect_filled(fill_rect, 2.0, threshold_color(pct));
+                        painter.rect_filled(
+                            fill_rect,
+                            2.0,
+                            theme::color(ui.ctx(), threshold_color(pct)),
+                        );
                     }
                 }
 
@@ -1001,7 +1015,7 @@ impl Widget for QuickLookPanel {
                     egui::Align2::LEFT_CENTER,
                     percent_text,
                     egui::FontId::proportional(11.0),
-                    threshold_color(percent.unwrap_or(0.0)),
+                    theme::color(ui.ctx(), threshold_color(percent.unwrap_or(0.0))),
                 );
             }
 
@@ -1009,7 +1023,7 @@ impl Widget for QuickLookPanel {
             painter.rect_stroke(
                 rect,
                 4.0,
-                Stroke::new(1.0_f32, CyberColors::BORDER),
+                Stroke::new(1.0_f32, theme::color(ui.ctx(), CyberColors::BORDER)),
                 egui::StrokeKind::Middle,
             );
         }
@@ -1031,10 +1045,26 @@ impl Widget for ThresholdLegend {
             let y = rect.center().y;
 
             let items = [
-                ("OK", CyberColors::THRESHOLD_OK, "0-50%"),
-                ("CAREFUL", CyberColors::THRESHOLD_CAREFUL, "50-70%"),
-                ("WARNING", CyberColors::THRESHOLD_WARNING, "70-90%"),
-                ("CRITICAL", CyberColors::THRESHOLD_CRITICAL, "90%+"),
+                (
+                    "OK",
+                    theme::color(ui.ctx(), CyberColors::THRESHOLD_OK),
+                    "0-50%",
+                ),
+                (
+                    "CAREFUL",
+                    theme::color(ui.ctx(), CyberColors::THRESHOLD_CAREFUL),
+                    "50-70%",
+                ),
+                (
+                    "WARNING",
+                    theme::color(ui.ctx(), CyberColors::THRESHOLD_WARNING),
+                    "70-90%",
+                ),
+                (
+                    "CRITICAL",
+                    theme::color(ui.ctx(), CyberColors::THRESHOLD_CRITICAL),
+                    "90%+",
+                ),
             ];
 
             let mut x = rect.min.x;
@@ -1062,7 +1092,7 @@ impl Widget for ThresholdLegend {
                     egui::Align2::LEFT_CENTER,
                     range,
                     egui::FontId::proportional(9.0),
-                    CyberColors::TEXT_MUTED,
+                    theme::color(ui.ctx(), CyberColors::TEXT_MUTED),
                 );
 
                 x += 90.0;
