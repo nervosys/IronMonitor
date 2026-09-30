@@ -144,6 +144,37 @@ fn provenance_and_value_never_contradict_each_other() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// An entity whose resolver declined is not an entity with no resolver.
+///
+/// A resolver that cannot proceed emits `<prefix>.<none>` with its reason and
+/// returns. Its entities were then filled by the catch-all for unbound ids,
+/// "no resolver bound on this build" -- false, and on macOS it hid the real
+/// reason for every `memory.bandwidth.*` row. They must carry the diagnostic's
+/// reason instead. This runs on whatever declined on the machine at hand; on
+/// macOS that always includes memory bandwidth.
+#[test]
+fn entities_under_a_declined_resolver_carry_its_reason() {
+    let declined: Vec<String> = readings()
+        .iter()
+        .filter_map(|r| r.id.strip_suffix(".<none>").map(|p| format!("{p}.")))
+        .collect();
+    let wrong: Vec<&str> = readings()
+        .iter()
+        .filter(|r| r.provenance == Provenance::Unavailable)
+        .filter(|r| declined.iter().any(|p| r.id.starts_with(p.as_str())))
+        .filter(|r| {
+            r.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("no resolver bound"))
+        })
+        .map(|r| r.id.as_str())
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "these resolvers declined with a reason, but their entities say no resolver is bound: {wrong:?}"
+    );
+}
+
 /// `nullable: false` is the schema promising a reader will always have a value.
 /// The ontology states outright that a null there "is a bug in the reader, not an
 /// absent device", so this is that claim made enforceable.

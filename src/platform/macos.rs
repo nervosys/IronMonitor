@@ -129,26 +129,29 @@ pub fn parse_vm_stat(output: &str) -> Option<VmStat> {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse::<u64>().ok())?;
 
-    let value = |label: &str| -> u64 {
+    // Every line is required. A missing one used to parse as `0`, so free,
+    // used and cached memory could each be understated by a whole category
+    // while the struct looked complete. `/proc/meminfo` on Linux is read the
+    // same way: a missing line fails the read rather than reading as zero.
+    let value = |label: &str| -> Option<u64> {
         output
             .lines()
             .find(|l| l.trim_start().starts_with(label))
             .and_then(|l| l.split_once(':'))
             .map(|(_, v)| v.trim().trim_end_matches('.').replace(',', ""))
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
     };
 
     Some(VmStat {
         page_size,
-        free: value("Pages free"),
-        active: value("Pages active"),
-        inactive: value("Pages inactive"),
-        speculative: value("Pages speculative"),
-        wired: value("Pages wired down"),
+        free: value("Pages free")?,
+        active: value("Pages active")?,
+        inactive: value("Pages inactive")?,
+        speculative: value("Pages speculative")?,
+        wired: value("Pages wired down")?,
         // Named "Pages occupied by compressor" on current macOS.
-        compressed: value("Pages occupied by compressor"),
-        file_backed: value("File-backed pages"),
+        compressed: value("Pages occupied by compressor")?,
+        file_backed: value("File-backed pages")?,
     })
 }
 
@@ -461,7 +464,7 @@ pub fn read_memory_stats() -> crate::error::Result<crate::core::memory::MemorySt
         ram: RamInfo {
             total: total_bytes / 1024,
             used: vm.used_bytes() / 1024,
-            free: vm.free_bytes() / 1024,
+            free: Some(vm.free_bytes() / 1024),
             // macOS keeps no buffer pool distinct from the file cache, so zero
             // here is a fact about the platform rather than a missing reading.
             // No macOS equivalent of the Linux "Buffers" line.
@@ -571,6 +574,18 @@ Pages occupied by compressor:             34567.
         assert_eq!(vm.used_bytes(), (234567 + 98765 + 34567) * 16384);
         assert_eq!(vm.free_bytes(), (45678 + 12345) * 16384);
         assert_eq!(vm.cached_bytes(), 87654 * 16384);
+    }
+
+    /// A missing line used to parse as `0`: without "File-backed pages",
+    /// cached memory read as none at all, with nothing to say it was not read.
+    #[test]
+    fn a_vm_stat_missing_a_line_is_rejected_rather_than_read_as_zero() {
+        let without: String = VM_STAT_OUTPUT
+            .lines()
+            .filter(|l| !l.starts_with("File-backed pages"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(parse_vm_stat(&without).is_none());
     }
 
     #[test]

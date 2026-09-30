@@ -119,20 +119,26 @@ pub struct SystemState {
     /// GPU information (only for queried GPUs)
     pub gpus: Vec<GpuState>,
 
-    /// Selected GPUs whose query failed, with the original collection index.
-    #[serde(default)]
-    pub gpu_errors: Vec<GpuQueryError>,
+    /// Queried GPUs that were enumerated but whose query failed.
+    ///
+    /// One failing adapter used to fail the whole state, so the model could
+    /// answer nothing -- not about memory, not about the adapter that read
+    /// fine. Now the others are reported and this one is named, with the
+    /// error, so the model can say which device it cannot see and why.
+    #[serde(default, alias = "gpu_errors")]
+    pub unreadable_gpus: Vec<UnreadableGpu>,
 
     /// Timestamp of state capture
     pub timestamp: u64,
 }
 
-/// A detected GPU whose current state could not be read.
+/// A GPU that was enumerated but could not be read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GpuQueryError {
-    /// Index in the detected GPU collection, unaffected by other query failures.
+pub struct UnreadableGpu {
+    /// The adapter's own index, the same one a readable adapter would have.
     pub index: usize,
-    /// Error returned by the device query; no sensor values were obtained.
+
+    /// The error its query returned.
     pub reason: String,
 }
 
@@ -193,7 +199,7 @@ pub struct GpuState {
 impl SystemState {
     /// Extract system state from monitor based on query
     pub fn from_monitor(monitor: &UnifiedMonitor, query: &Query) -> Result<Self> {
-        let (gpu_states, gpu_errors) =
+        let (gpu_states, unreadable_gpus) =
             Self::select_gpu_states(monitor.gpus().snapshot_all_partial(), query);
 
         // Get CPU state (platform-specific)
@@ -206,7 +212,7 @@ impl SystemState {
             cpu,
             memory,
             gpus: gpu_states,
-            gpu_errors,
+            unreadable_gpus,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -217,7 +223,7 @@ impl SystemState {
     fn select_gpu_states(
         snapshots: Vec<std::result::Result<GpuInfo, crate::Error>>,
         query: &Query,
-    ) -> (Vec<GpuState>, Vec<GpuQueryError>) {
+    ) -> (Vec<GpuState>, Vec<UnreadableGpu>) {
         let indices: Vec<usize> = if query.all_gpus || query.gpu_indices.is_empty() {
             (0..snapshots.len()).collect()
         } else {
@@ -228,7 +234,7 @@ impl SystemState {
         for index in indices {
             match snapshots.get(index) {
                 Some(Ok(info)) => gpus.push(Self::gpu_to_state(index, info.clone())),
-                Some(Err(error)) => errors.push(GpuQueryError {
+                Some(Err(error)) => errors.push(UnreadableGpu {
                     index,
                     reason: error.to_string(),
                 }),
@@ -474,10 +480,13 @@ impl SystemState {
             }
         }
 
-        for error in &self.gpu_errors {
+        for gpu in &self.unreadable_gpus {
             context.push_str(&format!(
-                "\nGPU {}: unavailable (query failed: {})\n",
-                error.index, error.reason
+                concat!(
+                    "\nGPU {}: present, but could not be read ({}). Nothing is known ",
+                    "about its state; do not infer it from the other GPUs.\n"
+                ),
+                gpu.index, gpu.reason
             ));
         }
 
@@ -667,11 +676,11 @@ mod tests {
 
     #[test]
     fn failed_gpu_preserves_other_readings_and_collection_indices() {
-        let (gpus, gpu_errors) =
+        let (gpus, unreadable_gpus) =
             SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("all GPUs"));
         assert_eq!(gpus.iter().map(|g| g.index).collect::<Vec<_>>(), [0, 2]);
-        assert_eq!(gpu_errors.len(), 1);
-        assert_eq!(gpu_errors[0].index, 1);
+        assert_eq!(unreadable_gpus.len(), 1);
+        assert_eq!(unreadable_gpus[0].index, 1);
         let state = SystemState {
             cpu: None,
             memory: Some(MemoryState {
@@ -681,22 +690,34 @@ mod tests {
                 utilization: 50.0,
             }),
             gpus,
-            gpu_errors,
+            unreadable_gpus,
             timestamp: 0,
         };
         let context = state.to_context_string();
         assert!(context.contains("Memory: 16384 / 32768 MB"), "{context}");
         assert!(context.contains("GPU 2: Test GPU"), "{context}");
         assert!(
-            context.contains("GPU 1: unavailable (query failed:"),
+            context.contains("GPU 1: present, but could not be read ("),
             "{context}"
         );
         assert!(context.contains("device disconnected"), "{context}");
         assert_eq!(state.total_power_w(), Some(200.0));
         assert_eq!(state.avg_utilization(), Some(40.0));
         assert_eq!(state.avg_temperature(), Some(50.0));
-        let json = serde_json::to_value(&state).unwrap();
-        assert!(json["gpu_errors"][0].get("value").is_none());
+        let mut json = serde_json::to_value(&state).unwrap();
+        assert!(json["unreadable_gpus"][0].get("value").is_none());
+        // Accept state serialized by the local fix before the upstream merge.
+        let old_errors = json
+            .as_object_mut()
+            .unwrap()
+            .remove("unreadable_gpus")
+            .unwrap();
+        json["gpu_errors"] = old_errors;
+        let restored: SystemState = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.unreadable_gpus[0].index, 1);
+        assert!(restored.unreadable_gpus[0]
+            .reason
+            .contains("device disconnected"));
     }
 
     #[test]
@@ -715,7 +736,7 @@ mod tests {
 
     #[test]
     fn every_gpu_can_fail_without_becoming_an_empty_machine() {
-        let (gpus, gpu_errors) = SystemState::select_gpu_states(
+        let (gpus, unreadable_gpus) = SystemState::select_gpu_states(
             vec![Err(crate::Error::GpuError(
                 "driver unavailable".to_string(),
             ))],
@@ -725,10 +746,12 @@ mod tests {
             cpu: None,
             memory: None,
             gpus,
-            gpu_errors,
+            unreadable_gpus,
             timestamp: 0,
         };
-        assert!(state.to_context_string().contains("GPU 0: unavailable"));
+        assert!(state
+            .to_context_string()
+            .contains("GPU 0: present, but could not be read"));
         assert_eq!(state.total_power_w(), None);
         assert_eq!(state.avg_utilization(), None);
         assert_eq!(state.avg_temperature(), None);
@@ -796,7 +819,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(50)), gpu(1, Some(36)), gpu(2, None)],
-            gpu_errors: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -835,7 +858,7 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: vec![gpu(0, Some(52))],
-            gpu_errors: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -854,10 +877,33 @@ mod tests {
             cpu: None,
             memory: None,
             gpus: Vec::new(),
-            gpu_errors: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
         assert!(!empty.to_context_string().contains("Reference thresholds"));
+    }
+
+    /// One adapter whose query fails must not blank the others, and the model
+    /// must be told it exists rather than left to believe the machine has one
+    /// GPU fewer.
+    #[test]
+    fn an_unreadable_gpu_is_named_and_does_not_hide_the_others() {
+        let state = SystemState {
+            cpu: None,
+            memory: None,
+            gpus: vec![gpu(0, Some(50))],
+            unreadable_gpus: vec![UnreadableGpu {
+                index: 1,
+                reason: "NVML: driver not loaded".to_string(),
+            }],
+            timestamp: 0,
+        };
+        let context = state.to_context_string();
+        assert!(context.contains("GPU 0:"), "{context}");
+        assert!(
+            context.contains("GPU 1: present, but could not be read (NVML: driver not loaded)"),
+            "{context}"
+        );
     }
 
     /// **The context the model is actually given** must not call logical
@@ -881,7 +927,7 @@ mod tests {
             cpu: Some(c),
             memory: None,
             gpus: Vec::new(),
-            gpu_errors: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -916,7 +962,7 @@ mod tests {
         let ram = crate::core::memory::RamInfo {
             total: 98_191_140,
             used: 49_095_570,
-            free: 10_000_000,
+            free: Some(10_000_000),
             buffers: None,
             cached: None,
             shared: None,
@@ -986,7 +1032,7 @@ mod tests {
                     process_count: 1,
                 },
             ],
-            gpu_errors: Vec::new(),
+            unreadable_gpus: Vec::new(),
             timestamp: 0,
         };
 

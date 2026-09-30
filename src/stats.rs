@@ -655,7 +655,7 @@ mod macos_stats {
             ram: RamInfo {
                 total: total / 1024,
                 used: vm.used_bytes() / 1024,
-                free: vm.free_bytes() / 1024,
+                free: Some(vm.free_bytes() / 1024),
                 // macOS has no buffer cache distinct from the file cache, so
                 // there is no figure to report rather than a figure of zero.
                 buffers: None,

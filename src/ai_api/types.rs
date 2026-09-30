@@ -96,8 +96,8 @@ pub struct MemorySummary {
     pub total_mb: u64,
     /// Used RAM in MB
     pub used_mb: u64,
-    /// Free RAM in MB
-    pub free_mb: u64,
+    /// Free RAM in MB, or `None` where it was not read.
+    pub free_mb: Option<u64>,
     /// Cached RAM in MB
     /// Cached RAM in MB, or `None` where the platform reports none.
     pub cached_mb: Option<u64>,

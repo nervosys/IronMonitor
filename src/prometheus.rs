@@ -481,11 +481,15 @@ impl PrometheusExporter {
                 "Used physical memory in bytes",
                 (mem.ram.used * KB) as f64,
             ));
-            self.add(MetricFamily::gauge(
-                &self.prefixed("memory_free_bytes"),
-                "Free physical memory in bytes",
-                (mem.ram.free * KB) as f64,
-            ));
+            // No series when free memory was not read, rather than a zero or
+            // the available figure under this name.
+            if let Some(free) = mem.ram.free {
+                self.add(MetricFamily::gauge(
+                    &self.prefixed("memory_free_bytes"),
+                    "Free physical memory in bytes",
+                    (free * KB) as f64,
+                ));
+            }
             if mem.ram.total > 0 {
                 self.add(MetricFamily::gauge(
                     &self.prefixed("memory_usage_percent"),

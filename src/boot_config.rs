@@ -194,7 +194,33 @@ pub struct BootMonitor {
 impl BootMonitor {
     /// Create a new boot monitor
     pub fn new() -> Result<Self> {
-        let mut monitor = Self {
+        let mut monitor = Self::unread();
+        monitor.refresh()?;
+        Ok(monitor)
+    }
+
+    /// Only the boot timing, without the boot configuration and startup items
+    /// [`BootMonitor::new`] also reads.
+    ///
+    /// Those cost several helper processes on Windows -- four PowerShell
+    /// sessions and `schtasks` -- and a caller that wants one duration, such
+    /// as the ontology resolver, was paying for all of them: about ten seconds
+    /// of every snapshot on the machine this was measured on.
+    pub fn read_boot_time() -> Result<BootTime> {
+        #[allow(unused_mut)]
+        let mut monitor = Self::unread();
+        #[cfg(target_os = "linux")]
+        monitor.linux_read_boot_time()?;
+        #[cfg(windows)]
+        monitor.windows_read_boot_time()?;
+        #[cfg(target_os = "macos")]
+        monitor.macos_read_boot_time()?;
+        Ok(monitor.boot_time)
+    }
+
+    /// A monitor with nothing read yet.
+    fn unread() -> Self {
+        Self {
             boot_time: BootTime {
                 total: Duration::ZERO,
                 firmware: None,
@@ -215,10 +241,7 @@ impl BootMonitor {
             },
             startup_items: Vec::new(),
             kernel_params: KernelParams::default(),
-        };
-
-        monitor.refresh()?;
-        Ok(monitor)
+        }
     }
 
     /// Refresh all boot information
@@ -580,7 +603,7 @@ impl BootMonitor {
 
         // Get uptime via PowerShell
         let output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile",
                 "-Command",
                 "(Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime | Select-Object -ExpandProperty TotalSeconds"
             ])
@@ -595,7 +618,7 @@ impl BootMonitor {
 
         // Get last boot time
         let output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile",
                 "-Command",
                 "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime | Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'"
             ])
@@ -629,7 +652,7 @@ impl BootMonitor {
         // code already reads as "not measured", and an elevated run gets the
         // genuine article.
         let output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile",
                 "-Command",
                 "try { $e = Get-WinEvent -LogName 'Microsoft-Windows-Diagnostics-Performance/Operational' -MaxEvents 1 -FilterXPath \"*[System[(EventID=100)]]\" -ErrorAction Stop; $x = [xml]$e.ToXml(); ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'BootTime' }).'#text' } catch { }"
             ])
@@ -663,7 +686,7 @@ impl BootMonitor {
 
         // Get startup items from Task Manager equivalent
         let output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile",
                 "-Command",
                 "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location,User | ConvertTo-Csv -NoTypeInformation"
             ])

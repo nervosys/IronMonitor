@@ -81,12 +81,18 @@ pub struct EnergyReading {
 pub struct PowerSnapshot {
     /// Per-domain power in watts.
     pub domain_watts: HashMap<String, f64>,
-    /// Total package power in watts (sum of package domains).
-    pub total_package_watts: f64,
-    /// Total core power in watts.
-    pub total_core_watts: f64,
-    /// Total DRAM power in watts.
-    pub total_dram_watts: f64,
+    /// Total package power in watts (sum of package domains), or `None` when
+    /// no package domain produced a delta this interval.
+    ///
+    /// The three totals were bare `f64` accumulators starting at `0.0`, so a
+    /// machine drawing no power, a platform with no such domain, and an
+    /// interval in which every counter wrapped without a known range all read
+    /// `0.0`. `Some(0.0)` now means domains were read and summed to zero.
+    pub total_package_watts: Option<f64>,
+    /// Total core power in watts, `None` as for the package total.
+    pub total_core_watts: Option<f64>,
+    /// Total DRAM power in watts, `None` as for the package total.
+    pub total_dram_watts: Option<f64>,
     /// Duration of measurement in seconds.
     pub measurement_duration_secs: f64,
     /// Per-domain energy delta in microjoules.
@@ -160,13 +166,15 @@ impl RaplMonitor {
                     elapsed,
                 ));
 
-                if let Some(ref snap) = self.snapshot {
-                    if snap.total_package_watts > self.peak_watts {
-                        self.peak_watts = snap.total_package_watts;
+                // Only an interval that measured package power moves the peak
+                // and the running average; one that measured nothing used to
+                // pull the average toward zero.
+                if let Some(package) = self.snapshot.as_ref().and_then(|s| s.total_package_watts) {
+                    if package > self.peak_watts {
+                        self.peak_watts = package;
                     }
                     self.sample_count += 1;
-                    self.avg_watts +=
-                        (snap.total_package_watts - self.avg_watts) / self.sample_count as f64;
+                    self.avg_watts += (package - self.avg_watts) / self.sample_count as f64;
                 }
             }
         }
@@ -185,13 +193,14 @@ impl RaplMonitor {
         self.snapshot.as_ref()
     }
 
-    /// Get power efficiency analysis.
-    pub fn efficiency(&self, estimated_tdp: f64) -> PowerEfficiency {
-        let current_watts = self
-            .snapshot
-            .as_ref()
-            .map(|s| s.total_package_watts)
-            .unwrap_or(0.0);
+    /// Power efficiency analysis, or `None` until an interval has measured
+    /// package power.
+    ///
+    /// Without one this used `0.0` as the current draw, and so reported the
+    /// machine within its TDP, with all of it as headroom and an efficiency
+    /// ratio of 1.0 -- a complete analysis of a reading that was never taken.
+    pub fn efficiency(&self, estimated_tdp: f64) -> Option<PowerEfficiency> {
+        let current_watts = self.snapshot.as_ref()?.total_package_watts?;
 
         let within_tdp = current_watts <= estimated_tdp;
         let headroom = (estimated_tdp - current_watts).max(0.0);
@@ -220,7 +229,7 @@ impl RaplMonitor {
             recommendations.push("Significant power headroom available for turbo boost".into());
         }
 
-        PowerEfficiency {
+        Some(PowerEfficiency {
             avg_package_watts: self.avg_watts,
             peak_package_watts: self.peak_watts,
             efficiency_ratio,
@@ -228,7 +237,7 @@ impl RaplMonitor {
             estimated_tdp,
             headroom_watts: headroom,
             recommendations,
-        }
+        })
     }
 
     fn compute_power(
@@ -239,9 +248,9 @@ impl RaplMonitor {
         let secs = elapsed.as_secs_f64();
         let mut domain_watts = HashMap::new();
         let mut energy_delta_uj = HashMap::new();
-        let mut total_package = 0.0;
-        let mut total_core = 0.0;
-        let mut total_dram = 0.0;
+        let mut total_package: Option<f64> = None;
+        let mut total_core: Option<f64> = None;
+        let mut total_dram: Option<f64> = None;
 
         for c in curr {
             // Find matching previous reading
@@ -267,12 +276,13 @@ impl RaplMonitor {
                 domain_watts.insert(key.clone(), watts);
                 energy_delta_uj.insert(key, delta);
 
-                match c.domain {
-                    PowerDomain::Package | PowerDomain::Platform => total_package += watts,
-                    PowerDomain::Core => total_core += watts,
-                    PowerDomain::Dram => total_dram += watts,
-                    _ => {}
-                }
+                let total = match c.domain {
+                    PowerDomain::Package | PowerDomain::Platform => &mut total_package,
+                    PowerDomain::Core => &mut total_core,
+                    PowerDomain::Dram => &mut total_dram,
+                    _ => continue,
+                };
+                *total = Some(total.unwrap_or(0.0) + watts);
             }
         }
 
@@ -442,7 +452,7 @@ mod tests {
         let elapsed = Duration::from_secs(1);
         let snap = RaplMonitor::compute_power(&prev, &curr, elapsed);
         // 10_000_000 uJ / (1s * 1_000_000) = 10W
-        assert!((snap.total_package_watts - 10.0).abs() < 0.1);
+        assert!((snap.total_package_watts.unwrap() - 10.0).abs() < 0.1);
     }
 
     #[test]
@@ -468,7 +478,7 @@ mod tests {
         let elapsed = Duration::from_secs(1);
         let snap = RaplMonitor::compute_power(&prev, &curr, elapsed);
         // Delta = (100M - 90M) + 5M = 15M uJ = 15W
-        assert!((snap.total_core_watts - 15.0).abs() < 0.1);
+        assert!((snap.total_core_watts.unwrap() - 15.0).abs() < 0.1);
     }
 
     /// A wrap with no known range has no recoverable delta, so the domain is
@@ -499,15 +509,12 @@ mod tests {
             "no delta is recoverable, so the domain must be absent: {:?}",
             snap.domain_watts
         );
-        // Nothing was summed into the total. Note what this does *not* claim:
-        // that `0.0` is the right answer. `PowerSnapshot`'s totals are bare
-        // `f64` sums, so "no domain produced a delta" and "the cores drew no
-        // power" are both `0.0` -- recorded in HANDOFF as open. This asserts
-        // only that the fabricated terawatt delta did not reach the sum.
-        assert!(
-            snap.total_core_watts < 1.0,
-            "the unrecoverable delta must not reach the core total: {}",
-            snap.total_core_watts
+        // Nothing was summed, and the total now says so. This used to assert
+        // only `< 1.0`, because a bare `f64` could not distinguish "no domain
+        // produced a delta" from "the cores drew no power".
+        assert_eq!(
+            snap.total_core_watts, None,
+            "no core domain produced a delta, so there is no core total"
         );
     }
 
@@ -519,9 +526,9 @@ mod tests {
             prev_time: None,
             snapshot: Some(PowerSnapshot {
                 domain_watts: HashMap::new(),
-                total_package_watts: 85.0,
-                total_core_watts: 60.0,
-                total_dram_watts: 8.0,
+                total_package_watts: Some(85.0),
+                total_core_watts: Some(60.0),
+                total_dram_watts: Some(8.0),
                 measurement_duration_secs: 1.0,
                 energy_delta_uj: HashMap::new(),
             }),
@@ -530,10 +537,28 @@ mod tests {
             sample_count: 100,
         };
 
-        let eff = monitor.efficiency(125.0);
+        let eff = monitor
+            .efficiency(125.0)
+            .expect("a package total was measured");
         assert!(!eff.within_tdp || eff.headroom_watts >= 0.0);
         assert!(eff.avg_package_watts > 0.0);
         assert!(eff.peak_package_watts > 100.0);
+    }
+
+    /// No measured package power, no analysis -- rather than one that treats
+    /// the missing reading as zero watts and finds all of the TDP free.
+    #[test]
+    fn no_measured_package_power_means_no_efficiency_analysis() {
+        let monitor = RaplMonitor {
+            readings: Vec::new(),
+            prev_readings: Vec::new(),
+            prev_time: None,
+            snapshot: None,
+            peak_watts: 0.0,
+            avg_watts: 0.0,
+            sample_count: 0,
+        };
+        assert!(monitor.efficiency(125.0).is_none());
     }
 
     #[test]

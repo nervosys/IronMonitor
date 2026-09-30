@@ -9,8 +9,15 @@ pub struct RamInfo {
     pub total: u64,
     /// Used RAM in KB
     pub used: u64,
-    /// Free RAM in KB
-    pub free: u64,
+    /// Free RAM in KB: memory holding nothing at all, not counting cache the
+    /// kernel would reclaim on demand. `None` where it was not read.
+    ///
+    /// Linux reports `MemFree` and macOS `Pages free`. Windows reported
+    /// `ullAvailPhys`, which is *available* -- the standby list included -- so
+    /// on the machine this was found on "free" was 60.9 GB where 31.7 GB was.
+    /// It now reads `\Memory\Free & Zero Page List Bytes`, and a failed read
+    /// is `None` rather than the available figure under this name.
+    pub free: Option<u64>,
     /// Buffered RAM in KB, or `None` where the platform has no such figure.
     ///
     /// "Buffers" is a Linux `/proc/meminfo` notion. Windows and macOS have no
@@ -138,7 +145,7 @@ impl MemoryStats {
             ram: RamInfo {
                 total: 0,
                 used: 0,
-                free: 0,
+                free: None,
                 buffers: None,
                 cached: None,
                 shared: None,

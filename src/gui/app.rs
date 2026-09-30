@@ -3329,7 +3329,7 @@ impl IronMonitorApp {
                 let usage = mem.ram_usage_percent();
                 let total_mb = mem.ram.total as f64 / 1024.0;
                 let used_mb = mem.ram.used as f64 / 1024.0;
-                let free_mb = mem.ram.free as f64 / 1024.0;
+                let free_mb = mem.ram.free.map(|v| v as f64 / 1024.0);
                 // Absent on platforms that publish no such figure -- Windows
                 // and macOS have no "buffers" at all. The cards below show an
                 // em dash for those rather than a plausible `0`.
@@ -3346,7 +3346,7 @@ impl IronMonitorApp {
                 // the installed total.
                 //
                 // It was `free + buffers + cached`, the Linux `free -h`
-                // approximation. On Windows `ram.free` is `ullAvailPhys` --
+                // approximation. On Windows `ram.free` was `ullAvailPhys` --
                 // already the available figure, standby list included -- and
                 // `cached` is `SystemCache`, which Microsoft documents as the
                 // standby list plus the system working set. So the standby list
@@ -3392,7 +3392,7 @@ impl IronMonitorApp {
                             .color(threshold_color(usage)),
                     );
                     ui.add(
-                        MetricCard::new("Free", format!("{:.0}", free_mb))
+                        MetricCard::new("Free", card(free_mb))
                             .unit("MB")
                             .color(CyberColors::THRESHOLD_OK),
                     );
@@ -3442,7 +3442,7 @@ impl IronMonitorApp {
                         let used_pct = (used_mb - buffers_bar - cached_bar).max(0.0) / total_mb;
                         let buffers_pct = buffers_bar / total_mb;
                         let cached_pct = cached_bar / total_mb;
-                        let free_pct = free_mb / total_mb;
+                        let free_pct = free_mb.unwrap_or(0.0) / total_mb;
 
                         let _bar_width = ui.available_width() - 100.0;
 
@@ -6166,12 +6166,12 @@ impl IronMonitorApp {
                 if let Some(ref result) = self.nettools_nmap_result {
                     // Host info
                     ui.horizontal(|ui| {
-                        let status_color = if result.is_up {
-                            CyberColors::NEON_GREEN
-                        } else {
-                            CyberColors::NEON_RED
+                        let (status_text, status_color) = match result.is_up {
+                            Some(true) => ("UP", CyberColors::NEON_GREEN),
+                            Some(false) => ("DOWN", CyberColors::NEON_RED),
+                            // Ping gave no verdict; not the same as no reply.
+                            None => ("ping unreadable", CyberColors::TEXT_MUTED),
                         };
-                        let status_text = if result.is_up { "UP" } else { "DOWN" };
 
                         ui.label(RichText::new(&result.host).color(CyberColors::CYAN));
                         ui.label(RichText::new(format!("({})", status_text)).color(status_color));

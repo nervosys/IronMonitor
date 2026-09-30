@@ -28,7 +28,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("    Address: {}", adapter.address);
         println!(
             "    Powered: {}",
-            if adapter.powered { "Yes" } else { "No" }
+            match adapter.powered {
+                Some(true) => "Yes",
+                Some(false) => "No",
+                None => "not read",
+            }
         );
         println!();
     }

@@ -532,7 +532,12 @@ impl Ontology {
             Some(U::Bytes),
             P::Measured,
             true,
-            "Video memory in use. Null on unified-memory parts that report none.",
+            concat!(
+                "Video memory in use, including what the driver reserves for itself ",
+                "-- about 250 MB on an RTX 3090 Ti -- so an idle discrete card does ",
+                "not read zero. Recent `nvidia-smi` excludes the reservation, and ",
+                "reads lower by that much. Null on unified-memory parts that report none."
+            ),
         ));
         add(Entity::new(
             "gpu.{n}.memory.total",
@@ -881,7 +886,7 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            true,
             "Physical core count. Below `logical_cores` when SMT is on, and the \
              right denominator for anything that scales with execution \
              resources rather than with schedulable threads.",
@@ -892,7 +897,7 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            true,
             "Logical processor count, SMT threads included. The right denominator \
              for a thread pool.",
         ));
@@ -902,7 +907,7 @@ impl Ontology {
             K::Identity,
             None,
             P::Measured,
-            false,
+            true,
             "Whether simultaneous multithreading is on right now. Measured rather \
              than declared: the silicon supports it or does not, but firmware \
              and the kernel both get a say, and this is the state as found.",
@@ -1089,9 +1094,11 @@ impl Ontology {
             K::Identity,
             None,
             P::Specification,
-            false,
+            true,
             "Whether this slot holds a module. False is a reading, and the reason \
-             the fields below may be absent for a slot that genuinely exists.",
+             the fields below may be absent for a slot that genuinely exists. Null \
+             where nothing the platform reported establishes presence either way: \
+             an unreadable size is not an empty slot.",
         ));
         add(Entity::new(
             "memory.dimm.{n}.capacity",
@@ -1663,7 +1670,7 @@ impl Ontology {
             K::Measurement,
             None,
             P::Measured,
-            false,
+            true,
             "Whether the radio is on. A measurement: it is a runtime state, and it \
              is the field that answers whether the adapter is usable now.",
         ));
@@ -2548,7 +2555,10 @@ impl Ontology {
             Some(U::Percent),
             P::Measured,
             true,
-            "Process CPU share over the last interval.",
+            "Process CPU share over an interval of about 250 ms between two \
+             samples taken for this snapshot, as a share of all logical \
+             processors. A process that started within the interval reports \
+             its average since it started.",
         ));
         add(Entity::new(
             "process.{pid}.memory",
@@ -2784,7 +2794,11 @@ impl Ontology {
             K::Identity,
             Some(U::Count),
             P::Specification,
-            false,
+            // Nullable: where the memory configuration cannot be read at all --
+            // every Mac, and a machine without readable SMBIOS -- there is no
+            // channel count, and a null here is that fact rather than a reader
+            // bug.
+            true,
             "Active channel count. The largest single term in the estimate: a \
              dual-channel machine misread as single-channel halves every figure \
              below it.",
@@ -2795,7 +2809,8 @@ impl Ontology {
             K::Limit,
             Some(U::Count),
             P::Specification,
-            false,
+            // Nullable for the same reason as `channels`.
+            true,
             "Channels the controller supports. Above `channels` means the machine \
              is running below the bandwidth its board allows, which is usually a \
              populated-slot problem and worth being able to see.",
@@ -3110,6 +3125,17 @@ impl Ontology {
                  that is not implemented here.",
             ));
         }
+        add(Entity::new(
+            "gpu.{n}.<unreadable>",
+            D::Gpu,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present in place of an adapter's readings when that adapter was \
+             enumerated but its query failed. Carries the error. The other \
+             adapters are reported as usual, and the index stays the adapter's own.",
+        ));
         add(Entity::new(
             "process.<truncated>",
             D::Process,

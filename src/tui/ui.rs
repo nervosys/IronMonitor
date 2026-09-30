@@ -905,21 +905,26 @@ fn draw_single_accelerator(
     };
 
     // Compact: All key metrics with Glances-style formatting
+    // Every figure that was not read shows a dash. Clocks, temperature and
+    // power used `.unwrap_or(0)`, so an adapter with no source for them -- the
+    // AMD iGPU on Windows -- was drawn at "0 MHz", "0°C" and "0/0W", which the
+    // snapshot publishes as unavailable. And the memory percentage was
+    // formatted `{:.0}` over a *string*, where `.0` means "at most zero
+    // characters": it printed "(%)" on every card.
     let accel_util_label = format!(
-        "{}: {} @ {} MHz │ MEM: {}/{} ({:.0}%) @ {} MHz │ {:.0}°C │ {:.0}/{:.0}W{}{}",
+        "{}: {} @ {} │ MEM: {}/{} ({}) @ {} │ {} │ {}{}{}",
         type_str,
         // A device with no utilization counter shows a dash, not 0%.
         accel
             .utilization
             .map_or_else(|| "-".to_string(), |u| format!("{u:.0}%")),
-        accel.clock_core.unwrap_or(0),
+        mhz_opt(accel.clock_core),
         auto_unit_opt(accel.memory_used),
         auto_unit_opt(accel.memory_total),
         pct_opt(mem_percent),
-        accel.clock_memory.unwrap_or(0),
-        accel.temperature.unwrap_or(0.0),
-        accel.power.unwrap_or(0.0),
-        accel.power_limit.unwrap_or(0.0),
+        mhz_opt(accel.clock_memory),
+        celsius_opt(accel.temperature),
+        watts_opt(accel.power, accel.power_limit),
         fan_str,
         enc_dec_str
     );
@@ -980,16 +985,15 @@ fn draw_single_gpu(f: &mut Frame, gpu: &super::app::GpuInfo, idx: usize, area: R
 
     // Compact: All key metrics with Glances-style formatting
     let gpu_util_label = format!(
-        "GPU: {} @ {} MHz │ MEM: {}/{} ({:.0}%) @ {} MHz │ {:.0}°C │ {:.0}/{:.0}W",
+        "GPU: {} @ {} │ MEM: {}/{} ({}) @ {} │ {} │ {}",
         pct_opt(gpu.utilization.map(f64::from)),
-        gpu.clock_graphics.unwrap_or(0),
+        mhz_opt(gpu.clock_graphics),
         auto_unit_opt(gpu.memory_used),
         auto_unit_opt(gpu.memory_total),
         pct_opt(mem_percent),
-        gpu.clock_memory.unwrap_or(0),
-        gpu.temperature.unwrap_or(0.0),
-        gpu.power.unwrap_or(0.0),
-        gpu.power_limit.unwrap_or(0.0)
+        mhz_opt(gpu.clock_memory),
+        celsius_opt(gpu.temperature),
+        watts_opt(gpu.power, gpu.power_limit)
     );
 
     // A gauge at 0% and a gauge with no reading look identical, so the
@@ -1821,12 +1825,17 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         })
                     } else {
                         // Total I/O (read + write) for display
-                        let total_io = p.io_read_bytes + p.io_write_bytes;
-                        let io_color = if total_io > 1024 * 1024 * 1024 {
+                        // `None` where the counters could not be read -- other
+                        // users' processes on an unprivileged Linux run. Shown
+                        // as `?`, not as the `-` of a process that did no I/O.
+                        let total_io = p.io_read_bytes.zip(p.io_write_bytes).map(|(r, w)| r + w);
+                        let io_color = if total_io.is_none() {
+                            Color::DarkGray
+                        } else if total_io.unwrap_or(0) > 1024 * 1024 * 1024 {
                             glances_colors::WARNING // > 1GB total I/O
-                        } else if total_io > 100 * 1024 * 1024 {
+                        } else if total_io.unwrap_or(0) > 100 * 1024 * 1024 {
                             glances_colors::CAREFUL // > 100MB
-                        } else if total_io > 0 {
+                        } else if total_io.unwrap_or(0) > 0 {
                             glances_colors::OK
                         } else {
                             Color::DarkGray
@@ -1882,10 +1891,10 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                                 Style::default().fg(thread_color),
                             ),
                             Span::styled(
-                                if total_io > 0 {
-                                    format!("{:>6}", auto_unit(total_io))
-                                } else {
-                                    "     -".to_string()
+                                match total_io {
+                                    Some(t) if t > 0 => format!("{:>6}", auto_unit(t)),
+                                    Some(_) => "     -".to_string(),
+                                    None => "     ?".to_string(),
                                 },
                                 Style::default().fg(io_color),
                             ),
@@ -3450,9 +3459,39 @@ fn pct_opt(pct: Option<f64>) -> String {
     pct.map_or_else(|| "-".to_string(), |p| format!("{p:.0}%"))
 }
 
+/// Render an optional clock, or a dash.
+fn mhz_opt(mhz: Option<u32>) -> String {
+    mhz.map_or_else(|| "- MHz".to_string(), |m| format!("{m} MHz"))
+}
+
+/// Render an optional temperature, or a dash.
+fn celsius_opt(c: Option<f32>) -> String {
+    c.map_or_else(|| "-°C".to_string(), |c| format!("{c:.0}°C"))
+}
+
+/// Render draw against limit, dashing whichever was not read.
+fn watts_opt(draw: Option<f32>, limit: Option<f32>) -> String {
+    let w = |v: Option<f32>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.0}"));
+    format!("{}/{}W", w(draw), w(limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unread clock, temperature or power figure is drawn as a dash, and
+    /// a percentage is drawn at all -- `{:.0}` over the string `pct_opt`
+    /// returns printed nothing.
+    #[test]
+    fn unread_gpu_figures_are_dashes_and_percentages_print() {
+        assert_eq!(mhz_opt(None), "- MHz");
+        assert_eq!(mhz_opt(Some(1860)), "1860 MHz");
+        assert_eq!(celsius_opt(None), "-°C");
+        assert_eq!(celsius_opt(Some(47.4)), "47°C");
+        assert_eq!(watts_opt(None, None), "-/-W");
+        assert_eq!(watts_opt(Some(77.2), Some(450.0)), "77/450W");
+        assert_eq!(format!("({})", pct_opt(Some(14.2))), "(14%)");
+    }
 
     #[test]
     fn absent_readings_render_as_nothing_not_as_zero() {

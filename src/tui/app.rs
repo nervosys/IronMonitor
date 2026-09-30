@@ -416,7 +416,11 @@ impl PeripheralCache {
                     lines.push(format!(
                         "Adapter: {} ({})",
                         a.name,
-                        if a.powered { "ON" } else { "OFF" }
+                        match a.powered {
+                            Some(true) => "ON",
+                            Some(false) => "OFF",
+                            None => "power state not read",
+                        }
                     ));
                 }
                 if devices.is_empty() {

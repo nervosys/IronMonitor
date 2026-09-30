@@ -46,9 +46,9 @@ fn main() -> Result<()> {
             p.pid,
             parent,
             p.thread_count,
-            p.handle_count,
-            format_bytes(p.io_read_bytes),
-            format_bytes(p.io_write_bytes),
+            p.handle_count.map_or("?".to_string(), |h| h.to_string()),
+            p.io_read_bytes.map_or("?".to_string(), format_bytes),
+            p.io_write_bytes.map_or("?".to_string(), format_bytes),
             format_bytes(p.private_bytes),
             p.name.chars().take(30).collect::<String>()
         );
@@ -58,7 +58,10 @@ fn main() -> Result<()> {
 
     // Show processes with highest I/O
     procs.sort_by(|a, b| {
-        (b.io_read_bytes + b.io_write_bytes).cmp(&(a.io_read_bytes + a.io_write_bytes))
+        let total = |p: &ironmonlib::process_monitor::ProcessMonitorInfo| {
+            p.io_read_bytes.zip(p.io_write_bytes).map(|(r, w)| r + w)
+        };
+        total(b).cmp(&total(a))
     });
 
     println!("\nTop 10 processes by total I/O:");
@@ -70,14 +73,14 @@ fn main() -> Result<()> {
     println!("{:-<110}", "");
 
     for p in procs.iter().take(10) {
-        let total_io = p.io_read_bytes + p.io_write_bytes;
+        let total_io = p.io_read_bytes.zip(p.io_write_bytes).map(|(r, w)| r + w);
         println!(
             "{:>7} | {:>5} | {:>12} | {:>12} | {:>12} | {:<30}",
             p.pid,
             p.thread_count,
-            format_bytes(p.io_read_bytes),
-            format_bytes(p.io_write_bytes),
-            format_bytes(total_io),
+            p.io_read_bytes.map_or("?".to_string(), format_bytes),
+            p.io_write_bytes.map_or("?".to_string(), format_bytes),
+            total_io.map_or("?".to_string(), format_bytes),
             p.name.chars().take(30).collect::<String>()
         );
     }

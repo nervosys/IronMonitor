@@ -143,6 +143,20 @@ pub fn snapshot() -> Vec<Reading> {
     resolve_settings(&mut out);
 
     // Anything the ontology names but nothing above produced.
+    //
+    // Most of these have no resolver. Some do, and it returned early after a
+    // `<prefix>.<none>` diagnostic saying why -- the processor could not be
+    // identified, the service manager could not be reached. Those entities
+    // used to get the note below too, "no resolver bound", which is false for
+    // them: the resolver ran and gave its reason. They inherit the reason of
+    // the nearest enclosing diagnostic instead.
+    let declined: Vec<(String, String)> = out
+        .iter()
+        .filter_map(|r| {
+            let prefix = r.id.strip_suffix(".<none>")?;
+            Some((format!("{prefix}."), r.note.clone()?))
+        })
+        .collect();
     let produced: std::collections::HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
     let mut unbound: Vec<Reading> = ontology
         .entities
@@ -158,12 +172,19 @@ pub fn snapshot() -> Vec<Reading> {
                 && !produced.contains(e.id.as_str())
         })
         .map(|e| {
-            Reading::unavailable(
-                e.id.clone(),
-                e.unit,
-                "no resolver bound on this build — the entity is defined but ironmon \
-                 does not yet read it here",
-            )
+            let inherited = declined
+                .iter()
+                .filter(|(prefix, _)| e.id.starts_with(prefix.as_str()))
+                .max_by_key(|(prefix, _)| prefix.len());
+            match inherited {
+                Some((_, why)) => Reading::unavailable(e.id.clone(), e.unit, why.clone()),
+                None => Reading::unavailable(
+                    e.id.clone(),
+                    e.unit,
+                    "no resolver bound on this build — the entity is defined but ironmon \
+                     does not yet read it here",
+                ),
+            }
         })
         .collect();
     out.append(&mut unbound);
@@ -1247,16 +1268,21 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         push_spec_text(out, format!("{base}.locator"), &dimm.locator);
         // Firmware-declared like the rest of the cluster: the board says the
         // slot is filled, and ironmon did not look inside the case.
-        out.push(Reading::spec(
+        push_spec_opt(
+            out,
             format!("{base}.populated"),
-            serde_json::json!(dimm.populated),
+            dimm.populated.map(|p| serde_json::json!(p)),
             None,
-        ));
+            concat!(
+                "nothing the platform reported establishes whether this slot holds a ",
+                "module: no size could be read, and no status or part number says"
+            ),
+        );
 
         // An empty slot is a real slot with nothing in it. Reporting zeros for its
         // capacity and speed would describe a module of no size running at no
         // speed, which is not what the board is telling us.
-        if !dimm.populated {
+        if dimm.populated == Some(false) {
             for suffix in PER_SLOT {
                 out.push(Reading::unavailable(
                     format!("{base}.{suffix}"),
@@ -1270,9 +1296,9 @@ fn resolve_memory_dimms(out: &mut Vec<Reading>) {
         push_spec_opt(
             out,
             format!("{base}.capacity"),
-            (dimm.capacity_bytes > 0).then(|| serde_json::json!(dimm.capacity_bytes)),
+            dimm.capacity_bytes.map(|b| serde_json::json!(b)),
             Some(Unit::Bytes),
-            "SMBIOS reported no capacity for a slot it marked populated",
+            "no module size was read for this slot",
         );
         push_spec_opt(
             out,
@@ -1444,14 +1470,13 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         ));
         return;
     };
-    let Ok(gpus) = monitor.snapshot_gpus() else {
-        out.push(Reading::unavailable(
-            "gpu.<none>",
-            None,
-            "GPU snapshot failed",
-        ));
-        return;
-    };
+    // Per adapter, not all-or-nothing. This took `snapshot_gpus()`, which fails
+    // as a whole when any one adapter's query fails, and answered that with
+    // `gpu.<none>` -- the row declared to mean "this domain enumerated nothing".
+    // A machine with two GPUs and one flaky driver was reported as having no
+    // GPU, and the adapter that read fine was dropped with it. The partial
+    // snapshot is index-aligned, so a failure keeps its adapter's number.
+    let gpus = monitor.gpus().snapshot_all_partial();
     if gpus.is_empty() {
         // Absent hardware is a fact, not a failure — and not a zero-valued GPU.
         out.push(Reading::unavailable(
@@ -1516,7 +1541,23 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         "beside it"
     );
 
+    const NO_ADAPTER_UTILIZATION: &str = concat!(
+        "no utilization counter was read for this adapter; the backend that ",
+        "queried it reports none, which is not the same as an idle engine"
+    );
+
     for (i, gpu) in gpus.iter().enumerate() {
+        let gpu = match gpu {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                out.push(Reading::unavailable(
+                    format!("gpu.{i}.<unreadable>"),
+                    None,
+                    format!("this adapter was enumerated but its query failed: {e}"),
+                ));
+                continue;
+            }
+        };
         let base = format!("gpu.{i}");
         push_text(out, format!("{base}.name"), &gpu.static_info.name);
         out.push(Reading::measured(
@@ -1526,14 +1567,18 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         ));
 
         let dynamic = &gpu.dynamic_info;
-        // Not an Option: the collection layer already flattens an absent counter to
-        // zero, so this cannot distinguish "idle" from "not reported" and must not
-        // pretend to.
-        out.push(Reading::measured(
+        // This comment used to say utilization was not an Option, because the
+        // collection layer flattened an absent counter to zero. The field became
+        // `Option<u8>` and this call stayed `Reading::measured`, so an adapter
+        // with no counter was published as a *measured* reading whose value was
+        // null -- neither a number nor an absence with a reason.
+        push_opt(
+            out,
             format!("{base}.utilization"),
-            serde_json::json!(dynamic.utilization),
+            dynamic.utilization.map(|u| serde_json::json!(u)),
             Some(Unit::Percent),
-        ));
+            NO_ADAPTER_UTILIZATION,
+        );
         push_opt(
             out,
             format!("{base}.thermal.temperature"),
@@ -1866,6 +1911,11 @@ fn lookup_template<'a>(ontology: &'a Ontology, concrete: &str) -> Option<&'a Ent
 /// a reading rather than applied silently, because a truncated list that looks
 /// complete is its own kind of wrong answer.
 const PROCESS_LIMIT: usize = 10;
+
+/// The interval `process.{pid}.cpu` is measured over. Long enough that a
+/// scheduler tick is a small fraction of it, short enough not to dominate a
+/// snapshot.
+const PROCESS_CPU_INTERVAL_MS: u64 = 250;
 
 fn resolve_disk(out: &mut Vec<Reading>) {
     let disks = match crate::disk::enumerate_disks() {
@@ -2317,6 +2367,20 @@ fn resolve_process(out: &mut Vec<Reading>) {
             return;
         }
     };
+    // Two samples, so `cpu` is what its entity says: the share over an
+    // interval. One sample from a fresh monitor gave each process's lifetime
+    // average instead -- CPU time since it started, over how long it has run --
+    // published as a measurement of now. A process started days ago and busy
+    // for the last minute read as idle.
+    if let Err(e) = monitor.sample_cpu_times() {
+        out.push(Reading::unavailable(
+            "process.<none>",
+            None,
+            format!("process enumeration failed: {e}"),
+        ));
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(PROCESS_CPU_INTERVAL_MS));
     let procs = match monitor.processes_by_memory() {
         Ok(p) => p,
         Err(e) => {
@@ -3103,19 +3167,21 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
 /// that needs Administrator, while elsewhere it comes from `systemd-analyze`,
 /// which is simply absent on a machine without systemd.
 fn resolve_boot_duration(out: &mut Vec<Reading>) {
-    let monitor = match crate::boot_config::BootMonitor::new() {
-        Ok(m) => m,
+    // Only the timing: a full `BootMonitor` also enumerates the boot
+    // configuration and startup items, none of which this entity uses.
+    let boot_time = match crate::boot_config::BootMonitor::read_boot_time() {
+        Ok(t) => t,
         Err(e) => {
             out.push(Reading::unavailable(
                 "system.boot.duration",
                 Some(Unit::Seconds),
-                format!("the boot configuration could not be read: {e}"),
+                format!("the boot timing could not be read: {e}"),
             ));
             return;
         }
     };
 
-    let secs = monitor.boot_time.total.as_secs_f64();
+    let secs = boot_time.total.as_secs_f64();
     if secs > 0.0 {
         out.push(Reading::measured(
             "system.boot.duration",
@@ -3204,8 +3270,10 @@ fn resolve_secure_boot(out: &mut Vec<Reading>) {
 fn resolve_secure_boot_from_firmware(out: &mut Vec<Reading>) {
     use crate::firmware::SecureBootStatus;
 
-    let monitor = match crate::firmware::FirmwareInventory::new() {
-        Ok(m) => m,
+    // Only the flag: the full inventory also runs `fwupdmgr`, which cost this
+    // entity 25 s on a machine without a reachable fwupd daemon.
+    let status = match crate::firmware::FirmwareInventory::read_secure_boot() {
+        Ok(s) => s,
         Err(e) => {
             out.push(Reading::unavailable(
                 "system.boot.secure_boot",
@@ -3216,7 +3284,7 @@ fn resolve_secure_boot_from_firmware(out: &mut Vec<Reading>) {
         }
     };
 
-    match monitor.secure_boot_status() {
+    match status {
         SecureBootStatus::Enabled => out.push(Reading::measured(
             "system.boot.secure_boot",
             serde_json::json!(true),
@@ -3440,11 +3508,13 @@ fn resolve_bluetooth(out: &mut Vec<Reading>) {
     for (i, a) in adapters.iter().enumerate() {
         let base = format!("network.bluetooth.{i}");
         push_text(out, format!("{base}.name"), &a.name);
-        out.push(Reading::measured(
+        push_opt(
+            out,
             format!("{base}.powered"),
-            serde_json::json!(a.powered),
+            a.powered.map(|p| serde_json::json!(p)),
             None,
-        ));
+            "the platform's adapter record carries no radio power state",
+        );
     }
 }
 
@@ -3469,7 +3539,12 @@ fn resolve_microarch(out: &mut Vec<Reading>) {
         }
     };
 
-    let report = monitor.report();
+    push_microarch(out, monitor.report());
+}
+
+/// The microarchitecture readings for one report, separate from reading it so
+/// a report with unread fields can be tested.
+fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicroarchReport) {
     let uarch = &report.microarch;
 
     // Field by field. An earlier version pushed `{:?}` of the whole struct,
@@ -3526,21 +3601,32 @@ fn resolve_microarch(out: &mut Vec<Reading>) {
             "the CPUID family/model/stepping triple was not read on this platform",
         );
     }
+    // The readers fill these with `.unwrap_or(0)`, and ARM Linux kernels
+    // commonly omit the `cpu cores` line from /proc/cpuinfo. Published as-is,
+    // an unread count was a specification of **zero cores**, and
+    // `smt_enabled` -- computed as `threads > cores && cores > 0` -- a
+    // measurement that SMT was off. A processor has at least one of each, so
+    // zero is the reader's "not read".
     for (suffix, value) in [
         ("physical_cores", report.physical_cores),
         ("logical_cores", report.logical_cores),
     ] {
-        out.push(Reading::spec(
+        push_spec_opt(
+            out,
             format!("cpu.microarch.{suffix}"),
-            serde_json::json!(value),
+            (value > 0).then(|| serde_json::json!(value)),
             Some(Unit::Count),
-        ));
+            "the platform's processor description did not include this count",
+        );
     }
-    out.push(Reading::measured(
+    push_opt(
+        out,
         "cpu.microarch.smt_enabled",
-        serde_json::json!(report.smt_enabled),
+        (report.physical_cores > 0 && report.logical_cores > 0)
+            .then(|| serde_json::json!(report.smt_enabled)),
         None,
-    ));
+        "SMT is judged by comparing logical to physical cores, and one of the two was not read",
+    );
 
     // Supported only. An extension the processor does not implement is not a
     // property of this machine, and listing it with a false flag invites a
@@ -3684,6 +3770,8 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
     let monitor = match crate::memory_bandwidth::MemoryBandwidthMonitor::new() {
         Ok(m) => m,
         Err(e) => {
+            // The cluster's entities inherit this reason in `snapshot`'s
+            // catch-all, rather than being told no resolver is bound.
             out.push(Reading::unavailable(
                 "memory.bandwidth.<none>",
                 None,
@@ -3958,6 +4046,35 @@ mod tests {
 
     /// The invariant the whole module exists for: a missing value is never a zero,
     /// and never silent about why.
+    /// Zero is how the microarch readers say a core count was not read, and
+    /// it was published as a specification of zero cores -- with SMT
+    /// "measured" off, since that is computed from the two counts.
+    #[test]
+    fn unread_core_counts_are_not_zero_cores_and_do_not_decide_smt() {
+        use crate::cpu_microarch::{CpuMicroarchMonitor, CpuVendor};
+        let mut report = CpuMicroarchMonitor::default().report().clone();
+        report.microarch.vendor = CpuVendor::Unknown;
+        report.physical_cores = 0;
+        report.logical_cores = 16;
+        report.smt_enabled = false;
+
+        let mut out = Vec::new();
+        push_microarch(&mut out, &report);
+        let get = |id: &str| out.iter().find(|r| r.id == id).cloned().expect(id);
+
+        let physical = get("cpu.microarch.physical_cores");
+        assert_eq!(physical.provenance, Provenance::Unavailable);
+        assert!(physical.value.is_none());
+        let logical = get("cpu.microarch.logical_cores");
+        assert_eq!(logical.value, Some(serde_json::json!(16)));
+        let smt = get("cpu.microarch.smt_enabled");
+        assert_eq!(
+            smt.provenance,
+            Provenance::Unavailable,
+            "SMT was decided from an unread count"
+        );
+    }
+
     #[test]
     fn unavailable_readings_carry_no_value_and_state_a_reason() {
         for r in snapshot() {

@@ -6,7 +6,7 @@ Current as of 6.0.0. This file is excluded from the published crate
 ## GUI header overlap fixed (2026-09-29)
 
 The native header placed the title, thirteen tabs, and right-aligned host
-controls on one fixed row. `heimdall@windows` painted over the AI tab; at
+controls on one fixed row. The `hostname@windows` label painted over the AI tab; at
 800 logical pixels the host label was not painted at all. The title and host
 controls now have their own row, and navigation uses `horizontal_wrapped`.
 Long host labels truncate within the available title-row space.
@@ -19,6 +19,19 @@ with the new layout. Earlier overflow tests rendered tab bodies only.
 
 Validation on Windows: the full library suite passed (932 passed, one ignored),
 and `cargo clippy --features full -- -D warnings` and `git diff --check` passed.
+
+Before pushing, merged the 35 newer upstream commits. Upstream independently
+fixed the same GPU query failure; the merge uses its `unreadable_gpus` field
+and explicit model-context warning, preserves the additional selection and
+aggregate regression tests, and accepts the local `gpu_errors` serialized
+field as an alias. The GUI header fix merged cleanly.
+
+The merged all-target/all-feature check, Clippy with warnings denied, macOS
+cross-check, and full all-feature suite passed (988 library tests, all integration
+tests, and 73 doctests; one library test and six doctests ignored). Several
+unrelated projects queued builds in the shared
+target directory, so the full tests use `--target-dir target/merge-validation`
+to avoid both the lock queue and executable relinking by another build.
 
 ## Read this first: 6.0.0 is shipped
 
@@ -8005,6 +8018,7 @@ evidence — `bandwidth_gbs`, `latency_ns` and `single_thread_score` all look
 exactly like measurements at the call site.
 
 Still uncovered and not probed: `wsl`, `drm_monitor`, `hardware_ai`, `scheduler`.
+*(Since probed -- see "The last four unprobed readers" at the end.)*
 
 Add a cluster per change, verify each field resolves to a true provenance on the
 machine at hand, and check the absent variant first — see open work 5 for why
@@ -9292,23 +9306,18 @@ reproduced exactly the `E0308` CI had reported, at the same line. **A check
 that has never been seen to fail is not evidence that the code is clean; it is
 evidence of nothing at all.**
 
-The working set, all five of which must be run before claiming a change is
-verified -- **the last one last**, after every edit including tests added by
-script:
+**The working set now lives in `CONTRIBUTING.md`, "Verifying a change"**,
+which is the single copy: five checks, the format check run last, with the
+reason each one is there. It replaced a Getting Started section that
+prescribed `cargo test --lib --features full` -- the command that missed both
+failures described here, handed to every new contributor. It was kept in this
+file only until it had a better home; two copies of a procedure drift.
 
-```bash
-cargo check --all-targets --all-features                          # Windows
-wsl cargo clippy --all-targets                                    # Linux
-cargo check --target aarch64-apple-darwin --features full --lib   # macOS
-cargo test --all-features                                         # incl. doctests
-cargo fmt --all -- --check                                        # immediately before commit
-```
-
-The fifth was added after `9b220f9` went red on CI's Format job alone -- every
+The fifth check, `cargo fmt --all -- --check`, was added after `9b220f9` went
+red on CI's Format job alone -- every
 test passed on all three platforms. `cargo fmt` had been run, then tests were
 appended by script, then the commit was made. Running the formatter partway
-through a change and not again is the same shape as the other gaps in this
-list: a check that was true when it ran and stopped being true before the
+through a change and not again is the same shape as the other gaps above: a check that was true when it ran and stopped being true before the
 commit.
 
 And the exit code must come from `cargo`, not from the tail of a pipeline --
@@ -9618,6 +9627,8 @@ above.
 
 ### Open: DIMM capacity, and a lookup table presented as a speed
 
+*(Decided and fixed 2026-09-28; see "DIMM presence from evidence" at the end.)*
+
 Two things found while fixing instance twenty-two and deliberately not fixed in
 that commit.
 
@@ -9674,7 +9685,7 @@ Linux path sees `// Fallback: infer from CPU model` and reasonably concludes
 something was inferred. It is now `memory_config_unreadable`, returns an error,
 and the resolver's existing error path reports it correctly.
 
-### Open: macOS memory bandwidth is a brand-string table
+### ~~Open: macOS memory bandwidth is a brand-string table~~ Fixed by declining; see "macOS memory bandwidth: declined, not rebuilt" at the end
 
 `memory_bandwidth::detect_memory_config` on macOS reads no memory. It matches
 the CPU brand string -- `M4 -> LPDDR5X-8533 x8`, `M3 | M2 -> LPDDR5-6400 x8`,
@@ -9754,7 +9765,7 @@ now skips the domain for that interval, since no delta is recoverable.
 Worth noting: `energy_uj` beside it was already correct, using `?` to drop the
 whole reading when the counter itself could not be read.
 
-#### Open: `PowerSnapshot`'s totals cannot say "nothing measured"
+#### ~~Open: `PowerSnapshot`'s totals cannot say "nothing measured"~~ Decided and fixed 2026-09-28; see "RAPL totals that can say nothing was measured" at the end
 
 `total_package_watts`, `total_core_watts` and `total_dram_watts` are bare `f64`
 accumulators starting at `0.0`. They read `0.0` when the machine is genuinely
@@ -10022,7 +10033,7 @@ Used 41,110 + Available 54,780 = 95,890 MB, and the TUI's panel agrees
 
 The GUI's JSON and CSV exports also published KB under `bytes`. Both fixed.
 
-#### Open: `RamInfo::free` means different things per platform
+#### ~~Open: `RamInfo::free` means different things per platform~~ Fixed; see "Free memory, twice over, on Windows" at the end
 
 Linux fills `free` with `MemFree`. Windows fills it with `ullAvailPhys`, which is
 *available*, not free. So the GUI's "Free" card has always shown the available
@@ -10032,17 +10043,17 @@ mismatch. A true free figure on Windows needs the `\Memory\Free & Zero Page
 List Bytes` counter, which the reader does not query. That is a reader fix, not
 a rendering one.
 
-#### Resolved: one failing GPU failed the whole agent context
+#### ~~Open: one failing GPU fails the whole agent context~~ Fixed; see "One failing GPU, reported as no GPU" at the end
 
 `SystemState::from_monitor` calls `UnifiedMonitor::snapshot_gpus`, which calls
 `GpuCollection::snapshot_all`, which collects every device's `Result` into one.
 A single GPU whose query errors therefore makes the whole call fail, and the
 chat agent could not answer anything. Resumed on 2026-09-29: it now uses
 `snapshot_all_partial`, preserving collection indices and readable devices.
-Selected failures are retained in `SystemState::gpu_errors` and rendered to
+Selected failures are retained in `SystemState::unreadable_gpus` and rendered to
 the model as unavailable with the query's error reason. CPU and memory
 collection proceeds even when every GPU fails. Older serialized state without
-`gpu_errors` defaults to an empty list.
+`unreadable_gpus` defaults to an empty list.
 
 Hardware-independent regression tests cover a failure between two readable
 devices, queries selecting the failed or surviving device, all devices failing,
@@ -10077,3 +10088,843 @@ constant back to the old wording makes it fail with exactly that message.
 > changing.** The fix is not to quote more carefully; it is to make the quote
 > checked. The same shape as the stale `lib.rs` comment about who calls
 > `backend`: prose about the rest of the codebase, rotting from the other end.
+
+### The fourth scan, made a test
+
+Plan task 2.1. The Option-helper scan -- a function returning `Option<numeric>`
+whose result is discarded with a literal default -- is now
+`tests/discarded_absence.rs`. It was written only once every current hit had a
+recorded verdict, because an allowlist is a claim about each entry, and it was
+ported to plain `std` rather than a regex, as `source_hygiene.rs` is.
+
+Porting it to exact parenthesis matching fixed the weakness recorded earlier
+(the Python pattern ran across struct literals) and in doing so **corrected the
+allowlist**: the test's own stale-entry check found two of the ten planned
+entries did not match.
+
+- `disk/windows.rs` `temperature_celsius` was never a discard of that helper.
+  The default there is applied to an `Option<Vec<_>>` after a `.map(..)`; the
+  Python scan matched only because of the looseness being fixed. It was a
+  scanner false positive recorded as a verdict, and it is out.
+- `dma_engine/mod.rs` has two `numa_node` reads discarding to `-1`, and the test
+  sees one. The other calls the helper inside an `.and_then(|p| { .. })`
+  closure and discards after the closure closes, so the discard is not adjacent
+  to the call. That is a genuine limit of the test, stated in its header rather
+  than papered over: it sees the *direct* form, which is the form of every
+  instance this sweep fixed, and a clean run is not proof of none.
+
+> **An allowlist needs a test that its entries still exist.** Without
+> `every_allowlist_entry_still_matches_its_call_sites`, the `temperature_celsius`
+> entry would have sat in the list admitting nothing, and a real discard of that
+> helper added later in the same file would have been let through by it.
+
+Its control reintroduces instance eighteen -- the watchdog's `pretimeout` read
+with `.unwrap_or(0)` -- and the test names the file and helper. That code is
+Linux-gated, so on Windows it compiles with the mutation in place; the scan is
+the only check that can see it there.
+
+### Task 1.4, finished: the "library-only" candidates
+
+The first ranking called 64 candidates "library-only" because no *agent-facing*
+surface named them. That skipped the surfaces people read -- the CLI, TUI and
+GUI -- so they were re-ranked against those. Six are named there; 58 are named
+by no surface at all.
+
+| Candidate | Verdict |
+| --- | --- |
+| `network_monitor::NetworkInterfaceInfo` | clean -- `?`-guarded on Linux, `GetIfTable2` 64-bit counters on Windows |
+| `network_tools::PingResult` | RTTs default to 0.0, but the GUI shows them only when `is_reachable`, and a summary that did not parse is recomputed from the per-reply times; the zeros never reach the screen |
+| `network_tools::NmapScanResult`, `CaptureConfig` | not readings: a duration the program measured, and configuration |
+| `tsdb::ProcessSnapshot` | carries `process_monitor`'s figures; first-sample behaviour already documented |
+| `tui::app::CpuInfo` | utilisation computed only where CPU stats exist, from the ontology's source |
+
+The 58 unnamed ones reach no one except a direct library caller, and are not
+worth triaging one by one while anything reachable remains.
+
+#### ~~Open: `ping` parsing assumes English output~~ Fixed by declining; see "A parse that found nothing is not a verdict" at the end
+
+Every parse in `network_tools::ping` matches English text -- `"Minimum = "`,
+`"Received = "`, `"time="`. Windows localizes `ping`'s output. On a
+non-English Windows, `packets_received` would fail to parse, so `is_reachable`
+would be `false`, and **a reachable host would be reported as unreachable** --
+a claim made from a failed parse, the same shape as the rest of this sweep.
+Not fixed: a correct fix needs real localized `ping` output to test against,
+and guessing the strings would be the defect again. Parsing the reply count
+from the numeric structure rather than the words, or using the ICMP API
+directly, would avoid the problem entirely.
+
+### The last four unprobed readers
+
+`examples/probe_readers.rs` now covers `drm_monitor`, `scheduler` and `wsl`, run
+on both Windows and WSL2. `hardware_ai` stays out of the probe on purpose: every
+field of its report is an inference or an identifier, so there is nothing a
+probe could confirm as a reading. It has no consumer outside its own module.
+
+| Reader | Windows | WSL2 | Verdict |
+| --- | --- | --- | --- |
+| `drm_monitor` | ok, 3 | none, 0 | clean |
+| `scheduler` | none, 0 -- as `Ok` | ok, 3 | **fixed**: declined nothing, and its aggregates defaulted to 0 |
+| `wsl` | none | ok, 941 "GPUs" | **fixed**: the GPU list was the Windows driver store |
+
+**`scheduler`.** Off Linux, `SchedulerMonitor::new()` returned `Ok` with an
+empty analysis -- no pressure, nothing queued -- on a platform that exposes
+neither: "cannot be read here" and "idle" were the same value, the shape the
+watchdog and RAPL readers shipped before. It now returns
+`IronError::UnsupportedPlatform` with the reason. On Linux, an unreadable
+`/proc/schedstat` gave `avg_runqueue_depth: 0.0`, `max_runqueue_depth: 0` and
+`busiest_cpu: 0`, the last naming a CPU as busiest from no data; all three are
+now `Option`. The module doc claimed Windows and macOS support that never
+existed; it now says there is none. Control: restoring `Ok(empty)` fails the
+new `a_platform_without_proc_declines_rather_than_reporting_an_idle_scheduler`.
+
+**`wsl`.** `gpu_devices` listed every directory under `/usr/lib/wsl/drivers`.
+That is the Windows driver store, not a device list: 941 entries on this
+machine, beginning `1394.inf_amd64_...` -- a FireWire driver published as a
+GPU. A synthetic `"NVIDIA (WSL2 CUDA)"` entry was added when an NVIDIA library
+was present. WSL2 does not expose its adapters through the filesystem at all
+(they come from DXCore), so there is no honest filesystem replacement and the
+field is removed rather than refilled. `cuda_available` counted that same
+directory as evidence of CUDA, so it was `true` on every WSL2 install; it now
+requires `libcuda.so` in `/usr/lib/wsl/lib`. Nothing outside the module
+consumed either.
+
+### Instance twenty-eight, found while deleting dead data
+
+Phase 5.2 was three cleanups. The first -- delete `silicon/apple.rs`'s
+`gpu_core_count`, recorded above as "written once and read nowhere" -- turned
+up a live defect beside it.
+
+`SocInfo` also held a per-chip power table: CPU, GPU and ANE ceilings by
+brand-string match, `(20.0, 20.0, 8.0)` for any chip the table did not name
+(so every M5). Its one reader was `npu_info`, which divided the ANE's measured
+draw by the table's ceiling and returned it as `NpuInfo::utilization`, and the
+TUI's accelerator panel draws that field. **This is the GPU
+power-percentage defect `AGENTS.md` cites by name** -- a real numerator over an
+invented denominator -- fixed for the GPU in `gpu/apple.rs` and left standing
+one module over for the ANE. A comment beside it said "the figure is real".
+`powermetrics` reports no ANE activity figure, so utilisation is now `None`.
+
+Two more went with it:
+
+- `cpu_info`'s two clusters split the one CPU power figure 40/60, marked
+  `// Approximate` -- a fixed ratio published as two per-cluster readings, the
+  E-cluster's share unchanged whether it was idle or saturated. Both are now
+  `None`. `cpu_info` has no caller outside `silicon`, so this reached only
+  library callers.
+- With the table and `gpu_core_count` gone, so is `get_gpu_cores` -- and the
+  `system_profiler` process it spawned on every `AppleSiliconMonitor::new()`,
+  which `gpu/apple.rs` calls on every GPU dynamic read. Its allowlist entry in
+  `tests/discarded_absence.rs` is removed with it, and the stale-entry test is
+  what confirms the count went to zero.
+
+**Not run on a Mac.** The macOS cross-check and a macOS clippy pass are clean;
+no test executes this code, because none can off macOS. It is on the Phase 4
+hardware list.
+
+The other two cleanups:
+
+- `interconnect::InterconnectLink::latency_ns` is now `estimated_latency_ns`,
+  matching `memory_bandwidth`'s field, so the name carries what only the doc
+  comment did. Every value is a per-link-type constant. Breaking for library
+  callers; nothing in the crate reads it.
+- `firmware::FirmwareInventory::risk_score()` returns `Option<u8>`, `None` for
+  an inventory with no entries. It returned `0` -- the safest score there is --
+  for a machine whose firmware could not be read at all. It still has no caller
+  but its doc example; it was changed now because it is cheaper than
+  remembering to.
+
+Lesson, again: **"dead" data is worth one grep of what sits beside it.** The
+field was dead; the struct it lived in was not.
+
+### Task 2.2: the structural scan, made a ratchet
+
+`tests/partial_correction.rs` ports the structural scan -- a struct with an
+`Option<numeric>` field beside a bare numeric one whose name is not an
+identifier or a self-produced count -- from the scratch Python to a test. The
+port was checked against the Python in both directions: 76 structs each.
+
+Those 76 are not triaged, so the test could not be an allowlist the way
+`discarded_absence.rs` is; that would have written "judged correct" beside 70
+structs nobody judged. It is a **ratchet** instead. `BASELINE` holds every
+match with its exact bare fields and says in its doc that it is not a list of
+approvals. The test fails when a struct gains a bare field beside `Option`
+siblings or a new struct of the shape appears, and fails when an entry shrinks
+or disappears, so fixing a struct forces its entry out and the list only
+shrinks.
+
+Control: turning `WatchdogInfo::pretimeout_secs` back into a bare `u32`
+(instance 18) fails it, naming the struct and field.
+
+It shares the Python scan's blind spots, stated in the module doc: multi-line
+field declarations, type aliases, and structs whose fields are all bare. That
+last is the "type that could not say 'not reported'" case, and nothing
+mechanical finds it.
+
+### One failing GPU, reported as no GPU
+
+The open item said one failing GPU failed the agent context, and called it
+"not a fabricated reading, so not fixed in this sweep". Following it to the
+other callers of `snapshot_gpus()` showed that was half right. **The ontology
+resolver did fabricate from it.** It answered a failed snapshot with
+`gpu.<none>`, the row declared as "present only when this domain enumerated
+nothing" -- so a machine with two GPUs and one failing driver was told to every
+agent as a machine with no GPU, and the adapter that read fine was dropped too.
+
+Both now use `snapshot_all_partial`, which is index-aligned:
+
+- The resolver emits the full rows for every adapter that read, and a new
+  declared diagnostic, `gpu.{n}.<unreadable>`, carrying the error, for each one
+  that did not. `gpu.<none>` is left for what it says. AGENTS.md shows the row.
+- `agent::SystemState` gains `unreadable_gpus`, and the context tells the model
+  the adapter is present, unreadable, and not to infer its state from the
+  others. Memory and the readable GPUs reach the model as before.
+  `from_monitor` no longer fails on a GPU error at all.
+
+**And a second defect in the same function.** `gpu.{n}.utilization` was pushed
+with `Reading::measured(json!(dynamic.utilization))`, under a comment saying
+utilisation was not an `Option` because the collection layer flattened an absent
+counter to zero. The field had since become `Option<u8>` and the call had not
+changed, so an adapter with no counter was published as a *measured* reading
+with a null value -- neither a number nor an absence with a reason.
+`agentic_contract.rs` checks exactly this, but only fires on hardware with a
+counterless adapter, which neither this machine nor CI has. It goes through
+`push_opt` with a reason now.
+
+**Lesson: "not a fabricated reading" was a claim about one caller.** The same
+call had four callers; the one this item named was a crash, and the one it did
+not name was a false absence. Grep the callers before classifying the defect.
+
+Two callers still take the all-or-nothing path and were left: `hardware_ai`
+(`snapshot_gpus().ok()?` for a power-cap sum, where a partial sum would be the
+worse answer) and `tuning::serve`, which skips GPU input when it fails. Neither
+publishes a reading.
+
+### Free memory, twice over, on Windows
+
+The recorded item said `RamInfo::free` was `ullAvailPhys` on Windows and called
+the fix "a reader fix, not a rendering one". It was worse than a GUI card
+matching its neighbour: the field reaches **agents** (six MCP tool responses
+carry `free_mb` or `free_kb`) and **Prometheus** (`memory_free_bytes`). On this
+machine, with a warm cache, those said 60.9 GB free where
+`\Memory\Free & Zero Page List Bytes` said 31.7 GB.
+
+Fixed at the reader. `platform::windows_pdh::free_and_zero_page_list_bytes`
+reads that counter through `PdhAddEnglishCounterW`, so it works on a
+non-English Windows. It is a gauge, so one collection per call, with the query
+opened once. Checked against `Get-Counter` sampled immediately before and after
+each read: 2,335 / **2,470** / 1,976 MB and 1,633 / **1,857** / 1,839 MB. Free
+memory moves fast enough that the bracket is the honest comparison.
+
+`RamInfo::free` is now `Option<u64>`, so a failed PDH read is `None` rather
+than the available figure under this name. The change runs through
+`ai_api::MemorySummary::free_mb` and `observability::MemoryMetrics::free_mb`
+(both now `Option`; with `RamInfo`, three entries in the partial-correction
+ratchet baseline lost the field, which the ratchet made the commit record), the MCP tools (null), Prometheus (no series), and the GUI's Free
+card (an em dash).
+
+**A sibling on macOS, found reading the constructors.** `parse_vm_stat`'s
+`value` closure ended in `.unwrap_or(0)`, so any missing `vm_stat` line
+parsed as zero pages: without "File-backed pages", cached memory read as none;
+without "Pages speculative", free was understated. It is behind a closure, so
+`tests/discarded_absence.rs` cannot see it -- the blind spot that file
+documents. Every line is now required and a missing one fails the parse, the
+way `/proc/meminfo` is read on Linux.
+
+Controls: `free: Some(avail_kb)` fails
+`free_memory_is_not_the_available_figure` (the old assignment made
+`free == total - used` hold to the kilobyte); restoring the macOS default fails
+`a_vm_stat_missing_a_line_is_rejected_rather_than_read_as_zero`.
+
+`memory_management.rs` still assigns `ullAvailPhys` to its own
+`MemorySummary::free` (a different struct, library API only, and in the
+ratchet baseline). Left with the rest of that baseline.
+
+### macOS memory bandwidth: declined, not rebuilt
+
+The recorded fix was to rebuild the brand-string table "from Apple's published
+specifications, keyed on the full chip name". Looking at what Apple publishes
+settled it the other way: its specifications give a **memory bandwidth per
+chip**, not the memory generation, transfer rate and channel count this module
+estimates from. A per-SKU table of those three would be reconstructed, not
+published -- the same defect as the table it replaced, with better numbers.
+
+So macOS now declines, as Linux and Windows do when SMBIOS cannot be read.
+`MemoryBandwidthMonitor::new()` returns `FeatureNotAvailable` with a
+macOS-specific reason, and the resolver's existing error path turns it into
+`memory.bandwidth.<none>` carrying that reason. Before this, the table's
+guesses reached agents as `specification` readings -- generation, speed,
+channels -- and the bandwidth figures derived from them.
+
+`memory_config_unreadable`, whose message names SMBIOS, is no longer compiled
+on macOS, where there is no SMBIOS path to have failed. The dead `hw.memsize`
+read beside the table, parsed and discarded with an `unwrap_or(0)`, went too.
+
+**Not run on a Mac.** A `#[cfg(target_os = "macos")]` test asserts the decline;
+it compiles for `aarch64-apple-darwin` here and runs only on CI's macOS job.
+
+If the published per-chip bandwidth is ever wanted, it is a different entity:
+a `specification` of peak bandwidth keyed on the exact chip name, with no
+generation or channel count claimed beside it.
+
+### A parse that found nothing is not a verdict
+
+`network_tools::ping` matched only English output, and on output it did not
+recognise every field kept its initial value: `packets_received: 0`,
+`is_reachable: false`, 100% loss. On a localised Windows a reachable host was
+reported unreachable.
+
+The recorded suggestion was to parse the numeric structure or call the ICMP API.
+Both are real fixes and both need localised output to verify against, which
+this project does not have. What does not need it: **the parser now reports
+whether it recognised a statistics line**, and `ping()` returns an error when it
+did not, quoting the first line of output. An English "no reply" still parses
+and still says unreachable; only "found nothing" stops being a verdict.
+
+Two library callers mapped any ping error to `false`, which would have undone
+that: `check_connectivity` now returns `Option<bool>` per host, and
+`NmapScanResult::is_up` is `Option<bool>`, drawn by the GUI as "ping
+unreadable" rather than DOWN. The GUI's Ping button already showed errors as
+errors.
+
+The fixtures are captured output from this machine (Windows 11) and WSL2
+(Ubuntu), reachable and unreachable. The unrecognised case is the Windows
+capture with its labels replaced, stated as such in the test -- not a
+localisation quoted from memory. Control: forcing `recognised = true` fails it.
+
+Also noticed, not changed: Windows prints `time<1ms` for sub-millisecond
+replies, which the parser records as 1 ms.
+
+#### The decline's first CI run, and a catch-all that lied
+
+The macOS decline failed CI -- not its own test, which passed on the macOS
+runner, but `non_nullable_entities_are_never_null`:
+`memory.bandwidth.channels` and `max_channels` resolved unavailable with the
+note **"no resolver bound on this build"**.
+
+That note was false, and had been on any machine whose memory configuration
+could not be read. `resolve_memory_bandwidth` answered an error with
+`memory.bandwidth.<none>` and returned, leaving the cluster's seven entities to
+the resolver's catch-all for declared-but-unproduced ids, which fills each with
+"no resolver bound". The resolver *was* bound; it had just said why. macOS was
+simply the first platform to take the path every time.
+
+Fixed twice over:
+
+- The error path emits each of the seven with the resolver's own reason.
+- `channels` and `max_channels` are nullable. They were declared never-null,
+  which is a promise that every machine has a readable channel count; a Mac and
+  a machine without SMBIOS do not.
+
+Reproduced on Windows by forcing the reader to decline: without the fix,
+exactly the two CI violations; with it, the conformance suite passes and
+`ironmon get memory.bandwidth.channels` exits 2 with the real reason. Restored
+and rebuilt afterwards, where it reads `specification` again.
+
+**Lesson: a catch-all reason is a claim too.** "No resolver bound" is correct
+for an entity nothing reads, and wrong for one whose resolver returned early.
+
+Checking the others found two more resolvers with the same shape:
+`cpu.microarch` (thirteen identity fields, when the processor cannot be
+identified) and `system.service` (three counts, when the service manager cannot
+be reached). So the fix moved from the one resolver into the catch-all: an
+unproduced entity under a `<prefix>.<none>` diagnostic now inherits that
+diagnostic's reason, the longest matching prefix winning, and only an entity
+with no enclosing diagnostic is told no resolver is bound. The per-site list in
+the bandwidth resolver was removed as redundant.
+
+`entities_under_a_declined_resolver_carry_its_reason` in
+`tests/ontology_conformance.rs` asserts it on whatever declines on the machine
+running it -- on macOS CI, always memory bandwidth. With the Windows reader
+forced to decline, disabling the inheritance fails it; restoring it passes the
+full suite.
+
+### A third of the processes, reported as using no memory
+
+Triaging the partial-correction baseline from the surfaces inward:
+`ai_api::ProcessSummary::memory_mb`, which the MCP tools publish, comes from
+`ProcessMonitorInfo::memory_bytes`. On Windows, unelevated, **167 of 515
+processes reported zero bytes**: `dwm.exe`, `lsass.exe`, `Registry`, `Secure
+System` and most `svchost` instances. `OpenProcess` is refused for SYSTEM and
+protected processes, and the enumeration emitted those rows from the Toolhelp
+snapshot with memory, CPU, handles and I/O all at zero -- a comment said so,
+"leave the privileged metrics at zero rather than dropping the row". Every
+"largest by memory" list, including the ontology's `process.<truncated>` "the
+10 largest by memory", was ranked without them.
+
+The figures were available all along without a handle.
+`NtQuerySystemInformation(SystemProcessInformation)` -- what Task Manager and
+`Get-Process` read -- carries working set, commit charge, private pages, handle
+count, I/O counts and CPU times for every process.
+`platform::windows::system_process_table` reads it, using the
+`SYSTEM_PROCESS_INFORMATION` layout the `windows` crate generates from
+Microsoft's metadata. The create, user and kernel times and the I/O transfer
+counts sit in fields that layout marks reserved, so
+`the_process_table_agrees_with_the_handle_based_calls` checks them for this
+process against `GetProcessTimes`, `GetProcessMemoryInfo` and
+`GetProcessIoCounters` instead of trusting the offsets. Create time matches
+exactly.
+
+After: 19 of 550 report zero, and `Get-Process` reports a working set of zero
+for them too -- idle processes whose pages were trimmed, which is a reading.
+`dwm.exe` 93 MB against `Get-Process`'s 94, `lsass.exe` 17 against 18,
+`Registry` 28 against 29. The table also fills a handle-opened process whose
+`GetProcessMemoryInfo` call is refused.
+
+`processes_that_cannot_be_opened_still_report_their_memory` fails if any
+process the kernel reports at 8 MiB or more is enumerated with none; restoring
+the zero fails it, naming `lsass.exe`, `dwm.exe` and the rest.
+
+**The Linux side, same commit series.** The Linux readers multiplied `statm`
+pages by a literal 4096 and divided CPU ticks by a literal 100 -- in
+`process_monitor`, `process_tree` and `core::process` (which wrote `* 4`,
+"pages to KB"). Both are the common values and neither is universal: ARM64
+kernels ship with 16 KiB and 64 KiB pages, where every process's memory read
+four or sixteen times too small. `platform::linux::page_size` and
+`clock_ticks_per_second` read both from `sysconf`, and a reader that cannot get
+them returns an error rather than assuming. **Unverified on a non-4 KiB
+machine**: WSL2 uses 4 KiB pages, so the fix is checked there only for not
+changing the common case. Add it to the bare-metal Linux list.
+
+The rest of the baseline on the agent-facing surfaces was triaged at the same
+time and left: memory totals and network counters that exist only after a
+successful read, timestamps and durations the program produced, a configured
+context length. `ai_api::SensorReading` is constructed nowhere.
+
+### "CPU share over the last interval", with no interval
+
+`process.{pid}.cpu` is declared as "Process CPU share over the last interval"
+with `measured` provenance. The resolver built a fresh `ProcessMonitor` and
+sampled once, and a monitor with no previous sample reports each process's
+**lifetime average** -- CPU time since it started, over how long it has run.
+So every snapshot published lifetime averages under a description promising
+current usage. The earlier triage recorded the first-sample behaviour as
+"documented"; it was, on the library field, and the ontology said the
+opposite.
+
+Measured on a child process that busy-looped for 3 s and then sat idle for
+about 2 s: one sample reported **2.3%** (3 s of one core over its ~5 s life,
+as a share of 24 processors); two samples 250 ms apart reported **0.0%**. A
+process started days ago and busy for the last minute had the opposite error,
+reading as nearly idle.
+
+`ProcessMonitor::sample_cpu_times` records cumulative CPU times without the
+GPU attribution a full listing does. The resolver calls it, waits 250 ms, and
+then enumerates, so the figure is the share over that interval; the entity's
+description now says which interval. The MCP server primes its long-lived
+monitor the same way at startup, so its first tool call measures the interval
+since startup rather than lifetimes.
+
+No automated test: a process's own CPU share is disturbed by every other test
+running in parallel in the same binary, so an assertion on it would be flaky.
+The demonstration above was a throwaway example, not committed.
+
+Cost: `sample_cpu_times` takes 60-170 ms (debug and release alike, since it is
+dominated by system calls), plus the 250 ms wait -- under half a second per
+snapshot. Measuring that exposed something larger and unrelated: **a debug
+`ironmon snapshot` takes 40-50 s on this machine** with or without this change.
+The agent-contract suite runs many of them, which is most of why the local test
+suite is slow. Profiled in the next section.
+
+### Where a debug snapshot's 45 seconds went
+
+Timing each resolver in `snapshot()` (temporary instrumentation, not
+committed): `board` 11.9 s, `boot_duration` 9.6 s, `gpu` 9.0 s, and nothing
+else above 2.2 s. Two causes accounted for most of it.
+
+**PowerShell was loading the user's profile.** Ten of the crate's 34
+`powershell` spawns lacked `-NoProfile`; on this machine a profile exists, and
+a start took 1,067 ms with it against 244 ms without. Besides the time, a
+profile that prints anything puts it on stdout, where every caller parses
+numbers or JSON. All ten now pass the flag, and `tests/powershell_spawns.rs`
+fails on a new spawn that does not -- checked by removing it from the
+`services.rs` spawn, which the test then named by line.
+
+**The boot-duration entity ran the whole boot monitor.** `resolve_boot_duration`
+used one field of `BootMonitor::new()`, which also reads the boot configuration
+and every startup item: on Windows four PowerShell sessions and `schtasks`.
+`BootMonitor::read_boot_time()` runs only the platform's timing reader.
+
+After both: `boot_duration` 9.6 s to 1.4 s, and the whole debug snapshot about
+45 s to 28.5 s. `gpu` also fell to 0.9 s, but that first 9.0 s was probably a
+cold driver start rather than anything changed here -- it is not claimed as a
+result. `agentic_contract` ran in 66 s where the previous run took 320 s.
+
+**Next, if anyone wants more:** `board` is now the largest at 9 s, of which the
+TPM reader is 6.2 s and firmware 2.2 s. *(TPM done; see the next section.)* The TPM reader spawns PowerShell three
+times: a `Win32_Tpm` CIM query, a filtered `Win32_PnPEntity` enumeration, and a
+test of whether one registry key exists. The last needs no process at all, and
+the two queries could share one session or go through the `wmi` crate the rest
+of the crate uses.
+
+### The TPM reader: 6.2 s to 30 ms
+
+Timed per query, the cost was one query: `Win32_Tpm` in the
+`root/cimv2/Security/MicrosoftTpm` namespace, which grants Administrators only,
+**took 6.6 s to be refused** to an unelevated process. The registry check took
+1.1 s -- a PowerShell session spent on `Test-Path` -- and the device-node query
+about 1 s.
+
+- `platform::windows::is_elevated()` reads the token's `TokenElevation`. An
+  unelevated process now carries the refusal it would have received -- "readable
+  only by Administrators, and this process is not elevated" -- without making
+  the query. Elevated, or with elevation unreadable, it still asks. If some
+  organisation grants the namespace to ordinary users, this loses the richer
+  answer for them; the fallback still reports presence and version.
+- The TPM service key is read with `winreg`.
+- The device node is read through an in-process WMI connection.
+
+Readings before and after are identical: present, version 2.0 (which is the
+device-node query working), status unavailable with its reason, measured boot
+true. `TpmMonitor::new()` takes 30-50 ms.
+
+**Tripped on the attribute trap this file already describes.** The new function
+went between `version_from_node`'s doc comment and its
+`#[cfg(target_os = "windows")]`, so it took both, and `version_from_node` lost
+its gate -- visible only as a dead-code warning on Linux, where it now compiled.
+Moved above the doc block. It is the third time; the Linux clippy run is what
+catches it.
+
+### Firmware: 2.2 s to 76 ms, and a BIOS age that was never computed
+
+The firmware inventory ran four PowerShell sessions per snapshot:
+`Win32_BIOS`, `Get-PhysicalDisk`, `Win32_ComputerSystem` and
+`Confirm-SecureBootUEFI`. The first three now go through
+`platform::windows::wmi_query`, a shared in-process WMI helper the TPM reader
+also uses now (`Get-PhysicalDisk` reads `MSFT_PhysicalDisk` in
+`root/Microsoft/Windows/Storage`). The fourth needs elevation and is skipped when
+the process is known not to have it. Every `board.firmware.*` reading was
+compared before and after: identical. `FirmwareInventory::new()` takes 76 ms.
+
+**Moving the BIOS date's source exposed two defects.** Through PowerShell the
+release date arrived as `/Date(ms)/` and was stored as Unix seconds, which
+`parse_date` does not read -- so `estimated_age_days` was *never* computed for a
+Windows BIOS, and `inferred_risk_score` ignored age there. The CIM datetime from
+WMI is now stored as `YYYY-MM-DD`, which parses. And the moment it parsed, the
+age was wrong: `estimate_age` counted 365-day years and 30-day months, putting a
+BIOS dated 2025-09-19 at 360 days old on 2026-09-28 when it was 374 -- on the
+other side of `infer_risk`'s 365-day threshold. It now uses an exact
+days-from-civil calculation, tested against Python's `datetime` including a
+leap day and a pre-epoch date; an off-by-one in its constant fails the test.
+
+**Snapshot time, cumulative:** a debug `ironmon snapshot` on this machine went
+from about 45 s to **17 s** across the `-NoProfile`, boot-timing, TPM and
+firmware changes. `agentic_contract` now runs in 55 s.
+
+### The partial-correction baseline: every entry a surface reaches, triaged
+
+Re-ranked the ratchet's baseline against every surface: the CLI, TUI, GUI,
+ontology resolver, HTTP server, Prometheus exporters and the MCP tools. Ten
+structs are named by one. Two were defects and are fixed above
+(`ProcessMonitorInfo`'s Windows zeros; the CPU interval). The rest:
+
+| Struct | Verdict |
+| --- | --- |
+| `connections::ConnectionInfo::local_port` | an identifier, present in every row |
+| `core::memory::RamInfo` total, used | exist only after a successful read |
+| `hwmon::HwSensor::value` | every constructor pushes a sensor only after its value parsed; `min`/`max` are thresholds, a separate question |
+| `memory_management::MemorySummary` | name collision with `ai_api::MemorySummary`; library only |
+| `network_monitor::NetworkInterfaceInfo` counters | clean (triaged in task 1.4) |
+| `network_tools::{PingResult, NmapScanResult, CaptureConfig}` | triaged in 1.4; ping's no-verdict case fixed above |
+| `tsdb::ProcessSnapshot` | carries `process_monitor`'s figures, fixed at the source |
+
+**About 60 baseline entries remain, and none reaches a user.** They are
+library API that nothing in the crate reads. Fixing them is legitimate but
+changes nothing anyone sees; the ratchet keeps them from spreading meanwhile.
+
+Also noticed while profiling: `resolve_gpu` measured 9-10 s in two whole
+snapshots and 1.4-1.7 s in isolation and in a later instrumented snapshot. The
+process list showed WMI's host among the busiest; this is contention on a
+loaded machine, not code, and nothing was changed for it.
+
+### Decisions taken 2026-09-28
+
+Asked and answered, recorded so they are not re-asked:
+
+- **`fleet-store` ships, with the Rust floor at 1.94.** The consent wording the
+  earlier note said must be narrowed first already had been, in `4d3ae92`
+  ("who chose the destination"); that note was stale.
+- **DIMM presence comes from evidence, not from the size.** Done below.
+- **`PowerSnapshot`'s totals become `Option`.** Next commit.
+- **Per-project target directories: held, pending a second question.**
+  `~/.cargo/config.toml` records why the shared directory exists: 649 GB across
+  50 per-project directories, and a disk that twice reached 50 MB free, once
+  corrupting a git ref. With 42 GB free, reverting it machine-wide would likely
+  repeat that. The narrower change -- a private target directory for this repo
+  alone -- is what was put back to the user.
+
+  **Answer: move the shared directory to E:.** `~/.cargo/config.toml` now sets
+  `target-dir = "E:/cargo-target"` (E: is an NVMe SSD with 2 TB free), with a
+  comment saying why. This fixes the disk, not the contention: builds from
+  different projects still serialise on one lock. The old
+  `~/.cargo-target` is no longer written to and is left for the
+  user to delete once nothing is building from it. Every earlier note in this
+  file that names that path describes where artifacts *were*.
+
+### DIMM presence from evidence
+
+`DimmInfo::capacity_bytes` was a `u64` documented "0 means empty slot", and
+the macOS and Windows readers set `populated = capacity > 0`: a module whose
+size did not read was reported as an empty slot. Linux counted a `Size:
+Unknown` as empty too.
+
+Now `capacity_bytes: Option<u64>` (`None` = no size read, including every empty
+slot) and `populated: Option<bool>`, set only from evidence:
+
+| Reader | Present | Absent | Unknown |
+| --- | --- | --- | --- |
+| Linux `dmidecode` | a size parsed, or a real part number | "No Module Installed" | anything else |
+| Windows `Win32_PhysicalMemory` | every row (the class lists installed modules only) | -- | -- |
+| macOS `system_profiler` | `dimm_status: ok`, or a size parsed | `dimm_status: empty` or size "Empty" | anything else |
+
+`memory.dimm.{n}.populated` is now nullable, and an unknown presence is
+published unavailable with its reason. Analysis sums only the sizes that were
+read. Tests on both pure parsers cover each row of the table; restoring the
+macOS `capacity > 0` rule fails the macOS one with exactly the old defect,
+`Some(false)` for a module whose size did not parse. `DimmInfo` leaves the
+ratchet baseline. This machine's readings are unchanged.
+
+### RAPL totals that can say nothing was measured
+
+`PowerSnapshot::total_package_watts`, `total_core_watts` and `total_dram_watts`
+are `Option<f64>`: `Some` once at least one domain of that class produced a
+delta, `None` otherwise. Idle is `Some(0.0)` now, and "nothing to sum" is not.
+The wrap test that could only assert `< 1.0` now asserts `None`; seeding the
+core total with `Some(0.0)` again fails it.
+
+The same shape one level up: **`RaplMonitor::efficiency()` returns
+`Option<PowerEfficiency>`**. With no package total it used `0.0` as the current
+draw and returned a whole analysis -- within TDP, all of it headroom, efficiency
+ratio 1.0 -- of a reading that was never taken. A new test covers the empty
+case. And `refresh()` moves the peak and the running average only on an interval
+that measured package power; one that measured nothing used to drag the average
+toward zero. Nothing outside `rapl` reads any of these.
+
+### Reach by field, not by name, and zero cores
+
+The baseline triage above judged reach by whether a surface *names* a struct.
+A resolver that iterates a monitor's results reads fields without ever naming
+the type, so the check was redone by field: for each baseline struct, which
+surfaces import its module and read one of its bare fields. Five candidates the
+name check missed; four are sound (`cpu_cache` sizes are pushed only after a
+non-zero read; `pci_devices.numa_node` is guarded in the resolver; codec
+`confidence` is the reader's own score; process I/O is fixed at the source).
+
+The fifth was a defect. `cpu.microarch.physical_cores` and `logical_cores` were
+published as `specification` straight from readers that fill them with
+`.unwrap_or(0)` -- and ARM Linux kernels commonly omit `cpu cores` from
+`/proc/cpuinfo`. So an unread count was a specification of **zero cores**, and
+`cpu.microarch.smt_enabled`, computed as `threads > cores && cores > 0`, a
+*measurement* that SMT was off. The resolver now publishes a zero count as
+unavailable with a reason and decides SMT only when both counts were read; the
+three entities are nullable. `push_microarch` was split out of the resolver so
+a report with an unread count can be tested; removing the guard fails the test
+(`Specification` where `Unavailable` was expected).
+
+The library struct still uses zero for "not read" and stays in the ratchet
+baseline; the fix is at the surface, where it reached anyone.
+
+The old shared build directory, `~/.cargo-target`, measured
+**194 GB** once the move to E: was done.
+
+### Process I/O and handles, zero where they were refused
+
+`ProcessMonitorInfo::io_read_bytes`, `io_write_bytes` and `handle_count` are
+`Option`. Linux read them from `/proc/<pid>/io` and `/proc/<pid>/fd`, which an
+unprivileged process cannot open for other users' processes -- **51 of 72
+processes** under WSL2 -- and recorded zero; macOS set all three to zero beside
+comments saying they were not read; Windows fell to zero when
+`GetProcessIoCounters` or `GetProcessHandleCount` was refused, and now uses the
+kernel process table instead. The TUI's I/O column shows `?` for unknown and
+keeps `-` for a real zero.
+
+`unreadable_io_counters_are_not_zero_io` (Linux) reads this process, whose
+counters are readable, and pid 1, whose are not when unprivileged; mapping the
+refusal back to `Some(0)` fails it. The ratchet shrank `ProcessMonitorInfo`'s
+entry by two fields. `private_bytes` on macOS is still a literal zero beside a
+comment -- left, since nothing reads it there.
+
+Placing this test tripped the attribute trap a fourth time: it went between
+the Windows test's `#[cfg]`/`#[test]` and its `fn`. Caught before compiling by
+reading the result back; the Linux build would have caught it too.
+
+Also fixed in passing: `the_process_table_agrees_with_the_handle_based_calls`
+asserted that this test process's own read-transfer count was non-zero, which
+it is only if something in the process has read a file. It failed once, in a
+run of 30 tests. It now reads `Cargo.toml` before sampling, so the offset check
+compares real figures rather than two zeros, which would pass for any offset.
+
+### Every zero in a live snapshot, checked (Windows, 2026-09-28)
+
+From the output side rather than the source: a debug `ironmon snapshot` on the
+development machine published 1,816 readings. Every one whose provenance is
+`measured`, `specification` or `derived` and whose value is `0`, `false` or
+empty was listed -- about sixty, in twenty entities -- and checked:
+
+- **Booleans that are correctly false**: audio `default`/`muted`, camera
+  `active`, printer `color`/`default`, power-profile `active`, display
+  `primary`, `memory.dimm.{n}.ecc` (non-ECC DDR5, from the widths),
+  `memory.numa.is_numa`, `cpu.microarch.hybrid`, `system.service.{n}.failed`.
+- **`system.boot.secure_boot = false`**: the registry's
+  `UEFISecureBootEnabled` is `0` on this machine. Real.
+- **`cpu.microarch.stepping = 0`**: `Win32_Processor.Description` reads
+  "Family 26 Model 68 Stepping 0". Real.
+- **An audio endpoint at volume 0**: the same endpoint reads `muted = true`.
+- **NVMe `critical_warnings`/`power_state` and SMART `uncorrectable_sectors`
+  at 0** on three healthy drives: the log fields, read.
+- **Fifteen network interfaces at 0 bytes**: every one is Disconnected or Not
+  Present, or a hidden miniport that is up and unused; `Get-NetAdapterStatistics`
+  agrees for Wi-Fi.
+- **`gpu.{n}.utilization = 0`, one `process.{n}.cpu = 0`**: idle.
+
+**No fabricated zero reaches an agent on this machine.**
+
+**The same audit on Linux (WSL2) found one immediately.** 651 readings; the
+zeros were idle processes, `numa_node = 0` on five PCI devices (sysfs says 0),
+`tpm.present = false` (WSL exposes no `/dev/tpm*`), and
+**`memory.numa.0.memory = 0`, measured** -- beside a node whose sysfs `meminfo`
+reads `Node 0 MemTotal: 48111256 kB`. `extract_kb` took the *first* number on
+the line, which is the node id: node 0 reported 0 bytes and node 1 would report
+1 kB, on every Linux machine. It now reads the figure after the colon; the live
+reading is 49,265,926,144 bytes, which is that line times 1024. A test on the
+real line format fails with `Some(0)` when the old parser is restored.
+
+This is the cheapest audit in the file and the most productive per minute: run
+a snapshot, list every zero, check each against a second source. Still owed on
+a Mac.
+
+### A Linux snapshot: 150 s to 23 s, and three Bluetooth claims
+
+Cross-checking the Linux snapshot against `/proc`, `nproc`, `lscpu`, `lsblk` and
+`/sys/class/net` found every figure right -- memory, swap, core counts, model,
+six disk sizes, interface counters. What it found instead was that one
+`ironmon get` took about 95 s. Profiled (temporary instrumentation, then
+`strace -e execve`):
+
+- **`fwupdmgr get-devices` takes 25 s and fails** on a host with the binary but
+  no reachable fwupd daemon -- it waits out a D-Bus activation. The firmware
+  inventory ran it with no bound, **twice per snapshot**: once for
+  `board.firmware`, once more because `system.boot.secure_boot` built a whole
+  inventory to read one efivar. Secure Boot now reads only that
+  (`FirmwareInventory::read_secure_boot`), and `fwupdmgr` goes through
+  `core::command::capture_with_timeout` with 8 s.
+- **`bluetoothctl devices` hit the helper's 30 s timeout** because `bluetoothd`
+  is not running. With no adapter registered with the kernel there is no device
+  list to ask for; the walk is now skipped with a note.
+
+Result: a debug Linux snapshot in 23 s. `board` is the largest resolver left,
+at about 10 s -- mostly that 8 s bound on this host.
+
+**Reading the Bluetooth module to fix the timeout turned up three claims:**
+
+- `BluetoothAdapter::powered` defaulted an unreadable Linux `powered` file to
+  **on**, and on Windows was the PnP node's `Status == "OK"` -- which says the
+  device works, not that its radio is on. It is `Option<bool>`; Windows now
+  reports `None`, macOS keeps `controller_powerState`. The entity is nullable.
+- Windows reported every paired peripheral whose PnP status was OK as
+  **Connected**. A paired device's node has that status connected or not; it is
+  now `Paired`, which is what is known.
+- `set_adapter_power` set the struct's field and returned `Ok` -- reporting a
+  radio switched that nothing touched. It returns `NotImplemented`, and a test
+  checks the field is unchanged.
+
+Whether Linux sysfs publishes a per-adapter `powered` file at all was not
+verified: WSL has no adapter. A bare-metal Linux machine with Bluetooth settles
+it.
+
+### Windows cross-check: one geometric lie
+
+The Linux cross-check, repeated on Windows against `Win32_ComputerSystem`,
+`Win32_Processor`, `Win32_OperatingSystem`, `Get-PhysicalDisk`,
+`Win32_VideoController`, `Get-NetAdapterStatistics`, `Win32_PhysicalMemory`
+and `Win32_PageFileUsage`: memory, swap (86,016 MiB exactly), cores, model, OS
+build, three GPUs, both DIMMs' rated and configured speeds, network counters
+and uptime all agree.
+
+Disk capacity did not. Every internal drive read **2,612,736 bytes short** --
+a 4 TB 990 PRO as 4,000,784,417,280 against `Get-PhysicalDisk`'s
+4,000,787,030,016. `disk.{n}.capacity` came from `Win32_DiskDrive.Size`, which
+Windows computes from a legacy geometry (cylinders x 255 x 63 x 512) and which
+drops the partial cylinder at the end; the table of `TotalCylinders` confirms
+it for all four drives. `MSFT_PhysicalDisk.Size` is the length, read through
+the shared in-process WMI helper and preferred. All four now match to the byte.
+Where the Storage namespace is missing (before Windows 8) the geometric figure
+remains, documented as a slight undercount.
+
+The Windows disk *type* was inferred from model-name substrings ("990 PRO"
+meant NVMe) with anything on a SCSI interface defaulting to an NVMe SSD -- so a
+hard disk behind a RAID or SAS controller was published as `nvme_ssd`. It is now
+read from the same `MSFT_PhysicalDisk` row's `BusType` and `MediaType`
+(`kind_from_bus_and_media`, tested), and without that class only an interface
+Windows names USB says anything; the rest is `unknown`. This machine's four
+drives read the same kinds as before, now from the source.
+
+### GPUs and displays, cross-checked
+
+Against `nvidia-smi` for both RTX 3090 Tis: total memory (24,564 MiB), clocks,
+maximum clock, power limit and names agree; power draw and temperature differ
+by a few percent on the card under full load, which moves between reads.
+Against `Win32_VideoController` and `Screen.AllScreens`: one 3440x1440 display,
+primary, 60 Hz (WMI rounds 59.94 down); the second card's 1920x1080 mode has no
+screen behind it, and ironmon correctly reports one display.
+
+One difference is definitional: an idle card reads **251 MiB used** where
+`nvidia-smi` shows 0. NVML's `memory_info` counts the driver's own reservation
+as used; recent `nvidia-smi` subtracts it. Both are measurements; the entity's
+description now says which this is, so an agent comparing the two is not left
+to conclude one of them is wrong.
+
+### Caches agree; NVMe health cannot be checked unelevated
+
+CPU caches against `Win32_Processor`: 48 KB L1 data, 32 KB L1 instruction and
+1 MB L2 per core -- 12 MB of L2, as WMI reports -- and two 32 MB L3 slices
+shared by processors 0-11 and 12-23, 64 MB, as WMI reports.
+
+NVMe health (power-on hours, power cycles, data units, percentage used,
+critical warnings) has no unelevated second source on Windows:
+`Get-StorageReliabilityCounter` returns nothing without Administrator. The
+figures are plausible -- 2,252 to 3,466 hours, 1-4 % of rated life, no
+warnings, no media errors -- and plausible is all that can be said. **An
+elevated `Get-StorageReliabilityCounter`, or `smartctl -a` on each drive,
+settles it in a minute**; the NVMe parser has had an offset bug before, so
+this is worth doing once.
+
+### The CLI views, read against the verified snapshot
+
+`ironmon status` and `cli gpu | memory | cpu | power | temperature | board`,
+compared with the figures already cross-checked:
+
+- `status`: 93.6 GiB, 12 cores / 24 threads, three GPUs -- agrees.
+- `cli gpu` once showed both RTX cards at exactly 26.0 % load while one was at
+  285 MHz and the other at 2010 MHz. Three further samples against
+  `nvidia-smi` gave different, tracking figures each time (48/27 against
+  20/43 a moment later, and so on); the workload was moving between the cards
+  faster than the two tools sample. A coincidence, not a mapping bug.
+- `power.battery.percentage = 100` on a desktop is an APC Back-UPS on USB,
+  which Windows reports through `Win32_Battery`. Real.
+- `cli cpu` printed `Clock: 5367 MHz (max 4400 MHz)`. The 4400 is the rated
+  clock -- the base, on current parts -- and the ontology already describes it
+  so ("a boosting core can and does exceed it"); the CLI's label said "max".
+  It now says "rated".
+
+### The TUI's accelerator line: zeros for the unread, and a percentage that never printed
+
+Rendering `ironmon tui --frame --tab Accelerators` against the verified GPU
+figures: the NVIDIA cards agreed, but the AMD iGPU was drawn at `@ 0 MHz`,
+`0°C` and `0/0W` -- all three published by the snapshot as unavailable.
+`draw_single_accelerator` (and its deprecated twin `draw_single_gpu`) passed
+clocks, temperature and power through `.unwrap_or(0)`. They now go through
+`mhz_opt`, `celsius_opt` and `watts_opt`, which dash what was not read.
+
+The same line printed `MEM: 3.4G/24.0G (%)` on every card. The percentage was
+formatted `({:.0}%)` over `pct_opt(..)`, which returns a `String` -- and on a
+string, `.0` is a precision of zero characters. It now reads `(98%)`.
+`unread_gpu_figures_are_dashes_and_percentages_print` covers both.
+
+The memory pane's renderer-agreement test would not have caught either: it
+parses the Memory tab only. `the_tui_accelerator_line_draws_absent_gpu_figures_as_dashes`
+in `tests/renderer_agreement.rs` now reads the Accelerators tab against the
+snapshot: every GPU temperature, power draw and graphics clock the ontology calls
+unavailable must be a dash, and no memory percentage may print empty. Drawing
+`0°C` for a missing temperature fails it on this machine's iGPU. The GUI's
+accelerator tab was read too and was already right -- it omits what it has not
+got rather than zeroing it.

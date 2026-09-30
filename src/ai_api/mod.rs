@@ -248,7 +248,12 @@ impl AiDataApi {
         let gpus = GpuCollection::auto_detect().ok();
 
         // Create process monitor (without GPU integration for now, as GpuCollection doesn't implement Clone)
-        let process_monitor = ProcessMonitor::new().ok();
+        // Primed here, so the first tool call reports CPU% over the interval
+        // since startup rather than each process's lifetime average.
+        let process_monitor = ProcessMonitor::new().ok().map(|mut m| {
+            let _ = m.sample_cpu_times();
+            m
+        });
         let network_monitor = NetworkMonitor::new().ok();
 
         Ok(Self {
@@ -544,7 +549,7 @@ impl AiDataApi {
                 summary.memory = Some(MemorySummary {
                     total_mb: (mem.ram.total / 1024),
                     used_mb: (mem.ram.used / 1024),
-                    free_mb: (mem.ram.free / 1024),
+                    free_mb: mem.ram.free.map(|v| v / 1024),
                     cached_mb: mem.ram.cached.map(|v| v / 1024),
                     swap_total_mb: mem.swap.total.map(|v| v / 1024),
                     swap_used_mb: mem.swap.used.map(|v| v / 1024),

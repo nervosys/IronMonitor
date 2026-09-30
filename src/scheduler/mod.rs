@@ -7,8 +7,9 @@
 //! ## Platform Support
 //!
 //! - **Linux**: `/proc/schedstat`, `/proc/pressure/`, `/proc/sys/kernel/sched_*`
-//! - **Windows**: Thread scheduling info via performance counters
-//! - **macOS**: Mach scheduling statistics
+//! - **Other platforms**: none. [`SchedulerMonitor::new`] returns
+//!   [`IronError::UnsupportedPlatform`] rather than an empty analysis, so
+//!   "cannot be read here" stays distinguishable from "nothing is queued".
 
 use crate::error::IronError;
 use serde::{Deserialize, Serialize};
@@ -114,12 +115,14 @@ pub struct SchedulerAnalysis {
     pub pressure: Vec<PressureInfo>,
     /// Tuning parameters.
     pub tuning: SchedTuning,
-    /// Average runqueue depth.
-    pub avg_runqueue_depth: f64,
-    /// Maximum runqueue depth.
-    pub max_runqueue_depth: u32,
-    /// CPU with highest wait time.
-    pub busiest_cpu: u32,
+    /// Average runqueue depth; `None` when `/proc/schedstat` gave no per-CPU
+    /// rows, rather than an idle-looking 0.
+    pub avg_runqueue_depth: Option<f64>,
+    /// Maximum runqueue depth; `None` under the same condition.
+    pub max_runqueue_depth: Option<u32>,
+    /// CPU with the highest wait time; `None` under the same condition, rather
+    /// than naming CPU 0.
+    pub busiest_cpu: Option<u32>,
     /// Whether scheduling latency is concerning.
     pub latency_concern: bool,
     /// Recommendations.
@@ -154,30 +157,32 @@ impl SchedulerMonitor {
         &self.analysis.pressure
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn collect() -> Result<SchedulerAnalysis, IronError> {
+        // An empty analysis here read as a machine with nothing queued and no
+        // pressure, on a platform that exposes neither. The reason travels
+        // with the error, as the watchdog reader's does.
+        Err(IronError::UnsupportedPlatform(
+            "scheduler statistics are read from `/proc/schedstat` and `/proc/pressure`, which this platform does not expose"
+                .into(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
     fn collect() -> Result<SchedulerAnalysis, IronError> {
         let cpu_stats = Self::read_schedstat();
         let pressure = Self::read_psi();
         let tuning = Self::read_tuning();
 
-        let avg_rq: f64 = if cpu_stats.is_empty() {
-            0.0
-        } else {
+        let avg_rq: Option<f64> = (!cpu_stats.is_empty()).then(|| {
             cpu_stats
                 .iter()
                 .map(|c| c.runqueue_depth as f64)
                 .sum::<f64>()
                 / cpu_stats.len() as f64
-        };
-        let max_rq = cpu_stats
-            .iter()
-            .map(|c| c.runqueue_depth)
-            .max()
-            .unwrap_or(0);
-        let busiest = cpu_stats
-            .iter()
-            .max_by_key(|c| c.waiting_ns)
-            .map(|c| c.cpu)
-            .unwrap_or(0);
+        });
+        let max_rq = cpu_stats.iter().map(|c| c.runqueue_depth).max();
+        let busiest = cpu_stats.iter().max_by_key(|c| c.waiting_ns).map(|c| c.cpu);
 
         let latency_concern = pressure
             .iter()
@@ -185,7 +190,7 @@ impl SchedulerMonitor {
 
         let mut recommendations = Vec::new();
 
-        if avg_rq > 4.0 {
+        if let Some(avg_rq) = avg_rq.filter(|&d| d > 4.0) {
             recommendations.push(format!(
                 "High average runqueue depth ({:.1}); system may be CPU-overcommitted",
                 avg_rq
@@ -272,11 +277,6 @@ impl SchedulerMonitor {
         stats
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn read_schedstat() -> Vec<CpuSchedStats> {
-        Vec::new()
-    }
-
     #[cfg(target_os = "linux")]
     fn read_psi() -> Vec<PressureInfo> {
         let mut pressures = Vec::new();
@@ -360,11 +360,6 @@ impl SchedulerMonitor {
         pressures
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn read_psi() -> Vec<PressureInfo> {
-        Vec::new()
-    }
-
     #[cfg(target_os = "linux")]
     fn read_tuning() -> SchedTuning {
         let read_ns = |name: &str| -> Option<u64> {
@@ -411,19 +406,6 @@ impl SchedulerMonitor {
         }
         false
     }
-
-    #[cfg(not(target_os = "linux"))]
-    fn read_tuning() -> SchedTuning {
-        SchedTuning {
-            min_granularity_ns: None,
-            latency_ns: None,
-            wakeup_granularity_ns: None,
-            migration_cost_ns: None,
-            nr_migrate: None,
-            autogroup_enabled: None,
-            scheduler_type: SchedPolicy::Unknown,
-        }
-    }
 }
 
 impl Default for SchedulerMonitor {
@@ -441,9 +423,9 @@ impl Default for SchedulerMonitor {
                     autogroup_enabled: None,
                     scheduler_type: SchedPolicy::Unknown,
                 },
-                avg_runqueue_depth: 0.0,
-                max_runqueue_depth: 0,
-                busiest_cpu: 0,
+                avg_runqueue_depth: None,
+                max_runqueue_depth: None,
+                busiest_cpu: None,
                 latency_concern: false,
                 recommendations: Vec::new(),
             },
@@ -503,6 +485,19 @@ mod tests {
         let avg: f64 =
             stats.iter().map(|c| c.runqueue_depth as f64).sum::<f64>() / stats.len() as f64;
         assert!((avg - 4.0).abs() < 0.01);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_platform_without_proc_declines_rather_than_reporting_an_idle_scheduler() {
+        match SchedulerMonitor::new() {
+            Err(IronError::UnsupportedPlatform(why)) => assert!(why.contains("/proc/schedstat")),
+            Err(e) => panic!("expected UnsupportedPlatform, got {e}"),
+            Ok(m) => panic!(
+                "a platform with no /proc produced an analysis: {:?}",
+                m.analysis()
+            ),
+        }
     }
 
     #[test]

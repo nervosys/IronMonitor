@@ -1155,7 +1155,7 @@ impl ObservabilityApi {
             if let Ok(stats) = memory::read_memory_stats() {
                 return Some(MemoryMetrics {
                     used_mb: stats.ram.used / 1024,
-                    free_mb: stats.ram.free / 1024,
+                    free_mb: stats.ram.free.map(|v| v / 1024),
                     total_mb: stats.ram.total / 1024,
                     cached_mb: stats.ram.cached.map(|v| v / 1024),
                     buffers_mb: stats.ram.buffers.map(|v| v / 1024),
@@ -1170,7 +1170,7 @@ impl ObservabilityApi {
             if let Ok(stats) = windows::read_memory_stats() {
                 return Some(MemoryMetrics {
                     used_mb: stats.ram.used / 1024,
-                    free_mb: stats.ram.free / 1024,
+                    free_mb: stats.ram.free.map(|v| v / 1024),
                     total_mb: stats.ram.total / 1024,
                     // These were `u64` sentinels that this layer converted
                     // back to `None` with `> 0` -- which also erased a genuine

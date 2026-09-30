@@ -260,14 +260,36 @@ pub fn ping(host: &str, count: u32) -> Result<PingResult> {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Parse ping output
-    parse_ping_output(&stdout, &mut result);
+    if !parse_ping_output(&stdout, &mut result) {
+        return Err(IronError::Parse(format!(
+            concat!(
+                "ping ran ({}) but its output had no statistics line this parser ",
+                "recognises. Only English output is parsed, so a reachability verdict ",
+                "here would be a guess: {}"
+            ),
+            output.status,
+            stdout
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("(no output)")
+        )));
+    }
 
     Ok(result)
 }
 
-/// Parse ping command output (cross-platform)
-fn parse_ping_output(output: &str, result: &mut PingResult) {
+/// Parse ping command output (cross-platform).
+///
+/// Returns whether a statistics line was recognised. Every match below is on
+/// English text -- `Packets: Sent =`, `packets transmitted`, `time=` -- and
+/// Windows localises `ping`. On a machine that is not running in English
+/// nothing matched, `packets_received` kept its initial `0`, and a reachable
+/// host was reported as unreachable with 100% loss: a verdict drawn from a
+/// parse that found nothing. The caller now turns an unrecognised output into
+/// an error instead.
+fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
     let lines: Vec<&str> = output.lines().collect();
+    let mut recognised = false;
 
     for line in &lines {
         let line_lower = line.to_lowercase();
@@ -287,6 +309,7 @@ fn parse_ping_output(output: &str, result: &mut PingResult) {
 
         // Parse statistics line (Windows)
         if line_lower.contains("packets: sent") {
+            recognised = true;
             // Windows format: "Packets: Sent = 4, Received = 4, Lost = 0 (0% loss)"
             if let Some(sent_start) = line.find("Sent = ") {
                 let sent_str = &line[sent_start + 7..];
@@ -310,6 +333,7 @@ fn parse_ping_output(output: &str, result: &mut PingResult) {
 
         // Parse statistics line (Linux/macOS)
         if line_lower.contains("packets transmitted") {
+            recognised = true;
             // Format: "4 packets transmitted, 4 received, 0% packet loss"
             let parts: Vec<&str> = line.split(',').collect();
             if !parts.is_empty() {
@@ -390,6 +414,8 @@ fn parse_ping_output(output: &str, result: &mut PingResult) {
             result.rtt_avg_ms = valid_times.iter().sum::<f64>() / valid_times.len() as f64;
         }
     }
+
+    recognised
 }
 
 /// Run traceroute to a host using system command
@@ -855,6 +881,7 @@ pub fn reverse_dns(ip: &str) -> Result<Option<String>> {
             // Windows: Use nslookup or PowerShell
             let output = Command::new("powershell")
                 .args([
+                    "-NoProfile",
                     "-Command",
                     &format!("[System.Net.Dns]::GetHostEntry('{}').HostName", ip),
                 ])
@@ -892,13 +919,17 @@ pub fn reverse_dns(ip: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Quick connectivity check to multiple hosts
-pub fn check_connectivity(hosts: &[&str]) -> HashMap<String, bool> {
+/// Quick connectivity check to multiple hosts.
+///
+/// `None` where ping gave no verdict -- it could not run, or its output was not
+/// recognised. That used to be `false`, the same answer as a host that did not
+/// reply.
+pub fn check_connectivity(hosts: &[&str]) -> HashMap<String, Option<bool>> {
     let mut results = HashMap::new();
 
     for host in hosts {
         // Try a quick ping (1 packet)
-        let reachable = ping(host, 1).map(|r| r.is_reachable).unwrap_or(false);
+        let reachable = ping(host, 1).ok().map(|r| r.is_reachable);
         results.insert(host.to_string(), reachable);
     }
 
@@ -956,8 +987,10 @@ pub struct NmapScanResult {
     pub ip_addresses: Vec<String>,
     /// Hostname (reverse DNS)
     pub hostname: Option<String>,
-    /// Whether host is up
-    pub is_up: bool,
+    /// Whether the host answered ping; `None` when ping gave no verdict (it
+    /// could not run, or its output was not recognised). A host that blocks
+    /// ICMP reads `Some(false)` and may still have open ports below.
+    pub is_up: Option<bool>,
     /// Latency in ms
     pub latency_ms: Option<f64>,
     /// Open ports with service info
@@ -1167,10 +1200,7 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
 
     // Check if host is up with ping
     let ping_result = ping(host, 1).ok();
-    let is_up = ping_result
-        .as_ref()
-        .map(|p| p.is_reachable)
-        .unwrap_or(false);
+    let is_up = ping_result.as_ref().map(|p| p.is_reachable);
     let latency_ms = ping_result
         .as_ref()
         .and_then(|p| p.ping_times.first().copied().flatten());
@@ -1183,7 +1213,7 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
     // Scan ports and grab banners
     let mut services = Vec::new();
 
-    if is_up || !ip_addresses.is_empty() {
+    if is_up == Some(true) || !ip_addresses.is_empty() {
         for &port in ports {
             let status = scan_single_port(host, port, timeout);
             if status == PortStatus::Open {
@@ -1470,7 +1500,7 @@ pub fn list_capture_interfaces() -> Result<Vec<String>> {
 
         // Also try PowerShell for more accurate results
         let ps_output = Command::new("powershell")
-            .args([
+            .args(["-NoProfile",
                 "-Command",
                 "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -ExpandProperty Name",
             ])
@@ -2072,5 +2102,85 @@ mod tests {
         assert!(ports.contains(&22));
         assert!(ports.contains(&80));
         assert!(ports.contains(&443));
+    }
+}
+
+#[cfg(test)]
+mod ping_parse_tests {
+    use super::*;
+
+    // Captured from this project's development machines: Windows 11 and Ubuntu
+    // under WSL2, both in English.
+    const WINDOWS_REPLY: &str = "
+Pinging 127.0.0.1 with 32 bytes of data:
+Reply from 127.0.0.1: bytes=32 time<1ms TTL=128
+Reply from 127.0.0.1: bytes=32 time<1ms TTL=128
+
+Ping statistics for 127.0.0.1:
+    Packets: Sent = 2, Received = 2, Lost = 0 (0% loss),
+Approximate round trip times in milli-seconds:
+    Minimum = 0ms, Maximum = 0ms, Average = 0ms
+";
+    const WINDOWS_TIMEOUT: &str = "
+Pinging 192.0.2.1 with 32 bytes of data:
+Request timed out.
+
+Ping statistics for 192.0.2.1:
+    Packets: Sent = 1, Received = 0, Lost = 1 (100% loss),
+";
+    const LINUX_REPLY: &str = "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=1.88 ms
+64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.077 ms
+
+--- 127.0.0.1 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1005ms
+rtt min/avg/max/mdev = 0.077/0.978/1.880/0.901 ms
+";
+    const LINUX_TIMEOUT: &str = "PING 192.0.2.1 (192.0.2.1) 56(84) bytes of data.
+
+--- 192.0.2.1 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+";
+
+    fn parse(output: &str) -> (bool, PingResult) {
+        let mut result = PingResult::new("host");
+        let recognised = parse_ping_output(output, &mut result);
+        (recognised, result)
+    }
+
+    #[test]
+    fn english_output_gives_a_verdict_either_way() {
+        for (output, reachable, received) in [
+            (WINDOWS_REPLY, true, 2),
+            (WINDOWS_TIMEOUT, false, 0),
+            (LINUX_REPLY, true, 2),
+            (LINUX_TIMEOUT, false, 0),
+        ] {
+            let (recognised, r) = parse(output);
+            assert!(recognised, "not recognised:\n{output}");
+            assert_eq!(r.is_reachable, reachable, "{output}");
+            assert_eq!(r.packets_received, received, "{output}");
+        }
+    }
+
+    /// Output the parser does not understand is not a host that did not reply.
+    ///
+    /// This fixture is the Windows reply above with its English labels
+    /// replaced, not a capture from a localised Windows: the property does not
+    /// depend on which language it is, only on the parser recognising none of
+    /// it -- and quoting a real localisation from memory would be the kind of
+    /// unverified constant this crate removes.
+    #[test]
+    fn unrecognised_output_gives_no_verdict_rather_than_unreachable() {
+        let relabelled = WINDOWS_REPLY
+            .replace("Packets: Sent", "Paquetes: Enviados")
+            .replace("Received", "Recibidos")
+            .replace("time<", "tiempo<")
+            .replace("Minimum", "Minimo");
+        let (recognised, _) = parse(&relabelled);
+        assert!(
+            !recognised,
+            "the relabelled output was matched:\n{relabelled}"
+        );
     }
 }

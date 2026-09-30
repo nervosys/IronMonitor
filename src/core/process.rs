@@ -231,7 +231,9 @@ pub(crate) mod linux {
         let starttime: f64 = stat_parts[21].parse().unwrap_or(0.0);
 
         // Calculate CPU percentage
-        let clk_tck = 100.0; // SC_CLK_TCK, typically 100
+        let clk_tck = crate::platform::linux::clock_ticks_per_second()
+            .ok_or_else(|| IronError::Other("sysconf(_SC_CLK_TCK) returned no tick rate".into()))?
+            as f64;
         let total_time = (utime + stime) / clk_tck;
         let proc_uptime = (uptime - (starttime / clk_tck)).max(1.0);
         let cpu_percent = (100.0 * (total_time / proc_uptime)) as f32;
@@ -241,7 +243,11 @@ pub(crate) mod linux {
         let statm_parts: Vec<&str> = statm_content.split_whitespace().collect();
 
         let vm_rss = if statm_parts.len() > 1 {
-            statm_parts[1].parse::<u64>().unwrap_or(0) * 4 // pages to KB
+            statm_parts[1].parse::<u64>().unwrap_or(0)
+                * crate::platform::linux::page_size().ok_or_else(|| {
+                    IronError::Other("sysconf(_SC_PAGESIZE) returned no page size".into())
+                })?
+                / 1024
         } else {
             0
         };

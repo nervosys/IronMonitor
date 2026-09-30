@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory, and readable GPU state. Failed selected devices appear as unavailable
   with their original index and error reason, rather than disappearing or
   contributing invented zeros to aggregates. Serialized agent state adds
-  `gpu_errors`; older state without that field still deserializes.
+  `unreadable_gpus`; older state without that field still deserializes, and
+  the local pre-merge name `gpu_errors` is accepted when reading state.
 
 ### Removed
 
@@ -85,6 +86,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   total and used memory 1024 times too small.
 
 ### Added
+
+- **A ratchet on partial corrections.** `tests/partial_correction.rs` fails
+  when a struct that already has an `Option` numeric field gains a bare one --
+  the shape where one reading was taught it could be missing and its siblings
+  were not. The 76 structs that match today are a baseline that may only
+  shrink, recorded as untriaged rather than approved.
+
+- **A test that no reader helper's absence is thrown away.**
+  `tests/discarded_absence.rs` finds every `fn` in `src/` returning
+  `Option<numeric>` and fails on any call written `helper(..).unwrap_or(<literal>)`
+  or `.unwrap_or_default()` that is not on its allowlist. That is the shape of
+  most readings the fabricated-reading sweep fixed: `read_sysfs_u32(..)
+  .unwrap_or(0)` reporting a watchdog pre-timeout as deliberately disabled, a
+  cooling device as not throttling, a GPU clock as 0 MHz. Nine sites where the
+  default was judged correct are listed, each with its reason and an exact
+  count, and a second test fails on any entry that no longer matches its code.
+  Putting instance eighteen's `.unwrap_or(0)` back makes it fail, naming the
+  file and helper. It sees only the direct form: a discard after a closure
+  boundary is not adjacent to the call and is missed, which the test says.
 
 - **An agreement test for what the TUI and GUI paint.** The TUI and GUI collect
   nothing of their own, but each converts units for display, and nothing
@@ -385,6 +405,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     introduced to fix.
 
 ### Fixed
+
+- **The TUI no longer draws an unread GPU figure as zero.** An adapter with no
+  source for its clocks, temperature or power -- the AMD iGPU on Windows --
+  showed "0 MHz", "0°C" and "0/0W"; these are dashes now. The memory
+  percentage, which printed as an empty "(%)" on every card, prints.
+
+- **Windows disk capacity is the drive's length.** It came from
+  `Win32_DiskDrive.Size`, a geometric figure that drops the last partial
+  cylinder -- 2.6 MB short on every drive measured. It now reads
+  `MSFT_PhysicalDisk.Size`, matching `Get-PhysicalDisk` to the byte.
+  The disk kind comes from the same class's `BusType` and `MediaType`
+  instead of the model name, which classified any SCSI-attached drive,
+  hard disks included, as an NVMe SSD.
+
+- **A Linux snapshot no longer waits on missing daemons: 150 s to 23 s.**
+  `fwupdmgr` is bounded at 8 s and no longer runs twice (Secure Boot reads its
+  efivar alone); the Bluetooth device walk is skipped when no adapter exists,
+  instead of waiting out `bluetoothctl`'s 30 s timeout.
+
+- **Bluetooth stops claiming what it did not read.** **Breaking:**
+  `BluetoothAdapter::powered` is `Option<bool>` -- an unreadable Linux file was
+  "on", and Windows reported PnP health as radio state. Windows no longer
+  reports paired peripherals as connected, and `set_adapter_power`, which
+  changed only a struct field, now returns `NotImplemented`.
+
+- **Linux NUMA node memory is the node's memory, not its id.** The parser took
+  the first number on `Node 0 MemTotal: 48111256 kB`, so node 0 reported 0
+  bytes and node 1 reported 1 kB. `memory.numa.{n}.memory` now reads the
+  figure.
+
+- **A process whose I/O counters were refused no longer shows zero I/O.**
+  On Linux, unprivileged, most other users' processes; on macOS, all of them.
+  **Breaking:** `ProcessMonitorInfo::io_read_bytes`, `io_write_bytes` and
+  `handle_count` are `Option`. The TUI shows `?` for unknown.
+
+- **An unread core count is no longer "zero cores".** `cpu.microarch.physical_cores`
+  and `logical_cores` were published as specifications of 0 when the platform
+  did not report them (common on ARM Linux), and `cpu.microarch.smt_enabled`
+  as a measurement that SMT was off. They are now unavailable with a reason,
+  and the three entities are nullable.
+
+- **RAPL power totals can say nothing was measured.** **Breaking:**
+  `PowerSnapshot`'s three totals are `Option<f64>`, `None` when no domain of
+  that class produced a delta rather than `0.0`; `RaplMonitor::efficiency()`
+  returns `Option<PowerEfficiency>`, `None` until package power is measured,
+  instead of analysing a zero it assumed.
+
+- **A DIMM whose size could not be read is no longer reported as an empty
+  slot.** Presence now comes from evidence -- a module row, a status field, a
+  size that parsed, a part number -- and is unknown when there is none.
+  **Breaking:** `DimmInfo::capacity_bytes` is `Option<u64>`, `populated` is
+  `Option<bool>` and `capacity_gib()` returns `Option<f64>`;
+  `memory.dimm.{n}.populated` is nullable.
+
+- **PowerShell helpers no longer run the user's profile.** Ten spawns lacked
+  `-NoProfile`, costing about 0.8 s each where a profile exists and letting
+  anything it printed corrupt the output being parsed. The boot-duration entity
+  also stopped running the whole boot monitor for one field (new:
+  `BootMonitor::read_boot_time`). A debug snapshot went from about 45 s to
+  28.5 s on the machine measured.
+
+- **The TPM reader takes 30 ms instead of 6 s unelevated.** It no longer asks
+  the Administrators-only `Win32_Tpm` class when the process is not elevated
+  (the refusal took 6.6 s to arrive), and reads the service key and device node
+  in-process rather than through PowerShell. Readings are unchanged.
+
+- **The firmware inventory reads in-process: 2.2 s to 76 ms.** Readings are
+  unchanged. A Windows BIOS's `estimated_age_days` is now computed -- its date
+  never parsed before -- and the age is exact rather than counting 30-day months
+  and 365-day years, which was off by two weeks a year.
+
+- **`process.{pid}.cpu` is the share over an interval, as it says.** Each
+  snapshot sampled processes once, which yields each process's lifetime
+  average; an idle process that had been busy earlier read 2.3% where it was
+  using nothing. The resolver now samples twice, 250 ms apart, and the MCP
+  server primes its process monitor at startup. New:
+  `ProcessMonitor::sample_cpu_times`.
+
+- **Processes Windows will not let IronMonitor open now report their memory.**
+  Unelevated, a third of the processes on a typical machine -- `dwm.exe`,
+  `lsass.exe`, most `svchost` instances -- were listed with zero memory, CPU,
+  handles and I/O, which also left them out of every "largest by memory" list
+  an agent or the ontology reported. Those figures now come from the kernel's
+  process table, which needs no process handle.
+
+- **Linux process memory and CPU time use the system's page size and tick
+  rate.** They were a literal 4096 bytes and 100 Hz; on an ARM64 kernel with
+  16 KiB or 64 KiB pages, every process's memory read 4x or 16x too small.
+
+- **`ping` output that was not understood is no longer "unreachable".** The
+  parser matches English output only; on a localised Windows it recognised
+  nothing and reported a reachable host as unreachable with 100% loss. It now
+  returns an error when no statistics line was recognised. **Breaking:**
+  `check_connectivity` returns `HashMap<String, Option<bool>>` and
+  `NmapScanResult::is_up` is `Option<bool>`, `None` where ping gave no verdict.
+
+- **macOS no longer publishes a memory configuration it did not read.** The
+  bandwidth estimator looked the memory generation, speed and channel count up
+  from the CPU brand string (every M3 variant alike), and the ontology published
+  them as specifications. macOS exposes none of the three, so
+  `MemoryBandwidthMonitor::new()` now returns an error with that reason and
+  `memory.bandwidth.<none>` carries it.
+  `memory.bandwidth.channels` and `max_channels` are now nullable.
+
+- **A resolver that declines is no longer reported as missing.** When a
+  resolver stopped at a `<prefix>.<none>` diagnostic, its entities were filled
+  with "no resolver bound on this build". They now carry the diagnostic's
+  reason. Affected `memory.bandwidth.*`, `cpu.microarch.*` and
+  `system.service.count.*`.
+
+- **Free memory on Windows is free memory.** `RamInfo::free` was the
+  *available* figure on Windows -- the standby cache included -- and reached
+  agents through six MCP tools and Prometheus as `memory_free_bytes`: 60.9 GB
+  "free" on a machine with 31.7 GB free. It now reads
+  `\Memory\Free & Zero Page List Bytes` through PDH's English counter names.
+  **Breaking:** `RamInfo::free`, `ai_api::MemorySummary::free_mb` and
+  `observability::MemoryMetrics::free_mb` are `Option`; an unread figure is
+  null in tool output, absent from Prometheus, and an em dash in the GUI.
+
+- **macOS `vm_stat` parsing no longer reads a missing line as zero pages.** A
+  missing line now fails the parse instead of understating free, used or
+  cached memory.
+
+- **One failing GPU no longer reads as no GPU.** The ontology answered any
+  adapter's query failure with `gpu.<none>` -- "this domain enumerated nothing"
+  -- and dropped every adapter's readings, and the chat agent's context failed
+  outright. Both now report each adapter that read, and name each one that did
+  not: a new declared diagnostic, `gpu.{n}.<unreadable>`, carries the error,
+  and `agent::SystemState::unreadable_gpus` tells the model. Indices do not
+  shift.
+
+- **`gpu.{n}.utilization` is never a measured null.** An adapter with no
+  utilisation counter was published as `measured` with a null value; it is now
+  `unavailable` with a reason.
+
+- **The Apple Neural Engine no longer reports a utilisation.** It was the ANE's
+  measured power divided by a ceiling from a per-chip table -- 8 W for any chip
+  the table did not name -- and reached the TUI's accelerator panel. The same
+  defect was fixed for the Apple GPU earlier. `powermetrics` reports no ANE
+  activity, so `NpuInfo::utilization` is `None`. `cpu_info`'s per-cluster
+  `power_watts`, a fixed 40/60 split of one CPU figure, is `None` too. The
+  table and an unread GPU core count are removed, and with them a
+  `system_profiler` process spawned on every Apple GPU read.
+
+- **`firmware::FirmwareInventory::risk_score()` returns `Option<u8>`**, `None`
+  when no firmware entry was read, instead of `0` -- the lowest-risk score.
+  **Breaking** for direct library callers.
+
+- **`interconnect::InterconnectLink::latency_ns` is renamed
+  `estimated_latency_ns`.** Every value is a constant per link type; the name
+  now says so. **Breaking** for direct library callers.
+
+- **`scheduler` declines off Linux instead of reporting an idle machine.**
+  `SchedulerMonitor::new()` returned an empty analysis on platforms with no
+  `/proc`; it now returns `IronError::UnsupportedPlatform`. On Linux,
+  `avg_runqueue_depth`, `max_runqueue_depth` and `busiest_cpu` are `Option`,
+  `None` when `/proc/schedstat` gave no rows rather than 0 -- `busiest_cpu: 0`
+  named CPU 0 from no data. **Breaking** for direct library callers of those
+  fields.
+
+- **`wsl` no longer lists the Windows driver store as GPUs.** `WslInfo::gpu_devices`
+  enumerated `/usr/lib/wsl/drivers` -- 941 driver packages, FireWire and ACPI
+  among them -- and is removed; WSL2 exposes no adapter list through the
+  filesystem. `cuda_available` was true on every WSL2 install because it counted
+  that directory; it now requires `libcuda.so`. **Breaking** for direct library
+  callers of `gpu_devices`.
 
 - **A flaky TUI test.** `sync_snapshot_populates_display_state_from_collector`
   asserted `!app.sync_snapshot()` against a live, ticking collector, so a
