@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "iron-monitor"
-version = "6.0.0"
+version = "7.0.0"
 dependencies = [
  "arc-swap",
  "arrow-array",
@@ -2732,6 +2732,7 @@ dependencies = [
  "libc",
  "log",
  "lru 0.12.5",
+ "native-tls",
  "nix 0.29.0",
  "num_cpus",
  "nvml-wrapper",

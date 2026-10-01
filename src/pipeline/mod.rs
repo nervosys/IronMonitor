@@ -261,6 +261,15 @@ pub struct Snapshot {
     pub collect_us: u64,
     /// Per-collector breakdown of this tick.
     pub timings: StageTimings,
+    /// Whether the process stage ran this tick rather than reusing its table.
+    #[serde(default)]
+    pub process_sampled: bool,
+    /// Whether the connection stage ran this tick rather than reusing its table.
+    #[serde(default)]
+    pub connections_sampled: bool,
+    /// Per-protocol connection failures on a refresh tick; None on cached ticks.
+    #[serde(default)]
+    pub connection_errors: Option<Vec<String>>,
 
     /// CPU statistics, if the platform collector succeeded.
     pub cpu: Option<CpuStats>,
@@ -766,6 +775,9 @@ fn collect_once(
         system_us: sys_stats.1,
     };
 
+    let process_sampled = process_list.0.is_some();
+    let connections_sampled = conn_list.0.is_some();
+
     let (cpu, memory) = (cpu.0, memory.0);
     let gpu_dynamic = gpu_dynamic.0;
     let network = net_list.0;
@@ -778,8 +790,10 @@ fn collect_once(
     if let Some(fresh) = process_list.0 {
         *cached_processes = fresh;
     }
-    if let Some(fresh) = conn_list.0 {
+    let mut connection_errors = None;
+    if let Some((fresh, errors)) = conn_list.0 {
         *cached_connections = fresh;
+        connection_errors = Some(errors);
     }
     let processes = cached_processes.clone();
     let connections = cached_connections.clone();
@@ -842,6 +856,9 @@ fn collect_once(
             .unwrap_or(0),
         collect_us: started.elapsed().as_micros() as u64,
         timings,
+        process_sampled,
+        connections_sampled,
+        connection_errors,
         cpu,
         memory,
         gpu_static: gpu_static.to_vec(),
@@ -933,10 +950,12 @@ fn collect_processes(monitor: Option<&mut ProcessMonitor>) -> Vec<ProcessMonitor
     monitor.and_then(|m| m.processes().ok()).unwrap_or_default()
 }
 
-fn collect_connections(monitor: Option<&mut ConnectionMonitor>) -> Vec<ConnectionInfo> {
+fn collect_connections(
+    monitor: Option<&mut ConnectionMonitor>,
+) -> (Vec<ConnectionInfo>, Vec<String>) {
     monitor
-        .and_then(|m| m.all_connections().ok())
-        .unwrap_or_default()
+        .map(|m| m.all_connections_checked())
+        .unwrap_or_else(|| (Vec::new(), vec!["Connection collector unavailable".into()]))
 }
 
 fn collect_network(monitor: Option<&mut NetworkMonitor>) -> Vec<NetSnapshot> {

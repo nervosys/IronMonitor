@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-09-30
+
+### Added
+
+- Ten bounded tools for snapshots, collector health, metric history, monitoring
+  events, processes, connections, endpoint checks, schema discovery, services
+  and OS events. The catalogue has 62 tools; the built-in agent uses a 51-tool
+  read-only allowlist.
+- Native model-directed tool loops for OpenAI Responses, Anthropic Messages,
+  Ollama chat and compatible Chat Completions, with cancellation, strict argument
+  validation, deadlines and bounded worker queues, results and conversations.
+- Background GUI AI activity and cancellation, plus manual diagnostic tools.
+- Shared dark palettes across GUI tabs, Dark Monochrome and VS Code-inspired
+  themes, a compact header and reusable chart storage.
+- Formatted UTC observation timestamps derived from original sample times and
+  explicit notices when a backend reaches its output token limit.
+
 ### Fixed
+
+- MCP resource reads use the registered tool catalogue and return explicit
+  unavailable/error results. Interactive AI aliases exit cleanly at EOF.
+- IronWorks readiness checks validate model-list shape; empty completions are
+  rejected. Exact read-only JSON calls pass through normal schema checks, and
+  repeated calls reach a final-answer boundary without further execution.
+- Unexecuted tool-call text is rejected rather than reported as a successful
+  monitoring answer. Live answers bypass the old question-only cache.
 
 - The GUI hostname and settings controls occupy a separate row above the tabs,
   preventing the hostname from overlapping the AI button. Navigation wraps at

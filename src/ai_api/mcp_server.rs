@@ -53,6 +53,21 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
+const RESOURCES: [(&str, &str, &str); 4] = [
+    (
+        "ironmon://system/summary",
+        "System Summary",
+        "get_system_summary",
+    ),
+    ("ironmon://gpu/status", "GPU Status", "get_gpu_status"),
+    ("ironmon://cpu/status", "CPU Status", "get_cpu_status"),
+    (
+        "ironmon://memory/status",
+        "Memory Status",
+        "get_memory_status",
+    ),
+];
+
 impl McpServer {
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -107,6 +122,7 @@ impl McpServer {
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(&request.params),
             "resources/list" => self.handle_resources_list(),
+            "resources/read" => self.handle_resources_read(&request.params),
             "ping" => Ok(json!({})),
             _ => Err(McpError {
                 code: METHOD_NOT_FOUND,
@@ -169,12 +185,101 @@ impl McpServer {
 
     fn handle_resources_list(&self) -> std::result::Result<Value, McpError> {
         Ok(json!({
-            "resources": [
-                { "uri": "ironmon://system/summary", "name": "System Summary", "mimeType": "application/json" },
-                { "uri": "ironmon://gpu/status", "name": "GPU Status", "mimeType": "application/json" },
-                { "uri": "ironmon://cpu/status", "name": "CPU Status", "mimeType": "application/json" },
-                { "uri": "ironmon://memory/status", "name": "Memory Status", "mimeType": "application/json" }
-            ]
+            "resources": RESOURCES.iter().map(|(uri,name,_)|
+                json!({"uri":uri,"name":name,"mimeType":"application/json"})).collect::<Vec<_>>()
         }))
+    }
+
+    fn handle_resources_read(&mut self, params: &Value) -> std::result::Result<Value, McpError> {
+        let uri = params
+            .get("uri")
+            .and_then(Value::as_str)
+            .ok_or_else(|| McpError {
+                code: INVALID_PARAMS,
+                message: "Missing resource URI".into(),
+                data: None,
+            })?;
+        let (_, _, tool) = RESOURCES
+            .iter()
+            .find(|(known, _, _)| *known == uri)
+            .ok_or_else(|| McpError {
+                code: -32002,
+                message: format!("Resource not found: {uri}"),
+                data: None,
+            })?;
+        let result = self
+            .api
+            .call_tool(tool, json!({}))
+            .map_err(|error| McpError {
+                code: INTERNAL_ERROR,
+                message: error.to_string(),
+                data: None,
+            })?;
+        // Retain the tool result envelope: unavailable hardware is reported as
+        // a failed reading with a reason, rather than becoming an empty resource.
+        let text = serde_json::to_string(&result).map_err(|error| McpError {
+            code: INTERNAL_ERROR,
+            message: error.to_string(),
+            data: None,
+        })?;
+        Ok(json!({"contents":[{"uri":uri,"mimeType":"application/json","text":text}]}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_advertised_resource_can_be_read_through_its_registered_tool() {
+        let mut server = McpServer {
+            api: AiDataApi::with_components(None, None, None),
+            server_info: ServerInfo {
+                name: "fixture".into(),
+                version: "1".into(),
+            },
+        };
+        let resources = server.handle_resources_list().unwrap();
+        for row in resources["resources"].as_array().unwrap() {
+            let result = server.handle_request(McpRequest {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(1)),
+                method: "resources/read".into(),
+                params: json!({"uri":row["uri"]}),
+            });
+            assert!(result.error.is_none(), "{result:?}");
+            let contents = &result.result.unwrap()["contents"][0];
+            assert_eq!(contents["uri"], row["uri"]);
+            assert_eq!(contents["mimeType"], "application/json");
+            let reading: Value = serde_json::from_str(contents["text"].as_str().unwrap()).unwrap();
+            assert!(reading["success"].is_boolean());
+            if reading["success"] == true {
+                assert!(!reading["data"].is_null());
+            } else {
+                assert!(reading["error"].as_str().is_some_and(|s| !s.is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_and_unknown_resource_uris_have_distinct_errors() {
+        let mut server = McpServer {
+            api: AiDataApi::with_components(None, None, None),
+            server_info: ServerInfo {
+                name: "fixture".into(),
+                version: "1".into(),
+            },
+        };
+        assert_eq!(
+            server.handle_resources_read(&json!({})).unwrap_err().code,
+            INVALID_PARAMS
+        );
+        assert_eq!(
+            server
+                .handle_resources_read(&json!({"uri":"ironmon://missing"}))
+                .unwrap_err()
+                .code,
+            -32002
+        );
     }
 }

@@ -361,8 +361,37 @@ impl Widget for MetricCard<'_> {
 }
 
 /// Sparkline chart for historical data - sexy animated version with improved readability
-pub struct SparklineChart {
-    data: Vec<f32>,
+enum ChartData<'a> {
+    Owned(Vec<f32>),
+    History(&'a std::collections::VecDeque<f32>),
+}
+
+impl ChartData<'_> {
+    fn slices(&self) -> (&[f32], &[f32]) {
+        match self {
+            Self::Owned(values) => (values, &[]),
+            Self::History(values) => values.as_slices(),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &f32> {
+        let (first, second) = self.slices();
+        first.iter().chain(second.iter())
+    }
+
+    fn len(&self) -> usize {
+        let (first, second) = self.slices();
+        first.len() + second.len()
+    }
+
+    fn last(&self) -> Option<&f32> {
+        let (first, second) = self.slices();
+        second.last().or_else(|| first.last())
+    }
+}
+
+pub struct SparklineChart<'a> {
+    data: ChartData<'a>,
     color: Color32,
     height: f32,
     show_grid: bool,
@@ -378,10 +407,10 @@ pub struct SparklineChart {
     line_thickness: f32,
 }
 
-impl SparklineChart {
+impl<'a> SparklineChart<'a> {
     pub fn new(data: Vec<f32>) -> Self {
         Self {
-            data,
+            data: ChartData::Owned(data),
             color: CyberColors::CYAN,
             height: 70.0,
             show_grid: true,
@@ -395,6 +424,14 @@ impl SparklineChart {
             fixed_max: None,
             show_min_max: false, // Disabled by default - less clutter
             line_thickness: 2.5, // Default thicker lines
+        }
+    }
+
+    /// Borrow a ring-buffer history without copying samples on every frame.
+    pub fn from_history(data: &'a std::collections::VecDeque<f32>) -> Self {
+        Self {
+            data: ChartData::History(data),
+            ..Self::new(Vec::new())
         }
     }
 
@@ -465,7 +502,7 @@ impl SparklineChart {
     }
 }
 
-impl Widget for SparklineChart {
+impl Widget for SparklineChart<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let widget_color = theme::color(ui.ctx(), self.color);
         // Reserve space for Y-axis labels on left
@@ -666,7 +703,7 @@ impl Widget for SparklineChart {
                         8,
                     );
                     painter.add(egui::Shape::convex_polygon(
-                        fill_points.clone(),
+                        fill_points,
                         fill_color_dark,
                         Stroke::NONE,
                     ));
@@ -727,10 +764,8 @@ impl Widget for SparklineChart {
 
                 // Full saturation and opacity give a crisp line on the dark fill.
                 let line_color = widget_color;
-                let main_path = PathShape::line(
-                    smooth_points.clone(),
-                    Stroke::new(self.line_thickness, line_color),
-                );
+                let main_path =
+                    PathShape::line(smooth_points, Stroke::new(self.line_thickness, line_color));
                 painter.add(main_path);
 
                 // Data point dots (only on original points, not interpolated)
@@ -794,7 +829,7 @@ fn catmull_rom_spline(points: &[Pos2], subdivisions: usize) -> Vec<Pos2> {
         return points.to_vec();
     }
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity((points.len() - 1) * subdivisions + 1);
 
     for i in 0..points.len() - 1 {
         let p0 = if i == 0 { points[0] } else { points[i - 1] };
@@ -831,6 +866,34 @@ fn catmull_rom_spline(points: &[Pos2], subdivisions: usize) -> Vec<Pos2> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod chart_history_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_history_preserves_wrapped_ring_order_and_last_sample() {
+        let mut history = std::collections::VecDeque::with_capacity(4);
+        history.extend([1.0, 2.0, 3.0, 4.0]);
+        history.pop_front();
+        history.pop_front();
+        history.extend([5.0, 6.0]);
+        assert!(!history.as_slices().1.is_empty());
+        let chart = SparklineChart::from_history(&history);
+        assert_eq!(
+            chart.data.iter().copied().collect::<Vec<_>>(),
+            vec![3.0, 4.0, 5.0, 6.0]
+        );
+        assert_eq!(chart.data.len(), 4);
+        assert_eq!(chart.data.last(), Some(&6.0));
+        assert_eq!(
+            SparklineChart::from_history(&std::collections::VecDeque::new())
+                .data
+                .last(),
+            None
+        );
+    }
 }
 
 /// Section header with cyber styling

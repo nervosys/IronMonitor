@@ -173,7 +173,6 @@ struct Usage {
 #[cfg(feature = "remote-backends")]
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
-    #[serde(default)]
     data: Vec<ModelEntry>,
 }
 
@@ -193,11 +192,20 @@ impl LocalInferenceClient for IronWorksClient {
         #[cfg(feature = "remote-backends")]
         {
             let url = format!("{}/v1/models", self.endpoint);
-            // A reachable-but-erroring server is not usable, so require success
-            // rather than merely a completed request.
-            match self.client.get(&url).send().await {
-                Ok(response) => response.status().is_success(),
+            // An unrelated web app can return 200 on this port. Availability
+            // requires the model-list shape, with a short discovery deadline.
+            match self
+                .client
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<ModelsResponse>().await.is_ok()
+                }
                 Err(_) => false,
+                _ => false,
             }
         }
 
@@ -309,7 +317,11 @@ impl LocalInferenceClient for IronWorksClient {
                 IronError::Agent("IronWorks returned no completion choices".to_string())
             })?;
 
-            let text = choice.message.map(|m| m.content).unwrap_or_default();
+            let text = choice
+                .message
+                .map(|m| m.content)
+                .filter(|text| !text.trim().is_empty())
+                .ok_or_else(|| IronError::Agent("IronWorks returned no assistant text".into()))?;
 
             // OpenAI-compatible servers report "length" when the token cap cut the
             // answer short; anything else means the model stopped on its own.
@@ -353,6 +365,135 @@ impl LocalInferenceClient for IronWorksClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "remote-backends")]
+    fn fixture(body: serde_json::Value) -> (String, std::thread::JoinHandle<serde_json::Value>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let header_end = loop {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16384);
+                if request.ends_with(b"\r\n\r\n") {
+                    break request.len();
+                }
+            };
+            let headers = String::from_utf8_lossy(&request);
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|n| n.trim().parse().ok())
+                })
+                .unwrap_or(0);
+            assert!(length < 16384);
+            request.resize(header_end + length, 0);
+            stream.read_exact(&mut request[header_end..]).unwrap();
+            let payload = if length > 0 {
+                serde_json::from_slice(&request[header_end..]).unwrap()
+            } else {
+                serde_json::Value::Null
+            };
+            let body = body.to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            payload
+        });
+        (format!("http://{address}"), worker)
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[tokio::test]
+    async fn availability_requires_a_model_list_and_listing_rejects_other_shapes() {
+        for (body, expected) in [
+            (serde_json::json!({"data":[{"id":"fixture-model"}]}), true),
+            (serde_json::json!({"data":[]}), true),
+            (serde_json::json!({}), false),
+            (serde_json::json!({"data":"not a listing"}), false),
+            (
+                serde_json::json!("<html>unrelated application</html>"),
+                false,
+            ),
+        ] {
+            let (endpoint, server) = fixture(body.clone());
+            let client = IronWorksClient::new(&endpoint).unwrap();
+            assert_eq!(client.is_available().await, expected);
+            server.join().unwrap();
+            let (endpoint, server) = fixture(body);
+            assert_eq!(
+                IronWorksClient::new(&endpoint)
+                    .unwrap()
+                    .list_models()
+                    .await
+                    .is_ok(),
+                expected
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[tokio::test]
+    async fn generation_preserves_controls_messages_and_response_metadata() {
+        let (endpoint, server) = fixture(serde_json::json!({
+            "model":"fixture-model","choices":[{"message":{"content":" fixture answer "},"finish_reason":"length"}],
+            "usage":{"completion_tokens":7}
+        }));
+        let response = IronWorksClient::new(&endpoint)
+            .unwrap()
+            .generate(InferenceRequest {
+                model: "fixture-model".into(),
+                prompt: "question".into(),
+                system: Some("system".into()),
+                max_tokens: Some(16),
+                temperature: Some(0.0),
+                top_p: Some(0.8),
+                stop: Some(vec!["END".into()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.text, "fixture answer");
+        assert_eq!(response.tokens_generated, Some(7));
+        assert!(response.truncated);
+        let request = server.join().unwrap();
+        assert_eq!(request["messages"][0]["role"], "system");
+        assert_eq!(request["messages"][1]["content"], "question");
+        assert_eq!(request["max_tokens"], 16);
+        assert_eq!(request["temperature"], 0.0);
+        assert_eq!(request["stop"][0], "END");
+        assert_eq!(request["stream"], false);
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[tokio::test]
+    async fn incomplete_and_empty_completions_are_errors() {
+        for body in [
+            serde_json::json!({"choices":[]}),
+            serde_json::json!({"choices":[{}]}),
+            serde_json::json!({"choices":[{"message":{"content":" "}}]}),
+        ] {
+            let (endpoint, server) = fixture(body);
+            let result = IronWorksClient::new(&endpoint)
+                .unwrap()
+                .generate(InferenceRequest {
+                    model: "fixture".into(),
+                    prompt: "question".into(),
+                    ..Default::default()
+                })
+                .await;
+            assert!(result.is_err());
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn default_endpoint_matches_ironworks_server_default() {

@@ -84,6 +84,7 @@ struct AgentResponse {
 
 /// Main application state
 pub struct IronMonitorApp {
+    agent_tools: super::agent_tools::AgentToolsPanel,
     // Current tab
     current_tab: Tab,
 
@@ -175,6 +176,9 @@ pub struct IronMonitorApp {
     agent_history: VecDeque<AgentChatEntry>,
     agent_is_processing: bool,
     agent_response_receiver: Option<Receiver<Result<AgentResponse, String>>>,
+    agent_run_control: Option<crate::agent::tool_runtime::RunControl>,
+    agent_tool_events: Option<Receiver<crate::agent::tool_runtime::ToolActivity>>,
+    agent_tool_activity: VecDeque<crate::agent::tool_runtime::ToolActivity>,
 
     // AI configuration UI state (reserved for future use)
     #[allow(dead_code)]
@@ -542,6 +546,12 @@ pub enum ColorTheme {
     Ice,
     Aurora,
     Amber,
+    Dracula,
+    OneDarkPro,
+    TokyoNight,
+    Nord,
+    Monokai,
+    GitHubDark,
     Monochrome, // Grayscale minimalist
 }
 
@@ -559,6 +569,12 @@ impl ColorTheme {
             ColorTheme::Ice => "Ice",
             ColorTheme::Aurora => "Aurora",
             ColorTheme::Amber => "Amber",
+            ColorTheme::Dracula => "Dracula",
+            ColorTheme::OneDarkPro => "One Dark Pro",
+            ColorTheme::TokyoNight => "Tokyo Night",
+            ColorTheme::Nord => "Nord",
+            ColorTheme::Monokai => "Monokai",
+            ColorTheme::GitHubDark => "GitHub Dark",
             ColorTheme::Monochrome => "Dark Monochrome",
         }
     }
@@ -576,6 +592,12 @@ impl ColorTheme {
             ColorTheme::Ice,
             ColorTheme::Aurora,
             ColorTheme::Amber,
+            ColorTheme::Dracula,
+            ColorTheme::OneDarkPro,
+            ColorTheme::TokyoNight,
+            ColorTheme::Nord,
+            ColorTheme::Monokai,
+            ColorTheme::GitHubDark,
             ColorTheme::Monochrome,
         ]
     }
@@ -594,6 +616,12 @@ impl ColorTheme {
             ColorTheme::Ice => egui::Color32::from_rgb(111, 210, 255),
             ColorTheme::Aurora => egui::Color32::from_rgb(137, 245, 139),
             ColorTheme::Amber => egui::Color32::from_rgb(255, 202, 88),
+            ColorTheme::Dracula => egui::Color32::from_rgb(189, 147, 249),
+            ColorTheme::OneDarkPro => egui::Color32::from_rgb(97, 175, 239),
+            ColorTheme::TokyoNight => egui::Color32::from_rgb(122, 162, 247),
+            ColorTheme::Nord => egui::Color32::from_rgb(136, 192, 208),
+            ColorTheme::Monokai => egui::Color32::from_rgb(166, 226, 46),
+            ColorTheme::GitHubDark => egui::Color32::from_rgb(121, 192, 255),
             ColorTheme::Monochrome => egui::Color32::from_rgb(200, 200, 200), // Light gray
         }
     }
@@ -613,6 +641,12 @@ impl ColorTheme {
             ColorTheme::Ice => egui::Color32::from_rgb(165, 178, 255),
             ColorTheme::Aurora => egui::Color32::from_rgb(195, 139, 255),
             ColorTheme::Amber => egui::Color32::from_rgb(255, 139, 94),
+            ColorTheme::Dracula => egui::Color32::from_rgb(255, 121, 198),
+            ColorTheme::OneDarkPro => egui::Color32::from_rgb(198, 120, 221),
+            ColorTheme::TokyoNight => egui::Color32::from_rgb(187, 154, 247),
+            ColorTheme::Nord => egui::Color32::from_rgb(180, 142, 173),
+            ColorTheme::Monokai => egui::Color32::from_rgb(249, 38, 114),
+            ColorTheme::GitHubDark => egui::Color32::from_rgb(210, 168, 255),
             ColorTheme::Monochrome => egui::Color32::from_rgb(150, 150, 150), // Medium gray
         }
     }
@@ -847,6 +881,7 @@ impl IronMonitorApp {
         });
 
         let mut app = Self {
+            agent_tools: super::agent_tools::AgentToolsPanel::default(),
             current_tab: Tab::Overview,
             cpu_stats: initial_cpu_stats,
             memory_stats: initial_memory_stats,
@@ -920,6 +955,9 @@ impl IronMonitorApp {
             agent_history: VecDeque::with_capacity(50),
             agent_is_processing: false,
             agent_response_receiver: None,
+            agent_run_control: None,
+            agent_tool_events: None,
+            agent_tool_activity: VecDeque::new(),
 
             // AI configuration UI
             ai_api_key_input: String::new(),
@@ -1003,6 +1041,10 @@ impl IronMonitorApp {
             processes_view_cache: Vec::new(),
             processes_view_key: None,
         };
+
+        if let Some(collector) = &app.collector {
+            crate::ai_api::observation_tools::register_gui_source(collector.handle());
+        }
 
         // Initialize history with zeros
         for _ in 0..HISTORY_SIZE {
@@ -1212,12 +1254,12 @@ impl IronMonitorApp {
         if (self.current_tab == Tab::Processes || self.process_list.is_empty())
             && !self.snapshot.processes.is_empty()
         {
-            self.process_list = self.snapshot.processes.clone();
+            self.process_list.clone_from(&self.snapshot.processes);
             self.process_list_version = self.process_list_version.wrapping_add(1);
         }
 
         if self.current_tab == Tab::Connections && !self.snapshot.connections.is_empty() {
-            self.connections = self.snapshot.connections.clone();
+            self.connections.clone_from(&self.snapshot.connections);
         }
 
         // System Stats (load avg, vmstat, etc.)
@@ -1416,6 +1458,14 @@ impl IronMonitorApp {
         }
 
         // Check AI agent response (non-blocking)
+        if let Some(receiver) = &self.agent_tool_events {
+            while let Ok(activity) = receiver.try_recv() {
+                self.agent_tool_activity.push_back(activity);
+                while self.agent_tool_activity.len() > 32 {
+                    self.agent_tool_activity.pop_front();
+                }
+            }
+        }
         if let Some(ref receiver) = self.agent_response_receiver {
             if let Ok(result) = receiver.try_recv() {
                 match result {
@@ -1440,6 +1490,8 @@ impl IronMonitorApp {
                 }
                 self.agent_is_processing = false;
                 self.agent_response_receiver = None;
+                self.agent_run_control = None;
+                self.agent_tool_events = None;
 
                 // Limit history size
                 while self.agent_history.len() > 100 {
@@ -2018,132 +2070,137 @@ impl eframe::App for IronMonitorApp {
 }
 
 impl IronMonitorApp {
-    /// Draw the title, navigation, and host controls in the native window header.
+    /// Draw navigation and host controls in the compact native window header.
     pub(super) fn draw_top_panel(&mut self, ctx: &egui::Context) {
         let palette_ctx = ctx.clone();
-        // Top panel with title and tabs
+        // Compact navigation header
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                // Logo/Title
-                ui.heading(
-                    RichText::new("⚡ IronMonitor")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+            ui.add_space(2.0);
+            // Reserve the right edge for host controls; tabs wrap within their
+            // remaining width rather than displacing or overlapping the controls.
+            ui.horizontal_top(|ui| {
+                let tabs_width =
+                    (ui.available_width() - 220.0 - ui.spacing().item_spacing.x).max(0.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(tabs_width, ui.spacing().interact_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.set_min_width(tabs_width);
+                        // Tabs - use local variable to avoid borrow issues
+                        let current = self.current_tab;
+                        let tab_color = |tab: Tab| {
+                            if current == tab {
+                                theme::color(&palette_ctx, CyberColors::CYAN)
+                            } else {
+                                theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
+                            }
+                        };
+
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Overview,
+                            RichText::new("📊 Overview")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Overview))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Cpu,
+                            RichText::new("🔲 CPU")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Cpu))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Accelerators,
+                            RichText::new("⚡ Accelerators")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Accelerators))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Memory,
+                            RichText::new("💾 Memory")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Memory))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Disk,
+                            RichText::new("💿 Disk")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Disk))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Processes,
+                            RichText::new("📋 Processes")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Processes))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Network,
+                            RichText::new("🌐 Network")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Network))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Connections,
+                            RichText::new("🔌 Sockets")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Connections))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::NetworkTools,
+                            RichText::new("🔧 Tools")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::NetworkTools))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Peripherals,
+                            RichText::new("🔌 Peripherals")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Peripherals))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::SystemInfo,
+                            RichText::new("🖥️ System")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::SystemInfo))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Profiles,
+                            RichText::new("🛠 Profiles")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Profiles))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::AIAssistant,
+                            RichText::new("🤖 AI")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::AIAssistant))),
+                        );
+                    },
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let settings_btn = ui.add(
-                        egui::Button::new(RichText::new("⚙").size(16.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
-                    );
-                    if settings_btn.clicked() {
-                        self.show_settings = !self.show_settings;
-                    }
-                    settings_btn.on_hover_text("Settings");
-                    ui.add_space(8.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("{}@{}", self.hostname, self.os_info))
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                                .small(),
-                        )
-                        .truncate(),
-                    );
+                ui.allocate_ui(egui::vec2(220.0, ui.spacing().interact_size.y), |ui| {
+                    ui.set_min_width(220.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let settings_btn = ui.add(
+                            egui::Button::new(RichText::new("⚙").size(16.0))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                        );
+                        if settings_btn.clicked() {
+                            self.show_settings = !self.show_settings;
+                        }
+                        settings_btn.on_hover_text("Settings");
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("{}@{}", self.hostname, self.os_info))
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
+                                    .small(),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
-
-            // Navigation gets its own wrapping row so the right-aligned host
-            // controls cannot paint over the final tab in a narrow window.
-            ui.horizontal_wrapped(|ui| {
-                // Tabs - use local variable to avoid borrow issues
-                let current = self.current_tab;
-                let tab_color = |tab: Tab| {
-                    if current == tab {
-                        theme::color(&palette_ctx, CyberColors::CYAN)
-                    } else {
-                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
-                    }
-                };
-
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Overview,
-                    RichText::new("📊 Overview")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Overview))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Cpu,
-                    RichText::new("🔲 CPU").color(theme::color(&palette_ctx, tab_color(Tab::Cpu))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Accelerators,
-                    RichText::new("⚡ Accelerators")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Accelerators))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Memory,
-                    RichText::new("💾 Memory")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Memory))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Disk,
-                    RichText::new("💿 Disk")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Disk))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Processes,
-                    RichText::new("📋 Processes")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Processes))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Network,
-                    RichText::new("🌐 Network")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Network))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Connections,
-                    RichText::new("🔌 Sockets")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Connections))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::NetworkTools,
-                    RichText::new("🔧 Tools")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::NetworkTools))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Peripherals,
-                    RichText::new("🔌 Peripherals")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Peripherals))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::SystemInfo,
-                    RichText::new("🖥️ System")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::SystemInfo))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Profiles,
-                    RichText::new("🛠 Profiles")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::Profiles))),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::AIAssistant,
-                    RichText::new("🤖 AI")
-                        .color(theme::color(&palette_ctx, tab_color(Tab::AIAssistant))),
-                );
-            });
-            ui.add_space(4.0);
+            ui.add_space(2.0);
         });
     }
 
@@ -2719,7 +2776,7 @@ impl IronMonitorApp {
             ui.columns(2, |columns| {
                 // CPU Chart
                 columns[0].add(
-                    SparklineChart::new(self.cpu_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.cpu_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
                         .height(100.0)
                         .title("CPU Usage")
@@ -2731,7 +2788,7 @@ impl IronMonitorApp {
 
                 // Memory Chart
                 columns[1].add(
-                    SparklineChart::new(self.memory_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.memory_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
                         .height(100.0)
                         .title("Memory Usage")
@@ -2753,7 +2810,7 @@ impl IronMonitorApp {
                     for (i, hist) in self.gpu_history.iter().enumerate() {
                         if i < columns.len() {
                             columns[i].add(
-                                SparklineChart::new(hist.iter().cloned().collect())
+                                SparklineChart::from_history(hist)
                                     .color(theme::color(&palette_ctx, DeviceTitleColors::ACCEL))
                                     .height(80.0)
                                     .title(format!("GPU {}", i))
@@ -2981,18 +3038,16 @@ impl IronMonitorApp {
             {
                 ui.columns(2, |columns| {
                     columns[0].add(
-                        SparklineChart::new(
-                            self.context_switches_history.iter().cloned().collect(),
-                        )
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .height(70.0)
-                        .title("Context Switches")
-                        .unit("/s")
-                        .show_scale(true),
+                        SparklineChart::from_history(&self.context_switches_history)
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .height(70.0)
+                            .title("Context Switches")
+                            .unit("/s")
+                            .show_scale(true),
                     );
 
                     columns[1].add(
-                        SparklineChart::new(self.interrupts_history.iter().cloned().collect())
+                        SparklineChart::from_history(&self.interrupts_history)
                             .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                             .height(70.0)
                             .title("Interrupts")
@@ -3017,7 +3072,7 @@ impl IronMonitorApp {
             ui.add(SectionHeader::new(&net_title).icon("🌐"));
             ui.columns(2, |columns| {
                 columns[0].add(
-                    SparklineChart::new(self.network_rx_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.network_rx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .height(70.0)
                         .title("Download")
@@ -3026,7 +3081,7 @@ impl IronMonitorApp {
                 );
 
                 columns[1].add(
-                    SparklineChart::new(self.network_tx_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.network_tx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .height(70.0)
                         .title("Upload")
@@ -3073,7 +3128,7 @@ impl IronMonitorApp {
 
                 // CPU History
                 ui.add(
-                    SparklineChart::new(self.cpu_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.cpu_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
                         .height(120.0)
                         .title("CPU History")
@@ -3098,7 +3153,7 @@ impl IronMonitorApp {
                             if col < columns.len() {
                                 let core_usage = hist.back().copied().unwrap_or(0.0);
                                 columns[col].add(
-                                    SparklineChart::new(hist.iter().cloned().collect())
+                                    SparklineChart::from_history(hist)
                                         .color(theme::color(
                                             &palette_ctx,
                                             theme::cpu_color(core_usage),
@@ -3402,15 +3457,13 @@ impl IronMonitorApp {
 
                             if i < self.gpu_history.len() {
                                 ui.add(
-                                    SparklineChart::new(
-                                        self.gpu_history[i].iter().cloned().collect(),
-                                    )
-                                    .color(theme::color(&palette_ctx, accel_color))
-                                    .height(chart_height)
-                                    .title("Utilization")
-                                    .unit("%")
-                                    .max_value(100.0)
-                                    .show_scale(true),
+                                    SparklineChart::from_history(&self.gpu_history[i])
+                                        .color(theme::color(&palette_ctx, accel_color))
+                                        .height(chart_height)
+                                        .title("Utilization")
+                                        .unit("%")
+                                        .max_value(100.0)
+                                        .show_scale(true),
                                 );
                             }
 
@@ -3418,15 +3471,13 @@ impl IronMonitorApp {
 
                             if i < self.gpu_temp_history.len() {
                                 ui.add(
-                                    SparklineChart::new(
-                                        self.gpu_temp_history[i].iter().cloned().collect(),
-                                    )
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                    .height(chart_height)
-                                    .title("Temperature")
-                                    .unit("°C")
-                                    .max_value(100.0)
-                                    .show_scale(true),
+                                    SparklineChart::from_history(&self.gpu_temp_history[i])
+                                        .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
+                                        .height(chart_height)
+                                        .title("Temperature")
+                                        .unit("°C")
+                                        .max_value(100.0)
+                                        .show_scale(true),
                                 );
                             }
                         });
@@ -3612,7 +3663,7 @@ impl IronMonitorApp {
 
                 // Memory history
                 ui.add(
-                    SparklineChart::new(self.memory_history.iter().cloned().collect())
+                    SparklineChart::from_history(&self.memory_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
                         .height(150.0)
                         .title("Memory Usage History")
@@ -4059,7 +4110,7 @@ impl IronMonitorApp {
 
             // Network charts - stacked vertically, left-aligned
             ui.add(
-                SparklineChart::new(self.network_rx_history.iter().cloned().collect())
+                SparklineChart::from_history(&self.network_rx_history)
                     .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                     .height(80.0)
                     .title("Download (Total MB)")
@@ -4071,7 +4122,7 @@ impl IronMonitorApp {
             ui.add_space(4.0);
 
             ui.add(
-                SparklineChart::new(self.network_tx_history.iter().cloned().collect())
+                SparklineChart::from_history(&self.network_tx_history)
                     .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                     .height(80.0)
                     .title("Upload (Total MB)")
@@ -6344,6 +6395,11 @@ impl IronMonitorApp {
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                ui.add(SectionHeader::new("Agent Observability"));
+                self.agent_tools.draw(ui);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
                 // Header
                 ui.add(SectionHeader::new("🔧 Network Diagnostic Tools"));
                 ui.label(
@@ -7471,6 +7527,10 @@ impl IronMonitorApp {
 
             if self.agent_is_processing {
                 ui.spinner();
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                if ui.button("Cancel").clicked() {
+                    if let Some(control)=&self.agent_run_control {control.cancel();}
+                }
                 ui.label(
                     RichText::new("Thinking...")
                         .color(theme::color(&palette_ctx, CyberColors::CYAN))
@@ -7485,6 +7545,14 @@ impl IronMonitorApp {
                 );
             }
         });
+        if !self.agent_tool_activity.is_empty() {
+            egui::CollapsingHeader::new("Tool activity").default_open(true).show(ui,|ui| {
+                for activity in self.agent_tool_activity.iter().rev().take(4).rev() {
+                    ui.label(RichText::new(format!("{} — {} ({} ms)",activity.tool,activity.phase,activity.elapsed_ms))
+                        .small().color(theme::color(&palette_ctx,CyberColors::TEXT_SECONDARY)));
+                }
+            });
+        }
         }); // End ScrollArea
     }
 
@@ -7512,6 +7580,11 @@ impl IronMonitorApp {
 
         let (tx, rx) = channel();
         self.agent_response_receiver = Some(rx);
+        let (progress_tx, progress_rx) = std::sync::mpsc::sync_channel(64);
+        let control = crate::agent::tool_runtime::RunControl::with_progress(progress_tx);
+        self.agent_run_control = Some(control.clone());
+        self.agent_tool_events = Some(progress_rx);
+        self.agent_tool_activity.clear();
 
         // Spawn background thread for agent query (all heavy work off UI thread)
         std::thread::spawn(move || {
@@ -7519,24 +7592,8 @@ impl IronMonitorApp {
                 // Create fresh agent and monitor in background thread
                 let mut agent = crate::agent::Agent::new(config)
                     .map_err(|e| format!("Failed to create agent: {}", e))?;
-                let monitor = crate::UnifiedMonitor::new()
-                    .map_err(|e| format!("Failed to create monitor: {}", e))?;
-
-                // Get tool context in background thread (avoids blocking UI)
-                let tool_context = AiDataApi::new()
-                    .ok()
-                    .map(|mut api| api.auto_query(&query))
-                    .unwrap_or_default();
-
-                // Enhance the query with tool context if available
-                let enhanced_query = if !tool_context.is_empty() {
-                    format!("{}\n\n---\n\n## User Question\n{}", tool_context, query)
-                } else {
-                    query
-                };
-
                 let response = agent
-                    .ask(&enhanced_query, &monitor)
+                    .ask_with_control(&query, &control)
                     .map_err(|e| format!("{}", e))?;
 
                 Ok(AgentResponse {

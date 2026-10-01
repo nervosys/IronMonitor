@@ -15,6 +15,42 @@
 use ironmonlib::ai_api::AiDataApi;
 use serde_json::Value;
 
+/// EOF must terminate every AI entry point even with a configured backend.
+/// The synthetic key is never used for inference: there is no question to send.
+#[cfg(feature = "cli")]
+#[test]
+fn interactive_ai_aliases_exit_at_eof() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    for (binary, args) in [
+        (env!("CARGO_BIN_EXE_ironmon"), &["ai", "query"][..]),
+        (env!("CARGO_BIN_EXE_imon"), &["ai", "query"][..]),
+        (env!("CARGO_BIN_EXE_amon"), &[][..]),
+    ] {
+        let mut child = Command::new(binary)
+            .args(args)
+            .env("OPENAI_API_KEY", "test-only-unused-key")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("AI binary starts");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "{binary} exited with {status}");
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{binary} did not exit at EOF");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
 fn api() -> AiDataApi {
     AiDataApi::new().expect("the tool surface must be constructible")
 }

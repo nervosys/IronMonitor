@@ -6,6 +6,7 @@
 
 use eframe::egui;
 
+mod agent_tools;
 pub mod app;
 // Renders the GUI's widget tree without a window and reads back the text that was
 // painted. Originally test-only, now also the backing for `ironmon gui --frame`: the

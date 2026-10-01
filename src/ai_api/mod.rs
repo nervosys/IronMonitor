@@ -32,8 +32,11 @@
 //! # }
 //! ```
 
+mod diagnostic_tools;
+mod endpoint_tools;
 pub mod formats;
 pub mod mcp_server;
+pub(crate) mod observation_tools;
 pub mod ontology;
 pub mod tools;
 pub mod types;
@@ -205,6 +208,7 @@ fn null_out_absence_words(v: &mut serde_json::Value) {
 
 /// AI Data API - Main interface for AI system data access
 pub struct AiDataApi {
+    observations: Option<Arc<observation_tools::ObservationService>>,
     /// GPU collection for GPU queries
     gpus: Option<GpuCollection>,
     /// Process monitor with GPU attribution
@@ -257,6 +261,7 @@ impl AiDataApi {
         let network_monitor = NetworkMonitor::new().ok();
 
         Ok(Self {
+            observations: None,
             gpus,
             process_monitor,
             network_monitor,
@@ -273,6 +278,7 @@ impl AiDataApi {
         network_monitor: Option<NetworkMonitor>,
     ) -> Self {
         Self {
+            observations: None,
             gpus,
             process_monitor,
             network_monitor,
@@ -310,6 +316,16 @@ impl AiDataApi {
         let start = Instant::now();
 
         let result = match name {
+            "describe_entities" => self.tool_describe_entities(params),
+            "list_connections" => self.tool_list_connections(params),
+            "inspect_services" => self.tool_inspect_services(params),
+            "query_os_events" => self.tool_query_os_events(params),
+            "get_observation_snapshot" => self.tool_observation_snapshot(params),
+            "get_collector_health" => self.tool_collector_health(params),
+            "query_metric_history" => self.tool_metric_history(params),
+            "query_events" => self.tool_observation_events(params),
+            "inspect_process" => self.tool_inspect_process(params),
+            "check_endpoint" => self.tool_check_endpoint(params),
             // System tools
             "get_system_summary" => self.tool_get_system_summary(params),
             "get_system_info" => self.tool_get_system_info(params),

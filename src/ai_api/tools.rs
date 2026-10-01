@@ -644,13 +644,8 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
     // own mistake rather than as ironmon's. The only other mention of the name was
     // a label pushed into a text blob, which is not the tool.
     //
-    // They are removed rather than stubbed. Answering "what was the GPU
-    // temperature five minutes ago" needs a time-series store, and the only
-    // buffer in the crate (`backend::HistoryBuffer`) carries no timestamps and is
-    // not reachable from here; `historical_context` is an `Option<String>` a
-    // caller sets, not history. Advertising a capability that does not exist is
-    // the capability-level version of reporting "Unknown" as a value. What it
-    // would take to build properly is in HANDOFF.
+    // Those legacy names stay removed. query_metric_history now uses the bounded,
+    // timestamped observation service, with session retention and explicit gaps.
 
     // Profile inspector tools (NVPI / XTU / Ryzen Master / nvme-cli style)
     tools.push(ToolDefinition {
@@ -759,6 +754,8 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
         example: Some(r#"search_profile_settings({"query": "xmp"})"#.to_string()),
     });
 
+    tools.extend(super::observation_tools::definitions());
+    tools.extend(super::diagnostic_tools::definitions());
     tools
 }
 

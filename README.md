@@ -19,7 +19,7 @@
 
 IronMonitor is a powerful, cross-platform hardware monitoring utility designed primarily for **AI agents** and **interactive interfaces**. It provides deep insights into CPUs, GPUs, memory, disks, motherboards, and network interfaces across Windows, Linux, and macOS.
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org/)
 
 
 ## Primary Usage Modes
@@ -186,28 +186,27 @@ for proc in gpu_procs.iter().take(10) {
 
 ### AI Agent for System Analysis
 
-Ask questions about your system in natural language:
+Ask questions through a configured model backend. The built-in agent calls
+read-only monitoring tools to obtain evidence and follow-up observations:
 
 ```rust
-use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
+use ironmonlib::agent::{Agent, AgentConfig};
+use ironmonlib::agent::tool_runtime::RunControl;
 
-let config = AgentConfig::new(ModelSize::Medium); // 500M parameters
+let config = AgentConfig::auto_detect()?;
 let mut agent = Agent::new(config)?;
 
-let response = agent.ask("What's my GPU temperature?", &monitor)?;
+let response = agent.ask_with_control("What's my GPU temperature?", &RunControl::default())?;
 println!("{}", response.response);
-// "GPU temperature is 65°C. ✓ Temperature is within safe range."
-
-let response = agent.ask("How much power am I using?", &monitor)?;
-// "Current GPU power consumption: 280.5W"
 ```
 
 **Features**:
 
-- Natural language queries (state, predictions, energy, recommendations)
-- Multiple model sizes (100M, 500M, 1B parameters)
-- Zero latency impact on monitoring (non-blocking)
-- Response caching for instant repeated queries
+- Native tool calls through OpenAI Responses, Anthropic Messages, Ollama chat,
+  and compatible Chat Completions servers such as IronWorks
+- Bounded tool rounds, deadlines, argument validation, queues and result sizes
+- Background GUI queries with visible tool activity and cancellation
+- Fresh evidence on repeated questions; live answers bypass the question cache
 - See [docs/AI_AGENT.md](docs/AI_AGENT.md) for the agent itself, [AI_INTEGRATION.md](AI_INTEGRATION.md) for model providers, and [AGENTS.md](AGENTS.md) for driving ironmon programmatically
 
 
@@ -855,14 +854,13 @@ ironmon ai  # Interactive mode
 ### Programmatic Usage
 
 ```rust
-use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
-use ironmonlib::IronMonitor;
+use ironmonlib::agent::{Agent, AgentConfig};
+use ironmonlib::agent::tool_runtime::RunControl;
 
-let monitor = IronMonitor::new()?;
-let config = AgentConfig::new(ModelSize::Medium);
+let config = AgentConfig::auto_detect()?;
 let mut agent = Agent::new(config)?;
 
-let response = agent.ask("What's my GPU temperature?", &monitor)?;
+let response = agent.ask_with_control("What's my GPU temperature?", &RunControl::default())?;
 println!("{}", response.response);
 ```
 
@@ -872,12 +870,59 @@ println!("{}", response.response);
 - **System Aware**: Reads the same hardware metrics the CLI does, with the same caveats — CPU percentages on Linux and macOS are averages since boot, not instantaneous rates
 - **Multiple Backends**: Automatic detection of local and remote AI models
 - **Local by Default**: Prefers backends that keep telemetry on your machine
-- **Smart Caching**: Remembers recent queries for instant responses
+- **Fresh Evidence**: Repeated questions obtain fresh tool results rather than cached answers
 - **Interactive Mode**: Multi-turn conversations about your system
 
 > **A backend is required.** There is no offline fallback: the agent needs an
 > inference backend and reports an error if none is available. Start an IronWorks
 > server, install one of the CLI tools below, or configure an API key.
+
+### Monitoring tools for agents
+
+The MCP catalogue and manifests expose **62 registered tools**. The built-in
+agent uses a **51-tool read-only allowlist**; hardware writes and benchmarks
+are excluded from automatic tool calling.
+
+| Tool | Evidence returned |
+| --- | --- |
+| `get_observation_snapshot` | Collector-backed readings with provenance, sample time and freshness |
+| `get_collector_health` | Collector status, generation and provider health |
+| `query_metric_history` | Bounded session history, aggregation, gaps and truncation |
+| `query_events` | Retained monitoring events with filters |
+| `inspect_process` | Process identity, sampled metrics, history and attributable connections |
+| `list_connections` | Connection observations with provider errors and sample time |
+| `check_endpoint` | Bounded DNS, TCP, TLS and HTTP diagnostics |
+| `describe_entities` | Versioned schema, IDs, templates, units and constraints |
+| `inspect_services` | Windows services or Linux systemd units |
+| `query_os_events` | Windows event logs or Linux journald records |
+
+Unavailable readings have a reason and no value. Observation timestamps include
+`sampled_at_ms` and a matching `sampled_at_utc`; history remains bounded in memory.
+A single sample cannot establish a throughput rate. Services and OS events report
+unavailable on platforms without a supported provider.
+
+```bash
+ironmon ai query --offline "Use monitoring tools to report measured RAM usage"
+ironmon ai server                      # MCP over standard input/output
+ironmon ai manifest --format openai    # tool definitions for external agents
+```
+
+The model must support the selected backend's tool protocol. IronWorks can recover
+an exact JSON call containing only a registered read-only name and arguments;
+it does not repair malformed fragments. Unexecuted tool-call text is rejected,
+and backend output-token limits are explicitly marked.
+
+Local testing covered all 62 tool routes, ten manifest formats and fourteen
+protocol/input checks. Native provider protocols have deterministic fixtures.
+Live model testing also found failures: Ollama's installed small model
+inconsistently followed tool schemas, and IronWorks refused the tested Qwen2 1.5B
+and Gemma2 2B checkpoints because their tool chat templates were unsupported.
+The larger model completed monitoring queries but also returned off-topic and
+truncated answers in a run with nearly full system memory. Model prose is not a
+substitute for checking tool provenance and timestamps.
+
+See [AI_INTEGRATION.md](AI_INTEGRATION.md) for provider setup, tool parameters,
+bounds and platform coverage, and [AGENTS.md](AGENTS.md) for the reading contract.
 
 ### Supported Backends
 
@@ -1068,11 +1113,16 @@ ironmon gui
 **GUI Features:**
 
 - 🖼️ Native desktop application (Windows, Linux, macOS)
-- 🎨 Multiple color themes (Dark, Light, Ocean, Forest, Sunset, Monochrome)
+- 🎨 18 palettes, including Dark Monochrome, Dracula, One Dark Pro, Tokyo Night,
+  Nord, Monokai and GitHub Dark, shared across tabs
 - 📊 Real-time graphs and visualizations
 - 🔄 Auto-refreshing metrics
 - 🖱️ Mouse-friendly interface with scrollable panels
 - 📈 Historical data with trend charts
+- 🤖 Background AI queries with tool progress and cancellation
+- 🛠️ Tools page for bounded observation, process, connection, service, event and
+  endpoint diagnostics
+- Compact header, wrapping navigation and readable Profiles groups
 
 > **Screenshots pending.** This section previously linked six PNGs under
 > `docs/images/` that were never added, so every one rendered as a broken image
@@ -1448,4 +1498,3 @@ Special thanks to the Rust community and the maintainers of the following crates
 ---
 
 Made with 🦾 by NERVOSYS
-

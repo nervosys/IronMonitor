@@ -5,10 +5,10 @@
 //!
 //! # How it works
 //!
-//! A question is parsed into a [`Query`] to classify intent, the relevant slice of
-//! system state is extracted via [`SystemState::from_monitor`], and both are handed
-//! to a configured inference backend which produces the answer. Responses are
-//! memoized in an LRU cache keyed on the normalized question text.
+//! A question is parsed into a [`Query`] to classify intent and handed to the
+//! configured model with read-only monitoring tools. A bounded loop executes
+//! requested measurements and returns their evidence for follow-up reasoning.
+//! Live answers are not cached.
 //!
 //! # Requirements and limitations
 //!
@@ -31,7 +31,7 @@
 //! - **Calls block the calling thread.** [`Agent::ask`] runs inference inline; nothing
 //!   in this module spawns a thread. Never call it from a render or event loop —
 //!   spawn a thread and deliver the result over a channel.
-//!   [`Agent::ask_with_timeout`] does *not* currently enforce its timeout argument.
+//!   [`Agent::ask_with_timeout`] bounds the tool loop and backend wait.
 //! - **[`ModelSize`] is advisory metadata.** It records an intended model scale, and
 //!   its `latency_estimate_ms` / `memory_mb` are fixed estimates rather than
 //!   measurements. It does not select, download, or load a model — the model in use
@@ -74,6 +74,7 @@ pub mod local;
 pub mod query;
 pub mod remote;
 pub mod state;
+pub mod tool_runtime;
 
 use crate::error::{IronError, Result};
 use crate::UnifiedMonitor;
@@ -487,9 +488,9 @@ impl Agent {
     ///
     /// This is the main entry point for user queries. The agent will:
     /// 1. Parse the query and determine intent
-    /// 2. Extract relevant system state from the monitor
+    /// 2. Offer registered read-only tools to the configured model
     /// 3. Generate a contextual response using the reasoning model
-    /// 4. Cache the response for future identical queries
+    /// 4. Return fresh evidence without question-only caching
     ///
     /// # Example
     ///
@@ -505,86 +506,65 @@ impl Agent {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn ask(&mut self, question: &str, monitor: &UnifiedMonitor) -> Result<AgentResponse> {
+    pub fn ask(&mut self, question: &str, _monitor: &UnifiedMonitor) -> Result<AgentResponse> {
+        self.ask_with_control(question, &tool_runtime::RunControl::default())
+    }
+
+    /// Ask with live read-only tools, cancellation and optional progress events.
+    /// Live answers are never reused from the question-only response cache.
+    pub fn ask_with_control(
+        &mut self,
+        question: &str,
+        control: &tool_runtime::RunControl,
+    ) -> Result<AgentResponse> {
+        self.ask_run(
+            question,
+            control,
+            Duration::from_secs(self.config.timeout_seconds),
+        )
+    }
+
+    fn ask_run(
+        &mut self,
+        question: &str,
+        control: &tool_runtime::RunControl,
+        budget: Duration,
+    ) -> Result<AgentResponse> {
         self.refuse_if_offline_and_offhost()?;
-
+        if control.is_cancelled() {
+            return Err(IronError::Agent("Agent run cancelled".into()));
+        }
+        if question.trim().is_empty() {
+            return Err(IronError::Agent("Question is empty".into()));
+        }
         let start = Instant::now();
-        let query_normalized = question.trim().to_lowercase();
-
-        // Check cache first
-        if self.config.enable_caching {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some((cached_response, query_type)) = cache.get(&query_normalized).cloned() {
-                return Ok(AgentResponse {
-                    query: question.to_string(),
-                    response: cached_response,
-                    query_type,
-                    inference_time_ms: start.elapsed().as_millis() as u64,
-                    from_cache: true,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                });
-            }
-        }
-
-        // Initialize on first query (lazy loading)
-        if !self.is_initialized() {
-            self.initialize()?;
-        }
-
-        // Parse query
-        let query = Query::parse(question);
-
-        // Extract relevant system state
-        let state = SystemState::from_monitor(monitor, &query)?;
-
-        // Generate response using inference engine
+        self.initialize()?;
         let response_text = {
-            let mut engine_lock = self.engine.lock().unwrap();
+            let engine_lock = self
+                .engine
+                .try_lock()
+                .map_err(|_| IronError::Agent("Agent is already running a query".into()))?;
             let engine = engine_lock
-                .as_mut()
-                .ok_or_else(|| IronError::Other("Agent not initialized".to_string()))?;
-
-            engine.generate_response(&query, &state)?
+                .as_ref()
+                .ok_or_else(|| IronError::Agent("Agent not initialized".into()))?;
+            engine.generate_tool_response(
+                question,
+                budget.saturating_sub(start.elapsed()),
+                control,
+            )?
         };
-
-        let inference_time = start.elapsed().as_millis() as u64;
-
-        // Cache response
-        if self.config.enable_caching {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(
-                query_normalized,
-                (response_text.clone(), query.query_type.clone()),
-            );
-        }
-
         Ok(AgentResponse {
             query: question.to_string(),
             response: response_text,
-            query_type: query.query_type,
-            inference_time_ms: inference_time,
+            query_type: Query::parse(question).query_type,
+            inference_time_ms: start.elapsed().as_millis() as u64,
             from_cache: false,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         })
     }
-
-    /// Ask a question, nominally bounded by `timeout`.
-    ///
-    /// # The timeout is not currently enforced
-    ///
-    /// This is equivalent to [`Agent::ask`]: it blocks the calling thread for as long
-    /// as the backend takes, and `timeout` is ignored. Enforcing it requires running
-    /// inference on a separate thread and abandoning the result on expiry, which this
-    /// module does not yet do.
-    ///
-    /// Do not rely on this to bound latency. If you need a hard bound, drive
-    /// [`Agent::ask`] from a thread you own and stop waiting on the channel yourself.
     /// Refuse to answer if `--offline` is set and the backend would send the
     /// question off this machine.
     ///
@@ -616,13 +596,15 @@ impl Agent {
         )))
     }
 
+    /// Ask with an explicit overall deadline for model rounds and tool waits.
     pub fn ask_with_timeout(
         &mut self,
         question: &str,
         monitor: &UnifiedMonitor,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Result<AgentResponse> {
-        self.ask(question, monitor)
+        let _ = monitor;
+        self.ask_run(question, &tool_runtime::RunControl::default(), timeout)
     }
 
     /// Clear response cache
@@ -693,7 +675,7 @@ mod offline_enforcement_tests {
     use crate::agent::backend::BackendConfig;
 
     /// Serialised because these mutate a process-wide environment variable.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn agent_with(backend: BackendConfig) -> Agent {
         let config = AgentConfig::with_backend(backend);

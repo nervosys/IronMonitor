@@ -47,6 +47,35 @@ pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
             visuals.error_fg_color = Color32::from_gray(240);
             visuals.text_cursor.stroke.color = Color32::from_gray(225);
         } else {
+            // Adapt the editor palettes to the existing monitor surfaces.
+            let palette = match selected {
+                ColorTheme::Dracula => Some((0x282a36, 0x21222c, 0x343746, 0xf8f8f2)),
+                ColorTheme::OneDarkPro => Some((0x282c34, 0x21252b, 0x303640, 0xabb2bf)),
+                ColorTheme::TokyoNight => Some((0x1a1b26, 0x16161e, 0x24283b, 0xc0caf5)),
+                ColorTheme::Nord => Some((0x2e3440, 0x242933, 0x3b4252, 0xeceff4)),
+                ColorTheme::Monokai => Some((0x272822, 0x1e1f1c, 0x34352f, 0xf8f8f2)),
+                ColorTheme::GitHubDark => Some((0x0d1117, 0x010409, 0x161b22, 0xe6edf3)),
+                _ => None,
+            };
+            if let Some((background, dark, surface, foreground)) = palette {
+                let rgb =
+                    |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+                visuals.window_fill = rgb(background);
+                visuals.panel_fill = rgb(background);
+                visuals.extreme_bg_color = rgb(dark);
+                visuals.faint_bg_color = rgb(surface);
+                for widget in [
+                    &mut visuals.widgets.noninteractive,
+                    &mut visuals.widgets.inactive,
+                    &mut visuals.widgets.hovered,
+                    &mut visuals.widgets.active,
+                    &mut visuals.widgets.open,
+                ] {
+                    widget.bg_fill = rgb(surface);
+                    widget.weak_bg_fill = rgb(surface);
+                    widget.fg_stroke.color = rgb(foreground);
+                }
+            }
             let accent = selected.accent_color();
             visuals.widgets.hovered.fg_stroke.color = accent;
             visuals.widgets.hovered.bg_stroke.color = accent.linear_multiply(0.7);
@@ -501,6 +530,24 @@ mod tests {
             ("light", apply_light_theme as fn(&egui::Context)),
             ("dark monochrome", |ctx: &egui::Context| {
                 apply_theme(ctx, ColorTheme::Monochrome)
+            }),
+            ("dracula", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::Dracula)
+            }),
+            ("one dark pro", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::OneDarkPro)
+            }),
+            ("tokyo night", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::TokyoNight)
+            }),
+            ("nord", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::Nord)
+            }),
+            ("monokai", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::Monokai)
+            }),
+            ("github dark", |ctx: &egui::Context| {
+                apply_theme(ctx, ColorTheme::GitHubDark)
             }),
         ] {
             let ctx = egui::Context::default();

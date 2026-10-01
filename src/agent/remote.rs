@@ -83,9 +83,9 @@ struct Usage {
 /// Remote backend client
 pub struct RemoteClient {
     #[allow(dead_code)]
-    config: BackendConfig,
+    pub(super) config: BackendConfig,
     #[cfg(feature = "remote-backends")]
-    http_client: reqwest::blocking::Client,
+    pub(super) http_client: reqwest::blocking::Client,
 }
 
 impl RemoteClient {

@@ -211,6 +211,24 @@ impl ConnectionMonitor {
         Ok(all)
     }
 
+    /// Enumerate sockets while preserving failures for each protocol family.
+    pub(crate) fn all_connections_checked(&self) -> (Vec<ConnectionInfo>, Vec<String>) {
+        let mut rows = Vec::new();
+        let mut errors = Vec::new();
+        for (family, result) in [
+            ("TCP", self.tcp_connections()),
+            ("TCP6", self.tcp6_connections()),
+            ("UDP", self.udp_endpoints()),
+            ("UDP6", self.udp6_endpoints()),
+        ] {
+            match result {
+                Ok(found) => rows.extend(found),
+                Err(error) => errors.push(format!("{family}: {error}")),
+            }
+        }
+        (rows, errors)
+    }
+
     /// Get only established TCP connections
     pub fn established_connections(&self) -> Result<Vec<ConnectionInfo>, Error> {
         let all = self.all_connections()?;

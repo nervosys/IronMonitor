@@ -147,11 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "cli")]
 fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     use ironmonlib::agent::{Agent, AgentConfig};
-    use ironmonlib::UnifiedMonitor;
     use std::io::{self, Write};
-
-    // Create monitor for system state
-    let monitor = UnifiedMonitor::new()?;
 
     // Auto-detect and configure best available backend
     let config = match AgentConfig::auto_detect() {
@@ -181,7 +177,10 @@ fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error
         println!("[AI Monitor]");
         println!("Question: {}\n", question);
 
-        let response = agent.ask(&question, &monitor)?;
+        let response = agent.ask_with_control(
+            &question,
+            &ironmonlib::agent::tool_runtime::RunControl::default(),
+        )?;
         println!("{}", response.response);
 
         if response.from_cache {
@@ -204,7 +203,9 @@ fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error
             io::stdout().flush()?;
 
             let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
+            if io::stdin().read_line(&mut input)? == 0 {
+                break;
+            }
             let input = input.trim();
 
             if input.is_empty() {
@@ -216,7 +217,10 @@ fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error
                 break;
             }
 
-            match agent.ask(input, &monitor) {
+            match agent.ask_with_control(
+                input,
+                &ironmonlib::agent::tool_runtime::RunControl::default(),
+            ) {
                 Ok(response) => {
                     println!("\n[Agent]: {}\n", response.response);
                     if response.from_cache {

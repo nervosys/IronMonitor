@@ -1671,7 +1671,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
 /// impossible to pass to `ironmon get` without quoting. Substitution is lossy but
 /// total, which matters more here than being reversible: an id an agent cannot type
 /// is not an id.
-fn id_segment(raw: &str) -> String {
+pub(crate) fn id_segment(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| {

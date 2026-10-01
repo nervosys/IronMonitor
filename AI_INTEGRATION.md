@@ -21,6 +21,79 @@ IronMonitor provides comprehensive hardware monitoring capabilities that AI agen
 
 ## Quick Start
 
+### Agent observability tools
+
+The tool manifest includes these read-only handlers. The GUI Tools tab also
+provides an Agent Observability panel that runs them in the background.
+
+| Tool | Purpose |
+|------|---------|
+| `get_observation_snapshot` | Read concrete ontology IDs from one collector generation, with provenance and freshness bounds. |
+| `get_collector_health` | Report collector status, stage timings, unavailable readings, and retention usage. |
+| `query_metric_history` | Query timestamped numeric observations retained during this process session, with aggregation and explicit gaps. |
+| `query_events` | Paginate observed threshold crossings and availability changes using a session cursor. |
+| `inspect_process` | Inspect a last-observed PID, its timestamp, identity-checked history, and attributable connections. |
+| `check_endpoint` | Probe HTTP(S) DNS, TCP, TLS, and HTTP stages within one deadline, without redirects. |
+| `describe_entities` | Discover versioned IDs, templates, units, provenance and constraints without hardware queries. |
+| `list_connections` | Filter last-observed sockets, with freshness, identity checks and partial-table diagnostics. |
+| `inspect_services` | Read bounded service status without controlling services. |
+| `query_os_events` | Read bounded warning/error/critical OS records in a requested time window. |
+
+The built-in AI supplies read-only tool schemas to the model and executes its
+requested calls through the same registry as MCP. It returns structured results
+and allows follow-up calls for at most six model rounds and sixteen tools per
+question, within the configured timeout (capped at 120 seconds). Each tool wait
+is capped at five seconds; results are capped at 32 KiB each and 256 KiB total.
+Oversized results are withheld with instructions to narrow the query.
+The AI tab shows tool activity and a Cancel button. Cancellation stops waiting
+promptly; already running read-only provider work retains its original deadline.
+Fixed workers and bounded queues limit outstanding work. Live answers bypass
+the question-only cache so repeated questions obtain fresh evidence.
+
+OpenAI uses the Responses API, Ollama uses native chat tool calls, Anthropic uses
+Messages tool blocks, and compatible local servers use Chat Completions tools.
+The selected model must support its backend's tool protocol. CLI providers keep
+a text-only path with a bounded observation snapshot and explicit capability
+disclosure; they cannot request IronMonitor's native tools.
+The built-in allowlist excludes hardware writes and profile application.
+An assistant response containing unexecuted tool-call JSON is rejected as a
+protocol failure instead of being presented as a successful monitoring answer.
+
+For IronWorks, a complete JSON object containing only a registered read-only
+`name` and its `arguments` can be normalized into a tool request. It still goes
+through the normal argument and schema checks; malformed fragments are not
+repaired or executed. After two identical requests, or at the last model round,
+the agent removes tool availability and requests a final answer from existing
+evidence. A further tool request fails explicitly without running another tool.
+
+Observation readings include `sampled_at_utc`, formatted from the same original
+sample time as `sampled_at_ms`; unavailable readings carry no date. Formatting
+happens during serialization so retained history does not store duplicate dates.
+When a backend reports an output token limit, the answer includes an explicit
+truncation notice. The configured token budget is preserved.
+
+Service and OS-event providers support Windows and Linux systemd/journald hosts;
+other platforms report unavailable with a reason. On Windows, a stopped service
+is not classified as failed: failed-state filtering is unavailable, and recorded
+failures can be investigated with OS events. OS-event windows are limited to
+24 hours and 100 records; Windows record-ID cursors stay tied to the requested
+log and time range. Logs and process names are treated as untrusted data.
+To expand schema templates, request a snapshot with include_collected_ids set
+to true; its concrete ID list is capped and announces truncation.
+
+History retains at most 120 batches and 4 MiB of serialized readings; events retain
+at most 256 entries. Neither supplies data from before the service started.
+Event queries cover collector observations, rather than operating-system event logs.
+Unavailable observations omit `value` and explain why. Process and connection
+tables carry their original sampling times when reused between collector ticks.
+Endpoint probing requires the `remote-backends` feature and retains no response body.
+
+Example arguments:
+
+```json
+{"ids":["cpu.total.utilization","memory.used"],"max_age_ms":5000,"wait_ms":1000}
+```
+
 ### For ChatGPT / OpenAI
 
 Export the function calling schema:
@@ -278,6 +351,8 @@ goes to stderr, so stdout carries only protocol traffic. It supports:
 - `tools/list` - List available tools
 - `tools/call` - Execute a tool
 - `resources/list` - List available resources
+- `resources/read` - Read a listed resource through its registered monitoring tool;
+  the JSON retains the tool result envelope, including failures and their reasons
 
 ## Export Formats
 

@@ -507,6 +507,14 @@ mod app_tab_tests {
             }
             assert!(labels.iter().any(|(text, _)| text.contains('@')));
             assert!(labels.iter().any(|(text, _)| text.ends_with(" AI")));
+            let settings = labels
+                .iter()
+                .find(|(text, _)| text == "⚙")
+                .expect("Settings control");
+            assert!(
+                settings.1.max.x > width - 40.0,
+                "Settings should stay at the right edge"
+            );
             for (index, (text, rect)) in labels.iter().enumerate() {
                 assert!(
                     rect.min.x >= 0.0 && rect.max.x <= width,

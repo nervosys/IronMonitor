@@ -1,6 +1,6 @@
 [package]
 name = "iron-monitor"
-version = "6.0.0"
+version = "7.0.0"
 edition = "2021"
 # Verified by building against each installed toolchain, not asserted. This said
 # 1.70 from 3.x through 5.1.0 and had not been true since the egui GUI was
@@ -153,6 +153,7 @@ open = { version = "5.3", optional = true }
 
 # Optional dependencies for remote AI backends
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+native-tls = { version = "0.2", optional = true }
 
 # Logging
 env_logger = { version = "0.11", optional = true }
@@ -313,7 +314,7 @@ gui = [
 ]
 
 # Remote AI backend support (OpenAI, Anthropic, Ollama, etc.)
-remote-backends = ["reqwest"]
+remote-backends = ["reqwest", "native-tls"]
 
 # Fleet-scale metric store on Apache Iceberg.
 #

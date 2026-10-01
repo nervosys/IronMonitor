@@ -2781,13 +2781,41 @@ fn print_engine_info(engines: &ironmonlib::core::engine::EngineStats) {
 }
 
 #[cfg(feature = "cli")]
+fn read_ai_input(reader: &mut impl std::io::BufRead) -> std::io::Result<Option<String>> {
+    let mut input = String::new();
+    if reader.read_line(&mut input)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(input.trim().to_string()))
+}
+
+#[cfg(all(test, feature = "cli"))]
+mod ai_input_tests {
+    #[test]
+    fn blank_lines_are_distinct_from_end_of_input() {
+        let mut input = std::io::Cursor::new(b"\n memory usage \nquit");
+        assert_eq!(
+            super::read_ai_input(&mut input).unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(
+            super::read_ai_input(&mut input).unwrap(),
+            Some("memory usage".into())
+        );
+        assert_eq!(
+            super::read_ai_input(&mut input).unwrap(),
+            Some("quit".into())
+        );
+        assert_eq!(super::read_ai_input(&mut input).unwrap(), None);
+    }
+}
+
+#[cfg(feature = "cli")]
 fn handle_ai_query(query: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use ironmonlib::agent::{Agent, AgentConfig};
-    use ironmonlib::UnifiedMonitor;
     use std::io::{self, Write};
 
     // Create monitor for system state
-    let monitor = UnifiedMonitor::new()?;
 
     // Auto-detect and configure best available backend
     let config = match AgentConfig::auto_detect() {
@@ -2819,7 +2847,10 @@ fn handle_ai_query(query: Option<&str>) -> Result<(), Box<dyn std::error::Error>
         println!("[AI Monitor]");
         println!("Question: {}\n", question);
 
-        let response = agent.ask(question, &monitor)?;
+        let response = agent.ask_with_control(
+            question,
+            &ironmonlib::agent::tool_runtime::RunControl::default(),
+        )?;
         println!("{}", response.response);
 
         if response.from_cache {
@@ -2836,9 +2867,9 @@ fn handle_ai_query(query: Option<&str>) -> Result<(), Box<dyn std::error::Error>
             print!("You: ");
             io::stdout().flush()?;
 
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
+            let Some(input) = read_ai_input(&mut io::stdin().lock())? else {
+                break;
+            };
 
             if input.is_empty() {
                 continue;
@@ -2849,7 +2880,10 @@ fn handle_ai_query(query: Option<&str>) -> Result<(), Box<dyn std::error::Error>
                 break;
             }
 
-            match agent.ask(input, &monitor) {
+            match agent.ask_with_control(
+                &input,
+                &ironmonlib::agent::tool_runtime::RunControl::default(),
+            ) {
                 Ok(response) => {
                     println!("\n[Agent]: {}\n", response.response);
                     if response.from_cache {
