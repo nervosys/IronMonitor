@@ -14,14 +14,14 @@
 //! caught by eye during review. [`unknown_is_never_dressed_as_a_measurement`]
 //! below catches that class by construction.
 //!
-//! These run in-process against `ironmonlib` rather than through the binary.
+//! These run in-process against `ironmonitor` rather than through the binary.
 //! `tests/agentic_contract.rs` covers the CLI surface — exit codes, JSON shape,
 //! the `describe`/`get`/`snapshot` commands — and is the right place for anything
 //! about how the ontology is *presented*. This file is about whether the readings
 //! themselves obey the schema.
 
-use ironmonlib::ontology::resolve::{self, Reading};
-use ironmonlib::ontology::{Domain, Entity, EntityKind, Ontology, Provenance, Unit};
+use ironmonitor::ontology::resolve::{self, Reading};
+use ironmonitor::ontology::{Domain, Entity, EntityKind, Ontology, Provenance, Unit};
 
 /// One resolve pass, shared by every test that needs live readings.
 ///

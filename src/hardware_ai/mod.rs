@@ -26,7 +26,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::hardware_ai::HardwareInferenceEngine;
+//! use ironmonitor::hardware_ai::HardwareInferenceEngine;
 //!
 //! let engine = HardwareInferenceEngine::new().unwrap();
 //! let report = engine.full_analysis();

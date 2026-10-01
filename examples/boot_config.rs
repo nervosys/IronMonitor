@@ -2,7 +2,7 @@
 //
 // Demonstrates boot configuration and startup item monitoring.
 
-use ironmonlib::{
+use ironmonitor::{
     boot_summary, format_uptime, BootMonitor, BootType, StartupItemStatus, StartupItemType,
 };
 

@@ -18,7 +18,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::firmware::FirmwareInventory;
+//! use ironmonitor::firmware::FirmwareInventory;
 //!
 //! let inventory = FirmwareInventory::new().unwrap();
 //! for fw in inventory.items() {

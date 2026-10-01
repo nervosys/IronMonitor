@@ -12,7 +12,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::numa::NumaMonitor;
+//! use ironmonitor::numa::NumaMonitor;
 //!
 //! let monitor = NumaMonitor::new().unwrap();
 //! for node in monitor.nodes() {

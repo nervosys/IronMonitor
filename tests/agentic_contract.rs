@@ -95,7 +95,7 @@ fn describe_emits_a_versioned_machine_readable_schema() {
 /// template expansion (`gpu.{n}.name` covering `gpu.0.name`).
 #[test]
 fn every_resolved_reading_is_declared_in_the_schema() {
-    use ironmonlib::ontology::Ontology;
+    use ironmonitor::ontology::Ontology;
 
     let ontology = Ontology::build();
     let snapshot = json(&["snapshot", "--format", "json"]);
@@ -545,7 +545,7 @@ fn the_schema_is_stable_across_invocations() {
 /// reports seeing into something it can query.
 #[test]
 fn on_screen_labels_map_back_to_queryable_ids() {
-    use ironmonlib::ontology::labels;
+    use ironmonitor::ontology::labels;
 
     let ids = labels::ids_for_label("Total");
     assert!(

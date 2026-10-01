@@ -5145,6 +5145,9 @@ impl IronMonitorApp {
                     ui.end_row();
                 });
 
+            ui.add_space(16.0);
+            super::system_summary::draw(ui, &self.snapshot);
+
             // System Info Section from WMI (if available)
             if let Some(ref info) = self.system_info {
                 ui.add_space(16.0);
@@ -5376,8 +5379,10 @@ impl IronMonitorApp {
                 // Only show error if we're done loading and still have no data
                 ui.add_space(16.0);
                 ui.label(
-                    RichText::new("⚠ Detailed system information not available (WMI query failed)")
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                    RichText::new(
+                        "⚠ Detailed system information unavailable (query failed or unsupported)",
+                    )
+                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                 );
             }
 

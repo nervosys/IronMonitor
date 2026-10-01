@@ -4,7 +4,7 @@
 //!
 //! Run: cargo run --release --example bandwidth_test
 
-use ironmonlib::{
+use ironmonitor::{
     loopback_test, memory_bandwidth_test, quick_bandwidth_estimate, BandwidthConfig, DEFAULT_PORT,
 };
 use std::time::Duration;
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║                                                                    ║");
     println!("║  2. Use this code:                                                 ║");
     println!("║     ```                                                            ║");
-    println!("║     use ironmonlib::{{bandwidth_test, BandwidthConfig}};                  ║");
+    println!("║     use ironmonitor::{{bandwidth_test, BandwidthConfig}};                  ║");
     println!("║     use std::time::Duration;                                       ║");
     println!("║                                                                    ║");
     println!("║     let config = BandwidthConfig::default()                        ║");

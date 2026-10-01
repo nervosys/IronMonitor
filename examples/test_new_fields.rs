@@ -2,7 +2,7 @@
 //!
 //! Shows thread count, handle count, I/O bytes, parent PID, and other new fields
 
-use ironmonlib::{ProcessMonitor, Result};
+use ironmonitor::{ProcessMonitor, Result};
 
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
 
     // Show processes with highest I/O
     procs.sort_by(|a, b| {
-        let total = |p: &ironmonlib::process_monitor::ProcessMonitorInfo| {
+        let total = |p: &ironmonitor::process_monitor::ProcessMonitorInfo| {
             p.io_read_bytes.zip(p.io_write_bytes).map(|(r, w)| r + w)
         };
         total(b).cmp(&total(a))

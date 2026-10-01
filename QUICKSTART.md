@@ -17,13 +17,13 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-iron-monitor = { version = "0.3", features = ["nvidia"] }
+ironmonitor = { version = "7.0", features = ["nvidia"] }
 
 # Or pick specific vendors:
-# iron-monitor = { version = "0.3", features = ["nvidia", "amd", "intel"] }
+# ironmonitor = { version = "7.0", features = ["nvidia", "amd", "intel"] }
 
 # Or everything:
-# iron-monitor = { version = "0.3", features = ["full"] }
+# ironmonitor = { version = "7.0", features = ["full"] }
 ```
 
 ### CLI Tool
@@ -46,7 +46,7 @@ cargo run --release --features cli -- --format json all
 ## First Program
 
 ```rust
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::gpu::GpuCollection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect all available GPUs
@@ -82,7 +82,7 @@ cargo run --features nvidia
 ### Monitor CPU
 
 ```rust
-use ironmonlib::CpuStats;
+use ironmonitor::CpuStats;
 
 let stats = CpuStats::new()?;
 println!("Cores: {}, Online: {}", stats.core_count(), stats.online_count());
@@ -93,8 +93,8 @@ println!("User: {:.1}%  System: {:.1}%  Idle: {:.1}%",
 ### Monitor Memory
 
 ```rust
-use ironmonlib::MemoryMonitor;
-use ironmonlib::memory_management::format_bytes;
+use ironmonitor::MemoryMonitor;
+use ironmonitor::memory_management::format_bytes;
 
 let monitor = MemoryMonitor::new()?;
 println!("RAM: {} / {} ({:.1}% used)",
@@ -109,7 +109,7 @@ println!("Swap: {} / {}",
 ### Monitor Processes with GPU Attribution
 
 ```rust
-use ironmonlib::{ProcessMonitor, GpuCollection};
+use ironmonitor::{ProcessMonitor, GpuCollection};
 
 let gpus = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpus)?;
@@ -125,7 +125,7 @@ for proc in processes.iter().take(5) {
 ### Monitor Network Interfaces
 
 ```rust
-use ironmonlib::network_monitor::NetworkMonitor;
+use ironmonitor::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 let interfaces = monitor.interfaces()?;
@@ -142,7 +142,7 @@ for iface in interfaces {
 ### Network Diagnostics
 
 ```rust
-use ironmonlib::{ping, dns_lookup, scan_ports, traceroute};
+use ironmonitor::{ping, dns_lookup, scan_ports, traceroute};
 
 // Ping
 let result = ping("8.8.8.8", 4)?;
@@ -162,8 +162,8 @@ let hops = traceroute("google.com", 30)?;
 ### Use the AI Agent
 
 ```rust
-use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
-use ironmonlib::IronMonitor;
+use ironmonitor::agent::{Agent, AgentConfig, ModelSize};
+use ironmonitor::IronMonitor;
 
 let monitor = IronMonitor::new()?;
 let config = AgentConfig::new(ModelSize::Medium);
@@ -188,7 +188,7 @@ amon query "What's my GPU temperature?"
 All metrics support JSON serialization via `serde`:
 
 ```rust
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::gpu::GpuCollection;
 
 let gpus = GpuCollection::auto_detect()?;
 let snapshots = gpus.snapshot_all()?;
@@ -236,4 +236,3 @@ cargo run --example tui --features cli
 **Build errors with `drm` crate**: Install `libdrm-dev` (`apt install libdrm-dev` on Debian/Ubuntu).
 
 See the full [README](README.md) for detailed API documentation and architecture.
-

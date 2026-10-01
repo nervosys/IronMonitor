@@ -7,8 +7,8 @@
 //! cargo run --release --features full --example agent_simple
 //! ```
 
-use ironmonlib::agent::{Agent, AgentConfig, ModelSize};
-use ironmonlib::UnifiedMonitor;
+use ironmonitor::agent::{Agent, AgentConfig, ModelSize};
+use ironmonitor::UnifiedMonitor;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {

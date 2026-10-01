@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::os_info::OsInfoMonitor;
+//! use ironmonitor::os_info::OsInfoMonitor;
 //!
 //! let monitor = OsInfoMonitor::new().unwrap();
 //! let info = monitor.info();

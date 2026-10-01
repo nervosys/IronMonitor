@@ -16,7 +16,7 @@
 //! - Custom configuration paths
 //! - Configuration validation
 
-use ironmonlib::Config;
+use ironmonitor::Config;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("⚙️  IronMonitor - Configuration Management Demo\n");

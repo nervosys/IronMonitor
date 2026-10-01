@@ -1,6 +1,6 @@
 //! Continuous monitoring example using IronMonitor
 
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::gpu::GpuCollection;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;

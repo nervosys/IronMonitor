@@ -12,7 +12,7 @@
 //! ## Monitor Training Workload
 //!
 //! ```no_run
-//! use ironmonlib::ai_workload::{AiWorkloadMonitor, WorkloadType};
+//! use ironmonitor::ai_workload::{AiWorkloadMonitor, WorkloadType};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = AiWorkloadMonitor::new()?;
@@ -38,7 +38,7 @@
 //! ## Monitor Inference Latency
 //!
 //! ```no_run
-//! use ironmonlib::ai_workload::AiWorkloadMonitor;
+//! use ironmonitor::ai_workload::AiWorkloadMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = AiWorkloadMonitor::new()?;

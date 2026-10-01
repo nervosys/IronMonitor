@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example network_tools
 
-use ironmonlib::{
+use ironmonitor::{
     check_connectivity, check_port, common_ports, dns_lookup, get_service_name, latency_test, ping,
     reverse_dns, scan_ports, traceroute, PingResult, PortStatus, TracerouteResult,
 };

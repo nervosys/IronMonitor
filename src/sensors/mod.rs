@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::sensors::SensorMonitor;
+//! use ironmonitor::sensors::SensorMonitor;
 //!
 //! let monitor = SensorMonitor::new().unwrap();
 //! for sensor in monitor.sensors() {

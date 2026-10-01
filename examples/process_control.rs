@@ -25,7 +25,7 @@
 //! Terminating system processes or processes owned by other users requires
 //! appropriate permissions and can cause system instability.
 
-use ironmonlib::{ProcessGpuType, ProcessMonitor};
+use ironmonitor::{ProcessGpuType, ProcessMonitor};
 use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;

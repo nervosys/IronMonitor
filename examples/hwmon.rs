@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo run --release --features nvidia --example hwmon
 
-use ironmonlib::hwmon::{HardwareMonitor, HwSensorType};
+use ironmonitor::hwmon::{HardwareMonitor, HwSensorType};
 
 fn main() {
     println!("=== IronMonitor - Hardware Monitor Example ===\n");
@@ -91,7 +91,7 @@ fn main() {
     }
 }
 
-fn print_sensor(sensor: &ironmonlib::hwmon::HwSensor) {
+fn print_sensor(sensor: &ironmonitor::hwmon::HwSensor) {
     let unit = match sensor.sensor_type {
         HwSensorType::Temperature => "°C",
         HwSensorType::Voltage => "V",

@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // `Snapshot` whose `gpus` is the map this example walks — is `stats::IronMonitor`.
         // Being Linux-only, this example had never been compiled.
         // `GpuStats` is used only by the commented-out control block below.
-        use ironmonlib::stats::IronMonitor;
+        use ironmonitor::stats::IronMonitor;
 
         let mut stats = IronMonitor::new()?;
         let snapshot = stats.snapshot()?;
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // the block rather than outside it — left outside, it was a binding the
         // live code never used, which clippy rejects under -D warnings.
         /*
-        let mut gpu_stats = ironmonlib::core::gpu::GpuStats::new();
+        let mut gpu_stats = ironmonitor::core::gpu::GpuStats::new();
         if let Some((name, gpu)) = snapshot.gpus.iter().next() {
             if let Some(current_scaling) = gpu.status.scaling_3d {
                 println!("Toggling 3D scaling for GPU: {}", name);

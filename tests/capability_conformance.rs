@@ -20,7 +20,7 @@
 //! agent can read the catalogue and rely on it, because nothing can quietly
 //! stop being true.
 
-use ironmonlib::ontology::capability::{self, Platform, Support, Surface};
+use ironmonitor::ontology::capability::{self, Platform, Support, Surface};
 use std::collections::BTreeSet;
 
 fn ids_with_prefix(prefix: &str) -> BTreeSet<String> {
@@ -38,7 +38,7 @@ fn ids_with_prefix(prefix: &str) -> BTreeSet<String> {
 /// agent: a promise that does not match the machine.
 #[test]
 fn declared_settings_and_registered_handlers_are_the_same_set() {
-    let registered: BTreeSet<String> = ironmonlib::profile::apply::builtin_handlers()
+    let registered: BTreeSet<String> = ironmonitor::profile::apply::builtin_handlers()
         .iter()
         .map(|h| h.setting_id().to_string())
         .collect();
@@ -67,7 +67,7 @@ fn declared_settings_and_registered_handlers_are_the_same_set() {
 /// intrusion is not a test.
 #[test]
 fn every_detection_rule_the_source_emits_is_declared() {
-    let declared: BTreeSet<&str> = ironmonlib::ids::RULES.iter().map(|(r, _)| *r).collect();
+    let declared: BTreeSet<&str> = ironmonitor::ids::RULES.iter().map(|(r, _)| *r).collect();
 
     let mut emitted = BTreeSet::new();
     for file in ["src/ids/file.rs", "src/ids/network.rs"] {
@@ -123,7 +123,7 @@ fn every_detection_rule_the_source_emits_is_declared() {
 #[test]
 fn every_ontology_domain_declares_its_reading_support() {
     let declared = ids_with_prefix("reading.");
-    for domain in ironmonlib::ontology::Domain::ALL {
+    for domain in ironmonitor::ontology::Domain::ALL {
         assert!(
             declared.contains(domain.as_str()),
             "the ontology declares the {} domain and the capability catalogue \
@@ -133,7 +133,7 @@ fn every_ontology_domain_declares_its_reading_support() {
     }
     for d in &declared {
         assert!(
-            ironmonlib::ontology::Domain::ALL
+            ironmonitor::ontology::Domain::ALL
                 .iter()
                 .any(|dom| dom.as_str() == d),
             "reading.{d} is declared and is not an ontology domain"
@@ -148,7 +148,7 @@ fn every_ontology_domain_declares_its_reading_support() {
 /// documentation implied one.
 #[test]
 fn readings_claimed_usable_here_actually_resolve() {
-    let snapshot = ironmonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonitor::ontology::resolve::snapshot();
     let here = Platform::current().expect("a named platform");
 
     for c in capability::catalogue() {
@@ -201,7 +201,7 @@ fn readings_claimed_usable_here_actually_resolve() {
 /// claim — a capability marked unimplemented long after somebody implemented it.
 #[test]
 fn readings_claimed_unimplemented_here_really_produce_nothing() {
-    let snapshot = ironmonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonitor::ontology::resolve::snapshot();
     let here = Platform::current().expect("a named platform");
 
     for c in capability::catalogue() {
@@ -250,7 +250,7 @@ fn the_tuning_verify_capability_matches_the_metric_registry() {
         "gt_max_freq_mhz",
     ]
     .iter()
-    .any(|id| ironmonlib::tuning::verify::metric_for(id).is_some());
+    .any(|id| ironmonitor::tuning::verify::metric_for(id).is_some());
 
     let claims_partial = cap
         .support
@@ -470,7 +470,7 @@ fn reported_features_match_the_commands_the_binary_accepts() {
 #[test]
 fn every_surface_has_at_least_one_capability() {
     let cat = capability::catalogue();
-    let handlers = ironmonlib::profile::apply::builtin_handlers().len();
+    let handlers = ironmonitor::profile::apply::builtin_handlers().len();
 
     for surface in Surface::ALL {
         let declared = cat.iter().filter(|c| c.surface == *surface).count();

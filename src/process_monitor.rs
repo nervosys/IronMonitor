@@ -13,7 +13,7 @@
 //! ## Basic Process Monitoring
 //!
 //! ```no_run
-//! use ironmonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonitor::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create monitor with GPU attribution
@@ -34,7 +34,7 @@
 //! ## Top GPU Consumers
 //!
 //! ```no_run
-//! use ironmonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonitor::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -59,7 +59,7 @@
 //! ## Top CPU Consumers
 //!
 //! ```no_run
-//! use ironmonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonitor::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -82,7 +82,7 @@
 //! ## Monitor Specific Process
 //!
 //! ```no_run
-//! use ironmonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonitor::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -1378,7 +1378,7 @@ impl ProcessMonitor {
     /// # Examples
     ///
     /// ```no_run
-    /// use ironmonlib::{ProcessMonitor, GpuCollection};
+    /// use ironmonitor::{ProcessMonitor, GpuCollection};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let gpus = GpuCollection::auto_detect()?;

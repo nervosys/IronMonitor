@@ -11,7 +11,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::tpm::TpmMonitor;
+//! use ironmonitor::tpm::TpmMonitor;
 //!
 //! let monitor = TpmMonitor::new().unwrap();
 //! if let Some(tpm) = monitor.tpm() {

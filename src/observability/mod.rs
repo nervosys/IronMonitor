@@ -23,8 +23,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::observability::{ObservabilityApi, RequestContext};
-//! use ironmonlib::observability::permissions::ApiConfig;
+//! use ironmonitor::observability::{ObservabilityApi, RequestContext};
+//! use ironmonitor::observability::permissions::ApiConfig;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut api = ObservabilityApi::new(ApiConfig::default());

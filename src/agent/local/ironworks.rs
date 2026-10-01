@@ -32,7 +32,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::{IronWorksClient, LocalInferenceClient, InferenceRequest};
+//! use ironmonitor::agent::local::{IronWorksClient, LocalInferenceClient, InferenceRequest};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = IronWorksClient::default_endpoint()?;

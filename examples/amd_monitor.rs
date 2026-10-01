@@ -1,7 +1,7 @@
 //! AMD GPU Monitoring Example
 
 #[cfg(feature = "amd")]
-use ironmonlib::gpu::amd_rocm;
+use ironmonitor::gpu::amd_rocm;
 
 #[cfg(feature = "amd")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

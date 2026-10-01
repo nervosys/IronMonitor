@@ -9,5 +9,5 @@
 
 fn main() -> Result<(), eframe::Error> {
     println!("⚡ Starting IronMonitor GUI...");
-    ironmonlib::gui::run()
+    ironmonitor::gui::run()
 }

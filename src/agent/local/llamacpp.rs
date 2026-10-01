@@ -19,7 +19,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::{LlamaCppClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonitor::agent::local::{LlamaCppClient, InferenceRequest, LocalInferenceClient};
 //! use std::path::PathBuf;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {

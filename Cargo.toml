@@ -1,6 +1,6 @@
 [package]
-name = "iron-monitor"
-version = "7.0.0"
+name = "ironmonitor"
+version = "7.0.1"
 edition = "2021"
 # Verified by building against each installed toolchain, not asserted. This said
 # 1.70 from 3.x through 5.1.0 and had not been true since the egui GUI was
@@ -38,7 +38,7 @@ license = "AGPL-3.0-or-later"
 description = "IronMonitor: hardware monitoring for CPUs, GPUs, NPUs, memory, I/O and network silicon on Linux, Windows and macOS, which reports what it cannot read as well as what it can"
 repository = "https://github.com/nervosys/IronMonitor"
 homepage = "https://github.com/nervosys/IronMonitor"
-documentation = "https://docs.rs/iron-monitor"
+documentation = "https://docs.rs/ironmonitor"
 readme = "README.md"
 keywords = ["silicon", "monitor", "gpu", "cpu", "hardware"]
 categories = [
@@ -61,11 +61,11 @@ exclude = [
 ]
 
 [lib]
-name = "ironmonlib"
+name = "ironmonitor"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib", "staticlib"]
 
-# `examples/gui.rs` names `ironmonlib::gui` and `eframe` directly, so it cannot
+# `examples/gui.rs` names `ironmonitor::gui` and `eframe` directly, so it cannot
 # build without the feature that supplies them. Without this, `cargo check
 # --all-targets` on any feature set lacking `gui` fails on the example rather than
 # skipping it — the same shape as the `cli`-without-`gui` breakage fixed in 3.0.1,

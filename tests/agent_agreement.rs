@@ -20,7 +20,7 @@
 //! memory figures alone. A path that has stopped existing is either a renamed
 //! field or a dropped one, and both are worth a red test.
 
-use ironmonlib::ai_api::AiDataApi;
+use ironmonitor::ai_api::AiDataApi;
 use serde_json::Value;
 
 /// The `data` of one tool call, or `None` where the tool declined.
@@ -36,7 +36,7 @@ fn tool(name: &str) -> Option<Value> {
         .flatten()
 }
 
-fn reading(readings: &[ironmonlib::ontology::resolve::Reading], id: &str) -> Option<f64> {
+fn reading(readings: &[ironmonitor::ontology::resolve::Reading], id: &str) -> Option<f64> {
     readings
         .iter()
         .find(|r| r.id == id)
@@ -52,7 +52,7 @@ fn at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 /// Capacities and counts, as the tool surface and the ontology each report them.
 #[test]
 fn the_agent_surface_and_the_ontology_agree_on_what_does_not_move() {
-    let readings = ironmonlib::ontology::resolve::snapshot();
+    let readings = ironmonitor::ontology::resolve::snapshot();
     let mut compared = 0usize;
     let mut problems: Vec<String> = Vec::new();
 
@@ -147,16 +147,16 @@ fn the_agent_surface_and_the_ontology_agree_on_what_does_not_move() {
 /// was compared, so the test cannot pass by comparing nothing.
 #[test]
 fn the_agent_context_and_the_ontology_agree_on_what_does_not_move() {
-    let Ok(monitor) = ironmonlib::UnifiedMonitor::new() else {
+    let Ok(monitor) = ironmonitor::UnifiedMonitor::new() else {
         eprintln!("skipping: no UnifiedMonitor on this machine");
         return;
     };
-    let query = ironmonlib::Query::parse("what is the state of this machine");
-    let state = match ironmonlib::SystemState::from_monitor(&monitor, &query) {
+    let query = ironmonitor::Query::parse("what is the state of this machine");
+    let state = match ironmonitor::SystemState::from_monitor(&monitor, &query) {
         Ok(state) => state,
         Err(e) => panic!("the agent could not build its context: {e}"),
     };
-    let readings = ironmonlib::ontology::resolve::snapshot();
+    let readings = ironmonitor::ontology::resolve::snapshot();
 
     const MIB: f64 = 1024.0 * 1024.0;
     let mut compared = 0usize;

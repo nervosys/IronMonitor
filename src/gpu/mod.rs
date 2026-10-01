@@ -13,7 +13,7 @@
 //! ## Auto-detect all GPUs
 //!
 //! ```no_run
-//! use ironmonlib::gpu::GpuCollection;
+//! use ironmonitor::gpu::GpuCollection;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Automatically detect and initialize all available GPUs
@@ -36,7 +36,7 @@
 //! ## Access individual GPU devices
 //!
 //! ```no_run
-//! use ironmonlib::gpu::GpuCollection;
+//! use ironmonitor::gpu::GpuCollection;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -74,7 +74,7 @@
 //! ```no_run,ignore
 //! // Note: Vendor-specific initialization requires feature flags
 //! // and uses internal types. Use GpuCollection::auto_detect() instead.
-//! use ironmonlib::gpu::GpuCollection;
+//! use ironmonitor::gpu::GpuCollection;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;

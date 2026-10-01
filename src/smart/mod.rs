@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::smart::SmartMonitor;
+//! use ironmonitor::smart::SmartMonitor;
 //!
 //! let monitor = SmartMonitor::new().unwrap();
 //! for disk in monitor.disks() {

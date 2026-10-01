@@ -18,7 +18,7 @@
 //! ### GPU Monitoring
 //!
 //! ```no_run
-//! use ironmonlib::gpu::GpuCollection;
+//! use ironmonitor::gpu::GpuCollection;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Auto-detect all available GPUs
@@ -55,7 +55,7 @@
 //! ### Process Monitoring with GPU Attribution
 //!
 //! ```no_run
-//! use ironmonlib::{ProcessMonitor, GpuCollection};
+//! use ironmonitor::{ProcessMonitor, GpuCollection};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let gpus = GpuCollection::auto_detect()?;
@@ -78,7 +78,7 @@
 //! ### Network Monitoring
 //!
 //! ```no_run
-//! use ironmonlib::NetworkMonitor;
+//! use ironmonitor::NetworkMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut monitor = NetworkMonitor::new()?;
@@ -105,7 +105,7 @@
 //! to query hardware monitoring data:
 //!
 //! ```no_run
-//! use ironmonlib::ai_api::{AiDataApi, ToolCategory};
+//! use ironmonitor::ai_api::{AiDataApi, ToolCategory};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut api = AiDataApi::new()?;

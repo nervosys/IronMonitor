@@ -6,8 +6,8 @@
 //! - Switching between local and remote backends
 //! - Using different AI models (OpenAI, Anthropic, Ollama, IronWorks)
 
-use ironmonlib::agent::{Agent, AgentConfig, BackendConfig, BackendDiscovery, BackendType};
-use ironmonlib::UnifiedMonitor;
+use ironmonitor::agent::{Agent, AgentConfig, BackendConfig, BackendDiscovery, BackendType};
+use ironmonitor::UnifiedMonitor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("IronMonitor - AI Agent Backend Discovery\n");
@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             // List available models
             let ollama_config = BackendConfig::ollama("llama3");
-            let client = ironmonlib::agent::RemoteClient::new(ollama_config)?;
+            let client = ironmonitor::agent::RemoteClient::new(ollama_config)?;
 
             match client.list_models() {
                 Ok(models) => {

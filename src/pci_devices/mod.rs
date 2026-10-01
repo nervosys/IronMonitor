@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::pci_devices::{PciDeviceMonitor, PciClass};
+//! use ironmonitor::pci_devices::{PciDeviceMonitor, PciClass};
 //!
 //! let monitor = PciDeviceMonitor::new().unwrap();
 //! for dev in monitor.devices() {

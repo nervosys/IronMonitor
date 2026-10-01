@@ -1,6 +1,6 @@
 //! Simple example using IronMonitor's new unified API
 
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::gpu::GpuCollection;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {

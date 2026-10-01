@@ -1,9 +1,9 @@
-﻿<p align="center">
+<p align="center">
   <img src="assets/banner.png" alt="IronMonitor (ironmon)" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/iron-monitor"><img src="https://img.shields.io/crates/v/iron-monitor.svg?style=flat-square&logo=rust&color=orange" alt="Crates.io"></a>
+  <a href="https://crates.io/crates/ironmonitor"><img src="https://img.shields.io/crates/v/ironmonitor.svg?style=flat-square&logo=rust&color=orange" alt="Crates.io"></a>
   <a href="https://github.com/nervosys/IronMonitor/actions/workflows/build-and-push.yml"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/IronMonitor/build-and-push.yml?style=flat-square&logo=github&label=CI" alt="CI Status"></a>
   <a href="https://github.com/nervosys/IronMonitor/actions"><img src="https://img.shields.io/github/actions/workflow/status/nervosys/IronMonitor/build-and-push.yml?style=flat-square&logo=github&label=build" alt="Security"></a>
   <a href="https://github.com/nervosys/IronMonitor/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square" alt="License"></a>
@@ -171,7 +171,7 @@ block a connection, kill a process, or quarantine a file.
 IronMonitor uniquely correlates system processes with GPU usage across all vendors:
 
 ```rust
-use ironmonlib::{ProcessMonitor, GpuCollection};
+use ironmonitor::{ProcessMonitor, GpuCollection};
 
 let gpu_collection = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpu_collection)?;
@@ -190,8 +190,8 @@ Ask questions through a configured model backend. The built-in agent calls
 read-only monitoring tools to obtain evidence and follow-up observations:
 
 ```rust
-use ironmonlib::agent::{Agent, AgentConfig};
-use ironmonlib::agent::tool_runtime::RunControl;
+use ironmonitor::agent::{Agent, AgentConfig};
+use ironmonitor::agent::tool_runtime::RunControl;
 
 let config = AgentConfig::auto_detect()?;
 let mut agent = Agent::new(config)?;
@@ -333,14 +333,14 @@ cargo test --test ontology_conformance -- --nocapture   # includes a coverage ta
 See **[AGENTS.md](AGENTS.md)** for the full contract: exit codes, the write
 surface, and how to read the TUI and GUI without a terminal or display.
 
-> The older `ironmonlib::ai_api::HardwareOntology` is superseded. It carries no
+> The older `ironmonitor::ai_api::HardwareOntology` is superseded. It carries no
 > provenance, cannot resolve an id to a value, and no command exposes it.
 
 <details>
 <summary>Legacy library-only ontology (superseded)</summary>
 
 ```rust
-use ironmonlib::ai_api::HardwareOntology;
+use ironmonitor::ai_api::HardwareOntology;
 
 let ontology = HardwareOntology::complete();
 println!("{}", serde_json::to_string_pretty(&ontology)?);
@@ -376,7 +376,7 @@ println!("{}", serde_json::to_string_pretty(&ontology)?);
 AI agents can enumerate all available monitoring tools with their schemas:
 
 ```rust
-use ironmonlib::ai_api::{AiDataApi, ToolDefinition};
+use ironmonitor::ai_api::{AiDataApi, ToolDefinition};
 
 let api = AiDataApi::new()?;
 let tools: Vec<ToolDefinition> = api.list_tools();
@@ -401,7 +401,7 @@ Configure in Claude Desktop's `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "iron-monitor": {
+    "ironmonitor": {
       "command": "ironmon",
       "args": ["ai", "server"]
     }
@@ -431,7 +431,7 @@ This enables AI agents to:
 ### From crates.io
 
 ```bash
-cargo install iron-monitor
+cargo install ironmonitor
 ```
 
 That installs both binaries, `ironmon` and `amon`. Default features are `full`,
@@ -446,13 +446,14 @@ As a library, where the GUI and CLI stacks are usually unwanted:
 
 ```toml
 [dependencies]
-iron-monitor = { version = "3.0", default-features = false, features = ["cpu", "io", "network"] }
+ironmonitor = { version = "7.0", default-features = false, features = ["cpu", "io", "network"] }
 ```
 
-The crate is published as `iron-monitor` and imported as `ironmonlib`:
+Both the Cargo package and Rust library are named `ironmonitor`. Update any
+existing `ironmonlib` imports to `ironmonitor`:
 
 ```rust
-use ironmonlib::disk;
+use ironmonitor::disk;
 ```
 
 ### From Source
@@ -575,7 +576,7 @@ TUI instead of the desktop window.
 ### GPU Monitoring
 
 ```rust
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::gpu::GpuCollection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect all GPUs (NVIDIA, AMD, Intel)
@@ -600,7 +601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### CPU Monitoring
 
 ```rust
-use ironmonlib::cpu::CpuMonitor;
+use ironmonitor::cpu::CpuMonitor;
 
 let mut monitor = CpuMonitor::new()?;
 let info = monitor.update()?;
@@ -615,7 +616,7 @@ for (idx, core) in info.cores.iter().enumerate() {
 ### Memory Monitoring
 
 ```rust
-use ironmonlib::memory::MemoryMonitor;
+use ironmonitor::memory::MemoryMonitor;
 
 let mut monitor = MemoryMonitor::new()?;
 let info = monitor.update()?;
@@ -629,7 +630,7 @@ println!("Swap: {} / {} MB",
 ### Disk, SMART and NVMe Monitoring
 
 ```rust
-use ironmonlib::disk::{self, DiskType};
+use ironmonitor::disk::{self, DiskType};
 
 for device in disk::enumerate_disks()? {
     let info = device.info()?;
@@ -678,7 +679,7 @@ fields still resolve while the counters come back `None`.
 Drives that reach the WMI fallback — no longer NVMe or SATA, but still USB bridges
 and anything else the two passthroughs decline — are served from one collector
 sweep shared across every drive and accessor for two seconds. A sweep is around a
-second, so this matters. Construct a `ironmonlib::smart::SmartMonitor` directly if
+second, so this matters. Construct a `ironmonitor::smart::SmartMonitor` directly if
 you need a guaranteed-fresh one.
 
 See `cargo run --all-features --example disk_monitor` for the full surface.
@@ -686,7 +687,7 @@ See `cargo run --all-features --example disk_monitor` for the full surface.
 ### Network Monitoring
 
 ```rust
-use ironmonlib::network_monitor::NetworkMonitor;
+use ironmonitor::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 let interfaces = monitor.interfaces()?;
@@ -705,7 +706,7 @@ for iface in interfaces {
 IronMonitor includes network diagnostic utilities inspired by popular CLI tools:
 
 ```rust
-use ironmonlib::{ping, traceroute, scan_ports, dns_lookup, check_port};
+use ironmonitor::{ping, traceroute, scan_ports, dns_lookup, check_port};
 use std::time::Duration;
 
 // Ping a host
@@ -749,7 +750,7 @@ IronMonitor provides cross-platform monitoring for audio, Bluetooth, display, an
 #### Audio Devices
 
 ```rust
-use ironmonlib::audio::AudioMonitor;
+use ironmonitor::audio::AudioMonitor;
 
 let mut monitor = AudioMonitor::new()?;
 let devices = monitor.devices();
@@ -773,7 +774,7 @@ if let Some(volume) = monitor.master_volume() {
 #### Bluetooth Devices
 
 ```rust
-use ironmonlib::bluetooth::BluetoothMonitor;
+use ironmonitor::bluetooth::BluetoothMonitor;
 
 let mut monitor = BluetoothMonitor::new()?;
 
@@ -795,7 +796,7 @@ for device in monitor.devices() {
 #### Display/Monitor Information
 
 ```rust
-use ironmonlib::display::DisplayMonitor;
+use ironmonitor::display::DisplayMonitor;
 
 let monitor = DisplayMonitor::new()?;
 
@@ -815,7 +816,7 @@ for display in monitor.displays() {
 #### USB Devices
 
 ```rust
-use ironmonlib::usb::UsbMonitor;
+use ironmonitor::usb::UsbMonitor;
 
 let monitor = UsbMonitor::new()?;
 
@@ -854,8 +855,8 @@ ironmon ai  # Interactive mode
 ### Programmatic Usage
 
 ```rust
-use ironmonlib::agent::{Agent, AgentConfig};
-use ironmonlib::agent::tool_runtime::RunControl;
+use ironmonitor::agent::{Agent, AgentConfig};
+use ironmonitor::agent::tool_runtime::RunControl;
 
 let config = AgentConfig::auto_detect()?;
 let mut agent = Agent::new(config)?;
@@ -994,7 +995,7 @@ ollama serve                         # Ollama on port 11434
 ### Programmatic Backend Selection
 
 ```rust
-use ironmonlib::agent::{AgentConfig, BackendConfig, BackendType};
+use ironmonitor::agent::{AgentConfig, BackendConfig, BackendType};
 
 // Auto-detect best backend
 let config = AgentConfig::auto_detect()?;
@@ -1113,6 +1114,11 @@ ironmon gui
 **GUI Features:**
 
 - 🖼️ Native desktop application (Windows, Linux, macOS)
+- 🖥️ System page with hostname, OS and kernel, architecture, CPU and motherboard
+  details, BIOS/UEFI, Secure Boot, temperatures and drivers, plus a live summary
+  of OS uptime, CPU utilization, accelerator names, RAM/swap usage and process
+  count. Open it from the System tab, or inspect it headlessly with
+  `ironmon gui --frame --tab system`.
 - 🎨 18 palettes, including Dark Monochrome, Dracula, One Dark Pro, Tokyo Night,
   Nord, Monokai and GitHub Dark, shared across tabs
 - 📊 Real-time graphs and visualizations
@@ -1301,7 +1307,7 @@ ironmon/
 The `GpuCollection` provides a unified interface for all GPU vendors:
 
 ```rust
-use ironmonlib::gpu::{GpuCollection, Device};
+use ironmonitor::gpu::{GpuCollection, Device};
 
 // Auto-detect all available GPUs
 let collection = GpuCollection::auto_detect()?;
@@ -1323,8 +1329,8 @@ for device in collection.gpus() {
 The `ProcessMonitor` correlates system processes with GPU usage:
 
 ```rust
-use ironmonlib::process_monitor::ProcessMonitor;
-use ironmonlib::gpu::GpuCollection;
+use ironmonitor::process_monitor::ProcessMonitor;
+use ironmonitor::gpu::GpuCollection;
 
 let gpus = GpuCollection::auto_detect()?;
 let mut monitor = ProcessMonitor::with_gpus(gpus)?;
@@ -1347,7 +1353,7 @@ let gpu_only = monitor.gpu_processes()?;
 The `NetworkMonitor` tracks network interface statistics:
 
 ```rust
-use ironmonlib::network_monitor::NetworkMonitor;
+use ironmonitor::network_monitor::NetworkMonitor;
 
 let mut monitor = NetworkMonitor::new()?;
 

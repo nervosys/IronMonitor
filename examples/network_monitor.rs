@@ -3,7 +3,7 @@
 //! Demonstrates network interface monitoring with bandwidth tracking.
 //! Shows all network interfaces with their statistics and real-time rates.
 
-use ironmonlib::{NetworkMonitor, Result};
+use ironmonitor::{NetworkMonitor, Result};
 use std::thread;
 use std::time::Duration;
 

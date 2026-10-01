@@ -2,7 +2,7 @@
 //
 // Demonstrates motherboard sensor monitoring and system information retrieval
 
-use ironmonlib::motherboard;
+use ironmonitor::motherboard;
 
 /// Show that an identifier was read without printing the identifier.
 ///

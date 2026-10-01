@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::printer::PrinterMonitor;
+//! use ironmonitor::printer::PrinterMonitor;
 //!
 //! let monitor = PrinterMonitor::new().unwrap();
 //! for printer in monitor.printers() {

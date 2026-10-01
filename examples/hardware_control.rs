@@ -7,7 +7,7 @@
 //!
 //! Run with: `cargo run --example hardware_control --features cli`
 
-use ironmonlib::{AudioMonitor, BluetoothMonitor};
+use ironmonitor::{AudioMonitor, BluetoothMonitor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hardware Control APIs Demo ===\n");

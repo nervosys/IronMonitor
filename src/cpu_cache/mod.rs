@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::cpu_cache::CpuCacheMonitor;
+//! use ironmonitor::cpu_cache::CpuCacheMonitor;
 //!
 //! let monitor = CpuCacheMonitor::new().unwrap();
 //! for cache in monitor.caches() {

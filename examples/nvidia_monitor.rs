@@ -3,10 +3,10 @@
 //! Demonstrates the unified GPU monitoring interface with NVIDIA GPUs.
 //! Run with: cargo run --example nvidia_monitor --features nvidia
 
-use ironmonlib::gpu::traits::*;
+use ironmonitor::gpu::traits::*;
 
 #[cfg(feature = "nvidia")]
-use ironmonlib::gpu::nvidia_new;
+use ironmonitor::gpu::nvidia_new;
 
 #[cfg(not(feature = "nvidia"))]
 fn main() {

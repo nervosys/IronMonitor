@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.1] - 2026-10-01
+
+### Changed
+
+- Rename the Cargo package from `iron-monitor` to `ironmonitor` and the Rust
+  library from `ironmonlib` to `ironmonitor`. Library consumers must update their
+  imports. The `ironmon`, `imon`, and `amon` commands retain their names.
+  Update installation examples and CI package discovery.
+
+### Added
+
+- A live summary on the existing GUI System page: OS uptime, CPU model and
+  utilization, accelerator names, RAM and swap usage, and process count, using
+  the shared collector without additional hardware queries on the UI thread.
+
 ## [7.0.0] - 2026-09-30
 
 ### Added

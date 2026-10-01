@@ -12,7 +12,7 @@
 //! These tests assert about *shape*, not about particular hardware, so they say
 //! the same thing on a developer's desktop and on a CI runner with no GPU.
 
-use ironmonlib::ai_api::AiDataApi;
+use ironmonitor::ai_api::AiDataApi;
 use serde_json::Value;
 
 /// EOF must terminate every AI entry point even with a configured backend.
@@ -114,7 +114,7 @@ fn no_tool_returns_a_string_that_names_an_absence() {
 
     for (name, data) in successful_results() {
         walk_strings(&name, &data, &mut |path, s| {
-            if s.trim().is_empty() || ironmonlib::ontology::resolve::names_an_absence(s) {
+            if s.trim().is_empty() || ironmonitor::ontology::resolve::names_an_absence(s) {
                 bad.push(format!("{path} = {s:?}"));
             }
         });

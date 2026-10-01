@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::camera::CameraMonitor;
+//! use ironmonitor::camera::CameraMonitor;
 //!
 //! let monitor = CameraMonitor::new().unwrap();
 //! for cam in monitor.cameras() {

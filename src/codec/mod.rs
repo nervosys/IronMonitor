@@ -14,7 +14,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::codec::CodecMonitor;
+//! use ironmonitor::codec::CodecMonitor;
 //!
 //! let monitor = CodecMonitor::new().unwrap();
 //! for cap in monitor.capabilities() {

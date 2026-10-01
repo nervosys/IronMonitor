@@ -2,7 +2,7 @@
 //!
 //! Tests the time-series database by recording and reading back data
 
-use ironmonlib::tsdb::{
+use ironmonitor::tsdb::{
     format_size, MetricsRecorder, ProcessSnapshot, SystemSnapshot, TimeSeriesDb,
 };
 use std::time::Duration;

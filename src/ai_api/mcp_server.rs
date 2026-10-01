@@ -73,7 +73,7 @@ impl McpServer {
         Ok(Self {
             api: AiDataApi::new()?,
             server_info: ServerInfo {
-                name: "iron-monitor".to_string(),
+                name: env!("CARGO_PKG_NAME").to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         })

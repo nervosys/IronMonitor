@@ -54,7 +54,7 @@ impl IronMonitor {
     /// # Example
     ///
     /// ```no_run
-    /// use ironmonlib::IronMonitor;
+    /// use ironmonitor::IronMonitor;
     ///
     /// let stats = IronMonitor::new().unwrap();
     /// ```
@@ -71,7 +71,7 @@ impl IronMonitor {
     /// # Example
     ///
     /// ```no_run
-    /// use ironmonlib::IronMonitor;
+    /// use ironmonitor::IronMonitor;
     ///
     /// let stats = IronMonitor::with_interval(0.5).unwrap();
     /// ```
@@ -93,7 +93,7 @@ impl IronMonitor {
     /// # Example
     ///
     /// ```no_run
-    /// use ironmonlib::IronMonitor;
+    /// use ironmonitor::IronMonitor;
     ///
     /// let mut stats = IronMonitor::new().unwrap();
     /// let snapshot = stats.snapshot().unwrap();

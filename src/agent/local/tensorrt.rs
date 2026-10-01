@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::{TensorRtClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonitor::agent::local::{TensorRtClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = TensorRtClient::new("localhost:8001")?;

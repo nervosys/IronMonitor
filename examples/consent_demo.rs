@@ -18,8 +18,8 @@
 //! - Consent status viewing
 //! - Simulated data collection (gated by consent + sandbox check)
 
-use ironmonlib::consent::{ConsentManager, ConsentScope};
-use ironmonlib::sandbox::SandboxDetector;
+use ironmonitor::consent::{ConsentManager, ConsentScope};
+use ironmonitor::sandbox::SandboxDetector;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════════╗");

@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::process_tree::{ProcessTree, ProcessNode};
+//! use ironmonitor::process_tree::{ProcessTree, ProcessNode};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let tree = ProcessTree::build()?;

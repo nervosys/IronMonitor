@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::input::InputMonitor;
+//! use ironmonitor::input::InputMonitor;
 //!
 //! let monitor = InputMonitor::new().unwrap();
 //! for device in monitor.devices() {

@@ -5,7 +5,7 @@ fn main() {
     breakdown();
     println!("--- whole path ---");
     let t = std::time::Instant::now();
-    let mut backend = match ironmonlib::backend::MonitoringBackend::new() {
+    let mut backend = match ironmonitor::backend::MonitoringBackend::new() {
         Ok(b) => b,
         Err(e) => {
             println!("new() failed: {e}");
@@ -44,51 +44,51 @@ fn breakdown() {
 
     let gpus = step!(
         "GpuCollection::auto_detect",
-        ironmonlib::gpu::GpuCollection::auto_detect().ok()
+        ironmonitor::gpu::GpuCollection::auto_detect().ok()
     );
     if let Some(ref g) = gpus {
         step!("gpus.snapshot_all", g.snapshot_all().unwrap_or_default());
     }
     step!(
         "ProcessMonitor::new",
-        ironmonlib::ProcessMonitor::new().ok()
+        ironmonitor::ProcessMonitor::new().ok()
     );
     step!(
         "NetworkMonitor::new",
-        ironmonlib::network_monitor::NetworkMonitor::new().ok()
+        ironmonitor::network_monitor::NetworkMonitor::new().ok()
     );
     step!(
         "ConnectionMonitor::new",
-        ironmonlib::connections::ConnectionMonitor::new().ok()
+        ironmonitor::connections::ConnectionMonitor::new().ok()
     );
     step!(
         "disk::enumerate_disks",
-        ironmonlib::disk::enumerate_disks()
+        ironmonitor::disk::enumerate_disks()
             .unwrap_or_default()
             .len()
     );
     step!(
         "motherboard::enumerate_sensors",
-        ironmonlib::motherboard::enumerate_sensors()
+        ironmonitor::motherboard::enumerate_sensors()
             .unwrap_or_default()
             .len()
     );
     step!(
         "motherboard::get_system_info",
-        ironmonlib::motherboard::get_system_info().ok()
+        ironmonitor::motherboard::get_system_info().ok()
     );
     step!(
         "motherboard::get_driver_versions",
-        ironmonlib::motherboard::get_driver_versions()
+        ironmonitor::motherboard::get_driver_versions()
             .unwrap_or_default()
             .len()
     );
     step!(
         "SystemStats::new",
-        ironmonlib::system_stats::SystemStats::new().ok()
+        ironmonitor::system_stats::SystemStats::new().ok()
     );
     step!(
         "AgentConfig::auto_detect",
-        ironmonlib::agent::AgentConfig::auto_detect().ok()
+        ironmonitor::agent::AgentConfig::auto_detect().ok()
     );
 }

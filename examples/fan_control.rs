@@ -6,7 +6,7 @@
 //! - Displaying thermal zones
 //! - Fan curve calculation
 
-use ironmonlib::fan_control::{
+use ironmonitor::fan_control::{
     fan_summary, list_fans, list_thermal_zones, FanCurve, FanMonitor, FanProfile, FanType,
 };
 

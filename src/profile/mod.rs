@@ -25,7 +25,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use ironmonlib::profile::{ProfileInspector, Subsystem};
+//! use ironmonitor::profile::{ProfileInspector, Subsystem};
 //!
 //! let mut inspector = ProfileInspector::new();
 //! let snapshot = inspector.snapshot_all();

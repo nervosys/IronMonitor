@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::SystemStats;
+//! use ironmonitor::SystemStats;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let stats = SystemStats::new()?;

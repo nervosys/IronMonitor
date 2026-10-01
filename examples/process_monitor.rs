@@ -3,7 +3,7 @@
 //! Demonstrates unified process monitoring with GPU attribution.
 //! Shows all running processes with their CPU, memory, and GPU usage.
 
-use ironmonlib::{ProcessMonitor, Result};
+use ironmonitor::{ProcessMonitor, Result};
 use std::thread;
 use std::time::Duration;
 

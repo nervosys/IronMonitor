@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example system_stats
 
-use ironmonlib::SystemStats;
+use ironmonitor::SystemStats;
 use std::thread;
 use std::time::Duration;
 

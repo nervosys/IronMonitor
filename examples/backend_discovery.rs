@@ -9,7 +9,7 @@
 //! cargo run --release --example backend_discovery --features "cli,remote-backends"
 //! ```
 
-use ironmonlib::agent::{BackendCapabilities, BackendDiscovery, BackendType};
+use ironmonitor::agent::{BackendCapabilities, BackendDiscovery, BackendType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AI Backend Discovery System ===\n");

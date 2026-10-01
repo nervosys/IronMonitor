@@ -140,7 +140,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "iron-monitor": {
+    "ironmonitor": {
       "command": "ironmon",
       "args": ["ai", "server"]
     }

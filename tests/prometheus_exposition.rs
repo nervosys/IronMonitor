@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use ironmonlib::prometheus::PrometheusExporter;
+use ironmonitor::prometheus::PrometheusExporter;
 
 fn exported() -> String {
     let mut exporter = PrometheusExporter::new("ironmon");
@@ -323,7 +323,7 @@ fn the_library_exporter_publishes_every_dashboard_metric() {
 /// invalid: Prometheus needs `name{gpu="0"}`, quoted and without the colon.
 #[test]
 fn the_served_renderer_emits_valid_label_syntax() {
-    use ironmonlib::observability::MetricCollector;
+    use ironmonitor::observability::MetricCollector;
 
     let collector = MetricCollector::new();
     collector.record("ironmon_uptime_seconds", 1234.0);

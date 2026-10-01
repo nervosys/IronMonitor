@@ -296,7 +296,7 @@ fn every_documented_command_exists() {
 /// acting on it — they run the command it names and get nothing.
 #[test]
 fn documented_http_paths_match_the_route_table() {
-    use ironmonlib::observability::server::routes;
+    use ironmonitor::observability::server::routes;
 
     let prometheus = format!("{}{}", routes::API_V1, routes::METRICS_PROMETHEUS);
 

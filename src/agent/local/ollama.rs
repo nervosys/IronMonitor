@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::{OllamaClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonitor::agent::local::{OllamaClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = OllamaClient::new("http://localhost:11434")?;

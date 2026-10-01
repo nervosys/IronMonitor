@@ -1,6 +1,6 @@
 //! Process Monitoring Example using IronMonitor
 
-use ironmonlib::ProcessMonitor;
+use ironmonitor::ProcessMonitor;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;

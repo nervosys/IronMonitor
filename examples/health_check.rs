@@ -4,7 +4,7 @@
 //!
 //! Run: cargo run --release --features nvidia --example health_check
 
-use ironmonlib::{
+use ironmonitor::{
     health_score, quick_health_check, HealthCheck, HealthStatus, HealthThresholds, SystemHealth,
 };
 

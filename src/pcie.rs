@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::pcie::{PcieMonitor, PcieDevice};
+//! use ironmonitor::pcie::{PcieMonitor, PcieDevice};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let devices = PcieMonitor::enumerate()?;

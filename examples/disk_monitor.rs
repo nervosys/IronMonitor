@@ -3,7 +3,7 @@
 //! Demonstrates the disk monitoring interface for SSDs, HDDs, and NVMe devices.
 //! Run with: cargo run --example disk_monitor
 
-use ironmonlib::disk;
+use ironmonitor::disk;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== IronMonitor: Disk Monitoring Example ===\n");

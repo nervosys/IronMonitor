@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::health::{SystemHealth, HealthCheck, HealthStatus};
+//! use ironmonitor::health::{SystemHealth, HealthCheck, HealthStatus};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let health = SystemHealth::check()?;

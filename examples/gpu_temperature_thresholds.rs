@@ -3,8 +3,8 @@
 //! Demonstrates temperature threshold detection and status monitoring
 //! for NVIDIA, AMD, and Intel GPUs.
 
-use ironmonlib::gpu::GpuCollection;
-use ironmonlib::UnifiedMonitor;
+use ironmonitor::gpu::GpuCollection;
+use ironmonitor::UnifiedMonitor;
 use std::thread;
 use std::time::Duration;
 

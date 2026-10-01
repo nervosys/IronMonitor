@@ -16,7 +16,7 @@
 //! ```
 
 #[cfg(feature = "intel")]
-use ironmonlib::gpu::intel_levelzero;
+use ironmonitor::gpu::intel_levelzero;
 
 #[cfg(feature = "intel")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

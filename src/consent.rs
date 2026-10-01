@@ -55,7 +55,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::consent::{ConsentManager, ConsentScope};
+//! use ironmonitor::consent::{ConsentManager, ConsentScope};
 //!
 //! let mut manager = ConsentManager::load()?;
 //!
@@ -87,7 +87,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// # Example
 ///
 /// ```no_run
-/// use ironmonlib::consent::is_telemetry_disabled;
+/// use ironmonitor::consent::is_telemetry_disabled;
 ///
 /// if is_telemetry_disabled() {
 ///     // Skip any telemetry code paths
@@ -105,7 +105,7 @@ pub fn is_telemetry_disabled() -> bool {
 /// # Example
 ///
 /// ```no_run
-/// use ironmonlib::consent::is_offline_mode;
+/// use ironmonitor::consent::is_offline_mode;
 ///
 /// if is_offline_mode() {
 ///     // Skip any network-dependent features

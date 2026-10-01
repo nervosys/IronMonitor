@@ -7,7 +7,7 @@
 //! - CPU idle states (C-states)
 //! - Energy preferences (Intel/AMD P-state)
 
-use ironmonlib::cpufreq::{
+use ironmonitor::cpufreq::{
     available_governors, cpufreq_summary, list_cpus, CpuFreqMonitor, EnergyPreference, Governor,
 };
 

@@ -40,147 +40,147 @@ fn main() {
 
     probe!(
         "input",
-        ironmonlib::input::InputMonitor,
-        |m: &ironmonlib::input::InputMonitor| m.devices().len()
+        ironmonitor::input::InputMonitor,
+        |m: &ironmonitor::input::InputMonitor| m.devices().len()
     );
     probe!(
         "services",
-        ironmonlib::services::ServiceMonitor,
-        |m: &ironmonlib::services::ServiceMonitor| m.services().len()
+        ironmonitor::services::ServiceMonitor,
+        |m: &ironmonitor::services::ServiceMonitor| m.services().len()
     );
     probe!(
         "storage_controller",
-        ironmonlib::storage_controller::StorageControllerMonitor,
-        |m: &ironmonlib::storage_controller::StorageControllerMonitor| m.controllers().len()
+        ironmonitor::storage_controller::StorageControllerMonitor,
+        |m: &ironmonitor::storage_controller::StorageControllerMonitor| m.controllers().len()
     );
     probe!(
         "iommu",
-        ironmonlib::iommu::IommuMonitor,
-        |m: &ironmonlib::iommu::IommuMonitor| m.groups().len()
+        ironmonitor::iommu::IommuMonitor,
+        |m: &ironmonitor::iommu::IommuMonitor| m.groups().len()
     );
     probe!(
         "interrupt_map",
-        ironmonlib::interrupt_map::InterruptMapMonitor,
-        |m: &ironmonlib::interrupt_map::InterruptMapMonitor| m.interrupts().len()
+        ironmonitor::interrupt_map::InterruptMapMonitor,
+        |m: &ironmonitor::interrupt_map::InterruptMapMonitor| m.interrupts().len()
     );
     probe!(
         "io_scheduler",
-        ironmonlib::io_scheduler::IoSchedulerMonitor,
-        |m: &ironmonlib::io_scheduler::IoSchedulerMonitor| m.devices().len()
+        ironmonitor::io_scheduler::IoSchedulerMonitor,
+        |m: &ironmonitor::io_scheduler::IoSchedulerMonitor| m.devices().len()
     );
     probe!(
         "dma_engine",
-        ironmonlib::dma_engine::DmaEngineMonitor,
-        |m: &ironmonlib::dma_engine::DmaEngineMonitor| m.controllers().len()
+        ironmonitor::dma_engine::DmaEngineMonitor,
+        |m: &ironmonitor::dma_engine::DmaEngineMonitor| m.controllers().len()
     );
     probe!(
         "gpu_topology",
-        ironmonlib::gpu_topology::GpuTopologyMonitor,
-        |m: &ironmonlib::gpu_topology::GpuTopologyMonitor| m.gpus().len()
+        ironmonitor::gpu_topology::GpuTopologyMonitor,
+        |m: &ironmonitor::gpu_topology::GpuTopologyMonitor| m.gpus().len()
     );
     probe!(
         "power_profile",
-        ironmonlib::power_profile::PowerProfileMonitor,
-        |m: &ironmonlib::power_profile::PowerProfileMonitor| m.power_plans().len()
+        ironmonitor::power_profile::PowerProfileMonitor,
+        |m: &ironmonitor::power_profile::PowerProfileMonitor| m.power_plans().len()
     );
     probe!(
         "thermal_zone",
-        ironmonlib::thermal_zone::ThermalZoneMonitor,
-        |m: &ironmonlib::thermal_zone::ThermalZoneMonitor| m.zones().len()
+        ironmonitor::thermal_zone::ThermalZoneMonitor,
+        |m: &ironmonitor::thermal_zone::ThermalZoneMonitor| m.zones().len()
     );
     probe!(
         "voltage_regulator",
-        ironmonlib::voltage_regulator::VoltageRegulatorMonitor,
-        |m: &ironmonlib::voltage_regulator::VoltageRegulatorMonitor| m.regulators().len()
+        ironmonitor::voltage_regulator::VoltageRegulatorMonitor,
+        |m: &ironmonitor::voltage_regulator::VoltageRegulatorMonitor| m.regulators().len()
     );
     probe!(
         "watchdog",
-        ironmonlib::watchdog::WatchdogMonitor,
-        |m: &ironmonlib::watchdog::WatchdogMonitor| m.devices().len()
+        ironmonitor::watchdog::WatchdogMonitor,
+        |m: &ironmonitor::watchdog::WatchdogMonitor| m.devices().len()
     );
     probe!(
         "audio",
-        ironmonlib::audio::AudioMonitor,
-        |m: &ironmonlib::audio::AudioMonitor| m.devices().len()
+        ironmonitor::audio::AudioMonitor,
+        |m: &ironmonitor::audio::AudioMonitor| m.devices().len()
     );
     probe!(
         "bluetooth",
-        ironmonlib::bluetooth::BluetoothMonitor,
-        |m: &ironmonlib::bluetooth::BluetoothMonitor| m.adapters().len()
+        ironmonitor::bluetooth::BluetoothMonitor,
+        |m: &ironmonitor::bluetooth::BluetoothMonitor| m.adapters().len()
     );
     probe!(
         "camera",
-        ironmonlib::camera::CameraMonitor,
-        |m: &ironmonlib::camera::CameraMonitor| m.cameras().len()
+        ironmonitor::camera::CameraMonitor,
+        |m: &ironmonitor::camera::CameraMonitor| m.cameras().len()
     );
     probe!(
         "codec",
-        ironmonlib::codec::CodecMonitor,
-        |m: &ironmonlib::codec::CodecMonitor| m.capabilities().len()
+        ironmonitor::codec::CodecMonitor,
+        |m: &ironmonitor::codec::CodecMonitor| m.capabilities().len()
     );
     probe!(
         "printer",
-        ironmonlib::printer::PrinterMonitor,
-        |m: &ironmonlib::printer::PrinterMonitor| m.printers().len()
+        ironmonitor::printer::PrinterMonitor,
+        |m: &ironmonitor::printer::PrinterMonitor| m.printers().len()
     );
 
     // Singleton reports rather than collections: one item when they construct.
     probe!(
         "kernel_params",
-        ironmonlib::kernel_params::KernelParamsMonitor,
+        ironmonitor::kernel_params::KernelParamsMonitor,
         // Was a hardcoded `1`, which counted nothing and reported "answers here"
         // for a reader that returns nothing on this machine. The table exists to
         // replace guesses about which readers answer; a constant in it is the
         // one thing it must not contain.
-        |m: &ironmonlib::kernel_params::KernelParamsMonitor| m.report().params.len()
+        |m: &ironmonitor::kernel_params::KernelParamsMonitor| m.report().params.len()
     );
     probe!(
         "memory_bandwidth",
-        ironmonlib::memory_bandwidth::MemoryBandwidthMonitor,
+        ironmonitor::memory_bandwidth::MemoryBandwidthMonitor,
         // 1 only when the memory generation was identified. Everything this
         // reader produces rests on that, and without it the estimator falls back
         // to 3200 MT/s and a 0.75 efficiency factor -- so a constant here would
         // report "answers" for a machine where nothing was read.
-        |m: &ironmonlib::memory_bandwidth::MemoryBandwidthMonitor| {
+        |m: &ironmonitor::memory_bandwidth::MemoryBandwidthMonitor| {
             usize::from(
-                m.estimate().generation != ironmonlib::memory_bandwidth::MemoryGeneration::Unknown,
+                m.estimate().generation != ironmonitor::memory_bandwidth::MemoryGeneration::Unknown,
             )
         }
     );
     probe!(
         "memory_topology",
-        ironmonlib::memory_topology::MemoryTopologyMonitor,
-        |m: &ironmonlib::memory_topology::MemoryTopologyMonitor| m.populated_dimms().len()
+        ironmonitor::memory_topology::MemoryTopologyMonitor,
+        |m: &ironmonitor::memory_topology::MemoryTopologyMonitor| m.populated_dimms().len()
     );
     probe!(
         "cpu_microarch",
-        ironmonlib::cpu_microarch::CpuMicroarchMonitor,
-        |m: &ironmonlib::cpu_microarch::CpuMicroarchMonitor| m.supported_extensions().len()
+        ironmonitor::cpu_microarch::CpuMicroarchMonitor,
+        |m: &ironmonitor::cpu_microarch::CpuMicroarchMonitor| m.supported_extensions().len()
     );
     probe!(
         "crypto_accel",
-        ironmonlib::crypto_accel::CryptoAccelMonitor,
+        ironmonitor::crypto_accel::CryptoAccelMonitor,
         // The features and RNG sources are the facts this reader holds; the
         // score beside them is a table lookup and is not published anywhere.
-        |m: &ironmonlib::crypto_accel::CryptoAccelMonitor| {
+        |m: &ironmonitor::crypto_accel::CryptoAccelMonitor| {
             m.report().features.len() + m.report().rng_sources.len()
         }
     );
     probe!(
         "interconnect",
-        ironmonlib::interconnect::InterconnectMonitor,
-        |m: &ironmonlib::interconnect::InterconnectMonitor| m.inter_socket_links().len()
+        ironmonitor::interconnect::InterconnectMonitor,
+        |m: &ironmonitor::interconnect::InterconnectMonitor| m.inter_socket_links().len()
     );
     probe!(
         "security_mitigations",
-        ironmonlib::security_mitigations::SecurityMitigationsMonitor,
+        ironmonitor::security_mitigations::SecurityMitigationsMonitor,
         // What this reader *enumerated*, not what it found wrong with it. This
         // counted `unmitigated()`, so a fully patched machine reported `none 0`
         // for a reader that had just read nineteen vulnerability files and found
         // every one of them mitigated — putting it in the silent column, which is
         // the column that drives the work plan. Third counter in this table to
         // measure the wrong thing; `kernel_params` was a literal `1`.
-        |m: &ironmonlib::security_mitigations::SecurityMitigationsMonitor| {
+        |m: &ironmonitor::security_mitigations::SecurityMitigationsMonitor| {
             m.vulnerabilities.len()
         }
     );
@@ -190,20 +190,20 @@ fn main() {
     // has nothing a probe could confirm as a reading.
     probe!(
         "drm_monitor",
-        ironmonlib::drm_monitor::DrmMonitor,
-        |m: &ironmonlib::drm_monitor::DrmMonitor| m.devices().len()
+        ironmonitor::drm_monitor::DrmMonitor,
+        |m: &ironmonitor::drm_monitor::DrmMonitor| m.devices().len()
     );
     probe!(
         "scheduler",
-        ironmonlib::scheduler::SchedulerMonitor,
+        ironmonitor::scheduler::SchedulerMonitor,
         // PSI entries enumerated, not "how many are under pressure": the table
         // counts what a reader read, which `security_mitigations` got wrong once.
-        |m: &ironmonlib::scheduler::SchedulerMonitor| m.pressure().len()
+        |m: &ironmonitor::scheduler::SchedulerMonitor| m.pressure().len()
     );
     {
         // `WslDetector::detect` cannot fail, so it does not fit `probe!`. Not
         // being inside WSL is a correct `none` on a Windows host.
-        let w = ironmonlib::wsl::WslDetector::detect();
+        let w = ironmonitor::wsl::WslDetector::detect();
         let status = if w.is_wsl { "ok" } else { "none" };
         println!(
             "{:<22} {:<7} version {:?}, dxg {}, cuda {}, {} virtual adapter(s)",

@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use ironmonlib::pipeline::{Collector, CollectorConfig};
+use ironmonitor::pipeline::{Collector, CollectorConfig};
 
 fn main() {
     println!("Spawning collector...\n");

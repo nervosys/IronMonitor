@@ -18,7 +18,7 @@
 //! everything would fail constantly and be deleted; a test that compares the
 //! stable half fails only when something is wrong.
 
-use ironmonlib::prometheus::PrometheusExporter;
+use ironmonitor::prometheus::PrometheusExporter;
 
 /// Every sample in the exposition, as `(name, labels, value)`.
 fn samples() -> Vec<(String, String, f64)> {
@@ -51,7 +51,7 @@ fn samples() -> Vec<(String, String, f64)> {
 }
 
 /// The numeric value of one ontology reading, or `None` where it is absent.
-fn reading(readings: &[ironmonlib::ontology::resolve::Reading], id: &str) -> Option<f64> {
+fn reading(readings: &[ironmonitor::ontology::resolve::Reading], id: &str) -> Option<f64> {
     readings
         .iter()
         .find(|r| r.id == id)
@@ -75,7 +75,7 @@ fn label<'a>(labels: &'a str, key: &str) -> Option<&'a str> {
 /// on the other, a reader that took "available" where the other took "total".
 #[test]
 fn the_exporter_and_the_ontology_agree_on_what_does_not_move() {
-    let readings = ironmonlib::ontology::resolve::snapshot();
+    let readings = ironmonitor::ontology::resolve::snapshot();
     let samples = samples();
 
     let mut compared = 0usize;

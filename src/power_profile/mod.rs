@@ -17,7 +17,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::power_profile::PowerProfileMonitor;
+//! use ironmonitor::power_profile::PowerProfileMonitor;
 //!
 //! let monitor = PowerProfileMonitor::new().unwrap();
 //! println!("Active profile: {:?}", monitor.active_profile());

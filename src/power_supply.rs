@@ -8,7 +8,7 @@
 //! ## List all power supplies
 //!
 //! ```no_run
-//! use ironmonlib::power_supply::{PowerSupplyMonitor, PowerSupplyType};
+//! use ironmonitor::power_supply::{PowerSupplyMonitor, PowerSupplyType};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let monitor = PowerSupplyMonitor::new()?;

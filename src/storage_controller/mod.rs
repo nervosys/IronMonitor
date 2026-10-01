@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::storage_controller::StorageControllerMonitor;
+//! use ironmonitor::storage_controller::StorageControllerMonitor;
 //!
 //! let monitor = StorageControllerMonitor::new().unwrap();
 //! for ctrl in monitor.controllers() {

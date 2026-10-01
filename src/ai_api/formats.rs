@@ -330,7 +330,7 @@ impl AgentManifest {
             })
             .collect();
         json!({
-            "name": "iron-monitor",
+            "name": env!("CARGO_PKG_NAME"),
             "version": self.version,
             "description": self.description,
             "protocol_version": "2024-11-05",

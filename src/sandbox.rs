@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::sandbox::SandboxDetector;
+//! use ironmonitor::sandbox::SandboxDetector;
 //!
 //! let detector = SandboxDetector::new();
 //! if detector.is_sandboxed() {

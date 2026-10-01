@@ -9,7 +9,7 @@
 //! cargo run --release --features full --example sandbox_demo
 //! ```
 
-use ironmonlib::sandbox::SandboxDetector;
+use ironmonitor::sandbox::SandboxDetector;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════════╗");

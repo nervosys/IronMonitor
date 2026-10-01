@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::http_server::{HttpServer, HttpServerConfig};
+//! use ironmonitor::http_server::{HttpServer, HttpServerConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

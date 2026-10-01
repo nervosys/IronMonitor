@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::cpufreq::{CpuFreqMonitor, Governor};
+//! use ironmonitor::cpufreq::{CpuFreqMonitor, Governor};
 //!
 //! let mut monitor = CpuFreqMonitor::new().unwrap();
 //!

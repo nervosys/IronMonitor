@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::services::{ServiceMonitor, ServiceStatus};
+//! use ironmonitor::services::{ServiceMonitor, ServiceStatus};
 //!
 //! let monitor = ServiceMonitor::new().unwrap();
 //!

@@ -48,8 +48,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::{Agent, AgentConfig};
-//! use ironmonlib::UnifiedMonitor;
+//! use ironmonitor::agent::{Agent, AgentConfig};
+//! use ironmonitor::UnifiedMonitor;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Discover a locally running inference server. Fails if none is available —
@@ -495,8 +495,8 @@ impl Agent {
     /// # Example
     ///
     /// ```no_run
-    /// # use ironmonlib::agent::{Agent, AgentConfig};
-    /// # use ironmonlib::UnifiedMonitor;
+    /// # use ironmonitor::agent::{Agent, AgentConfig};
+    /// # use ironmonitor::UnifiedMonitor;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut agent = Agent::new(AgentConfig::default())?;
     /// let monitor = UnifiedMonitor::new()?;

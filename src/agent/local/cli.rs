@@ -25,8 +25,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::cli::{CliClient, CliProvider};
-//! use ironmonlib::agent::local::{InferenceRequest, LocalInferenceClient};
+//! use ironmonitor::agent::local::cli::{CliClient, CliProvider};
+//! use ironmonitor::agent::local::{InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Use whichever supported tool is installed.

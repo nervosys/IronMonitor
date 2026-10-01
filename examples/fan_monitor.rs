@@ -1,5 +1,5 @@
-use ironmonlib::gpu::GpuCollection;
-use ironmonlib::Result;
+use ironmonitor::gpu::GpuCollection;
+use ironmonitor::Result;
 use std::thread;
 use std::time::Duration;
 

@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::prometheus::{PrometheusExporter, MetricFamily};
+//! use ironmonitor::prometheus::{PrometheusExporter, MetricFamily};
 //!
 //! let mut exporter = PrometheusExporter::new("ironmon");
 //!

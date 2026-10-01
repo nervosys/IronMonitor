@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::ai_api::{AiDataApi, ToolCall, ToolResult};
+//! use ironmonitor::ai_api::{AiDataApi, ToolCall, ToolResult};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut api = AiDataApi::new()?;

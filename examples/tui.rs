@@ -18,7 +18,7 @@
 
 #[cfg(feature = "cli")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ironmonlib::tui::run()
+    ironmonitor::tui::run()
 }
 
 #[cfg(not(feature = "cli"))]

@@ -18,7 +18,7 @@
 
 #![cfg(target_os = "macos")]
 
-use ironmonlib::IronMonitor;
+use ironmonitor::IronMonitor;
 
 /// `IronMonitor::new` calls `detect_platform_info` in its constructor, so this failing
 /// is what previously made every other reader unreachable on macOS regardless of

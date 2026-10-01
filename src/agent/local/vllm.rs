@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::agent::local::{VllmClient, InferenceRequest, LocalInferenceClient};
+//! use ironmonitor::agent::local::{VllmClient, InferenceRequest, LocalInferenceClient};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = VllmClient::new("http://localhost:8000")?;

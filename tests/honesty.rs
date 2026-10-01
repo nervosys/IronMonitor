@@ -96,7 +96,7 @@ fn the_readme_states_its_limits_where_a_reader_will_reach_them() {
 /// false, and this fails until the sentence is rewritten.
 #[test]
 fn the_claim_that_tuning_cannot_verify_matches_the_code() {
-    use ironmonlib::tuning::verify::metric_for;
+    use ironmonitor::tuning::verify::metric_for;
 
     let registered: Vec<&str> = [
         "active_scheme_guid",
@@ -132,7 +132,7 @@ fn the_claim_that_tuning_cannot_verify_matches_the_code() {
 /// That is a property of the code, so it is checked as one.
 #[test]
 fn a_first_intrusion_scan_really_cannot_report_clean() {
-    use ironmonlib::ids::{file, ScanStatus};
+    use ironmonitor::ids::{file, ScanStatus};
 
     let status = file::scan(&[], &file::Baseline::default());
     assert!(
@@ -190,10 +190,10 @@ fn unreadable_entities_carry_a_reason_rather_than_vanishing() {
          appear in the output teaches a reader to distrust the rest."
     );
 
-    let snapshot = ironmonlib::ontology::resolve::snapshot();
+    let snapshot = ironmonitor::ontology::resolve::snapshot();
     let unavailable_without_reason = snapshot
         .iter()
-        .filter(|r| r.provenance == ironmonlib::ontology::Provenance::Unavailable)
+        .filter(|r| r.provenance == ironmonitor::ontology::Provenance::Unavailable)
         .filter(|r| r.note.as_deref().unwrap_or("").trim().is_empty())
         .count();
     assert_eq!(
@@ -227,10 +227,10 @@ fn unreadable_entities_carry_a_reason_rather_than_vanishing() {
 /// support and fail on entities that are perfectly honest.
 #[test]
 fn a_reading_never_resolves_weaker_than_its_entity_declares() {
-    use ironmonlib::ontology::Provenance;
+    use ironmonitor::ontology::Provenance;
 
-    let ontology = ironmonlib::ontology::Ontology::build();
-    let violations: Vec<String> = ironmonlib::ontology::resolve::snapshot()
+    let ontology = ironmonitor::ontology::Ontology::build();
+    let violations: Vec<String> = ironmonitor::ontology::resolve::snapshot()
         .iter()
         .filter(|r| r.provenance != Provenance::Unavailable)
         .filter_map(|r| {

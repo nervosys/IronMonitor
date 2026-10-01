@@ -14,6 +14,7 @@ pub mod app;
 // surface an agent still could not see.
 pub mod headless;
 mod profile_tab;
+mod system_summary;
 mod theme;
 pub mod widgets;
 

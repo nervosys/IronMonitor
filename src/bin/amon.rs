@@ -50,7 +50,7 @@ enum AmonCommand {
 
 #[cfg(feature = "cli")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use ironmonlib::agent::AgentConfig;
+    use ironmonitor::agent::AgentConfig;
 
     env_logger::init();
 
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         // Manifest export
         Some(AmonCommand::Manifest { format, output }) => {
-            use ironmonlib::ai_api::{AgentManifest, ExportFormat};
+            use ironmonitor::ai_api::{AgentManifest, ExportFormat};
 
             let manifest = AgentManifest::new();
 
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // MCP Server
         Some(AmonCommand::Server) => {
-            use ironmonlib::ai_api::McpServer;
+            use ironmonitor::ai_api::McpServer;
 
             eprintln!("[*] Starting MCP (Model Context Protocol) server...");
             eprintln!("[*] Communicating via stdio (JSON-RPC 2.0)");
@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "cli")]
 fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    use ironmonlib::agent::{Agent, AgentConfig};
+    use ironmonitor::agent::{Agent, AgentConfig};
     use std::io::{self, Write};
 
     // Auto-detect and configure best available backend
@@ -179,7 +179,7 @@ fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error
 
         let response = agent.ask_with_control(
             &question,
-            &ironmonlib::agent::tool_runtime::RunControl::default(),
+            &ironmonitor::agent::tool_runtime::RunControl::default(),
         )?;
         println!("{}", response.response);
 
@@ -219,7 +219,7 @@ fn run_query_mode(query: Option<String>) -> Result<(), Box<dyn std::error::Error
 
             match agent.ask_with_control(
                 input,
-                &ironmonlib::agent::tool_runtime::RunControl::default(),
+                &ironmonitor::agent::tool_runtime::RunControl::default(),
             ) {
                 Ok(response) => {
                     println!("\n[Agent]: {}\n", response.response);

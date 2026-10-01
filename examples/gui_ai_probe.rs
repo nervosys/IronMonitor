@@ -6,14 +6,14 @@
 
 fn main() {
     let t0 = std::time::Instant::now();
-    match ironmonlib::agent::AgentConfig::auto_detect() {
+    match ironmonitor::agent::AgentConfig::auto_detect() {
         Ok(config) => {
             println!(
                 "auto_detect: ok in {:?} -> backend {:?}",
                 t0.elapsed(),
                 config.backend.as_ref().map(|b| b.backend_type.clone())
             );
-            match ironmonlib::agent::Agent::new(config) {
+            match ironmonitor::agent::Agent::new(config) {
                 Ok(_) => println!("Agent::new: ok"),
                 Err(e) => println!("Agent::new: ERR {e}"),
             }
@@ -22,7 +22,7 @@ fn main() {
     }
 
     let t1 = std::time::Instant::now();
-    match ironmonlib::UnifiedMonitor::new() {
+    match ironmonitor::UnifiedMonitor::new() {
         Ok(m) => println!(
             "UnifiedMonitor::new: ok in {:?}, {} GPU(s)",
             t1.elapsed(),

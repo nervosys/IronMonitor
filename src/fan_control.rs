@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ironmonlib::fan_control::{FanMonitor, FanProfile};
+//! use ironmonitor::fan_control::{FanMonitor, FanProfile};
 //!
 //! let monitor = FanMonitor::new().unwrap();
 //!

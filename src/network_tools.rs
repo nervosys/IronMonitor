@@ -13,7 +13,7 @@
 //! ## Ping a Host
 //!
 //! ```no_run
-//! use ironmonlib::network_tools::{ping, PingResult};
+//! use ironmonitor::network_tools::{ping, PingResult};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let result = ping("8.8.8.8", 4)?;
@@ -30,7 +30,7 @@
 //! ## Traceroute to Host
 //!
 //! ```no_run
-//! use ironmonlib::network_tools::traceroute;
+//! use ironmonitor::network_tools::traceroute;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let result = traceroute("google.com", 30)?;
@@ -48,7 +48,7 @@
 //! ## Scan Ports
 //!
 //! ```no_run
-//! use ironmonlib::network_tools::scan_ports;
+//! use ironmonitor::network_tools::scan_ports;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let results = scan_ports("192.168.1.1", &[22, 80, 443, 8080])?;
@@ -62,7 +62,7 @@
 //! ## Packet Capture (tcpdump-style)
 //!
 //! ```no_run
-//! use ironmonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
+//! use ironmonitor::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = CaptureConfig {
@@ -671,12 +671,12 @@ pub fn common_ports() -> Vec<u16> {
 ///
 /// # Example
 /// ```no_run
-/// use ironmonlib::network_tools::parallel_scan;
+/// use ironmonitor::network_tools::parallel_scan;
 /// use std::time::Duration;
 ///
 /// let results = parallel_scan("192.168.1.1", &[22, 80, 443, 8080], Duration::from_secs(1), 50).unwrap();
 /// for result in results {
-///     if result.status == ironmonlib::network_tools::PortStatus::Open {
+///     if result.status == ironmonitor::network_tools::PortStatus::Open {
 ///         println!("Port {} is open ({})", result.port, result.service.unwrap_or_default());
 ///     }
 /// }
@@ -1601,7 +1601,7 @@ fn build_capture_filter(config: &CaptureConfig) -> String {
 ///
 /// # Example
 /// ```no_run
-/// use ironmonlib::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
+/// use ironmonitor::network_tools::{capture_packets, CaptureConfig, CaptureProtocol};
 ///
 /// let config = CaptureConfig {
 ///     protocol: CaptureProtocol::Tcp,

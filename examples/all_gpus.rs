@@ -15,7 +15,7 @@
 //! cargo run --example all_gpus --features intel
 //! ```
 
-use ironmonlib::gpu::traits::{Device, Vendor};
+use ironmonitor::gpu::traits::{Device, Vendor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("═══════════════════════════════════════════════════════════");
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "nvidia")]
     {
         print!("[SCAN] Scanning for NVIDIA GPUs... ");
-        match ironmonlib::gpu::nvidia_new::enumerate() {
+        match ironmonitor::gpu::nvidia_new::enumerate() {
             Ok(devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "amd")]
     {
         print!("[SCAN] Scanning for AMD GPUs... ");
-        match ironmonlib::gpu::amd_rocm::enumerate() {
+        match ironmonitor::gpu::amd_rocm::enumerate() {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "intel")]
     {
         print!("[SCAN] Scanning for Intel GPUs... ");
-        match ironmonlib::gpu::intel_levelzero::enumerate() {
+        match ironmonitor::gpu::intel_levelzero::enumerate() {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -242,10 +242,10 @@ fn print_gpu_info(device: &dyn Device) -> Result<(), Box<dyn std::error::Error>>
     if let Ok(Some(fan)) = device.fan_speed() {
         println!("\n[FAN] Fan:");
         match fan {
-            ironmonlib::gpu::traits::FanSpeed::Rpm(rpm) => {
+            ironmonitor::gpu::traits::FanSpeed::Rpm(rpm) => {
                 println!("  Speed:   {} RPM", rpm);
             }
-            ironmonlib::gpu::traits::FanSpeed::Percent(percent) => {
+            ironmonitor::gpu::traits::FanSpeed::Percent(percent) => {
                 println!("  Speed:   {}%", percent);
             }
         }

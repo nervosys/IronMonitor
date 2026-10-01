@@ -9,7 +9,7 @@
 //! ## TCP Bandwidth Test
 //!
 //! ```no_run
-//! use ironmonlib::bandwidth::{bandwidth_test, BandwidthConfig, BandwidthResult};
+//! use ironmonitor::bandwidth::{bandwidth_test, BandwidthConfig, BandwidthResult};
 //! use std::time::Duration;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {

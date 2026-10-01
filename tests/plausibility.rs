@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant};
 
-use ironmonlib::pipeline::{Collector, CollectorConfig};
+use ironmonitor::pipeline::{Collector, CollectorConfig};
 
 /// Longest a collector may take to publish a fully-populated snapshot.
 ///
@@ -57,7 +57,7 @@ fn platform_has_hardware_readers() -> bool {
 ///
 /// Returns `None` when nothing populated in time, so callers can skip rather than
 /// fail on a machine where collection is unavailable.
-fn populated_snapshot() -> Option<std::sync::Arc<ironmonlib::pipeline::Snapshot>> {
+fn populated_snapshot() -> Option<std::sync::Arc<ironmonitor::pipeline::Snapshot>> {
     let collector = Collector::spawn(CollectorConfig {
         interval: Duration::from_millis(250),
         ..Default::default()
@@ -426,8 +426,8 @@ fn network_rates_are_non_negative() {
 /// one of these.
 #[test]
 fn readers_that_find_nothing_invent_nothing() {
-    use ironmonlib::audio::AudioMonitor;
-    use ironmonlib::usb::UsbMonitor;
+    use ironmonitor::audio::AudioMonitor;
+    use ironmonitor::usb::UsbMonitor;
 
     if let Ok(monitor) = UsbMonitor::new() {
         for device in monitor.devices() {
@@ -514,7 +514,7 @@ fn readers_that_find_nothing_invent_nothing() {
 /// screen these are indistinguishable from measurements.
 #[test]
 fn absent_hardware_is_reported_as_absent_not_invented() {
-    use ironmonlib::display::DisplayMonitor;
+    use ironmonitor::display::DisplayMonitor;
 
     let Ok(monitor) = DisplayMonitor::new() else {
         eprintln!("skipping: display monitor unavailable");
@@ -605,7 +605,7 @@ fn no_reader_depends_on_the_wmic_tool_windows_removed() {
 #[test]
 #[cfg(windows)]
 fn windows_cpu_reader_reports_measured_identity_and_clock() {
-    let Ok(stats) = ironmonlib::platform::windows::read_cpu_stats() else {
+    let Ok(stats) = ironmonitor::platform::windows::read_cpu_stats() else {
         return; // No CPU data at all is a separate failure, covered elsewhere.
     };
     let Some(core) = stats.cores.first() else {
@@ -661,7 +661,7 @@ fn windows_cpu_reader_reports_measured_identity_and_clock() {
 #[test]
 #[cfg(windows)]
 fn secure_boot_claim_matches_the_firmware_flag() {
-    use ironmonlib::boot_config::{BootMonitor, BootType};
+    use ironmonitor::boot_config::{BootMonitor, BootType};
 
     let Ok(monitor) = BootMonitor::new() else {
         return;
@@ -702,7 +702,7 @@ fn secure_boot_claim_matches_the_firmware_flag() {
 #[test]
 #[cfg(windows)]
 fn windows_os_info_reports_a_real_build() {
-    let Ok(monitor) = ironmonlib::os_info::OsInfoMonitor::new() else {
+    let Ok(monitor) = ironmonitor::os_info::OsInfoMonitor::new() else {
         return;
     };
     let info = monitor.info();

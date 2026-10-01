@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use ironmonlib::anomaly::{AnomalyDetector, AnomalyConfig};
+//! use ironmonitor::anomaly::{AnomalyDetector, AnomalyConfig};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut detector = AnomalyDetector::new(AnomalyConfig::default());
