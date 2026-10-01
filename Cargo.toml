@@ -152,7 +152,7 @@ open = { version = "5.3", optional = true }
 # owner's decision: listing models belongs to IronVault's own surfaces.
 
 # Optional dependencies for remote AI backends
-reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+reqwest = { version = "0.13", features = ["blocking", "json"], optional = true }
 native-tls = { version = "0.2", optional = true }
 
 # Logging
