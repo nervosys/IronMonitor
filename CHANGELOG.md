@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.5] - 2026-10-02
+
+### Changed
+
+- Remove the accent outline around the shared Overview and AI chat/search bar.
+
 ## [7.0.4] - 2026-10-01
 
 ### Changed

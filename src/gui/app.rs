@@ -2443,10 +2443,6 @@ impl IronMonitorApp {
         let mut submit = false;
         egui::Frame::NONE
             .fill(theme::color(&ctx, CyberColors::SURFACE))
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                theme::color(&ctx, CyberColors::CYAN),
-            ))
             .corner_radius(8)
             .inner_margin(8.0)
             .show(ui, |ui| {
