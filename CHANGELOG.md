@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.14] - 2026-10-02
+
+### Fixed
+
+- Recover from an empty Ollama assistant response with one bounded retry,
+  preserving tool availability, conversation, and existing monitoring evidence.
+- Discover supported thinking controls for thinking-only replies and enlarge the
+  retry output budget without exceeding the existing deadline or round limit.
+- Remove Ollama thinking text from tool-call history and report the selected model
+  and completion reason when empty responses persist.
+- Cover Gemma-style replies, named thinking levels, missing metadata, and repeated
+  empty responses through the real HTTP agent tool loop.
+
 ## [7.0.13] - 2026-10-02
 
 ### Fixed

@@ -540,6 +540,18 @@ fn observed_ram_leader(result: &Value) -> Option<String> {
     ))
 }
 
+#[cfg(feature = "remote-backends")]
+fn ollama_retry_thinking(metadata: &Value) -> Option<Value> {
+    let values = metadata["thinking"]["values"].as_array()?;
+    if values.contains(&json!(false)) {
+        Some(json!(false))
+    } else if values.contains(&json!("low")) {
+        Some(json!("low"))
+    } else {
+        None
+    }
+}
+
 fn content(message: &Value, wire: Wire) -> String {
     match wire {
         Wire::Responses => message["output"]
@@ -756,6 +768,8 @@ impl RemoteClient {
             let mut bytes = 0;
             let mut fingerprints = Vec::new();
             let mut final_only = false;
+            let mut empty_retry = false;
+            let mut retry_think: Option<Value> = None;
             for round in 0..MAX_ROUNDS {
                 control.check(deadline)?;
                 let answer_only = matches!(
@@ -783,6 +797,17 @@ impl RemoteClient {
                     body.as_object_mut().unwrap().remove("tools");
                     body.as_object_mut().unwrap().remove("tool_choice");
                 }
+                if wire == Wire::Ollama && empty_retry {
+                    body["options"]["num_predict"] = json!(self
+                        .config
+                        .max_tokens
+                        .saturating_mul(4)
+                        .clamp(1024, 4096)
+                        .max(self.config.max_tokens));
+                    if let Some(think) = &retry_think {
+                        body["think"] = think.clone();
+                    }
+                }
                 let reply = self.tool_request(body, wire, control, deadline)?;
                 let truncated = match wire {
                     Wire::Chat => reply["choices"][0]["finish_reason"] == "length",
@@ -790,6 +815,10 @@ impl RemoteClient {
                     Wire::Responses => reply["incomplete_details"]["reason"] == "max_output_tokens",
                     Wire::Ollama => reply["done_reason"] == "length",
                 };
+                let done_reason = reply["done_reason"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
                 let mut message = match wire {
                     Wire::Responses | Wire::Anthropic => reply,
                     Wire::Ollama => reply["message"].clone(),
@@ -816,10 +845,41 @@ impl RemoteClient {
                 }
                 if calls.is_empty() {
                     let answer = content(&message, wire);
-                    if answer.is_empty() {
-                        return Err(IronError::Agent(
-                            "Backend returned neither tools nor an answer".into(),
-                        ));
+                    if answer.trim().is_empty() {
+                        if wire == Wire::Ollama && !empty_retry && round + 1 < MAX_ROUNDS {
+                            empty_retry = true;
+                            if message["thinking"]
+                                .as_str()
+                                .is_some_and(|s| !s.trim().is_empty())
+                            {
+                                // Ask the server rather than guessing which models accept false.
+                                let metadata_deadline =
+                                    deadline.min(Instant::now() + Duration::from_secs(2));
+                                if let Ok(metadata) = self.request_at(
+                                    json!({"model":self.config.model_id}),
+                                    wire,
+                                    "/api/show",
+                                    control,
+                                    metadata_deadline,
+                                ) {
+                                    retry_think = ollama_retry_thinking(&metadata);
+                                }
+                            }
+                            control.report(
+                                "Ollama",
+                                "empty reply; retrying once with a bounded output budget",
+                                Duration::ZERO,
+                            );
+                            // Keep all original messages and tool evidence. Never append the
+                            // empty assistant message or use thinking as an answer/tool call.
+                            continue;
+                        }
+                        let detail = if wire == Wire::Ollama {
+                            format!("Ollama model '{}' returned no tool calls or final answer after one retry (done_reason: {}). Try another installed model or increase its output budget.", self.config.model_id, done_reason)
+                        } else {
+                            "Backend returned neither tools nor an answer".into()
+                        };
+                        return Err(IronError::Agent(detail));
                     }
                     if answer.lines().any(|line| {
                         let line = line.trim_start();
@@ -853,6 +913,11 @@ impl RemoteClient {
                 if wire == Wire::Responses {
                     messages.extend(message["output"].as_array().cloned().unwrap_or_default());
                 } else {
+                    if wire == Wire::Ollama {
+                        if let Some(fields) = message.as_object_mut() {
+                            fields.remove("thinking");
+                        }
+                    }
                     if wire == Wire::Ollama && message["content"].is_null() {
                         message["content"] = json!("");
                     }
@@ -922,13 +987,25 @@ impl RemoteClient {
         control: &RunControl,
         deadline: Instant,
     ) -> Result<Value> {
-        use std::io::Read;
         let suffix = match wire {
             Wire::Responses => "/responses",
             Wire::Anthropic => "/messages",
             Wire::Ollama => "/api/chat",
             Wire::Chat => "/chat/completions",
         };
+        self.request_at(body, wire, suffix, control, deadline)
+    }
+
+    #[cfg(feature = "remote-backends")]
+    fn request_at(
+        &self,
+        body: Value,
+        wire: Wire,
+        suffix: &str,
+        control: &RunControl,
+        deadline: Instant,
+    ) -> Result<Value> {
+        use std::io::Read;
         let base = self
             .config
             .endpoint
@@ -979,6 +1056,112 @@ impl RemoteClient {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "remote-backends")]
+    #[test]
+    fn ollama_empty_replies_retry_once_without_losing_tool_evidence() {
+        let _guard = crate::agent::offline_enforcement_tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (thinking, recovery, repeated_empty) in [
+            (false, Value::Null, false),
+            (true, json!(false), false),
+            (true, json!("low"), false),
+            (true, Value::Null, false),
+            (false, Value::Null, true),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let count = if thinking { 4 } else { 3 };
+                let mut original = Value::Null;
+                for step in 0..count {
+                    let until = Instant::now() + Duration::from_secs(10);
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < until, "missing retry request");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(e) => panic!("{e}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let body = request(&mut stream);
+                    assert_eq!(body["model"], "gemma4:e2b");
+                    if thinking && step == 2 {
+                        assert!(body.get("messages").is_none());
+                        let metadata = if recovery.is_null() {
+                            json!({})
+                        } else {
+                            json!({"thinking":{"values":[recovery],"default":true}})
+                        };
+                        respond(&mut stream, metadata);
+                        continue;
+                    }
+                    assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
+                    if step == 0 {
+                        respond(
+                            &mut stream,
+                            json!({"message":{"role":"assistant","content":"","thinking":"private tool reasoning","tool_calls":[{"function":{"name":"describe_entities","arguments":{"search":"cpu.total","limit":1}}}]},"done":true}),
+                        );
+                    } else if step == 1 {
+                        assert_eq!(body["options"]["num_predict"], 256);
+                        assert_eq!(
+                            body["messages"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|m| m["role"] == "tool")
+                                .count(),
+                            1
+                        );
+                        assert!(!body["messages"]
+                            .to_string()
+                            .contains("private tool reasoning"));
+                        original = body;
+                        respond(
+                            &mut stream,
+                            json!({"message":{"role":"assistant","content":"  ","thinking":if thinking {"private reasoning"} else {""}},"done":true,"done_reason":"length"}),
+                        );
+                    } else {
+                        assert_eq!(body["messages"], original["messages"]);
+                        assert_eq!(body["tools"], original["tools"]);
+                        assert_eq!(body["options"]["num_predict"], 1024);
+                        assert_eq!(
+                            body.get("think"),
+                            if recovery.is_null() {
+                                None
+                            } else {
+                                Some(&recovery)
+                            }
+                        );
+                        respond(
+                            &mut stream,
+                            json!({"message":{"role":"assistant","content":if repeated_empty {""} else {"CPU schema received."}},"done":true,"done_reason":"stop"}),
+                        );
+                    }
+                }
+            });
+            let mut config = super::super::BackendConfig::ollama("gemma4:e2b");
+            config.endpoint = Some(format!("http://{address}"));
+            let mut agent =
+                super::super::Agent::new(super::super::AgentConfig::with_backend(config)).unwrap();
+            let result = agent.ask_with_control("Inspect CPU evidence", &RunControl::default());
+            if repeated_empty {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("gemma4:e2b"), "{error}");
+                assert!(error.contains("after one retry"), "{error}");
+                assert!(error.contains("done_reason: stop"), "{error}");
+            } else {
+                assert_eq!(result.unwrap().response, "CPU schema received.");
+            }
+            server.join().unwrap();
+        }
+    }
     #[test]
     fn conversational_context_keeps_complete_recent_turns_within_its_budget() {
         let mut history: Vec<_> = (0..10)

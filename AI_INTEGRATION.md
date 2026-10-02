@@ -69,6 +69,13 @@ The built-in allowlist excludes hardware writes and profile application.
 An assistant response containing unexecuted tool-call JSON is rejected as a
 protocol failure instead of being presented as a successful monitoring answer.
 
+An empty Ollama answer is retried once within the existing deadline and model-round
+budget, preserving messages and tool evidence. The retry raises the output budget
+to 1,024–4,096 tokens (never lowering a larger configured budget). For thinking-only
+responses, a bounded `/api/show` query discovers whether the model supports disabling
+thinking or the `low` level; only declared controls are used. Thinking is never
+rendered as an answer or executed as a tool, and is removed from tool-call history.
+Repeated empty replies identify the selected model and server completion reason.
 For IronWorks and Ollama, a complete JSON object containing only a registered
 read-only `name` and its `arguments` can be normalized into a tool request.
 Ollama also accepts the `parameters` spelling and converts canonical decimal
