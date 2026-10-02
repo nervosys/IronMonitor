@@ -2810,6 +2810,11 @@ impl IronMonitorApp {
 
             ui.add_space(16.0);
 
+            // Storage capacity uses the background snapshot, never device I/O
+            // on the paint thread. Existing charts retain their own dimensions.
+            draw_overview_disk_usage(ui, &self.snapshot.disks);
+            ui.add_space(16.0);
+
             // Charts section
             ui.columns(2, |columns| {
                 // CPU Chart
@@ -8470,7 +8475,92 @@ impl IronMonitorApp {
     }
 }
 
-/// Format bytes as human-readable string (B, KB, MB, GB)
+/// Render per-volume space usage without combining potentially shared storage.
+fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSnapshot]) {
+    let title = super::widgets::domain_section_title("disk", "Capacity and Usage");
+    ui.add(SectionHeader::new(&title));
+    if disks.is_empty() {
+        ui.label("Disk capacity and usage unavailable — no disk readings in this snapshot.");
+        return;
+    }
+
+    for disk in disks {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(&disk.name)
+                        .strong()
+                        .color(theme::color(ui.ctx(), DeviceTitleColors::DISK)),
+                );
+                if disk.mount_point != "N/A" && !disk.mount_point.is_empty() {
+                    ui.label(&disk.mount_point);
+                }
+                if disk.filesystem != "N/A" && !disk.filesystem.is_empty() {
+                    ui.weak(&disk.filesystem);
+                }
+            });
+
+            // Reject impossible readings rather than painting a clamped bar.
+            let used = disk
+                .used
+                .filter(|used| disk.total.is_none_or(|total| *used <= total));
+            let free = disk
+                .total
+                .zip(used)
+                .and_then(|(total, used)| total.checked_sub(used));
+            let size = |value: Option<u64>| {
+                value.map_or_else(|| "unavailable".to_string(), format_disk_capacity)
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Capacity: {}", size(disk.total)));
+                ui.label(format!("Used: {}", size(used)));
+                ui.label(format!("Free: {}", size(free)));
+            });
+            if let Some((total, used)) = disk.total.zip(used).filter(|(total, _)| *total > 0) {
+                let fraction = used as f64 / total as f64;
+                ui.add(
+                    CyberProgressBar::new(fraction as f32)
+                        .with_threshold_color()
+                        .height(20.0)
+                        .label(format!("Space used: {:.1}%", fraction * 100.0))
+                        .show_percentage(false),
+                );
+            } else {
+                ui.weak("Space used: unavailable");
+            }
+
+            // These are rates only when the collector has measured them. Never
+            // turn an unavailable rate or a cumulative counter into idle I/O.
+            if disk.read_rate.is_some() || disk.write_rate.is_some() {
+                let rate = |value: Option<f64>| {
+                    value.filter(|v| v.is_finite() && *v >= 0.0).map_or_else(
+                        || "unavailable".to_string(),
+                        |v| format!("{}/s", format_bytes(v)),
+                    )
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Read: {}", rate(disk.read_rate)));
+                    ui.label(format!("Write: {}", rate(disk.write_rate)));
+                });
+            }
+        });
+        ui.add_space(4.0);
+    }
+}
+
+fn format_disk_capacity(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Format byte rates as human-readable strings.
 fn format_bytes(bytes: f64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -8624,6 +8714,126 @@ mod model_listing_tests {
                     provider
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod overview_disk_tests {
+    use super::*;
+    use crate::pipeline::DiskSnapshot;
+
+    fn volume(total: Option<u64>, used: Option<u64>) -> DiskSnapshot {
+        DiskSnapshot {
+            name: "Overview test disk".into(),
+            mount_point: "C:\\".into(),
+            total,
+            used,
+            filesystem: "NTFS".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn overview_paints_disk_capacity_used_free_and_space_percentage() {
+        let ctx = egui::Context::default();
+        let mut app = IronMonitorApp::with_context(&ctx);
+        let gib = 1024 * 1024 * 1024;
+        let snapshot = crate::pipeline::Snapshot {
+            disks: vec![volume(Some(2 * 1024 * gib), Some(512 * gib))],
+            ..Default::default()
+        };
+        app.snapshot = std::sync::Arc::new(snapshot);
+        let text =
+            super::super::headless::painted_text(&ctx, |ui| app.draw_overview(ui)).join("\n");
+        for expected in [
+            "Overview test disk",
+            "Capacity: 2.0 TiB",
+            "Used: 512.0 GiB",
+            "Free: 1.5 TiB",
+            "Space used: 25.0%",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+    }
+
+    #[test]
+    fn missing_or_impossible_disk_usage_never_paints_empty_space_as_a_reading() {
+        for disk in [
+            volume(None, None),
+            volume(Some(0), None),
+            volume(Some(100), Some(101)),
+        ] {
+            let ctx = egui::Context::default();
+            let text = super::super::headless::painted_text(&ctx, |ui| {
+                draw_overview_disk_usage(ui, std::slice::from_ref(&disk))
+            })
+            .join("\n");
+            assert!(text.contains("Used: unavailable"), "{text}");
+            assert!(text.contains("Free: unavailable"), "{text}");
+            assert!(text.contains("Space used: unavailable"), "{text}");
+            assert!(!text.contains("Space used: 0.0%"), "{text}");
+        }
+        let ctx = egui::Context::default();
+        let text =
+            super::super::headless::painted_text(&ctx, |ui| draw_overview_disk_usage(ui, &[]))
+                .join("\n");
+        assert!(text.contains("no disk readings"), "{text}");
+    }
+
+    #[test]
+    fn disk_rows_wrap_at_small_width_and_respect_monochrome() {
+        let ctx = egui::Context::default();
+        theme::apply_theme(&ctx, ColorTheme::Monochrome);
+        let disks = [
+            volume(Some(1024), Some(256)),
+            DiskSnapshot {
+                mount_point: "D:\\".into(),
+                used: Some(0),
+                ..volume(Some(1024), None)
+            },
+        ];
+        for width in [320.0, 800.0, 1400.0] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 600.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    draw_overview_disk_usage(ui, &disks);
+                    assert!(
+                        ui.min_rect().right() <= width,
+                        "disk rows overflow at {width}px"
+                    );
+                });
+            });
+            let mut vertices = 0;
+            for primitive in ctx.tessellate(output.shapes, output.pixels_per_point) {
+                if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                    for vertex in mesh.vertices {
+                        let c = vertex.color;
+                        assert!(
+                            c.r() == c.g() && c.g() == c.b(),
+                            "colored disk vertex: {c:?}"
+                        );
+                        vertices += 1;
+                    }
+                }
+            }
+            assert!(vertices > 0);
+            let text =
+                super::super::headless::painted_text_sized(&ctx, egui::vec2(width, 600.0), |ui| {
+                    draw_overview_disk_usage(ui, &disks)
+                })
+                .join("\n");
+            assert!(text.contains("C:\\") && text.contains("D:\\"), "{text}");
+            assert!(
+                text.contains("Space used: 0.0%"),
+                "measured zero must render: {text}"
+            );
         }
     }
 }

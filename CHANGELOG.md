@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.16] - 2026-10-02
+
+### Added
+
+- Overview disk/volume capacity, used and free space, and space-used percentage
+  bars, using background snapshots without shrinking existing charts or chat.
+- Explicit unavailable storage readings, binary capacity units, measured I/O rates
+  where supplied, and headless layout and monochrome regression coverage.
+
 ## [7.0.15] - 2026-10-02
 
 ### Added
