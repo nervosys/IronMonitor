@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "ironmonitor"
-version = "7.0.5"
+version = "7.0.6"
 dependencies = [
  "arc-swap",
  "arrow-array",

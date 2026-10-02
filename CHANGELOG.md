@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.6] - 2026-10-02
+
+### Changed
+
+- Cap the shared Overview and AI chat/search box at 520 pixels wide, including
+  padding, while allowing it to shrink to fit narrow windows.
+
 ## [7.0.5] - 2026-10-02
 
 ### Changed

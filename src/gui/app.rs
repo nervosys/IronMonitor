@@ -2446,6 +2446,8 @@ impl IronMonitorApp {
             .corner_radius(8)
             .inner_margin(8.0)
             .show(ui, |ui| {
+                // Cap the complete composer at 520 px including its padding.
+                ui.set_max_width(ui.available_width().min(504.0).max(1.0));
                 ui.label(
                     RichText::new("Ask IronMonitor")
                         .color(theme::color(&ctx, CyberColors::CYAN))
