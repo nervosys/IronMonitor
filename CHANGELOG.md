@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.3] - 2026-10-01
+
+### Fixed
+
+- Pass recent successful GUI exchanges into the agent so follow-ups such as
+  "What is that?" retain their referent. Context is capped at six exchanges and
+  16 KiB; failed exchanges are omitted and Clear removes the shared context.
+- Explain explicit conversational clarifications without advertising monitoring
+  tools. Current measurement questions retain fresh, validated tool calls.
+  Include Microsoft reference knowledge for Windows Memory Compression, separate
+  from live observations, for small models unfamiliar with the term.
+
+### Changed
+
+- Enlarge the shared chat input to a multiline composer and pin it above the
+  scrolling content on both the AI and Overview pages. Enter sends; Shift+Enter
+  inserts a newline. Both entry points share the draft and conversation.
+
 ## [7.0.2] - 2026-10-01
 
 ### Fixed

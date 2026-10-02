@@ -15,6 +15,69 @@ const MAX_CALLS: usize = 16;
 const RESULT_BYTES: usize = 32 * 1024;
 const TOTAL_BYTES: usize = 256 * 1024;
 const RESPONSE_BYTES: usize = 512 * 1024;
+const HISTORY_BYTES: usize = 16 * 1024;
+const HISTORY_TURNS: usize = 6;
+
+/// A completed exchange used to resolve conversational references, not as a
+/// source of current observations. Failed or cancelled exchanges are omitted.
+#[derive(Debug, Clone)]
+pub struct ConversationTurn {
+    pub user: String,
+    pub assistant: String,
+}
+
+pub(crate) fn explanation_followup(question: &str, history: &[ConversationTurn]) -> bool {
+    if !history.last().is_some_and(|turn| {
+        !turn.user.trim().is_empty()
+            && !turn.assistant.trim().is_empty()
+            && turn.user.len().saturating_add(turn.assistant.len()) <= HISTORY_BYTES
+    }) {
+        return false;
+    }
+    let normalized = question
+        .trim()
+        .trim_end_matches(['?', '.', '!'])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "what is that"
+            | "what's that"
+            | "what is it"
+            | "what does that mean"
+            | "explain that"
+            | "tell me more"
+            | "can you explain that"
+    )
+}
+
+fn conversation_messages(history: &[ConversationTurn]) -> Vec<Value> {
+    let mut bytes = 0;
+    let mut recent = Vec::new();
+    for turn in history.iter().rev().take(HISTORY_TURNS) {
+        let size = turn.user.len().saturating_add(turn.assistant.len());
+        if size > HISTORY_BYTES - bytes {
+            break;
+        }
+        if turn.user.trim().is_empty() || turn.assistant.trim().is_empty() {
+            break;
+        }
+        bytes += size;
+        recent.push(turn);
+    }
+    recent
+        .into_iter()
+        .rev()
+        .flat_map(|turn| {
+            [
+                json!({"role":"user","content":turn.user}),
+                json!({"role":"assistant","content":turn.assistant}),
+            ]
+        })
+        .collect()
+}
 const READ_TOOLS: [&str; 10] = [
     "describe_entities",
     "get_observation_snapshot",
@@ -597,6 +660,18 @@ impl RemoteClient {
         budget: Duration,
         control: &RunControl,
     ) -> Result<String> {
+        self.query_with_tools_and_history(system_prompt, user_query, &[], budget, control)
+    }
+
+    /// Supply bounded completed exchanges while taking fresh tool observations.
+    pub fn query_with_tools_and_history(
+        &self,
+        system_prompt: &str,
+        user_query: &str,
+        history: &[ConversationTurn],
+        budget: Duration,
+        control: &RunControl,
+    ) -> Result<String> {
         let deadline = Instant::now() + budget.min(Duration::from_secs(120));
         if user_query.len() > 16384 {
             return Err(IronError::Agent("Question exceeds 16 KiB".into()));
@@ -627,7 +702,12 @@ impl RemoteClient {
                 RESULT_BYTES,
             )?;
             let system=format!("{system_prompt}\nThis backend is text-only; it cannot request native monitoring tools. Available observations:\n{snapshot}");
-            let query = user_query.to_string();
+            let prior = conversation_messages(history);
+            let query = if prior.is_empty() {
+                user_query.to_string()
+            } else {
+                format!("Previous conversation (reference context only):\n{}\nCurrent question:\n{user_query}", serde_json::to_string(&prior)?)
+            };
             let result = work(
                 &HTTP_WORK,
                 "agent-http-worker",
@@ -643,7 +723,7 @@ impl RemoteClient {
         }
         #[cfg(not(feature = "remote-backends"))]
         {
-            let _ = system_prompt;
+            let _ = (system_prompt, history);
             Err(IronError::NotImplemented(
                 "Agent tool calling requires remote-backends".into(),
             ))
@@ -662,18 +742,17 @@ impl RemoteClient {
                 Wire::Responses=>json!({"type":"function","name":t.name,"description":t.description,"parameters":t.parameters,"strict":false}),
                 _=>json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}}),
             }).collect();
-            let mut messages = if wire == Wire::Anthropic {
-                vec![json!({"role":"user","content":user_query})]
-            } else {
-                vec![
-                    json!({"role":"system","content":system_prompt}),
-                    json!({"role":"user","content":user_query}),
-                ]
-            };
+            let mut messages = Vec::new();
+            if wire != Wire::Anthropic {
+                messages.push(json!({"role":"system","content":system_prompt}));
+            }
+            messages.extend(conversation_messages(history));
+            messages.push(json!({"role":"user","content":user_query}));
             let mut used = 0;
             let mut successful_calls = 0;
             let render_ram_leader = simple_ram_ranking_question(user_query);
             let mut ram_leader = None;
+            let explaining = explanation_followup(user_query, history);
             let mut bytes = 0;
             let mut fingerprints = Vec::new();
             let mut final_only = false;
@@ -700,7 +779,7 @@ impl RemoteClient {
                         json!({"model":self.config.model_id,"messages":messages,"tools":tools,"tool_choice":"auto","max_tokens":self.config.max_tokens,"temperature":self.config.temperature})
                     }
                 };
-                if answer_only {
+                if answer_only || explaining {
                     body.as_object_mut().unwrap().remove("tools");
                     body.as_object_mut().unwrap().remove("tool_choice");
                 }
@@ -764,7 +843,7 @@ impl RemoteClient {
                         answer
                     });
                 }
-                if answer_only {
+                if answer_only || explaining {
                     return Err(IronError::Agent("Backend requested another tool after the final-answer boundary; no additional tool was run".into()));
                 }
                 used += calls.len();
@@ -900,6 +979,154 @@ impl RemoteClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conversational_context_keeps_complete_recent_turns_within_its_budget() {
+        let mut history: Vec<_> = (0..10)
+            .map(|n| ConversationTurn {
+                user: format!("question {n}"),
+                assistant: format!("answer {n}"),
+            })
+            .collect();
+        let messages = conversation_messages(&history);
+        assert_eq!(messages.len(), HISTORY_TURNS * 2);
+        assert_eq!(messages[0]["content"], "question 4");
+        assert_eq!(messages[11]["content"], "answer 9");
+        assert!(messages.iter().all(|m| m["role"] != "system"));
+        history.push(ConversationTurn {
+            user: "What is that?".into(),
+            assistant: "x".repeat(HISTORY_BYTES + 1),
+        });
+        assert!(conversation_messages(&history).is_empty());
+        history.last_mut().unwrap().assistant = "x".repeat(HISTORY_BYTES - 20);
+        assert_eq!(conversation_messages(&history).len(), 2);
+        assert!(explanation_followup("What is that?", &history));
+        assert!(!explanation_followup("What is that?", &[]));
+        assert!(!explanation_followup(
+            "Is that still using the most RAM?",
+            &history
+        ));
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[test]
+    #[ignore = "requires local Ollama with llama3.2:3b installed"]
+    fn live_ollama_followup_resolves_memory_compression() {
+        let config = super::super::AgentConfig::with_backend(super::super::BackendConfig::ollama(
+            "llama3.2:3b",
+        ));
+        let mut agent = super::super::Agent::new(config).unwrap();
+        let first = agent
+            .ask_with_control(
+                "Which process is using the most memory?",
+                &RunControl::default(),
+            )
+            .unwrap();
+        eprintln!("Live RAM answer: {}", first.response);
+        let live_history = [ConversationTurn {
+            user: first.query.clone(),
+            assistant: first.response.clone(),
+        }];
+        let followup = agent
+            .ask_with_history_and_control("What is that?", &live_history, &RunControl::default())
+            .unwrap();
+        eprintln!("Live referent explanation: {}", followup.response);
+        assert!(!followup.response.contains("tool-call syntax"));
+        let history = [ConversationTurn {
+            user: "Which process is using the most memory?".into(),
+            assistant: "\"Memory Compression\" is using the most resident RAM: 2482 MiB.".into(),
+        }];
+        for _ in 0..3 {
+            let reply = agent
+                .ask_with_history_and_control("What is that?", &history, &RunControl::default())
+                .unwrap();
+            eprintln!(
+                "Follow-up ({} ms): {}",
+                reply.inference_time_ms, reply.response
+            );
+            let text = reply.response.to_ascii_lowercase();
+            assert!(text.contains("compress"), "{}", reply.response);
+            assert!(!text.contains("using the most"), "{}", reply.response);
+            assert!(text.contains("windows"), "{}", reply.response);
+            assert!(
+                text.contains("ram") || text.contains("pages"),
+                "{}",
+                reply.response
+            );
+            assert!(!text.contains("tool-call syntax"));
+        }
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[test]
+    fn explanations_preserve_the_referent_without_advertising_measurement_tools() {
+        let _guard = crate::agent::offline_enforcement_tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for wire in [Wire::Chat, Wire::Ollama, Wire::Anthropic, Wire::Responses] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let body = request(&mut stream);
+                assert!(body.get("tools").is_none());
+                assert!(body.get("tool_choice").is_none());
+                let messages = if wire == Wire::Responses {
+                    &body["input"]
+                } else {
+                    &body["messages"]
+                };
+                let first_user = if wire == Wire::Anthropic { 0 } else { 1 };
+                assert_eq!(
+                    messages[first_user]["content"],
+                    "Which process uses the most memory?"
+                );
+                assert_eq!(messages[first_user + 1]["content"], "Memory Compression");
+                assert_eq!(messages[first_user + 2]["content"], "What is that?");
+                let text = "Memory Compression is managed by Windows.";
+                let reply = match wire {
+                    Wire::Chat => {
+                        json!({"choices":[{"message":{"role":"assistant","content":text}}]})
+                    }
+                    Wire::Ollama => {
+                        json!({"message":{"role":"assistant","content":text},"done":true})
+                    }
+                    Wire::Anthropic => json!({"content":[{"type":"text","text":text}]}),
+                    Wire::Responses => {
+                        json!({"output":[{"type":"message","content":[{"type":"output_text","text":text}]}]})
+                    }
+                };
+                respond(&mut stream, reply);
+            });
+            let mut backend = match wire {
+                Wire::Chat => super::super::BackendConfig::ironworks("fixture"),
+                Wire::Ollama => super::super::BackendConfig::ollama("fixture"),
+                Wire::Anthropic => {
+                    super::super::BackendConfig::anthropic("fixture", Some("fixture".into()))
+                }
+                Wire::Responses => {
+                    super::super::BackendConfig::openai("fixture", Some("fixture".into()))
+                }
+            };
+            backend.endpoint = Some(format!(
+                "http://{address}{}",
+                if wire == Wire::Ollama { "" } else { "/v1" }
+            ));
+            let mut agent =
+                super::super::Agent::new(super::super::AgentConfig::with_backend(backend)).unwrap();
+            let result = agent
+                .ask_with_history_and_control(
+                    "What is that?",
+                    &[ConversationTurn {
+                        user: "Which process uses the most memory?".into(),
+                        assistant: "Memory Compression".into(),
+                    }],
+                    &RunControl::default(),
+                )
+                .unwrap();
+            assert!(result.response.contains("Memory Compression"));
+            server.join().unwrap();
+        }
+    }
     #[test]
     fn ram_leader_rendering_uses_only_successful_ranked_observations() {
         let result = json!({"success":true,"data":[{
@@ -1191,6 +1418,24 @@ mod tests {
                     };
                     let body = request(&mut stream);
                     let tools = body["tools"].as_array().unwrap();
+                    let conversation = if wire == Wire::Responses {
+                        &body["input"]
+                    } else {
+                        &body["messages"]
+                    };
+                    let first_user = if wire == Wire::Anthropic { 0 } else { 1 };
+                    assert_eq!(
+                        conversation[first_user]["content"],
+                        "Which process used the most memory?"
+                    );
+                    assert_eq!(
+                        conversation[first_user + 1]["content"],
+                        "Memory Compression (historical reading)"
+                    );
+                    assert_eq!(
+                        conversation[first_user + 2]["content"],
+                        "Inspect current CPU evidence"
+                    );
                     assert!(tools.iter().any(|t| t["name"] == "describe_entities"
                         || t["function"]["name"] == "describe_entities"));
                     assert!(!tools.iter().any(|t| t["name"] == "apply_profile_setting"
@@ -1294,7 +1539,14 @@ mod tests {
             let control = RunControl::with_progress(tx);
             for run in 0..2 {
                 let answer = agent
-                    .ask_with_control("Inspect current CPU evidence", &control)
+                    .ask_with_history_and_control(
+                        "Inspect current CPU evidence",
+                        &[ConversationTurn {
+                            user: "Which process used the most memory?".into(),
+                            assistant: "Memory Compression (historical reading)".into(),
+                        }],
+                        &control,
+                    )
                     .unwrap();
                 assert_eq!(answer.response, format!("Evidence received on run {run}"));
                 assert!(!answer.from_cache);

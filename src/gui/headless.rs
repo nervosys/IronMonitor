@@ -611,6 +611,38 @@ mod app_tab_tests {
         }
     }
 
+    #[test]
+    fn shared_chat_composer_is_visible_at_the_top_on_small_and_large_pages() {
+        let (mut app, ctx) = app_and_ctx();
+        for width in [320.0, 800.0, 1400.0] {
+            let size = egui::vec2(width, 700.0);
+            for ai_page in [false, true] {
+                let text = painted_text_rects_sized(&ctx, size, |ui| {
+                    if ai_page {
+                        app.draw_ai_assistant_tab(ui);
+                    } else {
+                        app.draw_overview(ui);
+                    }
+                });
+                let (_, title) = text
+                    .iter()
+                    .find(|(text, _)| text == "Ask IronMonitor")
+                    .expect("top composer title");
+                assert!(title.min.y < 30.0, "{title:?}");
+                let (_, input) = text
+                    .iter()
+                    .find(|(text, _)| text == "Ask about your system...")
+                    .expect("composer input");
+                assert!(input.min.y < 80.0, "{input:?}");
+                let (_, send) = text
+                    .iter()
+                    .find(|(text, _)| text == "Send")
+                    .expect("send control");
+                assert!(send.max.x <= width && send.max.y < 200.0, "{send:?}");
+            }
+        }
+    }
+
     /// The failure this whole thread began with: a tab that rendered every one of
     /// its rows while all of them were invisible. Asserted against the real tab.
     #[test]

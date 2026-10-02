@@ -530,6 +530,32 @@ impl Agent {
         control: &tool_runtime::RunControl,
         budget: Duration,
     ) -> Result<AgentResponse> {
+        self.ask_run_with_history(question, &[], control, budget)
+    }
+
+    /// Ask a follow-up with completed conversational exchanges. Prior readings
+    /// are reference context; live questions still request fresh tool evidence.
+    pub fn ask_with_history_and_control(
+        &mut self,
+        question: &str,
+        history: &[tool_runtime::ConversationTurn],
+        control: &tool_runtime::RunControl,
+    ) -> Result<AgentResponse> {
+        self.ask_run_with_history(
+            question,
+            history,
+            control,
+            Duration::from_secs(self.config.timeout_seconds),
+        )
+    }
+
+    fn ask_run_with_history(
+        &mut self,
+        question: &str,
+        history: &[tool_runtime::ConversationTurn],
+        control: &tool_runtime::RunControl,
+        budget: Duration,
+    ) -> Result<AgentResponse> {
         self.refuse_if_offline_and_offhost()?;
         if control.is_cancelled() {
             return Err(IronError::Agent("Agent run cancelled".into()));
@@ -547,8 +573,9 @@ impl Agent {
             let engine = engine_lock
                 .as_ref()
                 .ok_or_else(|| IronError::Agent("Agent not initialized".into()))?;
-            engine.generate_tool_response(
+            engine.generate_tool_response_with_history(
                 question,
+                history,
                 budget.saturating_sub(start.elapsed()),
                 control,
             )?

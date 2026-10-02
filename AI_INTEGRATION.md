@@ -50,6 +50,16 @@ promptly; already running read-only provider work retains its original deadline.
 Fixed workers and bounded queues limit outstanding work. Live answers bypass
 the question-only cache so repeated questions obtain fresh evidence.
 
+The larger chat input is pinned above the AI and Overview pages' scrolling
+content. Both use the same draft and transcript. Enter sends; Shift+Enter adds a
+newline. Recent successful exchanges provide conversational context (at most six
+exchanges and 16 KiB); Clear removes that context. Prior readings are historical
+references and do not replace fresh tool observations for current questions.
+Explicit explanations such as "What is that?" use the previous answer as context
+without advertising hardware tools. A built-in reference note explains Windows
+Memory Compression using [Microsoft's memory guide](https://github.com/microsoft/MSO-Scripts/wiki/Windows-Memory-Cheat-Sheet#memory-compression);
+this is descriptive knowledge, not a measured reading.
+
 OpenAI uses the Responses API, Ollama uses native chat tool calls, Anthropic uses
 Messages tool blocks, and compatible local servers use Chat Completions tools.
 The selected model must support its backend's tool protocol. CLI providers keep

@@ -359,6 +359,25 @@ struct AgentChatEntry {
     from_cache: bool,
 }
 
+fn agent_conversation_history(
+    entries: &VecDeque<AgentChatEntry>,
+) -> Vec<crate::agent::tool_runtime::ConversationTurn> {
+    let recent: Vec<_> = entries.iter().rev().take(12).collect();
+    recent
+        .windows(2)
+        .filter(|pair| {
+            pair[0].role == ChatRole::Assistant
+                && pair[0].inference_time_ms.is_some()
+                && pair[1].role == ChatRole::User
+        })
+        .map(|pair| crate::agent::tool_runtime::ConversationTurn {
+            user: pair[1].content.clone(),
+            assistant: pair[0].content.clone(),
+        })
+        .rev()
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatRole {
     User,
@@ -2412,143 +2431,111 @@ impl IronMonitorApp {
             || !self.ai_selected_backend.fallback_models().is_empty()
     }
 
-    /// Compact "ask about this machine" bar pinned to the top of the Overview tab.
+    /// Larger shared chat composer pinned to the top of AI and Overview.
     ///
     /// Shares `agent_query`, `agent_history` and `send_agent_query` with the AI tab,
     /// so this is a second entry point into one conversation rather than a second
     /// assistant: a question asked here appears in the AI tab's transcript and vice
     /// versa, and both honour the backend and model selected there.
-    pub(super) fn draw_overview_chat_bar(&mut self, ui: &mut egui::Ui) {
-        let palette_ctx = ui.ctx().clone();
+    pub(super) fn draw_agent_composer(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let can_answer = self.agent_can_answer();
         let mut submit = false;
-
         egui::Frame::NONE
-            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .fill(theme::color(&ctx, CyberColors::SURFACE))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                theme::color(&ctx, CyberColors::CYAN),
+            ))
+            .corner_radius(8)
+            .inner_margin(12.0)
             .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Ask IronMonitor")
+                        .color(theme::color(&ctx, CyberColors::CYAN))
+                        .strong()
+                        .size(16.0),
+                );
+                ui.add_space(4.0);
+                let response = ui.add_sized(
+                    [ui.available_width().max(1.0), 72.0],
+                    egui::TextEdit::multiline(&mut self.agent_query)
+                        .hint_text("Ask about your system...")
+                        .font(egui::FontId::proportional(16.0))
+                        .desired_rows(2)
+                        .interactive(can_answer && !self.agent_is_processing),
+                );
+                submit = response.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Ask")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    );
-
-                    // Measure the button instead of reserving a guess for it.
-                    //
-                    // This reserved a hardcoded 190 px for the button *and* a
-                    // status label, and the label alone is 172 px, so the row ran
-                    // past the window at every width — the field absorbed the
-                    // slack, so a wider window moved the overrun rather than
-                    // removing it, and everything else in the tab's `ScrollArea`
-                    // inherited the wider content box. egui already knows how wide
-                    // "Send" is; ask it.
-                    let send_galley = ui.painter().layout_no_wrap(
-                        "Send".to_owned(),
-                        egui::TextStyle::Button.resolve(ui.style()),
-                        egui::Color32::PLACEHOLDER,
-                    );
-                    let send_width = send_galley.size().x + ui.spacing().button_padding.x * 2.0;
-                    let field_width =
-                        (ui.available_width() - send_width - ui.spacing().item_spacing.x).max(80.0);
-
-                    let response = ui.add_sized(
-                        [field_width, 22.0],
-                        egui::TextEdit::singleline(&mut self.agent_query)
-                            .hint_text("e.g. why is my GPU hot?")
-                            .interactive(can_answer && !self.agent_is_processing),
-                    );
-                    submit = response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        && !self.agent_query.trim().is_empty();
-
-                    let button_enabled = can_answer
-                        && !self.agent_is_processing
-                        && !self.agent_query.trim().is_empty();
-                    if ui
-                        .add_enabled(button_enabled, egui::Button::new("Send"))
-                        .clicked()
-                    {
-                        submit = true;
+                    if self.agent_is_processing {
+                        ui.spinner();
+                        ui.label("Thinking...");
+                        if ui.button("Cancel").clicked() {
+                            if let Some(control) = &self.agent_run_control {
+                                control.cancel();
+                            }
+                        }
+                    } else {
+                        let enabled = can_answer && !self.agent_query.trim().is_empty();
+                        if ui
+                            .add_enabled(
+                                enabled,
+                                egui::Button::new("Send").min_size(egui::vec2(86.0, 32.0)),
+                            )
+                            .clicked()
+                        {
+                            submit = true;
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(if can_answer {
+                                    "Enter to send"
+                                } else {
+                                    "no model selected — see the AI tab"
+                                })
+                                .small()
+                                .color(theme::color(&ctx, CyberColors::TEXT_SECONDARY)),
+                            )
+                            .wrap(),
+                        );
                     }
                 });
-
-                // The status goes on its own line rather than competing with the
-                // input for the same row. It is a hint about the backend, not part
-                // of the control, and a row that has to fit a variable-length
-                // sentence beside a text field is a row that overflows the first
-                // time the sentence changes.
-                if self.agent_is_processing {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("thinking…")
-                                .small()
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                        );
-                    });
-                } else if !can_answer {
-                    // Say which condition is unmet rather than "unavailable": the
-                    // backend may be perfectly reachable and simply have no model
-                    // chosen yet.
-                    ui.label(
-                        RichText::new("no model selected — see the AI tab")
-                            .small()
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                    );
-                }
-
-                // Most recent exchange, so an answer is visible without leaving the
-                // tab. The full transcript stays in the AI tab.
-                let last_answer = self
-                    .agent_history
-                    .iter()
-                    .rev()
-                    .find(|e| e.role == ChatRole::Assistant);
-                if let Some(entry) = last_answer {
-                    ui.add_space(4.0);
-                    ui.separator();
-                    let text = entry.content.trim();
-                    // Keep the bar a bar: long answers are truncated here and read in
-                    // full on the AI tab.
-                    const MAX: usize = 400;
-                    let shown: String = if text.chars().count() > MAX {
-                        let mut s: String = text.chars().take(MAX).collect();
-                        s.push('…');
-                        s
-                    } else {
-                        text.to_string()
-                    };
-                    ui.label(
-                        RichText::new(shown)
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                    );
-                    if let Some(ms) = entry.inference_time_ms {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}ms{}",
-                                ms,
-                                if entry.from_cache { " · cached" } else { "" }
-                            ))
-                            .small()
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                        );
-                    }
-                }
             });
-
-        if submit {
+        if submit && can_answer && !self.agent_is_processing {
             self.send_agent_query();
         }
     }
 
-    fn draw_overview(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn draw_overview_chat_bar(&mut self, ui: &mut egui::Ui) {
+        self.draw_agent_composer(ui);
+        if let Some(entry) = self
+            .agent_history
+            .iter()
+            .rev()
+            .find(|entry| entry.role == ChatRole::Assistant)
+        {
+            let mut text: String = entry.content.trim().chars().take(401).collect();
+            if text.chars().count() > 400 {
+                text.pop();
+                text.push('…');
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new(text).color(theme::color(ui.ctx(), CyberColors::TEXT_PRIMARY)));
+            if let Some(ms) = entry.inference_time_ms {
+                ui.label(
+                    RichText::new(format!("{ms}ms"))
+                        .small()
+                        .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+                );
+            }
+        }
+    }
+    pub(super) fn draw_overview(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
+        self.draw_overview_chat_bar(ui);
+        ui.add_space(6.0);
         let scrolled = ScrollArea::vertical().show(ui, |ui| {
-            self.draw_overview_chat_bar(ui);
-            ui.add_space(6.0);
-
             // Glances-style QuickLook panel at the top
             let cpu_usage = self.cpu_usage();
             let mem_usage = self
@@ -7109,6 +7096,8 @@ impl IronMonitorApp {
 
     pub(super) fn draw_ai_assistant_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
+        self.draw_agent_composer(ui);
+        ui.add_space(8.0);
         // Show loading state while agent is being initialized in background
         // But timeout after 3 seconds to show the UI anyway
         let loading_timeout =
@@ -7361,7 +7350,7 @@ impl IronMonitorApp {
         }
 
         // Chat history area - fills available space
-        let chat_height = ui.available_height() - 80.0; // Leave room for input area
+        let chat_height = ui.available_height() - 40.0; // Leave room for the toolbar
 
         egui::Frame::NONE
             .fill(theme::color(&palette_ctx, CyberColors::BACKGROUND))
@@ -7483,44 +7472,6 @@ impl IronMonitorApp {
 
         ui.add_space(8.0);
 
-        // Input area with improved styling
-        egui::Frame::NONE
-            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
-            .stroke(egui::Stroke::new(1.0_f32, theme::color(&palette_ctx, CyberColors::BORDER)))
-            .corner_radius(6)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.agent_query)
-                            .hint_text("Ask about your system...")
-                            .desired_width(ui.available_width() - 100.0)
-                            .font(egui::TextStyle::Body),
-                    );
-
-                    let enter_pressed =
-                        response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                    let send_enabled = !self.agent_is_processing && !self.agent_query.trim().is_empty();
-                    let send_btn = ui.add_enabled(
-                        send_enabled,
-                        egui::Button::new(
-                            RichText::new(if self.agent_is_processing { "⏳" } else { "➤ Send" })
-                                .color(theme::color(&palette_ctx, if send_enabled { theme::color(&palette_ctx, CyberColors::CYAN) } else { theme::color(&palette_ctx, CyberColors::TEXT_MUTED) }))
-                                .size(14.0)
-                        )
-                        .min_size(Vec2::new(70.0, 28.0)),
-                    );
-
-                    if (enter_pressed || send_btn.clicked())
-                        && !self.agent_is_processing
-                        && !self.agent_query.trim().is_empty()
-                    {
-                        self.send_agent_query();
-                    }
-                });
-            });
-
         // Bottom toolbar
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -7567,6 +7518,8 @@ impl IronMonitorApp {
             return;
         }
 
+        let history = agent_conversation_history(&self.agent_history);
+
         // Add user message to history
         self.agent_history.push_back(AgentChatEntry {
             role: ChatRole::User,
@@ -7598,7 +7551,7 @@ impl IronMonitorApp {
                 let mut agent = crate::agent::Agent::new(config)
                     .map_err(|e| format!("Failed to create agent: {}", e))?;
                 let response = agent
-                    .ask_with_control(&query, &control)
+                    .ask_with_history_and_control(&query, &history, &control)
                     .map_err(|e| format!("{}", e))?;
 
                 Ok(AgentResponse {
@@ -8478,6 +8431,31 @@ fn format_bytes(bytes: f64) -> String {
 #[cfg(test)]
 mod model_listing_tests {
     use super::AiBackendSelection;
+
+    #[test]
+    fn chat_context_omits_failed_exchanges_and_clears_with_the_transcript() {
+        use super::{agent_conversation_history, AgentChatEntry, ChatRole};
+        let mut entries = std::collections::VecDeque::new();
+        for (role, content, elapsed) in [
+            (ChatRole::User, "Which process uses the most memory?", None),
+            (ChatRole::Assistant, "Memory Compression", Some(10)),
+            (ChatRole::User, "What is that?", None),
+            (ChatRole::Assistant, "Error: invalid arguments", None),
+        ] {
+            entries.push_back(AgentChatEntry {
+                role,
+                content: content.into(),
+                timestamp: std::time::Instant::now(),
+                inference_time_ms: elapsed,
+                from_cache: false,
+            });
+        }
+        let context = agent_conversation_history(&entries);
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0].assistant, "Memory Compression");
+        entries.clear();
+        assert!(agent_conversation_history(&entries).is_empty());
+    }
 
     /// The stale-model bug in one assertion.
     ///
