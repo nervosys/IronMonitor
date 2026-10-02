@@ -624,16 +624,12 @@ mod app_tab_tests {
                         app.draw_overview(ui);
                     }
                 });
-                let (_, title) = text
-                    .iter()
-                    .find(|(text, _)| text == "Ask IronMonitor")
-                    .expect("top composer title");
-                assert!(title.min.y < 30.0, "{title:?}");
+                assert!(!text.iter().any(|(text, _)| text == "Ask IronMonitor"));
                 let (_, input) = text
                     .iter()
                     .find(|(text, _)| text == "Ask about your system...")
                     .expect("composer input");
-                assert!(input.min.y < 80.0, "{input:?}");
+                assert!(input.min.y < 30.0, "{input:?}");
                 let (_, send) = text
                     .iter()
                     .find(|(text, _)| text == "Send")
@@ -660,7 +656,7 @@ mod app_tab_tests {
                     .find_map(|shape| match &shape.shape {
                         egui::epaint::Shape::Rect(rect)
                             if rect.fill == super::super::theme::CyberColors::BACKGROUND_DARK
-                                && rect.rect.contains(title.center())
+                                && rect.rect.contains(send.center())
                                 && rect.rect.contains(input.center()) =>
                         {
                             Some(rect.rect)

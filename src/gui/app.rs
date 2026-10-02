@@ -2438,7 +2438,6 @@ impl IronMonitorApp {
     /// assistant: a question asked here appears in the AI tab's transcript and vice
     /// versa, and both honour the backend and model selected there.
     pub(super) fn draw_agent_composer(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
         let can_answer = self.agent_can_answer();
         let mut submit = false;
         let available_width = ui.available_width();
@@ -2455,13 +2454,6 @@ impl IronMonitorApp {
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_width((composer_width - 16.0).max(1.0));
-                            ui.label(
-                                RichText::new("Ask IronMonitor")
-                                    .color(theme::color(&ctx, CyberColors::CYAN))
-                                    .strong()
-                                    .size(14.0),
-                            );
-                            ui.add_space(2.0);
                             let response = ui.add_sized(
                                 [ui.available_width().max(1.0), 32.0],
                                 egui::TextEdit::multiline(&mut self.agent_query)
