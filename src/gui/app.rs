@@ -825,16 +825,15 @@ impl IronMonitorApp {
         // Initialize monitors
         let gpu_collection = GpuCollection::auto_detect().ok();
         let (gpu_static_info, gpu_dynamic_info) = if let Some(ref gpus) = gpu_collection {
-            let static_info: Vec<GpuStaticInfo> = gpus
+            let (static_info, dynamic_info): (Vec<GpuStaticInfo>, Vec<GpuDynamicInfo>) = gpus
                 .gpus()
                 .iter()
-                .filter_map(|g| g.static_info().ok())
-                .collect();
-            let dynamic_info: Vec<GpuDynamicInfo> = gpus
-                .gpus()
-                .iter()
-                .filter_map(|g| g.dynamic_info().ok())
-                .collect();
+                .filter_map(|g| {
+                    g.static_info()
+                        .ok()
+                        .map(|info| (info, g.dynamic_info().unwrap_or_default()))
+                })
+                .unzip();
             (static_info, dynamic_info)
         } else {
             (vec![], vec![])
@@ -861,8 +860,10 @@ impl IronMonitorApp {
         let initial_cpu_stats = platform_impl::read_cpu_stats().ok();
         #[cfg(target_os = "linux")]
         let initial_cpu_stats = crate::platform::linux::cpu::read_cpu_stats().ok();
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let initial_cpu_stats = Some(CpuStats::empty());
+        #[cfg(target_os = "macos")]
+        let initial_cpu_stats = crate::platform::macos::read_cpu_stats().ok();
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        let initial_cpu_stats = None;
 
         // Get initial memory stats.
         //
@@ -872,16 +873,15 @@ impl IronMonitorApp {
         // a working `read_memory_stats` in `platform::linux::memory` the whole
         // time and simply was not being called; it is now.
         //
-        // macOS still falls through to the zero-constructor. That is left alone
-        // deliberately rather than "fixed" blind: there is no
-        // `platform::macos::read_memory_stats` to call yet (HANDOFF.md open work
-        // 2), and no Mac here to check a replacement against.
+        // macOS uses the same real reader as the background pipeline.
         #[cfg(target_os = "windows")]
         let initial_memory_stats = platform_impl::read_memory_stats().ok();
         #[cfg(target_os = "linux")]
         let initial_memory_stats = crate::platform::linux::memory::read_memory_stats().ok();
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let initial_memory_stats = Some(MemoryStats::empty());
+        #[cfg(target_os = "macos")]
+        let initial_memory_stats = crate::platform::macos::read_memory_stats().ok();
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        let initial_memory_stats = None;
 
         // Start background loading for AI agent (avoid blocking UI with HTTP timeouts)
         let (agent_tx, agent_rx) = channel();
@@ -1189,23 +1189,18 @@ impl IronMonitorApp {
             self.gpu_temp_history.resize_with(new_count, fresh_series);
         }
 
-        // `snapshot.gpu_dynamic` is index-aligned with `gpu_static` and carries `None`
-        // for devices whose query failed this tick. Keep the last-known sample for a
-        // failed slot rather than dropping it, which would shift every device after it
-        // and mislabel the charts.
-        if snapshot.gpu_dynamic.len() == self.gpu_dynamic_info.len() {
-            for (slot, fresh) in self
-                .gpu_dynamic_info
-                .iter_mut()
-                .zip(snapshot.gpu_dynamic.iter())
-            {
-                if let Some(fresh) = fresh {
-                    *slot = fresh.clone();
-                }
-            }
-        } else {
-            self.gpu_dynamic_info = snapshot.gpu_dynamic.iter().flatten().cloned().collect();
-        }
+        // Preserve every enumerated device, including slots whose query failed.
+        // Unknown fields must not be replaced with stale readings or shift indices.
+        self.gpu_dynamic_info = (0..self.gpu_static_info.len())
+            .map(|i| {
+                snapshot
+                    .gpu_dynamic
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
 
         for (i, info) in snapshot.gpu_dynamic.iter().enumerate() {
             let Some(info) = info.as_ref() else { continue };
@@ -1227,10 +1222,11 @@ impl IronMonitorApp {
                 }
             }
 
-            if i < self.gpu_temp_history.len() {
-                self.gpu_temp_history[i].pop_front();
-                let temp = info.thermal.temperature.unwrap_or(0) as f32;
-                self.gpu_temp_history[i].push_back(temp);
+            if let (Some(history), Some(temp)) =
+                (self.gpu_temp_history.get_mut(i), info.thermal.temperature)
+            {
+                history.pop_front();
+                history.push_back(temp as f32);
             }
         }
 
@@ -2438,6 +2434,8 @@ impl IronMonitorApp {
     /// assistant: a question asked here appears in the AI tab's transcript and vice
     /// versa, and both honour the backend and model selected there.
     pub(super) fn draw_agent_composer(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
+        let chat_color = |base| theme::fixed_color(&palette_ctx, base);
         let can_answer = self.agent_can_answer();
         let mut submit = false;
         let available_width = ui.available_width();
@@ -2451,7 +2449,7 @@ impl IronMonitorApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     let frame = egui::Frame::NONE
-                        .fill(CyberColors::BACKGROUND_DARK)
+                        .fill(chat_color(CyberColors::BACKGROUND_DARK))
                         .corner_radius(8)
                         .inner_margin(egui::Margin {
                             left: 10,
@@ -2474,13 +2472,13 @@ impl IronMonitorApp {
                                             } else {
                                                 "Ask — no model selected"
                                             })
-                                            .color(CyberColors::TEXT_SECONDARY),
+                                            .color(chat_color(CyberColors::TEXT_SECONDARY)),
                                         )
-                                        .background_color(CyberColors::BACKGROUND_DARK)
+                                        .background_color(chat_color(CyberColors::BACKGROUND_DARK))
                                         .frame(false)
                                         .margin(egui::Margin::ZERO)
                                         .min_size(egui::vec2(input_width, 32.0))
-                                        .text_color(CyberColors::TEXT_PRIMARY)
+                                        .text_color(chat_color(CyberColors::TEXT_PRIMARY))
                                         .font(egui::FontId::proportional(14.0))
                                         .desired_rows(1)
                                         .vertical_align(egui::Align::Center)
@@ -2499,9 +2497,9 @@ impl IronMonitorApp {
                                         .add(
                                             egui::Button::new(
                                                 RichText::new("Cancel")
-                                                    .color(CyberColors::TEXT_PRIMARY),
+                                                    .color(chat_color(CyberColors::TEXT_PRIMARY)),
                                             )
-                                            .fill(CyberColors::SURFACE_HOVER)
+                                            .fill(chat_color(CyberColors::SURFACE_HOVER))
                                             .stroke(egui::Stroke::NONE)
                                             .corner_radius(8)
                                             .min_size(egui::vec2(64.0, 32.0)),
@@ -2520,9 +2518,9 @@ impl IronMonitorApp {
                                             enabled,
                                             egui::Button::new(
                                                 RichText::new("Send")
-                                                    .color(CyberColors::TEXT_PRIMARY),
+                                                    .color(chat_color(CyberColors::TEXT_PRIMARY)),
                                             )
-                                            .fill(CyberColors::SURFACE_HOVER)
+                                            .fill(chat_color(CyberColors::SURFACE_HOVER))
                                             .stroke(egui::Stroke::NONE)
                                             .corner_radius(8)
                                             .min_size(egui::vec2(64.0, 32.0)),
@@ -2543,7 +2541,7 @@ impl IronMonitorApp {
                     ui.painter().rect_stroke(
                         frame.response.rect,
                         8,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(40, 50, 65)),
+                        egui::Stroke::new(1.0_f32, chat_color(egui::Color32::from_rgb(40, 50, 65))),
                         egui::StrokeKind::Inside,
                     );
                 },
@@ -3331,6 +3329,10 @@ impl IronMonitorApp {
 
                 frame.show(ui, |ui| {
                     ui.set_width(available_width - 16.0);
+                    if self.snapshot.gpu_dynamic.get(i).is_none_or(Option::is_none) {
+                        ui.label(RichText::new("Live accelerator readings unavailable this cycle; detected hardware is shown below.")
+                            .small().color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
+                    }
 
                     // Header row: Icon + Name + Live Metrics
                     ui.horizontal(|ui| {
@@ -8478,6 +8480,35 @@ fn format_bytes(bytes: f64) -> String {
 #[cfg(test)]
 mod model_listing_tests {
     use super::AiBackendSelection;
+
+    #[test]
+    fn detected_apple_gpu_is_visible_when_live_telemetry_is_unavailable() {
+        use super::*;
+        let ctx = egui::Context::default();
+        let mut app = IronMonitorApp::with_context(&ctx);
+        app.gpu_static_info = vec![serde_json::from_value(serde_json::json!({
+            "index": 0, "vendor": "Apple", "name": "Apple M1 GPU", "integrated": true,
+            "shader_cores": 8
+        }))
+        .unwrap()];
+        app.gpu_dynamic_info = vec![GpuDynamicInfo::default()];
+        app.snapshot = std::sync::Arc::new(crate::pipeline::Snapshot {
+            gpu_dynamic: vec![None],
+            ..Default::default()
+        });
+        app.gpu_history = vec![VecDeque::new()];
+        app.gpu_memory_history = vec![VecDeque::new()];
+        app.gpu_temp_history = vec![VecDeque::new()];
+        let text = crate::gui::headless::painted_blob(&ctx, |ui| app.draw_accelerators_tab(ui));
+        assert!(text.contains("Apple M1 GPU"), "{text}");
+        assert!(text.contains("Utilization -"), "{text}");
+        assert!(
+            text.contains("Live accelerator readings unavailable"),
+            "{text}"
+        );
+        assert!(!text.contains("No Accelerators Detected"), "{text}");
+        assert!(!text.contains("Utilization 0%"), "{text}");
+    }
 
     #[test]
     fn chat_context_omits_failed_exchanges_and_clears_with_the_transcript() {

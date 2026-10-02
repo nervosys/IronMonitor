@@ -1550,6 +1550,19 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
         let gpu = match gpu {
             Ok(gpu) => gpu,
             Err(e) => {
+                if let Some(info) = monitor
+                    .gpus()
+                    .gpus()
+                    .get(i)
+                    .and_then(|device| device.static_info().ok())
+                {
+                    push_text(out, format!("gpu.{i}.name"), &info.name);
+                    push_id(
+                        out,
+                        format!("gpu.{i}.vendor"),
+                        &format!("{:?}", info.vendor).to_lowercase(),
+                    );
+                }
                 out.push(Reading::unavailable(
                     format!("gpu.{i}.<unreadable>"),
                     None,

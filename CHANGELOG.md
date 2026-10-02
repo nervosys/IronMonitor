@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.13] - 2026-10-02
+
+### Fixed
+
+- Connect macOS GUI Overview and CPU/Memory pages to the real macOS readers.
+- Keep detected accelerator hardware visible when live telemetry fails, preserve
+  device slots, and show unknown readings rather than stale values or zeros.
+- Enumerate Apple GPUs from actual display records and retain unknown core counts.
+- Respect the monochrome palette in the dark chat composer without changing layout.
+
+### Added
+
+- OS version, OS build, and hardware model in `imon status`.
+- Native macOS regression coverage for GUI data collection and status output.
+
 ## [7.0.12] - 2026-10-02
 
 ### Changed

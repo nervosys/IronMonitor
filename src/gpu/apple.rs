@@ -37,41 +37,64 @@ impl AppleGpu {
         // Use system_profiler to get GPU info
         let output = std::process::Command::new("system_profiler")
             .args(["-detailLevel", "basic", "SPDisplaysDataType"])
+            .env("LC_ALL", "C")
             .output()
             .map_err(|e| Error::CommandExecutionFailed(format!("system_profiler: {}", e)))?;
 
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut gpus = Vec::new();
+        if !output.status.success() {
+            return Err(Error::CommandExecutionFailed(
+                "system_profiler could not enumerate displays".into(),
+            ));
+        }
+        Ok(Self::parse_inventory(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
 
-        // `None` until `system_profiler` states a count.
-        //
-        // This was `let mut cores = 8; // Default`, parsed with
-        // `unwrap_or(8)`. Eight is the GPU core count of a base M1 and M2, so
-        // a machine whose `system_profiler` output lacked the line -- or whose
-        // count failed to parse -- was reported as one of those, and an M3 Max
-        // with forty cores would have been reported as having eight.
-        let mut cores: Option<u32> = None;
-
+    fn parse_inventory(text: &str) -> Vec<Self> {
+        let mut gpus: Vec<Self> = Vec::new();
+        let mut current = None;
         for line in text.lines() {
-            if line.contains("Total Number of Cores") {
-                if let Some(cores_str) = line.split(':').nth(1) {
-                    cores = cores_str.trim().parse().ok();
+            let Some((key, value)) = line.trim().split_once(':') else {
+                continue;
+            };
+            match key {
+                "Chipset Model" => {
+                    current = None;
+                    if value.trim().starts_with("Apple ") {
+                        current = Some(gpus.len());
+                        gpus.push(Self::new(
+                            gpus.len() as u32,
+                            format!("{} GPU", value.trim()),
+                            None,
+                        ));
+                    }
                 }
+                "Total Number of Cores" => {
+                    if let Some(index) = current {
+                        gpus[index].cores = value.trim().parse::<u32>().ok().filter(|n| *n > 0);
+                    }
+                }
+                _ => {}
             }
         }
+        gpus
+    }
+}
 
-        // Get SOC name via sysctl
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            .map_err(|e| Error::CommandExecutionFailed(format!("sysctl: {}", e)))?;
+#[cfg(test)]
+mod inventory_tests {
+    use super::AppleGpu;
 
-        let soc_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-        // Create GPU instance
-        gpus.push(AppleGpu::new(0, format!("{} GPU", soc_name), cores));
-
-        Ok(gpus)
+    #[test]
+    fn apple_inventory_uses_enumerated_devices_and_keeps_unknown_core_counts() {
+        let gpus = AppleGpu::parse_inventory("Chipset Model: Apple M1\nTotal Number of Cores: 8\nChipset Model: Intel Iris\nTotal Number of Cores: 24\nChipset Model: Apple M4\n");
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "Apple M1 GPU");
+        assert_eq!(gpus[0].cores, Some(8));
+        assert_eq!(gpus[1].cores, None);
+        assert!(AppleGpu::parse_inventory("").is_empty());
+        assert!(AppleGpu::parse_inventory("Chipset Model: Intel Iris\n").is_empty());
     }
 }
 

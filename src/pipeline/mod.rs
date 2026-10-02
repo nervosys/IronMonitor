@@ -908,9 +908,13 @@ fn collect_cpu() -> Option<CpuStats> {
     {
         crate::platform::linux::read_cpu_stats().ok()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
     {
-        Some(CpuStats::empty())
+        crate::platform::macos::read_cpu_stats().ok()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        None
     }
 }
 
@@ -923,9 +927,13 @@ fn collect_memory() -> Option<MemoryStats> {
     {
         crate::platform::linux::read_memory_stats().ok()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
     {
-        Some(MemoryStats::empty())
+        crate::platform::macos::read_memory_stats().ok()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        None
     }
 }
 
@@ -1125,6 +1133,15 @@ fn collect_disks() -> Vec<DiskSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_gui_pipeline_reads_real_cpu_and_memory() {
+        let cpu = collect_cpu().expect("macOS GUI pipeline CPU reader");
+        assert!(!cpu.cores.is_empty());
+        let memory = collect_memory().expect("macOS GUI pipeline memory reader");
+        assert!(memory.ram.total > 0);
+    }
 
     /// The sleep must bound collection's share of wall time, and must not shorten
     /// the configured interval when collection is cheap.

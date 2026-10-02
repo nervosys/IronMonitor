@@ -20,6 +20,40 @@
 
 use ironmonitor::IronMonitor;
 
+#[cfg(feature = "cli")]
+#[test]
+fn status_reports_the_running_macos_version() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_imon"))
+        .args(["status", "--format", "json"])
+        .output()
+        .expect("run imon status");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("status JSON");
+    let version = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    let expected = String::from_utf8(version.stdout).unwrap();
+    let reported = rows
+        .iter()
+        .find(|row| row["label"] == "OS version")
+        .expect("OS version row");
+    assert_eq!(reported["value"], expected.trim());
+    let model = rows
+        .iter()
+        .find(|row| row["label"] == "Model")
+        .expect("model row");
+    assert!(
+        model["value"].as_str().is_some_and(|s| !s.is_empty()),
+        "{model}"
+    );
+}
+
 /// `IronMonitor::new` calls `detect_platform_info` in its constructor, so this failing
 /// is what previously made every other reader unreachable on macOS regardless of
 /// whether it worked.

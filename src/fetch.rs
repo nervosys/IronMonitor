@@ -284,6 +284,9 @@ fn as_percent(v: &serde_json::Value) -> String {
 pub fn summary(readings: &[Reading]) -> Vec<Line> {
     let mut out = vec![
         line(readings, "OS", "system.os.name", as_text),
+        line(readings, "OS version", "system.os.version", as_text),
+        line(readings, "OS build", "system.os.build", as_text),
+        line(readings, "Model", "board.firmware.product", as_text),
         line(readings, "Host", "system.hostname", as_text),
         line(readings, "Kernel", "system.kernel.version", as_text),
         line(readings, "Arch", "system.architecture", as_text),
@@ -512,6 +515,27 @@ mod tests {
             .map(|l| l.label)
             .collect();
         assert_eq!(labels, vec!["GPU", "GPU 1"]);
+    }
+
+    #[test]
+    fn status_includes_reported_os_version_build_and_hardware_model() {
+        let readings = [
+            measured("system.os.name", serde_json::json!("macOS")),
+            measured("system.os.version", serde_json::json!("test-version")),
+            measured("system.os.build", serde_json::json!("test-build")),
+            measured("board.firmware.product", serde_json::json!("Mac mini")),
+            measured("cpu.model", serde_json::json!("Apple M1")),
+        ];
+        let text = render_plain(&readings, false);
+        for value in [
+            "macOS",
+            "test-version",
+            "test-build",
+            "Mac mini",
+            "Apple M1",
+        ] {
+            assert!(text.contains(value), "{text}");
+        }
     }
 
     /// An id the snapshot never produced is distinguishable from one it produced

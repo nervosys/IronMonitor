@@ -98,6 +98,15 @@ fn gray(color: Color32) -> Color32 {
     Color32::from_rgba_premultiplied(value, value, value, color.a())
 }
 
+/// Keep a fixed dark surface while respecting the monochrome palette.
+pub fn fixed_color(ctx: &egui::Context, base: Color32) -> Color32 {
+    if ctx.data(|data| data.get_temp::<ColorTheme>(theme_id())) == Some(ColorTheme::Monochrome) {
+        gray(base)
+    } else {
+        base
+    }
+}
+
 /// Resolve shared Overview colors for text, charts, and custom-painted widgets.
 pub fn color(ctx: &egui::Context, base: Color32) -> Color32 {
     let selected = ctx

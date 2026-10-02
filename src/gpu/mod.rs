@@ -210,7 +210,7 @@ pub struct GpuProcess {
 }
 
 /// GPU memory information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuMemory {
     /// Total memory in bytes, or `None` where the driver reports none.
     ///
@@ -262,7 +262,7 @@ impl GpuMemory {
 }
 
 /// GPU clock information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuClocks {
     /// Current graphics/shader clock in MHz
     pub graphics: Option<u32>,
@@ -279,7 +279,7 @@ pub struct GpuClocks {
 }
 
 /// GPU power information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuPower {
     /// Current power draw in milliwatts
     pub draw: Option<u32>,
@@ -292,7 +292,7 @@ pub struct GpuPower {
 }
 
 /// GPU thermal information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuThermal {
     /// Current temperature in Celsius
     pub temperature: Option<i32>,
@@ -307,7 +307,7 @@ pub struct GpuThermal {
 }
 
 /// PCIe link information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PcieLinkInfo {
     /// Current PCIe generation (1-6)
     pub current_gen: Option<u8>,
@@ -328,7 +328,7 @@ pub struct PcieLinkInfo {
 }
 
 /// GPU hardware engine utilization
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuEngines {
     /// Graphics/3D engine utilization (0-100)
     pub graphics: Option<u8>,
@@ -374,7 +374,8 @@ pub struct GpuStaticInfo {
 }
 
 /// Dynamic GPU information (updated each snapshot)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Default contains only unknown fields, never fabricated zero readings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuDynamicInfo {
     /// GPU utilization percentage (0-100), or `None` where the device reports
     /// no utilization counter.

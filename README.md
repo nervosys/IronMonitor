@@ -1229,6 +1229,13 @@ cargo run --release --features full --example agent_simple
 > and board info on macOS. As on Linux, CPU percentages come from cumulative ticks
 > and so are averages since boot rather than instantaneous rates.
 >
+> The GUI's Overview and CPU/Memory pages use these same macOS readers. Apple
+> GPU names and core counts come from display enumeration; an unavailable live
+> query keeps the device visible and shows unknown readings. `imon status`
+> includes the reported OS version/build, hardware model, CPU chip name, and
+> detected GPU identity. Live Apple GPU telemetry still requires a working source;
+> the application does not elevate itself or invent power, temperature, or VRAM.
+>
 > `IronMonitor::snapshot()` still fails on macOS because it requires every reader, and
 > GPU, power and temperature remain unimplemented there. Use `IronMonitor::cpu()`,
 > `IronMonitor::memory()` and `IronMonitor::uptime()`, which read only what works. The table
