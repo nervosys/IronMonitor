@@ -2448,21 +2448,21 @@ impl IronMonitorApp {
                 theme::color(&ctx, CyberColors::CYAN),
             ))
             .corner_radius(8)
-            .inner_margin(12.0)
+            .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.label(
                     RichText::new("Ask IronMonitor")
                         .color(theme::color(&ctx, CyberColors::CYAN))
                         .strong()
-                        .size(16.0),
+                        .size(14.0),
                 );
-                ui.add_space(4.0);
+                ui.add_space(2.0);
                 let response = ui.add_sized(
-                    [ui.available_width().max(1.0), 72.0],
+                    [ui.available_width().max(1.0), 32.0],
                     egui::TextEdit::multiline(&mut self.agent_query)
                         .hint_text("Ask about your system...")
-                        .font(egui::FontId::proportional(16.0))
-                        .desired_rows(2)
+                        .font(egui::FontId::proportional(14.0))
+                        .desired_rows(1)
                         .interactive(can_answer && !self.agent_is_processing),
                 );
                 submit = response.has_focus()
@@ -2481,7 +2481,7 @@ impl IronMonitorApp {
                         if ui
                             .add_enabled(
                                 enabled,
-                                egui::Button::new("Send").min_size(egui::vec2(86.0, 32.0)),
+                                egui::Button::new("Send").min_size(egui::vec2(64.0, 24.0)),
                             )
                             .clicked()
                         {

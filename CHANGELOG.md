@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.4] - 2026-10-01
+
+### Changed
+
+- Make the shared Overview and AI chat composer compact: reduce the input height
+  from 72 to 32 pixels and tighten padding, typography, and the Send button.
+  Keep its top placement, shared conversation, and Shift+Enter multiline input.
+
 ## [7.0.3] - 2026-10-01
 
 ### Fixed
