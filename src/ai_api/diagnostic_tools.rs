@@ -321,7 +321,7 @@ mod tests {
         let args=vec!["-NoProfile".into(),"-NonInteractive".into(),"-Command".into(),"$p=[Console]::In.ReadToEnd()|ConvertFrom-Json; @{text=$p.text}|ConvertTo-Json -Compress".into()];
         let text = "日次 $(this remains data)";
         let result = command_json("powershell.exe", &args, Some(json!({"text":text}))).unwrap();
-        assert_eq!(result["text"], text);
+        assert_eq!(result["text"], text, "provider response: {result}");
         let args = vec![
             "-NoProfile".into(),
             "-NonInteractive".into(),

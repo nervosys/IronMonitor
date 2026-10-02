@@ -146,8 +146,9 @@ jobs:
       # `tests/documentation_links.rs`, which enumerates tracked markdown via
       # `git ls-files`. actions/checkout provides one by default.
       # Hardware and provider subprocess fixtures share bounded deadlines.
-      # Limit test concurrency so runner contention does not exhaust them.
-      - run: cargo test --all-features -- --test-threads=4
+      # Run serially: even four concurrent hardware probes can exhaust the
+      # four-second PowerShell fixture deadline on hosted Windows runners.
+      - run: cargo test --all-features -- --test-threads=1
 
   fmt:
     name: Format

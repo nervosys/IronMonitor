@@ -1685,6 +1685,10 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
             listener.set_nonblocking(true).unwrap();
+            // Keep the backend stalled until the client returns. A short sleep
+            // races cancellation on loaded CI runners and can close the socket
+            // before the cancellation thread gets scheduled.
+            let (release, stalled) = std::sync::mpsc::channel();
             let server = std::thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(3);
                 let mut stream = loop {
@@ -1697,7 +1701,7 @@ mod tests {
                     }
                 };
                 let _ = request(&mut stream);
-                std::thread::sleep(Duration::from_millis(350));
+                let _ = stalled.recv_timeout(Duration::from_secs(5));
             });
             let mut config = super::super::BackendConfig::ironworks("fixture");
             config.endpoint = Some(format!("http://{address}/v1"));
@@ -1716,14 +1720,18 @@ mod tests {
                     "Read observations",
                     "Inspect CPU",
                     if cancel {
-                        Duration::from_secs(1)
+                        Duration::from_secs(5)
                     } else {
                         Duration::from_millis(150)
                     },
                     &control,
                 )
                 .unwrap_err();
-            assert!(started.elapsed() < Duration::from_millis(300));
+            let elapsed = started.elapsed();
+            release.send(()).ok();
+            // Allow scheduling slack while still proving the client does not
+            // wait for the stalled backend or its five-second request budget.
+            assert!(elapsed < Duration::from_secs(2), "elapsed: {elapsed:?}");
             assert!(
                 error
                     .to_string()
