@@ -1,6 +1,6 @@
 # IronMonitor (ironmon) — Roadmap
 
-- **Crate**: [`ironmonitor`](https://crates.io/crates/ironmonitor) 7.0.10
+- **Crate**: [`ironmonitor`](https://crates.io/crates/ironmonitor) 7.0.11
 - **MSRV**: Rust 1.94, declared for every feature combination; a default build
   still compiles on 1.88 (see the unreleased section of
   [CHANGELOG.md](CHANGELOG.md))

@@ -995,7 +995,7 @@ impl QuickLookPanel {
 
 impl Widget for QuickLookPanel {
     fn ui(self, ui: &mut Ui) -> Response {
-        let desired_size = Vec2::new(ui.available_width(), 32.0);
+        let desired_size = Vec2::new(ui.available_width(), 48.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
         if ui.is_rect_visible(rect) {
@@ -1033,7 +1033,7 @@ impl Widget for QuickLookPanel {
                 };
 
                 painter.text(
-                    Pos2::new(x_start, y_center - 6.0),
+                    Pos2::new(x_start, y_center - 10.0),
                     egui::Align2::LEFT_CENTER,
                     &label_text,
                     egui::FontId::proportional(10.0),
@@ -1042,8 +1042,8 @@ impl Widget for QuickLookPanel {
 
                 // Mini bar
                 let bar_rect = Rect::from_min_size(
-                    Pos2::new(x_start, y_center + 2.0),
-                    Vec2::new(section_width * 0.6, bar_height * 0.5),
+                    Pos2::new(x_start, y_center),
+                    Vec2::new(section_width * 0.6, bar_height),
                 );
                 painter.rect_filled(
                     bar_rect,
@@ -1074,7 +1074,7 @@ impl Widget for QuickLookPanel {
                 };
 
                 painter.text(
-                    Pos2::new(x_start + section_width * 0.65, y_center + 2.0),
+                    Pos2::new(x_start + section_width * 0.65, y_center + bar_height * 0.5),
                     egui::Align2::LEFT_CENTER,
                     percent_text,
                     egui::FontId::proportional(11.0),

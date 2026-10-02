@@ -626,7 +626,7 @@ mod app_tab_tests {
                     0.0, 0.0, None, 0.0,
                 ));
                 assert!((dashboard.rect.width() - full_width).abs() < 1.0);
-                assert_eq!(dashboard.rect.height(), 32.0);
+                assert_eq!(dashboard.rect.height(), 48.0);
             });
             for ai_page in [false, true] {
                 let text = painted_text_rects_sized(&ctx, size, |ui| {
@@ -681,6 +681,7 @@ mod app_tab_tests {
                         _ => None,
                     })
                     .expect("dark composer background");
+                assert!((composer.height() - 32.0).abs() < 1.0, "{composer:?}");
                 assert!(
                     (composer.center().x - width * 0.5).abs() < 2.0,
                     "{composer:?}"

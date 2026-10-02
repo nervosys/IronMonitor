@@ -2450,12 +2450,17 @@ impl IronMonitorApp {
                 egui::vec2(composer_width, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    egui::Frame::NONE
+                    let frame = egui::Frame::NONE
                         .fill(CyberColors::BACKGROUND_DARK)
-                        .corner_radius(12)
-                        .inner_margin(8.0)
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin {
+                            left: 10,
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                        })
                         .show(ui, |ui| {
-                            ui.set_width((composer_width - 16.0).max(1.0));
+                            ui.set_width((composer_width - 10.0).max(1.0));
                             ui.horizontal(|ui| {
                                 let input_width =
                                     (ui.available_width() - 64.0 - ui.spacing().item_spacing.x)
@@ -2532,6 +2537,12 @@ impl IronMonitorApp {
                                 }
                             });
                         });
+                    ui.painter().rect_stroke(
+                        frame.response.rect,
+                        8,
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(40, 50, 65)),
+                        egui::StrokeKind::Inside,
+                    );
                 },
             );
         });

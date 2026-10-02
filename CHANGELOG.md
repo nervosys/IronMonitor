@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.11] - 2026-10-02
+
+### Changed
+
+- Add a subtle slate outline to the shared chat box and remove vertical padding
+  so its single-line height matches the 32-pixel Send button.
+- Increase the Overview CPU/MEM/SWAP/LOAD summary row from 32 to 48 pixels and
+  its bar thickness from 8 to 16 pixels.
+
 ## [7.0.10] - 2026-10-02
 
 ### Changed
