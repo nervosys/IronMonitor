@@ -82,23 +82,6 @@ impl AppleGpu {
     }
 }
 
-#[cfg(test)]
-mod inventory_tests {
-    use super::AppleGpu;
-
-    #[test]
-    fn apple_inventory_uses_enumerated_devices_and_keeps_unknown_core_counts() {
-        let gpus = AppleGpu::parse_inventory("Chipset Model: Apple M1\nTotal Number of Cores: 8\nChipset Model: Intel Iris\nTotal Number of Cores: 24\nChipset Model: Apple M4\n");
-        assert_eq!(gpus.len(), 2);
-        assert_eq!(gpus[0].name, "Apple M1 GPU");
-        assert_eq!(gpus[0].cores, Some(8));
-        assert_eq!(gpus[1].cores, None);
-        assert!(AppleGpu::parse_inventory("").is_empty());
-        assert!(AppleGpu::parse_inventory("Chipset Model: Intel Iris\n").is_empty());
-    }
-}
-
-#[cfg(feature = "apple")]
 impl Gpu for AppleGpu {
     fn vendor(&self) -> GpuVendor {
         GpuVendor::Apple
@@ -216,3 +199,21 @@ impl Gpu for AppleGpu {
         ))
     }
 }
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::AppleGpu;
+
+    #[test]
+    fn apple_inventory_uses_enumerated_devices_and_keeps_unknown_core_counts() {
+        let gpus = AppleGpu::parse_inventory("Chipset Model: Apple M1\nTotal Number of Cores: 8\nChipset Model: Intel Iris\nTotal Number of Cores: 24\nChipset Model: Apple M4\n");
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "Apple M1 GPU");
+        assert_eq!(gpus[0].cores, Some(8));
+        assert_eq!(gpus[1].cores, None);
+        assert!(AppleGpu::parse_inventory("").is_empty());
+        assert!(AppleGpu::parse_inventory("Chipset Model: Intel Iris\n").is_empty());
+    }
+}
+
+#[cfg(feature = "apple")]
