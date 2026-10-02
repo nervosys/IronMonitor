@@ -8576,7 +8576,8 @@ mod model_listing_tests {
     #[test]
     fn a_provider_with_hardcoded_models_can_find_a_credential_to_replace_them() {
         for provider in AiBackendSelection::ALL {
-            if provider.fallback_models().is_empty() {
+            // MLX exposes a server startup alias, not a hosted model catalogue.
+            if *provider == AiBackendSelection::Mlx || provider.fallback_models().is_empty() {
                 continue;
             }
             assert!(
