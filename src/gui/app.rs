@@ -2454,31 +2454,44 @@ impl IronMonitorApp {
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_width((composer_width - 16.0).max(1.0));
-                            let response = ui.add_sized(
-                                [ui.available_width().max(1.0), 32.0],
-                                egui::TextEdit::multiline(&mut self.agent_query)
-                                    .hint_text(
-                                        RichText::new("Ask about your system...")
-                                            .color(CyberColors::TEXT_SECONDARY),
-                                    )
-                                    .background_color(CyberColors::BACKGROUND_DARK)
-                                    .text_color(CyberColors::TEXT_PRIMARY)
-                                    .font(egui::FontId::proportional(14.0))
-                                    .desired_rows(1)
-                                    .interactive(can_answer && !self.agent_is_processing),
-                            );
-                            submit = response.has_focus()
-                                && ui.input(|i| {
-                                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                                });
                             ui.horizontal(|ui| {
+                                let input_width =
+                                    (ui.available_width() - 64.0 - ui.spacing().item_spacing.x)
+                                        .max(1.0);
+                                let response = ui.add_sized(
+                                    [input_width, 32.0],
+                                    egui::TextEdit::multiline(&mut self.agent_query)
+                                        .hint_text(
+                                            RichText::new(if can_answer {
+                                                "Ask about your system..."
+                                            } else {
+                                                "Ask — no model selected"
+                                            })
+                                            .color(CyberColors::TEXT_SECONDARY),
+                                        )
+                                        .background_color(CyberColors::BACKGROUND_DARK)
+                                        .text_color(CyberColors::TEXT_PRIMARY)
+                                        .font(egui::FontId::proportional(14.0))
+                                        .desired_rows(1)
+                                        .return_key(egui::KeyboardShortcut::new(
+                                            egui::Modifiers::SHIFT,
+                                            egui::Key::Enter,
+                                        ))
+                                        .interactive(can_answer && !self.agent_is_processing),
+                                );
+                                submit = response.has_focus()
+                                    && ui.input(|i| {
+                                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                                    });
                                 if self.agent_is_processing {
-                                    ui.spinner();
-                                    ui.label(
-                                        RichText::new("Thinking...")
-                                            .color(CyberColors::TEXT_PRIMARY),
-                                    );
-                                    if ui.button("Cancel").clicked() {
+                                    if ui
+                                        .add(
+                                            egui::Button::new("Cancel")
+                                                .min_size(egui::vec2(64.0, 32.0)),
+                                        )
+                                        .on_hover_text("Thinking… Click to cancel")
+                                        .clicked()
+                                    {
                                         if let Some(control) = &self.agent_run_control {
                                             control.cancel();
                                         }
@@ -2489,24 +2502,18 @@ impl IronMonitorApp {
                                         .add_enabled(
                                             enabled,
                                             egui::Button::new("Send")
-                                                .min_size(egui::vec2(64.0, 24.0)),
+                                                .min_size(egui::vec2(64.0, 32.0)),
                                         )
+                                        .on_hover_text("Enter to send; Shift+Enter for a new line")
+                                        .on_disabled_hover_text(if can_answer {
+                                            "Type a message to send"
+                                        } else {
+                                            "No model selected — select one on the AI tab"
+                                        })
                                         .clicked()
                                     {
                                         submit = true;
                                     }
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(if can_answer {
-                                                "Enter to send"
-                                            } else {
-                                                "no model selected — see the AI tab"
-                                            })
-                                            .small()
-                                            .color(CyberColors::TEXT_SECONDARY),
-                                        )
-                                        .wrap(),
-                                    );
                                 }
                             });
                         });

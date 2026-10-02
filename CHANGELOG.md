@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.9] - 2026-10-02
+
+### Changed
+
+- Put Send (or Cancel while processing) on the right of the shared chat/search
+  input, removing the separate controls row. Show missing-model status in the
+  placeholder and keyboard help in a tooltip.
+- Reserve Shift+Enter for inserting a newline; plain Enter sends the message.
+
 ## [7.0.8] - 2026-10-02
 
 ### Changed

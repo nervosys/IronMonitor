@@ -1,6 +1,6 @@
 [package]
 name = "ironmonitor"
-version = "7.0.8"
+version = "7.0.9"
 edition = "2021"
 # Verified by building against each installed toolchain, not asserted. This said
 # 1.70 from 3.x through 5.1.0 and had not been true since the egui GUI was

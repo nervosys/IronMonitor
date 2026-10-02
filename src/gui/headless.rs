@@ -627,7 +627,7 @@ mod app_tab_tests {
                 assert!(!text.iter().any(|(text, _)| text == "Ask IronMonitor"));
                 let (_, input) = text
                     .iter()
-                    .find(|(text, _)| text == "Ask about your system...")
+                    .find(|(text, _)| text.starts_with("Ask "))
                     .expect("composer input");
                 assert!(input.min.y < 30.0, "{input:?}");
                 let (_, send) = text
@@ -635,6 +635,11 @@ mod app_tab_tests {
                     .find(|(text, _)| text == "Send")
                     .expect("send control");
                 assert!(send.max.x <= width && send.max.y < 200.0, "{send:?}");
+                assert!(send.min.x > input.max.x, "input: {input:?}, send: {send:?}");
+                assert!(
+                    (send.center().y - input.center().y).abs() < 16.0,
+                    "input: {input:?}, send: {send:?}"
+                );
                 let output = ctx.run(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
