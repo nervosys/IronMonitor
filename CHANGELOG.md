@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.7] - 2026-10-02
+
+### Changed
+
+- Center the shared Overview and AI chat/search box at two-thirds of the available
+  page width. Use a dark background and readable input text across color themes.
+
 ## [7.0.6] - 2026-10-02
 
 ### Changed

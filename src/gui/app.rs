@@ -2441,65 +2441,86 @@ impl IronMonitorApp {
         let ctx = ui.ctx().clone();
         let can_answer = self.agent_can_answer();
         let mut submit = false;
-        egui::Frame::NONE
-            .fill(theme::color(&ctx, CyberColors::SURFACE))
-            .corner_radius(8)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                // Cap the complete composer at 520 px including its padding.
-                ui.set_max_width(ui.available_width().min(504.0).max(1.0));
-                ui.label(
-                    RichText::new("Ask IronMonitor")
-                        .color(theme::color(&ctx, CyberColors::CYAN))
-                        .strong()
-                        .size(14.0),
-                );
-                ui.add_space(2.0);
-                let response = ui.add_sized(
-                    [ui.available_width().max(1.0), 32.0],
-                    egui::TextEdit::multiline(&mut self.agent_query)
-                        .hint_text("Ask about your system...")
-                        .font(egui::FontId::proportional(14.0))
-                        .desired_rows(1)
-                        .interactive(can_answer && !self.agent_is_processing),
-                );
-                submit = response.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-                ui.horizontal(|ui| {
-                    if self.agent_is_processing {
-                        ui.spinner();
-                        ui.label("Thinking...");
-                        if ui.button("Cancel").clicked() {
-                            if let Some(control) = &self.agent_run_control {
-                                control.cancel();
-                            }
-                        }
-                    } else {
-                        let enabled = can_answer && !self.agent_query.trim().is_empty();
-                        if ui
-                            .add_enabled(
-                                enabled,
-                                egui::Button::new("Send").min_size(egui::vec2(64.0, 24.0)),
-                            )
-                            .clicked()
-                        {
-                            submit = true;
-                        }
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(if can_answer {
-                                    "Enter to send"
+        let available_width = ui.available_width();
+        let composer_width = available_width * (2.0 / 3.0);
+        ui.horizontal(|ui| {
+            ui.add_space((available_width - composer_width) * 0.5);
+            ui.allocate_ui_with_layout(
+                egui::vec2(composer_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::Frame::NONE
+                        .fill(CyberColors::BACKGROUND_DARK)
+                        .corner_radius(8)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.set_width((composer_width - 16.0).max(1.0));
+                            ui.label(
+                                RichText::new("Ask IronMonitor")
+                                    .color(theme::color(&ctx, CyberColors::CYAN))
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            ui.add_space(2.0);
+                            let response = ui.add_sized(
+                                [ui.available_width().max(1.0), 32.0],
+                                egui::TextEdit::multiline(&mut self.agent_query)
+                                    .hint_text(
+                                        RichText::new("Ask about your system...")
+                                            .color(CyberColors::TEXT_SECONDARY),
+                                    )
+                                    .background_color(CyberColors::BACKGROUND_DARK)
+                                    .text_color(CyberColors::TEXT_PRIMARY)
+                                    .font(egui::FontId::proportional(14.0))
+                                    .desired_rows(1)
+                                    .interactive(can_answer && !self.agent_is_processing),
+                            );
+                            submit = response.has_focus()
+                                && ui.input(|i| {
+                                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                                });
+                            ui.horizontal(|ui| {
+                                if self.agent_is_processing {
+                                    ui.spinner();
+                                    ui.label(
+                                        RichText::new("Thinking...")
+                                            .color(CyberColors::TEXT_PRIMARY),
+                                    );
+                                    if ui.button("Cancel").clicked() {
+                                        if let Some(control) = &self.agent_run_control {
+                                            control.cancel();
+                                        }
+                                    }
                                 } else {
-                                    "no model selected — see the AI tab"
-                                })
-                                .small()
-                                .color(theme::color(&ctx, CyberColors::TEXT_SECONDARY)),
-                            )
-                            .wrap(),
-                        );
-                    }
-                });
-            });
+                                    let enabled = can_answer && !self.agent_query.trim().is_empty();
+                                    if ui
+                                        .add_enabled(
+                                            enabled,
+                                            egui::Button::new("Send")
+                                                .min_size(egui::vec2(64.0, 24.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        submit = true;
+                                    }
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(if can_answer {
+                                                "Enter to send"
+                                            } else {
+                                                "no model selected — see the AI tab"
+                                            })
+                                            .small()
+                                            .color(CyberColors::TEXT_SECONDARY),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                            });
+                        });
+                },
+            );
+        });
         if submit && can_answer && !self.agent_is_processing {
             self.send_agent_query();
         }

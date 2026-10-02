@@ -639,6 +639,44 @@ mod app_tab_tests {
                     .find(|(text, _)| text == "Send")
                     .expect("send control");
                 assert!(send.max.x <= width && send.max.y < 200.0, "{send:?}");
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if ai_page {
+                                app.draw_ai_assistant_tab(ui);
+                            } else {
+                                app.draw_overview(ui);
+                            }
+                        });
+                    },
+                );
+                let composer = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Rect(rect)
+                            if rect.fill == super::super::theme::CyberColors::BACKGROUND_DARK
+                                && rect.rect.contains(title.center())
+                                && rect.rect.contains(input.center()) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("dark composer background");
+                assert!(
+                    (composer.center().x - width * 0.5).abs() < 2.0,
+                    "{composer:?}"
+                );
+                let expected_width = (width - 16.0) * (2.0 / 3.0);
+                assert!(
+                    (composer.width() - expected_width).abs() < 2.0,
+                    "{composer:?}"
+                );
             }
         }
     }
