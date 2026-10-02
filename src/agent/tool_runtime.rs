@@ -354,10 +354,41 @@ fn parse_calls(message: &Value, wire: Wire) -> Result<Vec<Call>> {
     Ok(calls)
 }
 
-/// Some IronWorks checkpoints emit the complete call as JSON content instead
+/// Some local checkpoints emit the complete call as JSON content instead
 /// of the server's native call envelope. Accept only an exact, known read call;
 /// never extract fragments from prose or repair malformed JSON.
 fn normalize_ironworks_call(message: &mut Value, round: usize) -> Result<()> {
+    normalize_local_call(message, round, "IronWorks", false)
+}
+
+/// Ollama's small checkpoints sometimes encode integer arguments as strings.
+/// Convert only canonical unsigned decimal strings in declared integer fields;
+/// validation still checks types, choices and bounds before any tool executes.
+fn normalize_ollama_integer_args(args: &mut Value, schema: &Value) {
+    let Some(object) = args.as_object_mut() else {
+        return;
+    };
+    for (name, value) in object {
+        if schema["properties"][name]["type"] != "integer" {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            continue;
+        };
+        if let Ok(number) = text.parse::<u64>() {
+            if number.to_string() == text {
+                *value = json!(number);
+            }
+        }
+    }
+}
+
+fn normalize_local_call(
+    message: &mut Value,
+    round: usize,
+    provider: &str,
+    allow_parameters: bool,
+) -> Result<()> {
     if message["tool_calls"]
         .as_array()
         .is_some_and(|calls| !calls.is_empty())
@@ -366,10 +397,14 @@ fn normalize_ironworks_call(message: &mut Value, round: usize) -> Result<()> {
     }
     let text = message["content"].as_str().unwrap_or("").trim();
     let Ok(value) = serde_json::from_str::<Value>(text) else {
-        if text.starts_with("{\"name\"") && text.contains("\"arguments\"") {
-            return Err(IronError::Agent(
-                "IronWorks returned malformed tool-call text; no tool was run".into(),
-            ));
+        if text.starts_with('{')
+            && text.contains("\"name\"")
+            && (text.contains("\"arguments\"")
+                || (allow_parameters && text.contains("\"parameters\"")))
+        {
+            return Err(IronError::Agent(format!(
+                "{provider} returned malformed tool-call syntax; no tool was run"
+            )));
         }
         return Ok(());
     };
@@ -382,21 +417,64 @@ fn normalize_ironworks_call(message: &mut Value, round: usize) -> Result<()> {
     if !READ_TOOLS.contains(&name) && !LEGACY_READ.contains(&name) {
         return Ok(());
     }
-    if !object.contains_key("arguments") {
+    let argument_key = if object.contains_key("arguments") {
+        "arguments"
+    } else if allow_parameters && object.contains_key("parameters") {
+        "parameters"
+    } else {
         return Ok(());
-    }
+    };
     if object.len() != 2 {
-        return Err(IronError::Agent(
-            "IronWorks returned an ambiguous tool-call object; no tool was run".into(),
-        ));
+        return Err(IronError::Agent(format!(
+            "{provider} returned ambiguous tool-call syntax; no tool was run"
+        )));
     }
     // parse_calls and tool_output enforce the normal argument, schema and
     // read-only limits after normalization.
     *message = json!({"role":"assistant","content":null,"tool_calls":[{
-        "id":format!("ironworks-text-{round}"),"type":"function",
-        "function":{"name":name,"arguments":value["arguments"]}
+        "id":format!("{}-text-{round}",provider.to_ascii_lowercase()),"type":"function",
+        "function":{"name":name,"arguments":value[argument_key]}
     }]});
     Ok(())
+}
+
+// Small local models can identify the right process but corrupt its numeric
+// value when composing prose. Render simple RAM-leader answers from the actual
+// model-requested ranking result; complex questions retain model synthesis.
+fn simple_ram_ranking_question(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    let words: Vec<_> = lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
+    matches!(words.first(), Some(&"what" | &"which"))
+        && words.iter().any(|word| ["ram", "memory"].contains(word))
+        && words
+            .iter()
+            .any(|word| ["most", "largest", "highest"].contains(word))
+        && !words.iter().any(|word| {
+            [
+                "and", "why", "how", "compare", "trend", "over", "not", "least", "gpu", "vram",
+                "swap", "disk", "cpu",
+            ]
+            .contains(word)
+        })
+}
+
+fn observed_ram_leader(result: &Value) -> Option<String> {
+    if result["success"] != true {
+        return None;
+    }
+    let first = result["data"].as_array()?.first()?;
+    let name = first["name"].as_str()?;
+    let bytes = first["memory_bytes"].as_u64()?;
+    // Quoting keeps process names containing line breaks distinguishable from
+    // answer text. Units and numbers come from the reading, never model prose.
+    Some(format!(
+        "{} is using the most resident RAM: {} MiB.",
+        serde_json::to_string(name).ok()?,
+        bytes / 1024 / 1024
+    ))
 }
 
 fn content(message: &Value, wire: Wire) -> String {
@@ -438,7 +516,9 @@ fn tool_output(
         .ok_or_else(|| IronError::Agent("Tool definition missing".into()))?;
     if let Err(error) = validate_args(&call.args, &definition.parameters, 0) {
         control.report(&call.name, "invalid arguments", Duration::ZERO);
-        return Ok(json!({"success":false,"error":error}).to_string());
+        return Ok(json!({"success":false,"tool_name":call.name,"error":error,
+            "expected_parameters":definition.parameters,
+            "instruction":"Correct the arguments and call the tool again. Integer fields require JSON numbers, not strings. Do not invent tool output."}).to_string());
     }
     control.report(&call.name, "running", Duration::ZERO);
     let name = call.name.clone();
@@ -576,7 +656,8 @@ impl RemoteClient {
                 BackendType::RemoteOpenAI => Wire::Responses,
                 _ => Wire::Chat,
             };
-            let tools:Vec<_>=definitions().into_iter().map(|t|match wire {
+            let catalog = definitions();
+            let tools:Vec<_>=catalog.iter().map(|t|match wire {
                 Wire::Anthropic=>json!({"name":t.name,"description":t.description,"input_schema":t.parameters}),
                 Wire::Responses=>json!({"type":"function","name":t.name,"description":t.description,"parameters":t.parameters,"strict":false}),
                 _=>json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}}),
@@ -590,13 +671,18 @@ impl RemoteClient {
                 ]
             };
             let mut used = 0;
+            let mut successful_calls = 0;
+            let render_ram_leader = simple_ram_ranking_question(user_query);
+            let mut ram_leader = None;
             let mut bytes = 0;
             let mut fingerprints = Vec::new();
             let mut final_only = false;
             for round in 0..MAX_ROUNDS {
                 control.check(deadline)?;
-                let answer_only = self.config.backend_type == BackendType::IronWorks
-                    && (final_only || round + 1 == MAX_ROUNDS);
+                let answer_only = matches!(
+                    self.config.backend_type,
+                    BackendType::IronWorks | BackendType::RemoteOllama
+                ) && (final_only || round + 1 == MAX_ROUNDS);
                 if answer_only {
                     messages.push(json!({"role":"user","content":"The tool budget is exhausted or the same request has repeated. Give a final answer using the tool results already supplied. Explain failed or unavailable readings and evidence limits. Do not request another tool or output tool-call syntax."}));
                 }
@@ -637,8 +723,18 @@ impl RemoteClient {
                 }
                 if self.config.backend_type == BackendType::IronWorks {
                     normalize_ironworks_call(&mut message, round)?;
+                } else if wire == Wire::Ollama {
+                    normalize_local_call(&mut message, round, "Ollama", true)?;
                 }
-                let calls = parse_calls(&message, wire)?;
+                let mut calls = parse_calls(&message, wire)?;
+                if wire == Wire::Ollama {
+                    for call in &mut calls {
+                        if let Some(definition) = catalog.iter().find(|tool| tool.name == call.name)
+                        {
+                            normalize_ollama_integer_args(&mut call.args, &definition.parameters);
+                        }
+                    }
+                }
                 if calls.is_empty() {
                     let answer = content(&message, wire);
                     if answer.is_empty() {
@@ -653,8 +749,14 @@ impl RemoteClient {
                             && (line.contains("\"parameters\"") || line.contains("\"arguments\""))
                     }) {
                         return Err(IronError::Agent(
-                            "Backend returned tool-call syntax instead of a final answer; no text-only call was executed. Use a model that supports this backend's native tool protocol.".into(),
+                            "Backend returned unrecognized tool-call syntax instead of a final answer; the text call was not executed.".into(),
                         ));
+                    }
+                    if used > 0 && successful_calls == 0 {
+                        return Err(IronError::Agent("No monitoring tool succeeded; the backend answer was withheld because it has no tool evidence".into()));
+                    }
+                    if let Some(observed) = ram_leader {
+                        return Ok(observed);
                     }
                     return Ok(if truncated {
                         format!("{answer}\n\n[Answer truncated: the backend reached its output token limit.]")
@@ -703,6 +805,14 @@ impl RemoteClient {
                     }
                     fingerprints.push(fingerprint);
                     let output = tool_output(call, control, deadline, TOTAL_BYTES - bytes)?;
+                    if let Ok(result) = serde_json::from_str::<Value>(&output) {
+                        if result["success"] == true {
+                            successful_calls += 1;
+                        }
+                        if render_ram_leader && name == "get_top_memory_processes" {
+                            ram_leader = observed_ram_leader(&result);
+                        }
+                    }
                     bytes += output.len();
                     match wire {
                         Wire::Responses=>messages.push(json!({"type":"function_call_output","call_id":id,"output":output})),
@@ -790,6 +900,41 @@ impl RemoteClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ram_leader_rendering_uses_only_successful_ranked_observations() {
+        let result = json!({"success":true,"data":[{
+            "name":"worker\n.exe","memory_bytes":53_481 * 1024_u64 * 1024,
+            "memory_mb":1,"memory_display":"invented text"
+        }]});
+        assert_eq!(
+            observed_ram_leader(&result).unwrap(),
+            "\"worker\\n.exe\" is using the most resident RAM: 53481 MiB."
+        );
+        for result in [
+            json!({"success":false,"data":[{"name":"worker","memory_bytes":123}]}),
+            json!({"success":true,"data":[]}),
+            json!({"success":true,"data":[{"name":"worker"}]}),
+            json!({"success":true,"data":[{"name":"worker","memory_bytes":null}]}),
+        ] {
+            assert!(observed_ram_leader(&result).is_none());
+        }
+        for question in [
+            "What is using the most RAM?",
+            "Which process is consuming the most memory right now?",
+            "Which application is using the most RAM?",
+        ] {
+            assert!(simple_ram_ranking_question(question), "{question}");
+        }
+        for question in [
+            "What is using the most RAM and why?",
+            "How do I reduce memory usage?",
+            "Which process used the most memory over the last hour?",
+            "What is using the most CPU?",
+            "Which process is using the most GPU memory?",
+        ] {
+            assert!(!simple_ram_ranking_question(question), "{question}");
+        }
+    }
     use super::*;
 
     #[test]
@@ -820,83 +965,165 @@ mod tests {
         assert!(parse_calls(&message, Wire::Chat).is_err());
     }
 
+    #[test]
+    fn ollama_text_calls_keep_read_only_and_schema_boundaries() {
+        for field in ["arguments", "parameters"] {
+            let mut message = json!({"role":"assistant","content":json!({
+                "name":"describe_entities",field:{"limit":1}
+            }).to_string()});
+            normalize_local_call(&mut message, 2, "Ollama", true).unwrap();
+            let calls = parse_calls(&message, Wire::Ollama).unwrap();
+            assert_eq!(calls[0].name, "describe_entities");
+            assert_eq!(calls[0].args, json!({"limit":1}));
+            assert_eq!(calls[0].id, "ollama-text-2");
+        }
+        for text in [
+            r#"{"name":"apply_profile_setting","parameters":{"confirm":true}}"#,
+            r#"{"name":"unknown_function","parameters":{}}"#,
+            r#"Example: {"name":"describe_entities","parameters":{}}"#,
+        ] {
+            let mut message = json!({"content":text});
+            normalize_local_call(&mut message, 0, "Ollama", true).unwrap();
+            assert!(parse_calls(&message, Wire::Ollama).unwrap().is_empty());
+        }
+        for text in [
+            r#"{"name":"describe_entities","parameters":{}} trailing"#,
+            r#"{"name":"describe_entities","arguments":{},"parameters":{}}"#,
+            r#"{"name":"describe_entities","parameters":{},"extra":true}"#,
+        ] {
+            assert!(normalize_local_call(&mut json!({"content":text}), 0, "Ollama", true).is_err());
+        }
+        let mut message =
+            json!({"content":r#"{"name":"describe_entities","parameters":{"limit":"1"}}"#});
+        normalize_local_call(&mut message, 0, "Ollama", true).unwrap();
+        let calls = parse_calls(&message, Wire::Ollama).unwrap();
+        let definition = definitions()
+            .into_iter()
+            .find(|tool| tool.name == calls[0].name)
+            .unwrap();
+        assert!(validate_args(&calls[0].args, &definition.parameters, 0).is_err());
+    }
+
+    #[test]
+    fn ollama_integer_conversion_is_lossless_and_remains_schema_validated() {
+        let schema = json!({"type":"object","properties":{
+            "limit":{"type":"integer","minimum":1,"maximum":100},
+            "name":{"type":"string"}
+        }});
+        let mut args = json!({"limit":"10","name":"20"});
+        normalize_ollama_integer_args(&mut args, &schema);
+        assert_eq!(args, json!({"limit":10,"name":"20"}));
+        assert!(validate_args(&args, &schema, 0).is_ok());
+        for text in [
+            "01",
+            " 1",
+            "1.0",
+            "1e2",
+            "-1",
+            "18446744073709551616",
+            "101",
+        ] {
+            let mut args = json!({"limit":text});
+            normalize_ollama_integer_args(&mut args, &schema);
+            assert!(validate_args(&args, &schema, 0).is_err(), "Accepted {text}");
+        }
+    }
+
     #[cfg(feature = "remote-backends")]
     #[test]
-    fn ironworks_text_recovery_and_repeat_boundary_use_real_tool_results() {
+    fn local_text_recovery_and_repeat_boundary_use_real_tool_results() {
         let _guard = crate::agent::offline_enforcement_tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        for (plain_text, refuses_final) in [(true, false), (false, false), (false, true)] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let address = listener.local_addr().unwrap();
-            let server = std::thread::spawn(move || {
-                for round in 0..3 {
-                    let until = Instant::now() + Duration::from_secs(5);
-                    let mut stream = loop {
-                        match listener.accept() {
-                            Ok((s, _)) => break s,
-                            Err(e)
-                                if e.kind() == std::io::ErrorKind::WouldBlock
-                                    && Instant::now() < until =>
-                            {
-                                std::thread::sleep(Duration::from_millis(5))
+        for ollama in [false, true] {
+            for (plain_text, refuses_final) in [(true, false), (false, false), (false, true)] {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = std::thread::spawn(move || {
+                    for round in 0..3 {
+                        let until = Instant::now() + Duration::from_secs(5);
+                        let mut stream = loop {
+                            match listener.accept() {
+                                Ok((s, _)) => break s,
+                                Err(e)
+                                    if e.kind() == std::io::ErrorKind::WouldBlock
+                                        && Instant::now() < until =>
+                                {
+                                    std::thread::sleep(Duration::from_millis(5))
+                                }
+                                Err(e) => panic!("expected agent round {round}: {e}"),
                             }
-                            Err(e) => panic!("expected agent round {round}: {e}"),
+                        };
+                        let body = request(&mut stream);
+                        if round > 0 {
+                            let results: Vec<_> = body["messages"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|m| m["role"] == "tool")
+                                .collect();
+                            assert_eq!(results.len(), round);
+                            let result: Value = serde_json::from_str(
+                                results.last().unwrap()["content"].as_str().unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(result["success"], true);
+                            assert_eq!(result["tool_name"], "describe_entities");
+                            assert_eq!(result["data"]["schema_version"], "1.0");
                         }
-                    };
-                    let body = request(&mut stream);
-                    if round > 0 {
-                        let results: Vec<_> = body["messages"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .filter(|m| m["role"] == "tool")
-                            .collect();
-                        assert_eq!(results.len(), round);
-                        let result: Value = serde_json::from_str(
-                            results.last().unwrap()["content"].as_str().unwrap(),
-                        )
-                        .unwrap();
-                        assert_eq!(result["success"], true);
-                        assert_eq!(result["tool_name"], "describe_entities");
-                        assert_eq!(result["data"]["schema_version"], "1.0");
+                        if round == 2 {
+                            assert!(body.get("tools").is_none());
+                            assert!(body.get("tool_choice").is_none());
+                        }
+                        let message = if round == 2 && !refuses_final {
+                            json!({"role":"assistant","content":"Final answer from observed schema version 1.0"})
+                        } else if plain_text {
+                            let field = if ollama { "parameters" } else { "arguments" };
+                            json!({"role":"assistant","content":json!({"name":"describe_entities",field:{"search":"memory","limit":1}}).to_string()})
+                        } else {
+                            json!({"role":"assistant","content":null,"tool_calls":[{
+                            "id":format!("call-{round}"),"type":"function","function":{
+                                "name":"describe_entities","arguments":r#"{"search":"memory","limit":1}"#
+                            }}]})
+                        };
+                        respond(
+                            &mut stream,
+                            if ollama {
+                                json!({"message":message,"done":true})
+                            } else {
+                                json!({"choices":[{"message":message}]})
+                            },
+                        );
                     }
-                    if round == 2 {
-                        assert!(body.get("tools").is_none());
-                        assert!(body.get("tool_choice").is_none());
-                    }
-                    let message = if round == 2 && !refuses_final {
-                        json!({"role":"assistant","content":"Final answer from observed schema version 1.0"})
-                    } else if plain_text {
-                        json!({"role":"assistant","content":r#"{"name":"describe_entities","arguments":{"search":"memory","limit":1}}"#})
-                    } else {
-                        json!({"role":"assistant","content":null,"tool_calls":[{
-                        "id":format!("call-{round}"),"type":"function","function":{
-                            "name":"describe_entities","arguments":r#"{"search":"memory","limit":1}"#
-                        }}]})
-                    };
-                    respond(&mut stream, json!({"choices":[{"message":message}]}));
+                });
+                let mut backend = if ollama {
+                    super::super::BackendConfig::ollama("fixture")
+                } else {
+                    super::super::BackendConfig::ironworks("fixture")
+                };
+                backend.endpoint = Some(if ollama {
+                    format!("http://{address}")
+                } else {
+                    format!("http://{address}/v1")
+                });
+                let client = RemoteClient::new(backend).unwrap();
+                let result = client.query_with_tools(
+                    "Use evidence",
+                    "Read schema",
+                    Duration::from_secs(5),
+                    &RunControl::default(),
+                );
+                if refuses_final {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("final-answer boundary"));
+                } else {
+                    assert!(result.unwrap().contains("Final answer"));
                 }
-            });
-            let mut backend = super::super::BackendConfig::ironworks("fixture");
-            backend.endpoint = Some(format!("http://{address}/v1"));
-            let client = RemoteClient::new(backend).unwrap();
-            let result = client.query_with_tools(
-                "Use evidence",
-                "Read schema",
-                Duration::from_secs(5),
-                &RunControl::default(),
-            );
-            if refuses_final {
-                assert!(result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("final-answer boundary"));
-            } else {
-                assert!(result.unwrap().contains("Final answer"));
+                server.join().unwrap();
             }
-            server.join().unwrap();
         }
     }
 
@@ -976,6 +1203,8 @@ mod tests {
                                 json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":id,"type":"function","function":{"name":"describe_entities","arguments":r#"{"search":"cpu.total","limit":1}"#}}]}}]})
                             }
                             Wire::Ollama => {
+                                let mut function = function;
+                                function["arguments"]["limit"] = json!("1");
                                 json!({"message":{"role":"assistant","content":"","tool_calls":[{"function":function}]},"done":true})
                             }
                             Wire::Anthropic => {
@@ -1144,6 +1373,57 @@ mod tests {
             assert!(error.to_string().contains("tool-call syntax"), "{error}");
             server.join().unwrap();
         }
+    }
+
+    #[cfg(feature = "remote-backends")]
+    #[test]
+    fn ollama_cannot_pass_off_failed_tools_as_observed_ram_usage() {
+        let _guard = crate::agent::offline_enforcement_tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for round in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let body = request(&mut stream);
+                if round == 0 {
+                    respond(
+                        &mut stream,
+                        json!({"message":{"role":"assistant","content":"","tool_calls":[{
+                        "function":{"name":"get_top_memory_processes","arguments":{"count":"five"}}
+                    }]},"done":true}),
+                    );
+                } else {
+                    let messages = body["messages"].as_array().unwrap();
+                    let result: Value =
+                        serde_json::from_str(messages.last().unwrap()["content"].as_str().unwrap())
+                            .unwrap();
+                    assert_eq!(result["success"], false);
+                    assert_eq!(
+                        result["expected_parameters"]["properties"]["count"]["type"],
+                        "integer"
+                    );
+                    respond(
+                        &mut stream,
+                        json!({"message":{"role":"assistant","content":"Chrome is using 8 GB of RAM"},"done":true}),
+                    );
+                }
+            }
+        });
+        let mut config = super::super::BackendConfig::ollama("fixture");
+        config.endpoint = Some(format!("http://{address}"));
+        let error = RemoteClient::new(config)
+            .unwrap()
+            .query_with_tools(
+                "Use observed data",
+                "What is using the most RAM?",
+                Duration::from_secs(5),
+                &RunControl::default(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("no tool evidence"), "{error}");
+        server.join().unwrap();
     }
 
     #[cfg(feature = "remote-backends")]

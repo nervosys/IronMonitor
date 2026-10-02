@@ -59,12 +59,20 @@ The built-in allowlist excludes hardware writes and profile application.
 An assistant response containing unexecuted tool-call JSON is rejected as a
 protocol failure instead of being presented as a successful monitoring answer.
 
-For IronWorks, a complete JSON object containing only a registered read-only
-`name` and its `arguments` can be normalized into a tool request. It still goes
+For IronWorks and Ollama, a complete JSON object containing only a registered
+read-only `name` and its `arguments` can be normalized into a tool request.
+Ollama also accepts the `parameters` spelling and converts canonical decimal
+strings in declared integer fields to numbers before schema validation;
+other strings and undeclared fields are not converted. It still goes
 through the normal argument and schema checks; malformed fragments are not
 repaired or executed. After two identical requests, or at the last model round,
 the agent removes tool availability and requests a final answer from existing
 evidence. A further tool request fails explicitly without running another tool.
+Schema errors include correction details. An answer after only failed tool
+calls is withheld rather than presented as measured monitoring output.
+For simple largest-RAM questions, the final process name and MiB amount are
+rendered directly from a successful `get_top_memory_processes` result requested
+by the model. Questions requiring explanation retain model synthesis.
 
 Observation readings include `sampled_at_utc`, formatted from the same original
 sample time as `sampled_at_ms`; unavailable readings carry no date. Formatting

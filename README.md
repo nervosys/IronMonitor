@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="IronMonitor (ironmon)" width="100%">
+  <img src="assets/banner.jpg" alt="IronMonitor (IMON)" width="100%">
 </p>
 
 <p align="center">

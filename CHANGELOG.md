@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.2] - 2026-10-01
+
+### Fixed
+
+- Ollama read-only calls returned as exact JSON text now use the normal tool
+  dispatcher, including the `parameters` spelling used by some local models.
+  Canonical integer strings in declared integer fields are converted before
+  normal schema validation. Calls remain bounded and cannot invoke writes.
+- Ollama gets a final-answer boundary for repeated requests. Schema errors
+  include correction details, and an answer after only failed tool calls is
+  withheld instead of presenting invented monitoring output.
+- Guide RAM-ranking questions to the top-memory tool and supply a preformatted
+  MiB value so local models can quote the measurement without converting units.
+- Render simple RAM-leader answers from the successful model-requested ranking
+  result, preventing local models from inventing additional unit conversions.
+- Preserve the endpoint probe concurrency cap using MSRV-compatible atomics,
+  and bound CI test concurrency to avoid provider fixture startup timeouts.
+
+### Changed
+
+- Replace the README banner with the supplied IronMonitor/IMON artwork.
+
 ## [7.0.1] - 2026-10-01
 
 ### Changed

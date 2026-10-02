@@ -212,15 +212,20 @@ fn probe(p: Params) -> Result<Value> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-    if ACTIVE
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < 4).then_some(n + 1)
-        })
-        .is_err()
-    {
-        return Ok(
-            json!({"status":"unavailable", "reason":"Four endpoint probes are already active"}),
-        );
+    // Keep the four-probe limit with atomics available at our MSRV. Newer Rust
+    // renamed fetch_update, but its replacement is newer than that floor.
+    let mut active = ACTIVE.load(Ordering::Acquire);
+    loop {
+        if active >= 4 {
+            return Ok(
+                json!({"status":"unavailable", "reason":"Four endpoint probes are already active"}),
+            );
+        }
+        match ACTIVE.compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(observed) => active = observed,
+        }
     }
     struct Permit;
     impl Drop for Permit {

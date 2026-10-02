@@ -387,7 +387,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
     // Process tools
     tools.push(ToolDefinition {
         name: "get_process_list".to_string(),
-        description: "Get list of running processes with CPU and memory usage.".to_string(),
+        description: "Get running processes with CPU and memory usage. The default ordering is CPU, not RAM. For the largest RAM consumer, prefer get_top_memory_processes with count 1; otherwise specify sort_by memory explicitly.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -443,7 +443,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
 
     tools.push(ToolDefinition {
         name: "get_top_memory_processes".to_string(),
-        description: "Get top N processes by memory usage.".to_string(),
+        description: "Get processes ranked by resident RAM usage, largest first. Use count 1 to identify the largest RAM consumer. Copy the returned process name and memory_display verbatim. memory_mb is in MiB (1024 squared bytes).".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -2137,6 +2137,7 @@ impl AiDataApi {
                     "name": p.name,
                     "memory_bytes": p.memory_bytes,
                     "memory_mb": p.memory_bytes / 1024 / 1024,
+                    "memory_display": format!("{} MiB", p.memory_bytes / 1024 / 1024),
                     "cpu_percent": p.cpu_percent,
                 })
             })
