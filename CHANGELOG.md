@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.12] - 2026-10-02
+
+### Changed
+
+- Vertically center the chat input text and placeholder to align with Send in
+  the middle of the shared chat/search box.
+
 ## [7.0.11] - 2026-10-02
 
 ### Changed

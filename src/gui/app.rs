@@ -2478,9 +2478,12 @@ impl IronMonitorApp {
                                         )
                                         .background_color(CyberColors::BACKGROUND_DARK)
                                         .frame(false)
+                                        .margin(egui::Margin::ZERO)
+                                        .min_size(egui::vec2(input_width, 32.0))
                                         .text_color(CyberColors::TEXT_PRIMARY)
                                         .font(egui::FontId::proportional(14.0))
                                         .desired_rows(1)
+                                        .vertical_align(egui::Align::Center)
                                         .return_key(egui::KeyboardShortcut::new(
                                             egui::Modifiers::SHIFT,
                                             egui::Key::Enter,

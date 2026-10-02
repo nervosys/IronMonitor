@@ -649,7 +649,7 @@ mod app_tab_tests {
                 assert!(send.max.x <= width && send.max.y < 200.0, "{send:?}");
                 assert!(send.min.x > input.max.x, "input: {input:?}, send: {send:?}");
                 assert!(
-                    (send.center().y - input.center().y).abs() < 16.0,
+                    (send.center().y - input.center().y).abs() < 1.0,
                     "input: {input:?}, send: {send:?}"
                 );
                 let output = ctx.run(
