@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.10] - 2026-10-02
+
+### Changed
+
+- Refine only the shared chat/search box with a dark rounded surface, a frameless
+  input, and compact dark Send/Cancel buttons. Preserve its centered two-thirds
+  width and reserve a full-width page row so subsequent content retains its size.
+
 ## [7.0.9] - 2026-10-02
 
 ### Changed

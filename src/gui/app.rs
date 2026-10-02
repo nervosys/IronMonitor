@@ -2443,6 +2443,8 @@ impl IronMonitorApp {
         let available_width = ui.available_width();
         let composer_width = available_width * (2.0 / 3.0);
         ui.horizontal(|ui| {
+            // Reserve the whole page row; only the composer itself is narrower.
+            ui.set_min_width(available_width);
             ui.add_space((available_width - composer_width) * 0.5);
             ui.allocate_ui_with_layout(
                 egui::vec2(composer_width, 0.0),
@@ -2450,7 +2452,7 @@ impl IronMonitorApp {
                 |ui| {
                     egui::Frame::NONE
                         .fill(CyberColors::BACKGROUND_DARK)
-                        .corner_radius(8)
+                        .corner_radius(12)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_width((composer_width - 16.0).max(1.0));
@@ -2470,6 +2472,7 @@ impl IronMonitorApp {
                                             .color(CyberColors::TEXT_SECONDARY),
                                         )
                                         .background_color(CyberColors::BACKGROUND_DARK)
+                                        .frame(false)
                                         .text_color(CyberColors::TEXT_PRIMARY)
                                         .font(egui::FontId::proportional(14.0))
                                         .desired_rows(1)
@@ -2486,8 +2489,14 @@ impl IronMonitorApp {
                                 if self.agent_is_processing {
                                     if ui
                                         .add(
-                                            egui::Button::new("Cancel")
-                                                .min_size(egui::vec2(64.0, 32.0)),
+                                            egui::Button::new(
+                                                RichText::new("Cancel")
+                                                    .color(CyberColors::TEXT_PRIMARY),
+                                            )
+                                            .fill(CyberColors::SURFACE_HOVER)
+                                            .stroke(egui::Stroke::NONE)
+                                            .corner_radius(8)
+                                            .min_size(egui::vec2(64.0, 32.0)),
                                         )
                                         .on_hover_text("Thinking… Click to cancel")
                                         .clicked()
@@ -2501,8 +2510,14 @@ impl IronMonitorApp {
                                     if ui
                                         .add_enabled(
                                             enabled,
-                                            egui::Button::new("Send")
-                                                .min_size(egui::vec2(64.0, 32.0)),
+                                            egui::Button::new(
+                                                RichText::new("Send")
+                                                    .color(CyberColors::TEXT_PRIMARY),
+                                            )
+                                            .fill(CyberColors::SURFACE_HOVER)
+                                            .stroke(egui::Stroke::NONE)
+                                            .corner_radius(8)
+                                            .min_size(egui::vec2(64.0, 32.0)),
                                         )
                                         .on_hover_text("Enter to send; Shift+Enter for a new line")
                                         .on_disabled_hover_text(if can_answer {

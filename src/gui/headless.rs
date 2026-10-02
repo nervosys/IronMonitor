@@ -616,6 +616,18 @@ mod app_tab_tests {
         let (mut app, ctx) = app_and_ctx();
         for width in [320.0, 800.0, 1400.0] {
             let size = egui::vec2(width, 700.0);
+            painted_text_rects_sized(&ctx, size, |ui| {
+                let full_width = ui.available_width();
+                let fonts = ui.style().text_styles.clone();
+                app.draw_agent_composer(ui);
+                assert!((ui.available_width() - full_width).abs() < 1.0);
+                assert_eq!(ui.style().text_styles, fonts);
+                let dashboard = ui.add(crate::gui::widgets::QuickLookPanel::new(
+                    0.0, 0.0, None, 0.0,
+                ));
+                assert!((dashboard.rect.width() - full_width).abs() < 1.0);
+                assert_eq!(dashboard.rect.height(), 32.0);
+            });
             for ai_page in [false, true] {
                 let text = painted_text_rects_sized(&ctx, size, |ui| {
                     if ai_page {
