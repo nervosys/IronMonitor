@@ -82,6 +82,7 @@ impl AppleGpu {
     }
 }
 
+#[cfg(feature = "apple")]
 impl Gpu for AppleGpu {
     fn vendor(&self) -> GpuVendor {
         GpuVendor::Apple
@@ -215,5 +216,3 @@ mod inventory_tests {
         assert!(AppleGpu::parse_inventory("Chipset Model: Intel Iris\n").is_empty());
     }
 }
-
-#[cfg(feature = "apple")]
