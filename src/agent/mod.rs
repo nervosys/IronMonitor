@@ -323,6 +323,7 @@ impl AgentConfig {
             BackendType::RemoteOllama => {
                 BackendConfig::ollama("llama3.2:3b") // Default Ollama model
             }
+            BackendType::RemoteMlx => BackendConfig::mlx("default_model"),
             BackendType::RemoteLMStudio => {
                 BackendConfig::lm_studio("local-model") // LM Studio model
             }
@@ -360,6 +361,7 @@ impl AgentConfig {
             BackendType::RemoteOpenAI => BackendConfig::openai(DEFAULT_OPENAI_MODEL, None),
             BackendType::RemoteAnthropic => BackendConfig::anthropic(DEFAULT_ANTHROPIC_MODEL, None),
             BackendType::RemoteOllama => BackendConfig::ollama("llama3.2:3b"),
+            BackendType::RemoteMlx => BackendConfig::mlx("default_model"),
             BackendType::RemoteLMStudio => BackendConfig::lm_studio("local-model"),
             BackendType::RemoteGitHub => BackendConfig::github_models(DEFAULT_GITHUB_MODEL, None),
             BackendType::RemoteVllm => BackendConfig::vllm("local-model"),

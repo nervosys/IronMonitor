@@ -63,6 +63,9 @@ pub enum BackendType {
     /// Remote LM Studio (local server)
     RemoteLMStudio,
 
+    /// MLX-LM HTTP server running on Apple silicon.
+    RemoteMlx,
+
     /// Remote vLLM (local/remote server)
     RemoteVllm,
 
@@ -124,6 +127,7 @@ impl BackendType {
                     | BackendType::LocalCandle
                     | BackendType::RemoteOllama
                     | BackendType::RemoteLMStudio
+                    | BackendType::RemoteMlx
                     | BackendType::RemoteVllm
                     | BackendType::RemoteTensorRT
             ),
@@ -159,6 +163,7 @@ impl BackendType {
             BackendType::RemoteAnthropic => "Anthropic Claude",
             BackendType::RemoteOllama => "Ollama (Local Server)",
             BackendType::RemoteLMStudio => "LM Studio (Local Server)",
+            BackendType::RemoteMlx => "MLX (Apple Silicon Server)",
             BackendType::RemoteVllm => "vLLM (High-Performance Server)",
             BackendType::RemoteTensorRT => "TensorRT-LLM (NVIDIA Optimized)",
             BackendType::RemoteGitHub => "GitHub Models",
@@ -209,6 +214,7 @@ impl BackendType {
             BackendType::RemoteAnthropic => Some("https://api.anthropic.com/v1".to_string()),
             BackendType::RemoteOllama => Some("http://localhost:11434".to_string()),
             BackendType::RemoteLMStudio => Some("http://localhost:1234/v1".to_string()),
+            BackendType::RemoteMlx => Some("http://localhost:8082/v1".to_string()),
             // `/v1` is required: the request path appends only "/chat/completions",
             // so without it every vLLM request went to /chat/completions and 404'd.
             BackendType::RemoteVllm => Some("http://localhost:8000/v1".to_string()),
@@ -346,6 +352,21 @@ impl BackendConfig {
         }
     }
 
+    /// Connect to an MLX-LM server. `default_model` selects its startup model.
+    /// IronMonitor uses port 8082 to keep MLX separate from IronWorks on 8080.
+    pub fn mlx(model: &str) -> Self {
+        Self {
+            backend_type: BackendType::RemoteMlx,
+            model_id: model.to_string(),
+            endpoint: BackendType::RemoteMlx.default_endpoint(),
+            api_key: None,
+            model_path: None,
+            max_tokens: 1024,
+            temperature: 0.3,
+            timeout: Duration::from_secs(120),
+            options: HashMap::new(),
+        }
+    }
     /// Create config for LM Studio (local server)
     pub fn lm_studio(model: &str) -> Self {
         Self {
@@ -461,7 +482,7 @@ pub struct BackendDiscovery {
 impl BackendDiscovery {
     /// Discover available backends
     ///
-    /// The five server probes are HTTP round trips to localhost ports that are
+    /// The six server probes are HTTP round trips to localhost ports that are
     /// usually not listening, and each costs up to a 1s connect timeout. Run in
     /// sequence they took 4.7s on a machine with only Ollama running — long enough
     /// that the GUI's AI tab, which gave up waiting after 3s, reported "AI backend
@@ -473,10 +494,11 @@ impl BackendDiscovery {
         // Order the results deterministically regardless of which probe finishes
         // first: IronWorks is the default backend and must stay ahead of the others,
         // because `recommended()` takes the first available entry.
-        let probes: [(BackendType, fn() -> bool); 5] = [
+        let probes: [(BackendType, fn() -> bool); 6] = [
             (BackendType::IronWorks, Self::check_ironworks_available),
             (BackendType::RemoteOllama, Self::check_ollama_available),
             (BackendType::RemoteLMStudio, Self::check_lm_studio_available),
+            (BackendType::RemoteMlx, Self::check_mlx_available),
             (BackendType::RemoteVllm, Self::check_vllm_available),
             (BackendType::RemoteTensorRT, Self::check_tensorrt_available),
         ];
@@ -575,6 +597,7 @@ impl BackendDiscovery {
             BackendType::IronWorks,
             BackendType::RemoteTensorRT,
             BackendType::RemoteVllm,
+            BackendType::RemoteMlx,
             BackendType::RemoteOllama,
             BackendType::RemoteLMStudio,
             BackendType::Cli(CliProvider::Ollama),
@@ -636,6 +659,10 @@ impl BackendDiscovery {
     fn check_lm_studio_available() -> bool {
         // Try to connect to LM Studio server
         Self::check_http_endpoint_shape("http://localhost:1234/v1/models", Some("data"))
+    }
+
+    fn check_mlx_available() -> bool {
+        Self::check_http_endpoint_shape("http://localhost:8082/v1/models", Some("data"))
     }
 
     /// Check if vLLM is running
@@ -796,13 +823,15 @@ impl BackendCapabilities {
                 max_context_length: 1_000_000,
                 cost_per_million_tokens: None, // See the note on RemoteOpenAI.
             },
-            BackendType::RemoteOllama | BackendType::RemoteLMStudio => Self {
-                supports_streaming: true,
-                supports_functions: false,
-                supports_vision: false,
-                max_context_length: 8192,
-                cost_per_million_tokens: None, // Local/free
-            },
+            BackendType::RemoteOllama | BackendType::RemoteLMStudio | BackendType::RemoteMlx => {
+                Self {
+                    supports_streaming: true,
+                    supports_functions: false,
+                    supports_vision: false,
+                    max_context_length: 8192,
+                    cost_per_million_tokens: None, // Local/free
+                }
+            }
             BackendType::RemoteVllm => Self {
                 supports_streaming: true,
                 supports_functions: false,
@@ -861,6 +890,31 @@ mod tests {
     /// over the Ollama server that was genuinely running — sending every query to a
     /// service that speaks no such API. Ports 1234, 8000 and 11434 are equally
     /// available to unrelated software.
+    #[test]
+    fn mlx_is_a_configurable_local_server_with_a_valid_default_model() {
+        let config = BackendConfig::mlx("default_model");
+        config.validate().unwrap();
+        assert_eq!(config.endpoint.as_deref(), Some("http://localhost:8082/v1"));
+        assert!(config.backend_type.runs_on_host());
+        assert!(config.backend_type.is_remote());
+        assert!(!config.backend_type.requires_api_key());
+        assert!(!config.backend_type.is_builtin_engine());
+        let discovery = BackendDiscovery {
+            available_backends: vec![BackendType::RemoteMlx],
+        };
+        assert_eq!(discovery.recommended(), BackendType::RemoteMlx);
+        assert_eq!(
+            crate::agent::AgentConfig::with_backend_type(discovery.recommended())
+                .unwrap()
+                .backend
+                .unwrap()
+                .model_id,
+            "default_model"
+        );
+        let serialized = serde_json::to_string(&config).unwrap();
+        let restored: BackendConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.backend_type, BackendType::RemoteMlx);
+    }
     #[test]
     fn discovery_requires_the_shape_of_the_api_not_just_a_response() {
         let openai_listing = serde_json::json!({

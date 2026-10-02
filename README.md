@@ -186,6 +186,8 @@ for proc in gpu_procs.iter().take(10) {
 
 ### AI Agent for System Analysis
 
+Apple silicon macOS also supports MLX-LM through the **MLX (Apple Silicon)** AI provider, with model discovery and native monitoring tool calls. See [MLX setup](AI_INTEGRATION.md#mlx-on-apple-silicon-macos).
+
 Ask questions through a configured model backend. The built-in agent calls
 read-only monitoring tools to obtain evidence and follow-up observations:
 

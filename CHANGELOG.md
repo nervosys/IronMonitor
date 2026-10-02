@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.15] - 2026-10-02
+
+### Added
+
+- MLX-LM backend configuration, local-server discovery, and AI-page selection for
+  Apple silicon macOS, using port 8082 to avoid the IronWorks default port.
+- MLX model listing, native OpenAI-format monitoring tool calls, and the server's
+  `default_model` startup alias for automatic CLI/TUI configuration.
+- MLX HTTP integration tests and macOS setup documentation.
+
 ## [7.0.14] - 2026-10-02
 
 ### Fixed

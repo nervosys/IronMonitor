@@ -107,6 +107,7 @@ impl RemoteClient {
                 crate::agent::backend::BackendType::IronWorks
                     | crate::agent::backend::BackendType::RemoteOllama
                     | crate::agent::backend::BackendType::RemoteLMStudio
+                    | crate::agent::backend::BackendType::RemoteMlx
                     | crate::agent::backend::BackendType::RemoteVllm
                     | crate::agent::backend::BackendType::RemoteTensorRT
             ) {
@@ -384,6 +385,13 @@ impl RemoteClientBuilder {
     pub fn ollama(model: &str) -> Self {
         Self {
             config: BackendConfig::ollama(model),
+        }
+    }
+
+    /// Connect to an Apple silicon MLX-LM server.
+    pub fn mlx(model: &str) -> Self {
+        Self {
+            config: BackendConfig::mlx(model),
         }
     }
 

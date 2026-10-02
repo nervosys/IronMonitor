@@ -2,6 +2,39 @@
 
 IronMonitor provides comprehensive hardware monitoring capabilities that AI agents can use to understand and query system state.
 
+## MLX on Apple silicon macOS
+
+IronMonitor supports `mlx-lm` as the **MLX (Apple Silicon)** provider. Install and
+start its HTTP server on the Mac, then select MLX on the AI page:
+
+```sh
+python3 -m venv ~/.venvs/ironmonitor-mlx
+source ~/.venvs/ironmonitor-mlx/bin/activate
+python -m pip install -U mlx-lm
+mlx_lm.server --model mlx-community/Llama-3.2-3B-Instruct-4bit --host 127.0.0.1 --port 8082
+```
+
+IronMonitor connects to `http://localhost:8082/v1`, reads `/models`, and sends
+non-streaming Chat Completions with native monitoring tools. Choose an actual
+model listed by the server; `default_model` is MLX-LM's documented startup-model
+alias when no explicit choice is available. Automatic discovery also makes MLX
+available to `imon ai query`, `amon`, and the TUI. IronWorks retains priority when
+both are running. The MLX server and chosen tokenizer/model must support native
+tool calls for agentic monitoring; unexecuted text tool syntax is not a reading.
+
+MLX inference requires Apple silicon and a macOS version supported by your MLX
+installation. The Rust client connects over HTTP and needs no Python embedding or
+new Rust feature flag beyond `remote-backends` (included in the normal build).
+IronMonitor does not install packages, download model weights, or start the server
+automatically. Port 8082 keeps this setup separate from IronWorks on 8080.
+
+For an existing server on another port, use `BackendConfig::mlx("default_model")`
+and set its public `endpoint`, or
+`RemoteClientBuilder::mlx("default_model").endpoint("http://localhost:8080/v1".into())`.
+Loopback endpoints remain compatible with IronMonitor's offline privacy mode.
+
+See [MLX-LM's server documentation](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md)
+and [MLX installation requirements](https://ml-explore.github.io/mlx/build/html/install.html).
 ## Supported Models
 
 ### Closed Source

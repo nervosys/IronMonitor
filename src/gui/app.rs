@@ -417,6 +417,7 @@ enum AiBackendSelection {
     #[default]
     Ollama,
     LmStudio,
+    Mlx,
     Vllm,
     TensorRt,
     OpenAi,
@@ -436,6 +437,7 @@ impl AiBackendSelection {
         Self::IronWorks,
         Self::Ollama,
         Self::LmStudio,
+        Self::Mlx,
         Self::Vllm,
         Self::TensorRt,
         Self::OpenAi,
@@ -453,6 +455,7 @@ impl AiBackendSelection {
             Self::IronWorks => "IronWorks",
             Self::Ollama => "Ollama",
             Self::LmStudio => "LM Studio",
+            Self::Mlx => "MLX (Apple Silicon)",
             Self::Vllm => "vLLM",
             Self::TensorRt => "TensorRT-LLM",
             Self::OpenAi => "OpenAI",
@@ -472,6 +475,7 @@ impl AiBackendSelection {
             Self::IronWorks => "⚙ IronWorks (built-in)",
             Self::Ollama => "🦙 Ollama",
             Self::LmStudio => "📦 LM Studio",
+            Self::Mlx => "MLX (Apple Silicon)",
             Self::Vllm => "🚀 vLLM",
             Self::TensorRt => "⚡ TensorRT-LLM",
             Self::OpenAi => "🤖 OpenAI",
@@ -499,6 +503,7 @@ impl AiBackendSelection {
                 Some("http://localhost:11434/api/tags")
             }
             Self::LmStudio => Some("http://localhost:1234/v1/models"),
+            Self::Mlx => Some("http://localhost:8082/v1/models"),
             Self::Vllm => Some("http://localhost:8000/v1/models"),
             Self::TensorRt => Some("http://localhost:8001/v1/models"),
             Self::OpenAi => Some("https://api.openai.com/v1/models"),
@@ -534,6 +539,7 @@ impl AiBackendSelection {
     /// a guess, not an observation, and they will age.
     fn fallback_models(self) -> &'static [&'static str] {
         match self {
+            Self::Mlx => &["default_model"],
             Self::Anthropic => &["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
             Self::OpenAi => &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
             // GitHub's catalogue is readable without a credential, so the live
@@ -1382,7 +1388,7 @@ impl IronMonitorApp {
                 self.agent_receiver = None;
 
                 if self.agent.is_none() {
-                    // Detection is five HTTP probes with a 1s connect timeout each,
+                    // Detection is six HTTP probes with a 1s connect timeout each,
                     // fired during the startup stampede — GPU enumeration, disk
                     // enumeration and an `ollama list` are all running at that
                     // moment. A probe that loses that race used to latch the tab into
@@ -7164,7 +7170,7 @@ impl IronMonitorApp {
                 );
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("Checking for Ollama, OpenAI, Anthropic, LM Studio...")
+                    RichText::new("Checking for Ollama, MLX, OpenAI, Anthropic, LM Studio...")
                         .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                 );
             });
@@ -7179,7 +7185,7 @@ impl IronMonitorApp {
         }
 
         // `agent_receiver` is dropped when the detection thread's result is taken, so
-        // this is the truthful "still looking" signal. Backend discovery probes five
+        // this is the truthful "still looking" signal. Backend discovery probes six
         // local ports and used to take 4.7s, comfortably past the 3s spinner budget,
         // so the tab asserted "AI backend not connected" about a backend it was in
         // the middle of finding — and then connected a second later.
@@ -8012,6 +8018,9 @@ impl IronMonitorApp {
                                  http://localhost:8080 and it is used automatically. \
                                  Inference stays on this machine."
                             }
+                            AiBackendSelection::Mlx => {
+                                "On Apple silicon macOS, install mlx-lm and run mlx_lm.server --model <model-path-or-repo> --port 8082. Select a listed model or default_model for the startup model."
+                            }
                             AiBackendSelection::Vllm => {
                                 "Start vLLM with an OpenAI-compatible server on \
                                  http://localhost:8000."
@@ -8153,6 +8162,7 @@ impl IronMonitorApp {
         match self.ai_selected_backend {
             AiBackendSelection::IronWorks => BackendConfig::ironworks(&model),
             AiBackendSelection::Ollama => BackendConfig::ollama(&model),
+            AiBackendSelection::Mlx => BackendConfig::mlx(&model),
             AiBackendSelection::LmStudio => BackendConfig::lm_studio(&model),
             AiBackendSelection::Vllm => BackendConfig::vllm(&model),
             AiBackendSelection::TensorRt => BackendConfig::tensorrt(&model),
@@ -8482,6 +8492,26 @@ mod model_listing_tests {
     use super::AiBackendSelection;
 
     #[test]
+    fn mlx_selection_uses_the_server_model_and_renders_mac_setup() {
+        use super::*;
+        let ctx = egui::Context::default();
+        let mut app = IronMonitorApp::with_context(&ctx);
+        app.ai_selected_backend = AiBackendSelection::Mlx;
+        app.ai_selected_model.clear();
+        let config = app.build_backend_config();
+        assert_eq!(config.backend_type, crate::agent::BackendType::RemoteMlx);
+        assert_eq!(config.model_id, "default_model");
+        assert!(app.agent_can_answer());
+        app.models_by_provider
+            .insert(AiBackendSelection::Mlx, vec!["actual-server-model".into()]);
+        assert_eq!(app.build_backend_config().model_id, "actual-server-model");
+        app.ai_selected_model = "explicit-model".into();
+        assert_eq!(app.build_backend_config().model_id, "explicit-model");
+        let text = crate::gui::headless::painted_blob(&ctx, |ui| app.draw_ai_setup_panel(ui));
+        assert!(text.contains("MLX (Apple Silicon)"), "{text}");
+        assert!(text.contains("mlx_lm.server"), "{text}");
+    }
+    #[test]
     fn detected_apple_gpu_is_visible_when_live_telemetry_is_unavailable() {
         use super::*;
         let ctx = egui::Context::default();
@@ -8582,7 +8612,10 @@ mod model_listing_tests {
             let is_local = provider
                 .models_endpoint()
                 .is_some_and(|url| url.contains("localhost"));
-            if is_local {
+            if *provider == AiBackendSelection::Mlx {
+                // This is the documented server startup-model alias, not a guessed repo.
+                assert_eq!(provider.fallback_models(), &["default_model"]);
+            } else if is_local {
                 assert!(
                     provider.fallback_models().is_empty(),
                     "{:?} guesses a model name, but a local server serves only what \

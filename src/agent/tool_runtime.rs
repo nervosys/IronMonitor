@@ -774,7 +774,7 @@ impl RemoteClient {
                 control.check(deadline)?;
                 let answer_only = matches!(
                     self.config.backend_type,
-                    BackendType::IronWorks | BackendType::RemoteOllama
+                    BackendType::IronWorks | BackendType::RemoteOllama | BackendType::RemoteMlx
                 ) && (final_only || round + 1 == MAX_ROUNDS);
                 if answer_only {
                     messages.push(json!({"role":"user","content":"The tool budget is exhausted or the same request has repeated. Give a final answer using the tool results already supplied. Explain failed or unavailable readings and evidence limits. Do not request another tool or output tool-call syntax."}));
@@ -793,6 +793,9 @@ impl RemoteClient {
                         json!({"model":self.config.model_id,"messages":messages,"tools":tools,"tool_choice":"auto","max_tokens":self.config.max_tokens,"temperature":self.config.temperature})
                     }
                 };
+                if self.config.backend_type == BackendType::RemoteMlx {
+                    body["stream"] = json!(false);
+                }
                 if answer_only || explaining {
                     body.as_object_mut().unwrap().remove("tools");
                     body.as_object_mut().unwrap().remove("tool_choice");
@@ -1056,6 +1059,90 @@ impl RemoteClient {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "remote-backends")]
+    #[test]
+    fn mlx_lists_models_and_executes_native_monitoring_tools() {
+        use std::io::Read;
+        let _guard = crate::agent::offline_enforcement_tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            for round in 0..3 {
+                let until = Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < until, "missing MLX request");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(e) => panic!("{e}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                if round == 0 {
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        header.push(byte[0]);
+                        assert!(header.len() < 8192);
+                    }
+                    assert!(String::from_utf8(header)
+                        .unwrap()
+                        .starts_with("GET /v1/models "));
+                    respond(
+                        &mut stream,
+                        json!({"object":"list","data":[{"id":"mlx-fixture","object":"model"}]}),
+                    );
+                    continue;
+                }
+                let body = request(&mut stream);
+                assert_eq!(body["model"], "mlx-fixture");
+                assert_eq!(body["stream"], false);
+                assert_eq!(body["max_tokens"], 1024);
+                assert!(body["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["function"]["name"] == "describe_entities"));
+                if round == 1 {
+                    respond(
+                        &mut stream,
+                        json!({"object":"chat.completion","choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"mlx-call","type":"function","function":{"name":"describe_entities","arguments":"{\"search\":\"cpu.total\",\"limit\":1}"}}]}}]}),
+                    );
+                } else {
+                    let messages = body["messages"].as_array().unwrap();
+                    let output = messages.last().unwrap();
+                    assert_eq!(output["role"], "tool");
+                    assert_eq!(output["tool_call_id"], "mlx-call");
+                    let evidence: Value =
+                        serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+                    assert_eq!(evidence["success"], true);
+                    respond(
+                        &mut stream,
+                        json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"MLX received CPU schema."}}]}),
+                    );
+                }
+            }
+        });
+        let mut config = super::super::BackendConfig::mlx("mlx-fixture");
+        config.endpoint = Some(format!("http://{address}/v1"));
+        let client = RemoteClient::new(config.clone()).unwrap();
+        assert_eq!(client.list_models().unwrap(), vec!["mlx-fixture"]);
+        let mut agent =
+            super::super::Agent::new(super::super::AgentConfig::with_backend(config)).unwrap();
+        let response = agent
+            .ask_with_control("Inspect CPU evidence", &RunControl::default())
+            .unwrap();
+        assert_eq!(response.response, "MLX received CPU schema.");
+        server.join().unwrap();
+    }
     #[cfg(feature = "remote-backends")]
     #[test]
     fn ollama_empty_replies_retry_once_without_losing_tool_evidence() {
