@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.18] - 2026-10-02
+
+### Fixed
+
+- Show Overview drive labels once when the disk name already matches its mount
+  point (for example, C:\), while retaining distinct hardware model names.
+
 ## [7.0.17] - 2026-10-02
 
 ### Changed

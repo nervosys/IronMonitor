@@ -8491,7 +8491,10 @@ fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSna
         for (disk, ui) in disks.iter().zip(columns) {
             ui.group(|ui| {
                 ui.set_width(ui.available_width());
-                let name = if disk.mount_point != "N/A" && !disk.mount_point.is_empty() {
+                let name = if disk.mount_point != "N/A"
+                    && !disk.mount_point.is_empty()
+                    && disk.mount_point != disk.name
+                {
                     format!("{}  {}", disk.mount_point, disk.name)
                 } else {
                     disk.name.clone()
@@ -8907,5 +8910,31 @@ mod overview_disk_tests {
             }
             height = Some(bottom);
         }
+    }
+    #[test]
+    fn overview_drive_title_does_not_repeat_the_mount_point() {
+        let ctx = egui::Context::default();
+        let disks = [
+            DiskSnapshot {
+                name: "C:\\".into(),
+                ..volume(Some(1024), Some(0))
+            },
+            DiskSnapshot {
+                name: "Samsung SSD".into(),
+                mount_point: "D:\\".into(),
+                ..volume(Some(1024), Some(0))
+            },
+        ];
+        let text =
+            super::super::headless::painted_text(&ctx, |ui| draw_overview_disk_usage(ui, &disks));
+        assert!(text.iter().any(|label| label == "C:\\"), "{text:?}");
+        assert!(
+            !text.iter().any(|label| label.contains("C:\\  C:\\")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter().any(|label| label == "D:\\  Samsung SSD"),
+            "distinct model names should remain: {text:?}"
+        );
     }
 }
