@@ -1123,7 +1123,8 @@ ironmon gui
   `ironmon gui --frame --tab system`.
 - 🎨 18 palettes, including Dark Monochrome, Dracula, One Dark Pro, Tokyo Night,
   Nord, Monokai and GitHub Dark, shared across tabs
-- 💾 Overview disk capacity, used/free space and a space-utilization bar per disk or volume
+- 💾 Overview disk capacity, used/free space and space-utilization bars in one
+  automatically fitted horizontal row, with full details on hover
 - 📊 Real-time graphs and visualizations
 - 🔄 Auto-refreshing metrics
 - 🖱️ Mouse-friendly interface with scrollable panels

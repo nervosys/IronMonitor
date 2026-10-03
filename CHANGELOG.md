@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.17] - 2026-10-02
+
+### Changed
+
+- Fit Overview disks side by side into one horizontal row using equal-width
+  summaries, compact usage bars and truncated labels with complete hover details.
+- Preserve existing chat/chart dimensions and unavailable storage states.
+
 ## [7.0.16] - 2026-10-02
 
 ### Added

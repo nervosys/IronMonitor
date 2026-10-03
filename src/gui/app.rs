@@ -8484,69 +8484,82 @@ fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSna
         return;
     }
 
-    for disk in disks {
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(&disk.name)
-                        .strong()
-                        .color(theme::color(ui.ctx(), DeviceTitleColors::DISK)),
-                );
-                if disk.mount_point != "N/A" && !disk.mount_point.is_empty() {
-                    ui.label(&disk.mount_point);
-                }
-                if disk.filesystem != "N/A" && !disk.filesystem.is_empty() {
-                    ui.weak(&disk.filesystem);
-                }
-            });
-
-            // Reject impossible readings rather than painting a clamped bar.
-            let used = disk
-                .used
-                .filter(|used| disk.total.is_none_or(|total| *used <= total));
-            let free = disk
-                .total
-                .zip(used)
-                .and_then(|(total, used)| total.checked_sub(used));
-            let size = |value: Option<u64>| {
-                value.map_or_else(|| "unavailable".to_string(), format_disk_capacity)
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("Capacity: {}", size(disk.total)));
-                ui.label(format!("Used: {}", size(used)));
-                ui.label(format!("Free: {}", size(free)));
-            });
-            if let Some((total, used)) = disk.total.zip(used).filter(|(total, _)| *total > 0) {
-                let fraction = used as f64 / total as f64;
-                ui.add(
-                    CyberProgressBar::new(fraction as f32)
-                        .with_threshold_color()
-                        .height(20.0)
-                        .label(format!("Space used: {:.1}%", fraction * 100.0))
-                        .show_percentage(false),
-                );
-            } else {
-                ui.weak("Space used: unavailable");
-            }
-
-            // These are rates only when the collector has measured them. Never
-            // turn an unavailable rate or a cumulative counter into idle I/O.
-            if disk.read_rate.is_some() || disk.write_rate.is_some() {
-                let rate = |value: Option<f64>| {
-                    value.filter(|v| v.is_finite() && *v >= 0.0).map_or_else(
-                        || "unavailable".to_string(),
-                        |v| format!("{}/s", format_bytes(v)),
-                    )
+    // One strip for every disk: equal-width columns fit the current viewport.
+    // Truncated labels retain full readings on hover rather than wrapping into
+    // additional rows or reducing the size of other Overview widgets.
+    ui.columns(disks.len(), |columns| {
+        for (disk, ui) in disks.iter().zip(columns) {
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                let name = if disk.mount_point != "N/A" && !disk.mount_point.is_empty() {
+                    format!("{}  {}", disk.mount_point, disk.name)
+                } else {
+                    disk.name.clone()
                 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("Read: {}", rate(disk.read_rate)));
-                    ui.label(format!("Write: {}", rate(disk.write_rate)));
-                });
-            }
-        });
-        ui.add_space(4.0);
-    }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&name)
+                            .strong()
+                            .color(theme::color(ui.ctx(), DeviceTitleColors::DISK)),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&name);
+
+                // Reject impossible readings rather than painting a clamped bar.
+                let used = disk
+                    .used
+                    .filter(|used| disk.total.is_none_or(|total| *used <= total));
+                let free = disk
+                    .total
+                    .zip(used)
+                    .and_then(|(total, used)| total.checked_sub(used));
+                let size = |value: Option<u64>| {
+                    value.map_or_else(|| "unavailable".to_string(), format_disk_capacity)
+                };
+                let summary = format!(
+                    "Capacity: {}  Used: {}  Free: {}",
+                    size(disk.total),
+                    size(used),
+                    size(free),
+                );
+                let mut details = format!("{name}\n{}\n{summary}", disk.filesystem);
+                if disk.read_rate.is_some() || disk.write_rate.is_some() {
+                    let rate = |value: Option<f64>| {
+                        value.filter(|v| v.is_finite() && *v >= 0.0).map_or_else(
+                            || "unavailable".to_string(),
+                            |v| format!("{}/s", format_bytes(v)),
+                        )
+                    };
+                    details.push_str(&format!(
+                        "\nRead: {}  Write: {}",
+                        rate(disk.read_rate),
+                        rate(disk.write_rate),
+                    ));
+                }
+                ui.add(egui::Label::new(summary).truncate())
+                    .on_hover_text(details);
+
+                if let Some((total, used)) = disk.total.zip(used).filter(|(total, _)| *total > 0) {
+                    let fraction = used as f64 / total as f64;
+                    let usage = format!("Space used: {:.1}%", fraction * 100.0);
+                    ui.add(egui::Label::new(&usage).truncate())
+                        .on_hover_text(&usage);
+                    ui.add(
+                        CyberProgressBar::new(fraction as f32)
+                            .with_threshold_color()
+                            .height(8.0)
+                            .show_percentage(false),
+                    );
+                } else {
+                    ui.add(egui::Label::new("Space used: unavailable").truncate());
+                    // Keep unknown and measured disks aligned without an empty
+                    // usage bar implying a measured zero.
+                    ui.allocate_space(egui::vec2(ui.available_width(), 8.0));
+                }
+            });
+        }
+    });
 }
 
 fn format_disk_capacity(bytes: u64) -> String {
@@ -8782,7 +8795,7 @@ mod overview_disk_tests {
     }
 
     #[test]
-    fn disk_rows_wrap_at_small_width_and_respect_monochrome() {
+    fn disk_strip_fits_one_row_at_small_width_and_respects_monochrome() {
         let ctx = egui::Context::default();
         theme::apply_theme(&ctx, ColorTheme::Monochrome);
         let disks = [
@@ -8834,6 +8847,65 @@ mod overview_disk_tests {
                 text.contains("Space used: 0.0%"),
                 "measured zero must render: {text}"
             );
+        }
+    }
+    #[test]
+    fn multiple_disks_share_one_row_without_wrapping_long_labels() {
+        let ctx = egui::Context::default();
+        let disks: Vec<_> = ["C:\\", "D:\\", "E:\\", "F:\\"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, mount_point)| DiskSnapshot {
+                name: "Very long physical disk model name with manufacturer and serial number"
+                    .into(),
+                mount_point: mount_point.into(),
+                read_rate: Some(1024.0),
+                ..volume(
+                    Some(1024 * 1024 * 1024),
+                    if i == 3 { None } else { Some(0) },
+                )
+            })
+            .collect();
+        let mut height: Option<f32> = None;
+        for width in [320.0, 800.0, 1400.0] {
+            let labels = super::super::headless::painted_text_rects_sized(
+                &ctx,
+                egui::vec2(width, 600.0),
+                |ui| draw_overview_disk_usage(ui, &disks),
+            );
+            let names: Vec<_> = labels
+                .iter()
+                .filter(|(text, _)| text.contains("Very long physical disk"))
+                .collect();
+            assert_eq!(
+                names.len(),
+                disks.len(),
+                "every disk must be painted: {labels:?}"
+            );
+            let first_y = names[0].1.min.y;
+            for (_, rect) in names {
+                assert!(
+                    (rect.min.y - first_y).abs() < 1.0,
+                    "disk wrapped onto a second row at {width}px"
+                );
+            }
+            for (text, rect) in &labels {
+                assert!(
+                    rect.right() <= width + 1.0,
+                    "{text} overflows at {width}px: {rect:?}"
+                );
+            }
+            let bottom = labels
+                .iter()
+                .map(|(_, rect)| rect.bottom())
+                .fold(0.0_f32, f32::max);
+            if let Some(previous) = height {
+                assert!(
+                    (bottom - previous).abs() < 1.0,
+                    "disk strip height must stay fixed across widths"
+                );
+            }
+            height = Some(bottom);
         }
     }
 }
