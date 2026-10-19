@@ -21,6 +21,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the observability `dropped` figure follows. An interface whose link record
   carried no statistics is left out instead of listed as never having moved a
   byte.
+- Process listings no longer report figures for processes nobody read. On
+  Linux a `/proc/<pid>/stat` field that did not parse became 0 CPU time, 0
+  threads or a start at boot, and an unreadable `statm` a resident size of 0;
+  such a process is now left out, as one that vanished mid-read already was. On
+  Windows a process that exited between the snapshot and the process table was
+  listed using no memory and no CPU; a handle whose `GetProcessTimes` was
+  refused now takes its CPU times from the process table. `private_bytes` is
+  `Option`, `None` on Linux and macOS, where it is not read and was 0.
+- macOS process CPU time is converted from mach time. `pti_total_user` and
+  `pti_total_system` are nanoseconds on Intel and 24 MHz timebase ticks on
+  Apple silicon, and were read as microseconds, so CPU time and the first-sample
+  CPU percentage were about 1000 or 24 times too large. The PID buffer passed to
+  `proc_listpids` is now described by its real size; it was declared four
+  times larger than its allocation.
+- Windows temperature sensors no longer carry invented thresholds. Every
+  OpenHardwareMonitor, LibreHardwareMonitor and thermal-zone counter sensor
+  reported a maximum of 95 or 100 °C and a critical point of 105 °C, whatever
+  the part; those are now `None`, and an ACPI thermal zone reports the
+  firmware's own `CriticalTripPoint`.
+- A ping that got no reply reports no round-trip time rather than 0 ms, the
+  fastest possible. `rtt_min_ms`, `rtt_avg_ms` and `rtt_max_ms` are `Option`; a
+  statistics line counts as recognised only if its sent and received counts
+  parse, where an unparsed count used to become 0 received and an unreachable
+  verdict; and loss is computed from those counts. Windows's 0 ms average for a
+  sub-millisecond reply is kept instead of being replaced by its `time<1ms`
+  upper bound.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

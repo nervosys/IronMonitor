@@ -21,8 +21,9 @@
 //! println!("  Packets: Sent = {}, Received = {}, Lost = {} ({:.0}% loss)",
 //!     result.packets_sent, result.packets_received,
 //!     result.packets_lost, result.packet_loss_percent);
-//! println!("  RTT: min = {:.2}ms, avg = {:.2}ms, max = {:.2}ms",
-//!     result.rtt_min_ms, result.rtt_avg_ms, result.rtt_max_ms);
+//! if let (Some(min), Some(avg), Some(max)) = (result.rtt_min_ms, result.rtt_avg_ms, result.rtt_max_ms) {
+//!     println!("  RTT: min = {min:.2}ms, avg = {avg:.2}ms, max = {max:.2}ms");
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -105,12 +106,14 @@ pub struct PingResult {
     pub packets_lost: u32,
     /// Packet loss percentage
     pub packet_loss_percent: f64,
-    /// Minimum round-trip time in milliseconds
-    pub rtt_min_ms: f64,
-    /// Maximum round-trip time in milliseconds
-    pub rtt_max_ms: f64,
-    /// Average round-trip time in milliseconds
-    pub rtt_avg_ms: f64,
+    /// Minimum round-trip time in milliseconds. `None` when no reply came
+    /// back: there is no round trip to time, and this read 0 ms -- a host that
+    /// never answered reported as the fastest one there is.
+    pub rtt_min_ms: Option<f64>,
+    /// Maximum round-trip time in milliseconds, `None` without a reply
+    pub rtt_max_ms: Option<f64>,
+    /// Average round-trip time in milliseconds, `None` without a reply
+    pub rtt_avg_ms: Option<f64>,
     /// Standard deviation of RTT (if available)
     pub rtt_stddev_ms: Option<f64>,
     /// Individual ping times
@@ -129,9 +132,9 @@ impl PingResult {
             packets_received: 0,
             packets_lost: 0,
             packet_loss_percent: 100.0,
-            rtt_min_ms: 0.0,
-            rtt_max_ms: 0.0,
-            rtt_avg_ms: 0.0,
+            rtt_min_ms: None,
+            rtt_max_ms: None,
+            rtt_avg_ms: None,
             rtt_stddev_ms: None,
             ping_times: Vec::new(),
             is_reachable: false,
@@ -287,6 +290,17 @@ pub fn ping(host: &str, count: u32) -> Result<PingResult> {
 /// host was reported as unreachable with 100% loss: a verdict drawn from a
 /// parse that found nothing. The caller now turns an unrecognised output into
 /// an error instead.
+/// Loss from the counts themselves rather than the printed percentage, which
+/// Windows rounds and this used to replace with 100% when it did not parse.
+fn loss_percent(sent: u32, received: u32) -> f64 {
+    if sent == 0 {
+        // Nothing sent is no loss measured; `is_reachable` stays false.
+        0.0
+    } else {
+        f64::from(sent.saturating_sub(received)) / f64::from(sent) * 100.0
+    }
+}
+
 fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
     let lines: Vec<&str> = output.lines().collect();
     let mut recognised = false;
@@ -309,75 +323,47 @@ fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
 
         // Parse statistics line (Windows)
         if line_lower.contains("packets: sent") {
-            recognised = true;
             // Windows format: "Packets: Sent = 4, Received = 4, Lost = 0 (0% loss)"
-            if let Some(sent_start) = line.find("Sent = ") {
-                let sent_str = &line[sent_start + 7..];
-                if let Some(end) = sent_str.find(',') {
-                    result.packets_sent = sent_str[..end].trim().parse().unwrap_or(0);
-                }
-            }
-            if let Some(recv_start) = line.find("Received = ") {
-                let recv_str = &line[recv_start + 11..];
-                if let Some(end) = recv_str.find(',') {
-                    result.packets_received = recv_str[..end].trim().parse().unwrap_or(0);
-                }
-            }
-            if let Some(loss_start) = line.find("(") {
-                let loss_str = &line[loss_start + 1..];
-                if let Some(end) = loss_str.find('%') {
-                    result.packet_loss_percent = loss_str[..end].trim().parse().unwrap_or(100.0);
-                }
+            //
+            // The line counts as recognised only if both counts parse. A count
+            // that did not parse used to become 0 received, and the host was
+            // declared unreachable from a figure nobody read.
+            let count = |label: &str| {
+                let rest = &line[line.find(label)? + label.len()..];
+                rest[..rest.find(',')?].trim().parse::<u32>().ok()
+            };
+            if let (Some(sent), Some(received)) = (count("Sent = "), count("Received = ")) {
+                recognised = true;
+                result.packets_sent = sent;
+                result.packets_received = received;
+                result.packet_loss_percent = loss_percent(sent, received);
             }
         }
 
         // Parse statistics line (Linux/macOS)
         if line_lower.contains("packets transmitted") {
-            recognised = true;
             // Format: "4 packets transmitted, 4 received, 0% packet loss"
-            let parts: Vec<&str> = line.split(',').collect();
-            if !parts.is_empty() {
-                if let Some(sent) = parts[0].split_whitespace().next() {
-                    result.packets_sent = sent.parse().unwrap_or(0);
-                }
-            }
-            if parts.len() > 1 {
-                if let Some(recv) = parts[1].split_whitespace().next() {
-                    result.packets_received = recv.parse().unwrap_or(0);
-                }
-            }
-            if parts.len() > 2 {
-                if let Some(loss_str) = parts[2].split('%').next() {
-                    result.packet_loss_percent = loss_str
-                        .split_whitespace()
-                        .last()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(100.0);
-                }
+            // Recognised only if both counts parse, as above.
+            let mut parts = line.split(',');
+            let mut leading = || parts.next()?.split_whitespace().next()?.parse::<u32>().ok();
+            if let (Some(sent), Some(received)) = (leading(), leading()) {
+                recognised = true;
+                result.packets_sent = sent;
+                result.packets_received = received;
+                result.packet_loss_percent = loss_percent(sent, received);
             }
         }
 
         // Parse RTT statistics (Windows)
         if line_lower.contains("minimum =") {
             // Format: "Minimum = 10ms, Maximum = 15ms, Average = 12ms"
-            if let Some(min_start) = line.find("Minimum = ") {
-                let min_str = &line[min_start + 10..];
-                if let Some(end) = min_str.find("ms") {
-                    result.rtt_min_ms = min_str[..end].trim().parse().unwrap_or(0.0);
-                }
-            }
-            if let Some(max_start) = line.find("Maximum = ") {
-                let max_str = &line[max_start + 10..];
-                if let Some(end) = max_str.find("ms") {
-                    result.rtt_max_ms = max_str[..end].trim().parse().unwrap_or(0.0);
-                }
-            }
-            if let Some(avg_start) = line.find("Average = ") {
-                let avg_str = &line[avg_start + 10..];
-                if let Some(end) = avg_str.find("ms") {
-                    result.rtt_avg_ms = avg_str[..end].trim().parse().unwrap_or(0.0);
-                }
-            }
+            let millis = |label: &str| {
+                let rest = &line[line.find(label)? + label.len()..];
+                rest[..rest.find("ms")?].trim().parse::<f64>().ok()
+            };
+            result.rtt_min_ms = millis("Minimum = ");
+            result.rtt_max_ms = millis("Maximum = ");
+            result.rtt_avg_ms = millis("Average = ");
         }
 
         // Parse RTT statistics (Linux/macOS)
@@ -387,14 +373,18 @@ fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
                 let stats_str = line[eq_pos + 1..].trim();
                 let parts: Vec<&str> = stats_str.split('/').collect();
                 if parts.len() >= 3 {
-                    result.rtt_min_ms = parts[0].trim().parse().unwrap_or(0.0);
-                    result.rtt_avg_ms = parts[1].trim().parse().unwrap_or(0.0);
+                    result.rtt_min_ms = parts[0].trim().parse().ok();
+                    result.rtt_avg_ms = parts[1].trim().parse().ok();
                     // Remove "ms" from max value
-                    let max_str = parts[2].split_whitespace().next().unwrap_or("0");
-                    result.rtt_max_ms = max_str.parse().unwrap_or(0.0);
+                    result.rtt_max_ms = parts[2]
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse().ok());
                     if parts.len() >= 4 {
-                        let mdev_str = parts[3].split_whitespace().next().unwrap_or("0");
-                        result.rtt_stddev_ms = mdev_str.parse().ok();
+                        result.rtt_stddev_ms = parts[3]
+                            .split_whitespace()
+                            .next()
+                            .and_then(|s| s.parse().ok());
                     }
                 }
             }
@@ -405,13 +395,15 @@ fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
     result.packets_lost = result.packets_sent.saturating_sub(result.packets_received);
     result.is_reachable = result.packets_received > 0;
 
-    // If we didn't parse RTT from summary, calculate from individual pings
-    if result.rtt_avg_ms == 0.0 && !result.ping_times.is_empty() {
+    // If the summary gave no RTTs, compute them from the individual replies.
+    // This tested for an average of exactly 0.0, which a summary it could not
+    // parse and a sub-millisecond LAN reply both produce.
+    if result.rtt_avg_ms.is_none() {
         let valid_times: Vec<f64> = result.ping_times.iter().filter_map(|&t| t).collect();
         if !valid_times.is_empty() {
-            result.rtt_min_ms = valid_times.iter().cloned().fold(f64::INFINITY, f64::min);
-            result.rtt_max_ms = valid_times.iter().cloned().fold(0.0, f64::max);
-            result.rtt_avg_ms = valid_times.iter().sum::<f64>() / valid_times.len() as f64;
+            result.rtt_min_ms = valid_times.iter().copied().reduce(f64::min);
+            result.rtt_max_ms = valid_times.iter().copied().reduce(f64::max);
+            result.rtt_avg_ms = Some(valid_times.iter().sum::<f64>() / valid_times.len() as f64);
         }
     }
 
@@ -2161,6 +2153,30 @@ rtt min/avg/max/mdev = 0.077/0.978/1.880/0.901 ms
             assert_eq!(r.is_reachable, reachable, "{output}");
             assert_eq!(r.packets_received, received, "{output}");
         }
+    }
+
+    #[test]
+    fn a_host_that_never_answered_has_no_round_trip_time() {
+        for output in [WINDOWS_TIMEOUT, LINUX_TIMEOUT] {
+            let (_, r) = parse(output);
+            assert_eq!(
+                (r.rtt_min_ms, r.rtt_avg_ms, r.rtt_max_ms),
+                (None, None, None),
+                "{output}"
+            );
+            assert_eq!(r.packet_loss_percent, 100.0);
+        }
+        let (_, r) = parse(LINUX_REPLY);
+        assert_eq!(
+            (r.rtt_min_ms, r.rtt_avg_ms, r.rtt_max_ms),
+            (Some(0.077), Some(0.978), Some(1.880))
+        );
+        assert_eq!(r.rtt_stddev_ms, Some(0.901));
+        // Windows rounds a sub-millisecond reply to 0ms. That is its reading,
+        // and the `time<1ms` lines are only an upper bound on it.
+        let (_, r) = parse(WINDOWS_REPLY);
+        assert_eq!(r.rtt_avg_ms, Some(0.0));
+        assert_eq!(r.packet_loss_percent, 0.0);
     }
 
     /// Output the parser does not understand is not a host that did not reply.

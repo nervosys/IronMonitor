@@ -84,9 +84,12 @@ fn print_ping_result(result: &PingResult) {
 
     if result.is_reachable {
         println!("  Approximate round trip times:");
+        let ms = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}ms"));
         println!(
-            "    Minimum = {:.2}ms, Maximum = {:.2}ms, Average = {:.2}ms",
-            result.rtt_min_ms, result.rtt_max_ms, result.rtt_avg_ms
+            "    Minimum = {}, Maximum = {}, Average = {}",
+            ms(result.rtt_min_ms),
+            ms(result.rtt_max_ms),
+            ms(result.rtt_avg_ms)
         );
         if let Some(stddev) = result.rtt_stddev_ms {
             println!("    StdDev = {:.2}ms", stddev);

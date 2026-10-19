@@ -6775,10 +6775,11 @@ impl IronMonitorApp {
                         );
 
                         if result.is_reachable {
+                            let ms = |v: Option<f64>| v.map_or_else(|| "—".to_string(), |v| format!("{v:.2}ms"));
                             columns[0].label(
                                 RichText::new(format!(
-                                    "  RTT: min={:.2}ms avg={:.2}ms max={:.2}ms",
-                                    result.rtt_min_ms, result.rtt_avg_ms, result.rtt_max_ms
+                                    "  RTT: min={} avg={} max={}",
+                                    ms(result.rtt_min_ms), ms(result.rtt_avg_ms), ms(result.rtt_max_ms)
                                 ))
                                 .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );

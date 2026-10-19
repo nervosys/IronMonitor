@@ -1121,6 +1121,9 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
     struct ThermalZone {
         instance_name: String,
         current_temperature: u32, // In tenths of Kelvin
+        // The zone's own shutdown threshold, in tenths of Kelvin; 0 or absent
+        // where the firmware declares none.
+        critical_trip_point: Option<u32>,
     }
 
     // Performance counter thermal zone (Kelvin)
@@ -1170,8 +1173,11 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
                 crate::core::temperature::TemperatureSensor {
                     online: true,
                     temp: sensor.value,
-                    max: Some(95.0),
-                    crit: Some(105.0),
+                    // The Sensor class reports a value and no threshold. These
+                    // were 95 and 105 for every CPU and motherboard sensor,
+                    // whatever the part.
+                    max: None,
+                    crit: None,
                 },
             );
         }
@@ -1198,8 +1204,11 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
                 e.insert(crate::core::temperature::TemperatureSensor {
                     online: true,
                     temp: sensor.value,
-                    max: Some(95.0),
-                    crit: Some(105.0),
+                    // The Sensor class reports a value and no threshold. These
+                    // were 95 and 105 for every CPU and motherboard sensor,
+                    // whatever the part.
+                    max: None,
+                    crit: None,
                 });
             }
         }
@@ -1223,8 +1232,9 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
                     .or_insert(crate::core::temperature::TemperatureSensor {
                         online: true,
                         temp: temp_celsius,
-                        max: Some(100.0),
-                        crit: Some(105.0),
+                        // The performance counter carries no trip points.
+                        max: None,
+                        crit: None,
                     });
             }
         }
@@ -1233,7 +1243,10 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
     // Try ACPI thermal zones in root\WMI (requires admin, but try anyway)
     if let Ok(wmi_con) = WMIConnection::with_namespace_path("root\\WMI", com_con) {
         let thermal_zones: Vec<ThermalZone> = wmi_con
-            .raw_query("SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature")
+            .raw_query(
+                "SELECT InstanceName, CurrentTemperature, CriticalTripPoint \
+                 FROM MSAcpi_ThermalZoneTemperature",
+            )
             .unwrap_or_default();
 
         for zone in thermal_zones {
@@ -1252,8 +1265,16 @@ pub fn read_temperature_stats() -> Result<TemperatureStats> {
                         crate::core::temperature::TemperatureSensor {
                             online: true,
                             temp: temp_celsius,
-                            max: Some(100.0),
-                            crit: Some(105.0),
+                            // ACPI declares the passive and active trip points
+                            // as cooling policy, not as a maximum; none of them
+                            // is this field.
+                            max: None,
+                            // The firmware's own critical trip point, where it
+                            // declares one. This was 105 for every zone.
+                            crit: zone
+                                .critical_trip_point
+                                .filter(|&t| t > 0)
+                                .map(|t| t as f32 / 10.0 - 273.15),
                         },
                     );
                 }

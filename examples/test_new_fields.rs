@@ -49,7 +49,8 @@ fn main() -> Result<()> {
             p.handle_count.map_or("?".to_string(), |h| h.to_string()),
             p.io_read_bytes.map_or("?".to_string(), format_bytes),
             p.io_write_bytes.map_or("?".to_string(), format_bytes),
-            format_bytes(p.private_bytes),
+            p.private_bytes
+                .map_or_else(|| "-".to_string(), format_bytes),
             p.name.chars().take(30).collect::<String>()
         );
     }

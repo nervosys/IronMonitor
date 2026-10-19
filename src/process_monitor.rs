@@ -835,7 +835,11 @@ pub struct ProcessMonitorInfo {
     /// Virtual memory size in bytes
     pub virtual_memory_bytes: u64,
     /// Private memory in bytes (unique to this process)
-    pub private_bytes: u64,
+    ///
+    /// `None` where it is not read: Linux would need `smaps_rollup` and macOS
+    /// has no per-process private figure in `proc_taskinfo`. Both used to
+    /// report 0, a process with no private memory at all.
+    pub private_bytes: Option<u64>,
     /// Number of threads
     pub thread_count: u32,
     /// Number of open handles (Windows) or file descriptors (Unix), or `None`
@@ -1578,13 +1582,22 @@ mod linux {
         // to mean "not reported", and two different sentinels for one condition
         // means every consumer has to know both.
         let state = stat_fields[0].chars().next().unwrap_or('U');
-        let parent_pid: u32 = stat_fields[1].parse().unwrap_or(0);
-        let utime: u64 = stat_fields[11].parse().unwrap_or(0);
-        let stime: u64 = stat_fields[12].parse().unwrap_or(0);
-        let priority: i32 = stat_fields[15].parse().unwrap_or(0);
-        let num_threads: u32 = stat_fields[17].parse().unwrap_or(0);
-        let starttime: u64 = stat_fields[19].parse().unwrap_or(0);
-        let vsize: u64 = stat_fields[20].parse().unwrap_or(0); // virtual memory size in bytes
+        // The kernel writes every one of these as a decimal. One that does not
+        // parse is a stat line this does not understand, and the process is
+        // not reported rather than reported with zero CPU time, zero threads or
+        // a start at boot -- which is what `unwrap_or(0)` made of it.
+        fn stat_number<T: std::str::FromStr>(fields: &[String], i: usize, what: &str) -> Result<T> {
+            fields[i]
+                .parse()
+                .map_err(|_| IronError::Parse(format!("/proc/<pid>/stat {what}: {:?}", fields[i])))
+        }
+        let parent_pid: u32 = stat_number(&stat_fields, 1, "ppid")?;
+        let utime: u64 = stat_number(&stat_fields, 11, "utime")?;
+        let stime: u64 = stat_number(&stat_fields, 12, "stime")?;
+        let priority: i32 = stat_number(&stat_fields, 15, "priority")?;
+        let num_threads: u32 = stat_number(&stat_fields, 17, "num_threads")?;
+        let starttime: u64 = stat_number(&stat_fields, 19, "starttime")?;
+        let vsize: u64 = stat_number(&stat_fields, 20, "vsize")?; // virtual memory size in bytes
 
         // Calculate CPU percentage (lifetime average as fallback for first delta sample)
         let clk_tck = crate::platform::linux::clock_ticks_per_second()
@@ -1615,33 +1628,26 @@ mod linux {
         let process_start_time =
             boot_time_secs.map(|btime| btime + (starttime as f64 / clk_tck as f64) as u64);
 
-        // Read /proc/[pid]/statm for memory
-        let statm_path = format!("{}/statm", proc_path);
-        let (memory_bytes, virtual_memory_from_statm) =
-            if let Ok(statm_content) = fs::read_to_string(&statm_path) {
-                let parts: Vec<&str> = statm_content.split_whitespace().collect();
-                let rss = if parts.len() > 1 {
-                    // RSS (Resident Set Size) in pages.
-                    parts[1].parse::<u64>().unwrap_or(0) * page_size
-                } else {
-                    0
-                };
-                let vsize_statm = if !parts.is_empty() {
-                    // Total program size in pages
-                    parts[0].parse::<u64>().unwrap_or(0) * page_size
-                } else {
-                    0
-                };
-                (rss, vsize_statm)
-            } else {
-                (0, 0)
-            };
+        // Read /proc/[pid]/statm for memory: size and resident, in pages.
+        //
+        // A statm that cannot be read means the process exited after its stat
+        // was read, and it is not reported. This used to report it resident in
+        // zero bytes, which ranked it as the smallest process on the machine.
+        let statm_content = fs::read_to_string(format!("{}/statm", proc_path))?;
+        let mut statm = statm_content.split_whitespace().map(str::parse::<u64>);
+        let (Some(Ok(size_pages)), Some(Ok(resident_pages))) = (statm.next(), statm.next()) else {
+            return Err(IronError::Parse(format!(
+                "/proc/{pid}/statm: no size and resident pages in {statm_content:?}"
+            )));
+        };
+        let memory_bytes = resident_pages * page_size;
 
-        // Use vsize from stat (in bytes) if available, otherwise statm
+        // stat's vsize is in bytes; a kernel thread has none, and statm then
+        // says the same 0 in pages.
         let virtual_memory_bytes = if vsize > 0 {
             vsize
         } else {
-            virtual_memory_from_statm
+            size_pages * page_size
         };
 
         // Read /proc/[pid]/io for I/O stats (may require privileges)
@@ -1685,7 +1691,7 @@ mod linux {
             cpu_percent,
             memory_bytes,
             virtual_memory_bytes,
-            private_bytes: 0, // Would need /proc/[pid]/smaps parsing (expensive)
+            private_bytes: None,
             thread_count: num_threads,
             handle_count,
             io_read_bytes,
@@ -2013,31 +2019,31 @@ mod windows_impl {
 
                         // Get memory info
                         let mut mem_counters = PROCESS_MEMORY_COUNTERS_EX::default();
-                        let (memory_bytes, virtual_memory_bytes, private_bytes) =
-                            if GetProcessMemoryInfo(
-                                handle,
-                                std::ptr::addr_of_mut!(mem_counters) as *mut _,
-                                std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-                            )
-                            .is_ok()
-                            {
-                                (
-                                    mem_counters.WorkingSetSize as u64,
-                                    mem_counters.PagefileUsage as u64,
-                                    mem_counters.PrivateUsage as u64,
-                                )
-                            } else if let Some(r) = table.get(&pid) {
-                                // The handle opened but the query was refused; the
-                                // process table has the same figures.
+                        let table_row = table.get(&pid);
+                        let memory = if GetProcessMemoryInfo(
+                            handle,
+                            std::ptr::addr_of_mut!(mem_counters) as *mut _,
+                            std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                        )
+                        .is_ok()
+                        {
+                            Some((
+                                mem_counters.WorkingSetSize as u64,
+                                mem_counters.PagefileUsage as u64,
+                                mem_counters.PrivateUsage as u64,
+                            ))
+                        } else {
+                            // The handle opened but the query was refused; the
+                            // process table has the same figures. With neither,
+                            // see `times` below.
+                            table_row.map(|r| {
                                 (r.working_set_bytes, r.pagefile_usage_bytes, r.private_bytes)
-                            } else {
-                                (0, 0, 0)
-                            };
+                            })
+                        };
 
                         // Get handle count
                         // Either call may be refused on a handle that opened;
                         // the kernel process table has the same figures.
-                        let table_row = table.get(&pid);
                         let mut handles: u32 = 0;
                         let handle_count = if GetProcessHandleCount(handle, &mut handles).is_ok() {
                             Some(handles)
@@ -2069,62 +2075,85 @@ mod windows_impl {
                         let mut kernel_time = Default::default();
                         let mut user_time = Default::default();
 
-                        let (cpu_percent, start_time, cpu_time_us, creation_100ns) =
-                            if GetProcessTimes(
-                                handle,
-                                &mut creation_time,
-                                &mut exit_time,
-                                &mut kernel_time,
-                                &mut user_time,
-                            )
-                            .is_ok()
-                            {
-                                // Convert FILETIME (100ns units)
-                                let kernel_100ns = (kernel_time.dwHighDateTime as u64) << 32
-                                    | (kernel_time.dwLowDateTime as u64);
-                                let user_100ns = (user_time.dwHighDateTime as u64) << 32
-                                    | (user_time.dwLowDateTime as u64);
+                        let times = if GetProcessTimes(
+                            handle,
+                            &mut creation_time,
+                            &mut exit_time,
+                            &mut kernel_time,
+                            &mut user_time,
+                        )
+                        .is_ok()
+                        {
+                            // Convert FILETIME (100ns units)
+                            let kernel_100ns = (kernel_time.dwHighDateTime as u64) << 32
+                                | (kernel_time.dwLowDateTime as u64);
+                            let user_100ns = (user_time.dwHighDateTime as u64) << 32
+                                | (user_time.dwLowDateTime as u64);
 
-                                // Cumulative CPU time in microseconds for delta-based calculation
-                                let cpu_us = (kernel_100ns + user_100ns) / 10;
+                            // Cumulative CPU time in microseconds for delta-based calculation
+                            let cpu_us = (kernel_100ns + user_100ns) / 10;
 
-                                // Convert creation_time FILETIME to Unix timestamp
-                                // FILETIME is 100ns intervals since Jan 1, 1601
-                                // Unix epoch is Jan 1, 1970 - difference is 116444736000000000 (100ns intervals)
-                                let creation_100ns = (creation_time.dwHighDateTime as u64) << 32
-                                    | (creation_time.dwLowDateTime as u64);
-                                let unix_epoch_diff: u64 = 116444736000000000;
-                                let start_unix = if creation_100ns > unix_epoch_diff {
-                                    Some((creation_100ns - unix_epoch_diff) / 10_000_000)
-                                } else {
-                                    None
-                                };
+                            // Convert creation_time FILETIME to Unix timestamp
+                            // FILETIME is 100ns intervals since Jan 1, 1601
+                            // Unix epoch is Jan 1, 1970 - difference is 116444736000000000 (100ns intervals)
+                            let creation_100ns = (creation_time.dwHighDateTime as u64) << 32
+                                | (creation_time.dwLowDateTime as u64);
+                            let unix_epoch_diff: u64 = 116444736000000000;
+                            let start_unix = if creation_100ns > unix_epoch_diff {
+                                Some((creation_100ns - unix_epoch_diff) / 10_000_000)
+                            } else {
+                                None
+                            };
 
-                                // Calculate CPU% as lifetime average (fallback for first delta sample)
-                                let total_cpu_secs = cpu_us as f64 / 1_000_000.0;
+                            // Calculate CPU% as lifetime average (fallback for first delta sample)
+                            let total_cpu_secs = cpu_us as f64 / 1_000_000.0;
 
-                                // Get current time as FILETIME for uptime calculation
-                                let now_ft =
+                            // Get current time as FILETIME for uptime calculation
+                            let now_ft =
                                 windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime(
                                 );
-                                let now_100ns = (now_ft.dwHighDateTime as u64) << 32
-                                    | (now_ft.dwLowDateTime as u64);
-                                let uptime_secs = if now_100ns > creation_100ns {
-                                    (now_100ns - creation_100ns) as f64 / 10_000_000.0
-                                } else {
-                                    1.0
-                                };
-
-                                let pct = if uptime_secs > 0.0 {
-                                    ((total_cpu_secs / uptime_secs) * 100.0) as f32
-                                } else {
-                                    0.0
-                                };
-
-                                (pct, start_unix, cpu_us, creation_100ns)
+                            let now_100ns = (now_ft.dwHighDateTime as u64) << 32
+                                | (now_ft.dwLowDateTime as u64);
+                            let uptime_secs = if now_100ns > creation_100ns {
+                                (now_100ns - creation_100ns) as f64 / 10_000_000.0
                             } else {
-                                (0.0, None, 0, 0)
+                                1.0
                             };
+
+                            let pct = if uptime_secs > 0.0 {
+                                ((total_cpu_secs / uptime_secs) * 100.0) as f32
+                            } else {
+                                0.0
+                            };
+
+                            Some((pct, start_unix, cpu_us, creation_100ns))
+                        } else {
+                            // Refused on a handle that opened: the process
+                            // table has the same CPU times. This used to
+                            // report the process as never having run.
+                            table_row.map(|r| {
+                                let cpu_us = (r.user_time_100ns + r.kernel_time_100ns) / 10;
+                                let (pct, start) = lifetime_cpu(r.create_time_100ns, cpu_us);
+                                (pct, start, cpu_us, r.create_time_100ns)
+                            })
+                        };
+
+                        // Neither the handle nor the process table had figures:
+                        // the process exited between the snapshot and the table.
+                        // It is left out rather than listed as using no memory and
+                        // no CPU. The reduced path below would find no table row
+                        // either, so this moves straight to the next entry.
+                        let (
+                            Some((memory_bytes, virtual_memory_bytes, private_bytes)),
+                            Some((cpu_percent, start_time, cpu_time_us, creation_100ns)),
+                        ) = (memory, times)
+                        else {
+                            let _ = CloseHandle(handle);
+                            if Process32NextW(snapshot, &mut entry).is_err() {
+                                break;
+                            }
+                            continue;
+                        };
 
                         // Get user (memoized against the process creation time — the
                         // SID lookup underneath is the single most expensive call in
@@ -2160,7 +2189,7 @@ mod windows_impl {
                             // New Windows-specific fields
                             parent_pid: Some(entry.th32ParentProcessID),
                             virtual_memory_bytes,
-                            private_bytes,
+                            private_bytes: Some(private_bytes),
                             thread_count: entry.cntThreads,
                             handle_count,
                             io_read_bytes,
@@ -2191,14 +2220,18 @@ mod windows_impl {
                     // These rows used to leave all of those at zero: on the machine
                     // it was found on, 167 of 515 processes -- `dwm.exe`, `lsass.exe`
                     // and `Registry` among them -- reported using no memory, and every
-                    // "largest by memory" list was ranked without them. Zero remains
-                    // only for a process that exited between the two snapshots.
-                    let row = table.get(&pid).copied();
-                    let cpu_time_us = row
-                        .map(|r| (r.user_time_100ns + r.kernel_time_100ns) / 10)
-                        .unwrap_or(0);
-                    let create_100ns = row.map(|r| r.create_time_100ns).unwrap_or(0);
-                    let (cpu_percent, start_time) = lifetime_cpu(create_100ns, cpu_time_us);
+                    // "largest by memory" list was ranked without them. A process
+                    // with no table row exited between the two snapshots; it used to
+                    // be listed here using no memory and no CPU, and is now left out.
+                    let Some(row) = table.get(&pid).copied() else {
+                        if Process32NextW(snapshot, &mut entry).is_err() {
+                            break;
+                        }
+                        continue;
+                    };
+                    let cpu_time_us = (row.user_time_100ns + row.kernel_time_100ns) / 10;
+                    let (cpu_percent, start_time) =
+                        lifetime_cpu(row.create_time_100ns, cpu_time_us);
                     let null_pos = entry
                         .szExeFile
                         .iter()
@@ -2215,7 +2248,7 @@ mod windows_impl {
                         user: None,
                         category,
                         cpu_percent,
-                        memory_bytes: row.map(|r| r.working_set_bytes).unwrap_or(0),
+                        memory_bytes: row.working_set_bytes,
                         gpu_indices: Vec::new(),
                         gpu_memory_per_device: HashMap::new(),
                         total_gpu_memory_bytes: None,
@@ -2231,12 +2264,12 @@ mod windows_impl {
                         gpu_process_type: ProcessGpuType::Unknown,
                         gpu_memory_percentage: None,
                         parent_pid: Some(entry.th32ParentProcessID),
-                        virtual_memory_bytes: row.map(|r| r.pagefile_usage_bytes).unwrap_or(0),
-                        private_bytes: row.map(|r| r.private_bytes).unwrap_or(0),
+                        virtual_memory_bytes: row.pagefile_usage_bytes,
+                        private_bytes: Some(row.private_bytes),
                         thread_count: entry.cntThreads,
-                        handle_count: row.map(|r| r.handle_count),
-                        io_read_bytes: row.map(|r| r.io_read_bytes),
-                        io_write_bytes: row.map(|r| r.io_write_bytes),
+                        handle_count: Some(row.handle_count),
+                        io_read_bytes: Some(row.io_read_bytes),
+                        io_write_bytes: Some(row.io_write_bytes),
                         start_time,
                         cpu_time_us,
                     });
@@ -2274,6 +2307,16 @@ mod macos {
         fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut u8, buffer_size: i32) -> i32;
 
         fn proc_pidpath(pid: i32, buffer: *mut u8, buffer_size: u32) -> i32;
+    }
+
+    #[repr(C)]
+    struct MachTimebaseInfo {
+        numer: u32,
+        denom: u32,
+    }
+
+    extern "C" {
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
     }
 
     #[repr(C)]
@@ -2340,9 +2383,12 @@ mod macos {
                 return Err(IronError::Other("Failed to get process count".to_string()));
             }
 
-            // Allocate buffer for PIDs
-            let buffer_size = num_pids * mem::size_of::<i32>() as i32;
-            let mut pid_buffer = vec![0i32; (num_pids / mem::size_of::<i32>() as i32) as usize];
+            // `num_pids` is a size in bytes, not a count. The buffer size passed
+            // below used to be that figure times four, telling the kernel the
+            // buffer was four times the allocation, so processes started between
+            // the two calls could be written past its end.
+            let mut pid_buffer = vec![0i32; num_pids as usize / mem::size_of::<i32>()];
+            let buffer_size = (pid_buffer.len() * mem::size_of::<i32>()) as i32;
 
             // Get all PIDs
             let actual_size = proc_listpids(
@@ -2356,7 +2402,23 @@ mod macos {
                 return Err(IronError::Other("Failed to list processes".to_string()));
             }
 
-            let num_processes = (actual_size / mem::size_of::<i32>() as i32) as usize;
+            let num_processes =
+                (actual_size as usize / mem::size_of::<i32>()).min(pid_buffer.len());
+
+            // `pti_total_user` and `pti_total_system` are mach absolute time:
+            // nanoseconds on Intel, timebase ticks (24 MHz, 125/3 ns each) on
+            // Apple silicon. They were read as microseconds, a CPU time a
+            // thousand times too large on Intel and about 24 times on Apple
+            // silicon, and a lifetime CPU percentage scaled the same way.
+            let mut timebase = MachTimebaseInfo { numer: 0, denom: 0 };
+            if mach_timebase_info(&mut timebase) != 0 || timebase.denom == 0 {
+                return Err(IronError::Other(
+                    "mach_timebase_info gave no timebase to convert CPU time".to_string(),
+                ));
+            }
+            let mach_to_us = |t: u64| {
+                (t as u128 * timebase.numer as u128 / timebase.denom as u128 / 1_000) as u64
+            };
 
             // Iterate through each PID
             for &pid in &pid_buffer[..num_processes] {
@@ -2420,7 +2482,7 @@ mod macos {
 
                 // Cumulative CPU time in microseconds for delta-based calculation
                 let cpu_time_us =
-                    task_info.ptinfo.pti_total_user + task_info.ptinfo.pti_total_system;
+                    mach_to_us(task_info.ptinfo.pti_total_user + task_info.ptinfo.pti_total_system);
 
                 // Calculate CPU% as lifetime average (fallback for first delta sample)
                 let process_start_secs = task_info.pbsd.pbi_start_tvsec;
@@ -2463,7 +2525,7 @@ mod macos {
                     cpu_percent,
                     memory_bytes: task_info.ptinfo.pti_resident_size,
                     virtual_memory_bytes: task_info.ptinfo.pti_virtual_size,
-                    private_bytes: 0, // Not easily available on macOS
+                    private_bytes: None,
                     thread_count: task_info.ptinfo.pti_threadnum as u32,
                     // None of the three is read here; `proc_pid_rusage`
                     // carries disk I/O and is the place to start.
@@ -2648,7 +2710,7 @@ mod tests {
             cpu_percent: 25.5,
             memory_bytes: 1024 * 1024 * 512,
             virtual_memory_bytes: 1024 * 1024 * 1024,
-            private_bytes: 1024 * 1024 * 256,
+            private_bytes: Some(1024 * 1024 * 256),
             thread_count: 4,
             handle_count: Some(100),
             io_read_bytes: Some(0),
