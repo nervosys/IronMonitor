@@ -8,14 +8,10 @@
 use super::*;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
-use std::process::{Child, Command, Stdio};
-
-#[cfg(all(feature = "apple", target_os = "macos"))]
-use plist::Value;
+use std::process::Command;
 
 /// Apple Silicon monitor
 pub struct AppleSiliconMonitor {
-    powermetrics_process: Option<Child>,
     soc_info: SocInfo,
 }
 
@@ -60,10 +56,7 @@ impl AppleSiliconMonitor {
     pub fn new() -> Result<Self> {
         let soc_info = Self::detect_soc_info()?;
 
-        Ok(Self {
-            powermetrics_process: None,
-            soc_info,
-        })
+        Ok(Self { soc_info })
     }
 
     /// Detect SOC information using sysctl and system_profiler
@@ -117,173 +110,29 @@ impl AppleSiliconMonitor {
         String::from_utf8_lossy(&output.stdout).trim().parse().ok()
     }
 
-    /// Start powermetrics process
-    #[allow(dead_code)]
-    fn start_powermetrics(&mut self, interval_ms: u32) -> Result<()> {
-        let temp_file = format!("/tmp/ironmon_powermetrics_{}", std::process::id());
-
-        let child = Command::new("sudo")
-            .args([
-                "powermetrics",
-                "--samplers",
-                "cpu_power,gpu_power,thermal",
-                "-o",
-                &temp_file,
-                "-f",
-                "plist",
-                "-i",
-                &interval_ms.to_string(),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| Error::CommandExecutionFailed(format!("powermetrics: {}", e)))?;
-
-        self.powermetrics_process = Some(child);
-
-        // Wait for first data
-        std::thread::sleep(std::time::Duration::from_millis(interval_ms as u64 + 100));
-
-        Ok(())
-    }
-
-    /// Parse powermetrics output
+    /// The live CPU, GPU and ANE figures `powermetrics` reports.
+    ///
+    /// Always an error, and the error says why. `powermetrics` must run as
+    /// root, and IronMonitor does not elevate itself — AGENTS.md promises
+    /// that, and an interactive `sudo` would sit waiting for a password inside
+    /// a TUI or an agent's tool call.
+    ///
+    /// What was here could never succeed and could mislead if it did. It read
+    /// a plist from `/tmp/ironmon_powermetrics_<pid>`, a file written only by
+    /// a `sudo powermetrics` launcher that nothing called; on macOS it failed
+    /// with a bare "file not found", and elsewhere it returned a default — every
+    /// clock, utilisation and power figure zero — as a successful reading. Its
+    /// parser filled each missing key with 0 MHz, 0% busy or core 0, and its
+    /// key names were never checked against a real `powermetrics` sample.
+    ///
+    /// A reader that runs `powermetrics` directly when the process is already
+    /// root belongs here, written against output from a real Mac.
     pub fn parse_powermetrics(&self) -> Result<PowermetricsData> {
-        #[cfg(all(feature = "apple", target_os = "macos"))]
-        {
-            let temp_file = format!("/tmp/ironmon_powermetrics_{}", std::process::id());
-
-            // Read the plist file
-            let data = std::fs::read(&temp_file).map_err(Error::Io)?;
-
-            // Split by null bytes (powermetrics appends multiple plists)
-            let parts: Vec<&[u8]> = data.split(|&b| b == 0).collect();
-
-            // Parse the last complete plist
-            if let Some(last_plist) = parts.iter().rev().find(|p| !p.is_empty()) {
-                let value = Value::from_reader(std::io::Cursor::new(last_plist))
-                    .map_err(|e| Error::ParseError(format!("plist: {}", e)))?;
-
-                return self.parse_plist_data(&value);
-            }
-        }
-
-        // Fallback to default data
-        Ok(PowermetricsData::default())
-    }
-
-    #[cfg(all(feature = "apple", target_os = "macos"))]
-    #[allow(dead_code)]
-    /// Parse plist data into PowermetricsData
-    fn parse_plist_data(&self, value: &Value) -> Result<PowermetricsData> {
-        let mut data = PowermetricsData::default();
-
-        if let Some(dict) = value.as_dictionary() {
-            // Parse thermal pressure
-            if let Some(Value::String(thermal)) = dict.get("thermal_pressure") {
-                data.thermal_pressure = thermal.clone();
-            }
-
-            // Parse processor data
-            if let Some(Value::Dictionary(processor)) = dict.get("processor") {
-                // Parse clusters
-                if let Some(Value::Array(clusters)) = processor.get("clusters") {
-                    for cluster in clusters {
-                        if let Some(cluster_dict) = cluster.as_dictionary() {
-                            if let Some(Value::String(name)) = cluster_dict.get("name") {
-                                // Get cluster metrics
-                                let freq_hz = cluster_dict
-                                    .get("freq_hz")
-                                    .and_then(|v| v.as_unsigned_integer())
-                                    .unwrap_or(0);
-                                let freq_mhz = (freq_hz / 1_000_000) as u32;
-
-                                let idle_ratio = cluster_dict
-                                    .get("idle_ratio")
-                                    .and_then(|v| v.as_real())
-                                    .unwrap_or(1.0);
-                                let active = ((1.0 - idle_ratio) * 100.0) as u8;
-
-                                // Assign to E or P cluster
-                                if name.starts_with('E') {
-                                    data.e_cluster_freq_mhz = freq_mhz;
-                                    data.e_cluster_active = active;
-                                } else if name.starts_with('P') {
-                                    data.p_cluster_freq_mhz = freq_mhz;
-                                    data.p_cluster_active = active;
-                                }
-
-                                // Parse individual cores
-                                if let Some(Value::Array(cpus)) = cluster_dict.get("cpus") {
-                                    for cpu in cpus {
-                                        if let Some(cpu_dict) = cpu.as_dictionary() {
-                                            let cpu_num = cpu_dict
-                                                .get("cpu")
-                                                .and_then(|v| v.as_unsigned_integer())
-                                                .unwrap_or(0)
-                                                as u32;
-
-                                            let cpu_freq_hz = cpu_dict
-                                                .get("freq_hz")
-                                                .and_then(|v| v.as_unsigned_integer())
-                                                .unwrap_or(0);
-                                            let cpu_freq_mhz = (cpu_freq_hz / 1_000_000) as u32;
-
-                                            let cpu_idle = cpu_dict
-                                                .get("idle_ratio")
-                                                .and_then(|v| v.as_real())
-                                                .unwrap_or(1.0);
-                                            let cpu_active = ((1.0 - cpu_idle) * 100.0) as u8;
-
-                                            if name.starts_with('E') {
-                                                data.e_cores
-                                                    .insert(cpu_num, (cpu_freq_mhz, cpu_active));
-                                            } else {
-                                                data.p_cores
-                                                    .insert(cpu_num, (cpu_freq_mhz, cpu_active));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Parse power metrics
-                if let Some(Value::Real(cpu_power)) = processor.get("cpu_energy") {
-                    data.cpu_power_mw = *cpu_power as u32;
-                }
-                if let Some(Value::Real(gpu_power)) = processor.get("gpu_energy") {
-                    data.gpu_power_mw = *gpu_power as u32;
-                }
-                if let Some(Value::Real(ane_power)) = processor.get("ane_energy") {
-                    data.ane_power_mw = *ane_power as u32;
-                }
-                if let Some(Value::Real(package_power)) = processor.get("combined_power") {
-                    data.package_power_mw = *package_power as u32;
-                }
-            }
-
-            // Parse GPU data
-            if let Some(Value::Dictionary(gpu)) = dict.get("gpu") {
-                if let Some(Value::Integer(freq_hz)) = gpu.get("freq_hz") {
-                    // `plist::Integer` is not a primitive; it must be asked for its value.
-                    data.gpu_freq_mhz = (freq_hz.as_unsigned().unwrap_or(0) / 1_000_000) as u32;
-                }
-                if let Some(Value::Real(idle_ratio)) = gpu.get("idle_ratio") {
-                    data.gpu_active = ((1.0 - idle_ratio) * 100.0) as u8;
-                }
-            }
-        }
-
-        Ok(data)
-    }
-
-    #[cfg(not(all(feature = "apple", target_os = "macos")))]
-    #[allow(dead_code)]
-    fn parse_plist_data(&self, _value: &()) -> Result<PowermetricsData> {
-        Ok(PowermetricsData::default())
+        Err(crate::error::IronError::PermissionDenied(
+            "live Apple Silicon CPU, GPU and ANE figures come from powermetrics, \
+             which requires root; IronMonitor does not elevate itself"
+                .into(),
+        ))
     }
 }
 
@@ -495,14 +344,6 @@ impl SiliconMonitor for AppleSiliconMonitor {
     }
 }
 
-impl Drop for AppleSiliconMonitor {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.powermetrics_process.take() {
-            let _ = child.kill();
-        }
-    }
-}
-
 /// Classify macOS interface name to type
 fn classify_macos_interface(iface: &str) -> String {
     if iface == "en0" {
@@ -534,6 +375,26 @@ fn classify_macos_interface(iface: &str) -> String {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    /// Without root there is no `powermetrics` sample, and the readers built
+    /// on it say so rather than reporting a machine at 0 MHz and 0 mW.
+    #[test]
+    fn live_figures_are_refused_with_the_reason_not_zeroed() {
+        let monitor = AppleSiliconMonitor {
+            soc_info: SocInfo {
+                name: "Apple M2".into(),
+                e_core_count: 4,
+                p_core_count: 4,
+            },
+        };
+        let err = monitor.parse_powermetrics().expect_err("no sample exists");
+        assert!(
+            matches!(err, crate::error::IronError::PermissionDenied(ref why) if why.contains("root")),
+            "{err:?}"
+        );
+        assert!(monitor.cpu_info().is_err());
+        assert!(monitor.npu_info().is_err());
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

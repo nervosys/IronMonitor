@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Live Apple Silicon CPU, GPU and ANE figures are refused with their reason
+  (`powermetrics` requires root, and IronMonitor does not elevate itself)
+  instead of failing with a bare "file not found" on macOS and reading as zeros
+  elsewhere. The reader parsed a plist that only an uncalled `sudo powermetrics`
+  launcher would have written, and filled every missing key with 0 MHz, 0% or
+  core 0; the launcher, the parser and the `plist` dependency are removed. A
+  new scan, `tests/no_self_elevation.rs`, fails if any reader outside the
+  `jetson-utils` admin commands spawns `sudo`.
+- README and ROADMAP describe macOS as it now is: Apple GPUs are listed from
+  `system_profiler` with live figures unavailable, and the TUI and GUI draw
+  macOS CPU and memory from the real readers.
+
 - Data labels in the GUI are bold and legible. egui's only bundled proportional
   font is Ubuntu Light and it has no bold, so chart scales, min/max, card titles,
   QuickLook values and legend ranges were drawn thin at 9-10 px, several in the

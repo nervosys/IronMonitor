@@ -43,8 +43,9 @@ absent form. One run on the right machine settles each.
 - **A laptop** — `hardware_ai`'s form-factor weights were tuned on one desktop.
 - **A Mac** — the Apple Silicon readers, including the ANE and CPU-cluster
   changes in the unreleased changelog, are cross-compiled but have not been
-  run. macOS CPU and memory feed the ontology but not yet the pipeline the TUI
-  and GUI draw from.
+  run. Live Apple Silicon figures need a `powermetrics` reader that runs only
+  when the process is already root, written against a real sample; until then
+  they are refused with that reason.
 - **Bare-metal Linux** — RAPL's package power-limit path has never executed.
 - **An ARM64 Linux machine with 16 KiB or 64 KiB pages** — process memory now
   scales by the system page size; only the 4 KiB case has been run.

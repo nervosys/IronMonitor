@@ -252,7 +252,6 @@ winreg = "0.52"
 
 # macOS dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
-plist = { version = "1.7", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.41", features = ["full", "test-util"] }
@@ -281,9 +280,7 @@ amd = [] # AMD GPU support via DRM (direct implementation)
 jetson-utils = [
 ] # Unsafe Jetson utilities (swap, clocks, power_mode) - see SECURITY.md
 intel = ["drm", "drm-ffi"] # Intel GPU support via i915/xe drivers
-apple = [
-    "plist",
-] # Apple Silicon support (M1/M2/M3/M4 series) with powermetrics parsing
+apple = [] # Apple Silicon support (M1/M2/M3/M4 series): GPU inventory, sysctl and IOKit readers
 # Silicon monitoring features
 cpu = []     # Enhanced CPU monitoring (per-core, clusters, power states)
 npu = []     # NPU/ASIC monitoring (ANE, Intel NPU, AMD AI Engine)

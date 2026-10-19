@@ -75,9 +75,14 @@ beats a confident wrong answer, and that applies to its own capabilities.
   cumulative tick counters, not instantaneous rates. The TUI and GUI graphs are
   built from repeated samples and do show change over time; a single `ironmon cpu`
   is not a snapshot of this second.
-- **macOS has no GPU, power or temperature readers.** `IronMonitor::snapshot()` fails
-  there because it requires all of them. `IronMonitor::cpu()`, `memory()` and
-  `uptime()` work.
+- **macOS reads Apple GPUs' identity, not their activity.** GPU names and core
+  counts come from `system_profiler`, so the device is listed with every live
+  figure — utilisation, clock, power, temperature — reported unavailable. Those
+  figures come from `powermetrics`, which requires root, and IronMonitor does not
+  elevate itself. The GUI and TUI draw macOS CPU and memory from the real
+  readers. The older `IronMonitor::snapshot()` API still fails on macOS, because
+  it requires GPU, power and temperature readers; `IronMonitor::cpu()`,
+  `memory()` and `uptime()` work.
 
 **Code that compiles everywhere and has not run everywhere**
 
