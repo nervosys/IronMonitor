@@ -32,6 +32,14 @@ const HISTORY_SIZE: usize = 60;
 // actually sustain, and is the cadence htop and nvtop use.
 const DATA_POLL_INTERVAL: Duration = Duration::from_millis(1000); // Data polling rate
 const SLOW_UPDATE_INTERVAL: Duration = Duration::from_secs(2); // Slow updates for heavy ops
+/// The smallest fraction of their natural height the Overview's charts shrink
+/// to before the tab scrolls instead. Half keeps a 70 px chart's three scale
+/// labels apart.
+const OVERVIEW_MIN_CHART_SCALE: f32 = 0.5;
+/// The Overview's content width at which CPU, memory and network share one row
+/// of four charts rather than two rows of two. Below it a chart column is too
+/// narrow for its title, min/max and current value to sit side by side.
+const OVERVIEW_FOUR_CHART_WIDTH: f32 = 1060.0;
 /// How often the disk refresher thread re-samples every drive.
 ///
 /// SMART and filesystem queries are slow device I/O, but they run on their own
@@ -263,8 +271,15 @@ pub struct IronMonitorApp {
     autofit_done: bool,
 
     /// How much taller the Overview's content is than the room it was given,
-    /// recorded by `draw_overview` on the frame it was last drawn.
+    /// recorded by `draw_overview` on the frame it was last drawn. Measured at
+    /// full chart height, so the autofit grows the window toward the layout's
+    /// natural size rather than toward whatever the charts last shrank to.
     overview_shortfall: Option<f32>,
+
+    /// The fraction of their natural height the Overview's charts are drawn at,
+    /// between `OVERVIEW_MIN_CHART_SCALE` and 1. Recomputed from what the last
+    /// frame measured; see `draw_overview`.
+    overview_chart_scale: f32,
 
     // Cache for the Processes tab — avoid cloning + sorting the whole
     // process_list on every paint (10 FPS × hundreds of processes is enough
@@ -1062,6 +1077,7 @@ impl IronMonitorApp {
             applied_color_theme: None,
             autofit_done: false,
             overview_shortfall: None,
+            overview_chart_scale: 1.0,
             process_list_version: 0,
             processes_view_cache: Vec::new(),
             processes_view_key: None,
@@ -1932,12 +1948,18 @@ impl IronMonitorApp {
             return true;
         }
 
-        // Leave room for a title bar and a taskbar rather than filling the panel
-        // and tucking the bottom edge under one.
+        // The tallest client area whose window still fits the work area, where
+        // `gui::run` could read it. Elsewhere, leave room for a title bar and a
+        // taskbar rather than filling the panel and tucking the bottom edge
+        // under one.
         const SCREEN_FRACTION: f32 = 0.92;
-        let ceiling = ctx
-            .input(|i| i.viewport().monitor_size)
-            .map(|monitor| monitor.y * SCREEN_FRACTION)
+        let ceiling = super::MAX_INNER_SIZE
+            .get()
+            .map(|room| room.y)
+            .or_else(|| {
+                ctx.input(|i| i.viewport().monitor_size)
+                    .map(|monitor| monitor.y * SCREEN_FRACTION)
+            })
             .unwrap_or(f32::INFINITY);
 
         let height = (window.y + shortfall).min(ceiling);
@@ -2099,14 +2121,24 @@ impl IronMonitorApp {
             ui.add_space(2.0);
             // Reserve the right edge for host controls; tabs wrap within their
             // remaining width rather than displacing or overlapping the controls.
+            //
+            // The reserve and the tab padding are what decide whether the strip
+            // is one row or two on a laptop. At the theme's 10 px button padding
+            // and a 220 px reserve the thirteen tabs needed a 1400 px window, so
+            // every 13" panel paid a second 26 px row. The host label truncates,
+            // so the reserve only has to hold the gear and a useful prefix.
+            const HOST_CONTROLS_WIDTH: f32 = 180.0;
             ui.horizontal_top(|ui| {
                 let tabs_width =
-                    (ui.available_width() - 220.0 - ui.spacing().item_spacing.x).max(0.0);
+                    (ui.available_width() - HOST_CONTROLS_WIDTH - ui.spacing().item_spacing.x)
+                        .max(0.0);
                 ui.allocate_ui_with_layout(
                     egui::vec2(tabs_width, ui.spacing().interact_size.y),
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
                         ui.set_min_width(tabs_width);
+                        ui.spacing_mut().button_padding.x = 6.0;
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         // Tabs - use local variable to avoid borrow issues
                         let current = self.current_tab;
                         let tab_color = |tab: Tab| {
@@ -2197,29 +2229,35 @@ impl IronMonitorApp {
                         );
                     },
                 );
-                ui.allocate_ui(egui::vec2(220.0, ui.spacing().interact_size.y), |ui| {
-                    ui.set_min_width(220.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let settings_btn = ui.add(
-                            egui::Button::new(RichText::new("⚙").size(16.0))
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE),
-                        );
-                        if settings_btn.clicked() {
-                            self.show_settings = !self.show_settings;
-                        }
-                        settings_btn.on_hover_text("Settings");
-                        ui.add_space(8.0);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("{}@{}", self.hostname, self.os_info))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                                    .small(),
-                            )
-                            .truncate(),
-                        );
-                    });
-                });
+                ui.allocate_ui(
+                    egui::vec2(HOST_CONTROLS_WIDTH, ui.spacing().interact_size.y),
+                    |ui| {
+                        ui.set_min_width(HOST_CONTROLS_WIDTH);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let settings_btn = ui.add(
+                                egui::Button::new(RichText::new("⚙").size(16.0))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE),
+                            );
+                            if settings_btn.clicked() {
+                                self.show_settings = !self.show_settings;
+                            }
+                            settings_btn.on_hover_text("Settings");
+                            ui.add_space(8.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("{}@{}", self.hostname, self.os_info))
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        ))
+                                        .small(),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    },
+                );
             });
             ui.add_space(2.0);
         });
@@ -2586,6 +2624,21 @@ impl IronMonitorApp {
         let palette_ctx = ui.ctx().clone();
         self.draw_overview_chat_bar(ui);
         ui.add_space(6.0);
+
+        // Chart heights are the one part of this tab that can give, so they are
+        // what absorbs a short window. Every chart row's graph is drawn at
+        // `scale` of its natural height; everything else is fixed. Recording
+        // both lets the frame work out exactly what scale would have fitted.
+        let scale = self.overview_chart_scale;
+        let mut natural_chart_height = 0.0_f32;
+        let mut drawn_chart_height = 0.0_f32;
+        let mut chart_row = |natural: f32| {
+            let drawn = (natural * scale).round();
+            natural_chart_height += natural;
+            drawn_chart_height += drawn;
+            drawn
+        };
+
         let scrolled = ScrollArea::vertical().show(ui, |ui| {
             // Glances-style QuickLook panel at the top
             let cpu_usage = self.cpu_usage();
@@ -2634,9 +2687,9 @@ impl IronMonitorApp {
             // Threshold legend
             ui.add(ThresholdLegend);
 
-            ui.add_space(8.0);
-            ui.separator();
             ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(2.0);
 
             // System status bar (htop-style)
             ui.horizontal(|ui| {
@@ -2713,9 +2766,9 @@ impl IronMonitorApp {
                 }
             });
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             ui.separator();
-            ui.add_space(8.0);
+            ui.add_space(4.0);
 
             // Top metric cards
             ui.horizontal_wrapped(|ui| {
@@ -2808,20 +2861,25 @@ impl IronMonitorApp {
                 }
             });
 
-            ui.add_space(16.0);
+            ui.add_space(10.0);
 
             // Storage capacity uses the background snapshot, never device I/O
-            // on the paint thread. Existing charts retain their own dimensions.
+            // on the paint thread.
             draw_overview_disk_usage(ui, &self.snapshot.disks);
-            ui.add_space(16.0);
+            ui.add_space(10.0);
 
-            // Charts section
-            ui.columns(2, |columns| {
+            // Charts section. On a wide window network I/O joins this row rather
+            // than taking a section of its own below: a laptop has width to
+            // spare and no height, and the separate section cost a heading and
+            // a second chart row.
+            let network_in_first_row = ui.available_width() >= OVERVIEW_FOUR_CHART_WIDTH;
+            let first_row_height = chart_row(100.0);
+            ui.columns(if network_in_first_row { 4 } else { 2 }, |columns| {
                 // CPU Chart
                 columns[0].add(
                     SparklineChart::from_history(&self.cpu_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
-                        .height(100.0)
+                        .height(first_row_height)
                         .title("CPU Usage")
                         .unit("%")
                         .max_value(100.0)
@@ -2833,21 +2891,41 @@ impl IronMonitorApp {
                 columns[1].add(
                     SparklineChart::from_history(&self.memory_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
-                        .height(100.0)
+                        .height(first_row_height)
                         .title("Memory Usage")
                         .unit("%")
                         .max_value(100.0)
                         .show_scale(true)
                         .show_min_max(true),
                 );
+
+                if network_in_first_row {
+                    columns[2].add(
+                        SparklineChart::from_history(&self.network_rx_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .height(first_row_height)
+                            .title("Network Download")
+                            .unit("KB/s")
+                            .show_scale(true),
+                    );
+                    columns[3].add(
+                        SparklineChart::from_history(&self.network_tx_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .height(first_row_height)
+                            .title("Network Upload")
+                            .unit("KB/s")
+                            .show_scale(true),
+                    );
+                }
             });
 
-            ui.add_space(16.0);
+            ui.add_space(10.0);
 
             // GPU Charts
             if !self.gpu_history.is_empty() {
                 let gpu_title = super::widgets::domain_section_title("gpu", "Utilization");
                 ui.add(SectionHeader::new(&gpu_title).icon("🎮"));
+                let gpu_row_height = chart_row(80.0);
                 let num_cols = self.gpu_history.len().min(4);
                 ui.columns(num_cols.max(1), |columns| {
                     for (i, hist) in self.gpu_history.iter().enumerate() {
@@ -2855,7 +2933,7 @@ impl IronMonitorApp {
                             columns[i].add(
                                 SparklineChart::from_history(hist)
                                     .color(theme::color(&palette_ctx, DeviceTitleColors::ACCEL))
-                                    .height(80.0)
+                                    .height(gpu_row_height)
                                     .title(format!("GPU {}", i))
                                     .unit("%")
                                     .max_value(100.0)
@@ -2866,7 +2944,7 @@ impl IronMonitorApp {
                 });
             }
 
-            ui.add_space(16.0);
+            ui.add_space(10.0);
 
             // Linux/BSD style System Stats (like htop/vmstat)
             // Not Linux/BSD-only: uptime and CPU count render on every platform, and
@@ -2935,7 +3013,7 @@ impl IronMonitorApp {
                 }
             });
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
 
             // CPU Time breakdown (like vmstat/top)
             if let Some(ref stats) = self.system_stats {
@@ -3065,7 +3143,7 @@ impl IronMonitorApp {
                 }
             }
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
 
             // Context Switches and Interrupts charts (vmstat-style).
             //
@@ -3079,11 +3157,12 @@ impl IronMonitorApp {
                 .as_ref()
                 .is_some_and(|s| s.vm_stats.is_some())
             {
+                let vmstat_row_height = chart_row(70.0);
                 ui.columns(2, |columns| {
                     columns[0].add(
                         SparklineChart::from_history(&self.context_switches_history)
                             .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .height(70.0)
+                            .height(vmstat_row_height)
                             .title("Context Switches")
                             .unit("/s")
                             .show_scale(true),
@@ -3092,7 +3171,7 @@ impl IronMonitorApp {
                     columns[1].add(
                         SparklineChart::from_history(&self.interrupts_history)
                             .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                            .height(70.0)
+                            .height(vmstat_row_height)
                             .title("Interrupts")
                             .unit("/s")
                             .show_scale(true),
@@ -3108,36 +3187,59 @@ impl IronMonitorApp {
                 );
             }
 
-            ui.add_space(16.0);
+            // Network Charts, where they did not fit in the first row.
+            if !network_in_first_row {
+                ui.add_space(10.0);
+                let net_title = super::widgets::domain_section_title("network", "I/O");
+                ui.add(SectionHeader::new(&net_title).icon("🌐"));
+                let network_row_height = chart_row(70.0);
+                ui.columns(2, |columns| {
+                    columns[0].add(
+                        SparklineChart::from_history(&self.network_rx_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .height(network_row_height)
+                            .title("Download")
+                            .unit("KB/s")
+                            .show_scale(true),
+                    );
 
-            // Network Charts
-            let net_title = super::widgets::domain_section_title("network", "I/O");
-            ui.add(SectionHeader::new(&net_title).icon("🌐"));
-            ui.columns(2, |columns| {
-                columns[0].add(
-                    SparklineChart::from_history(&self.network_rx_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .height(70.0)
-                        .title("Download")
-                        .unit("KB/s")
-                        .show_scale(true),
-                );
-
-                columns[1].add(
-                    SparklineChart::from_history(&self.network_tx_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .height(70.0)
-                        .title("Upload")
-                        .unit("KB/s")
-                        .show_scale(true),
-                );
-            });
+                    columns[1].add(
+                        SparklineChart::from_history(&self.network_tx_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .height(network_row_height)
+                            .title("Upload")
+                            .unit("KB/s")
+                            .show_scale(true),
+                    );
+                });
+            }
         });
 
-        // What the tab needs against what it was given. `autofit_to_overview_once`
-        // resizes the window by the difference; see there for why it is measured
-        // rather than computed.
-        self.overview_shortfall = Some(scrolled.content_size.y - scrolled.inner_rect.height());
+        // Everything that is not a chart graph, which does not change with
+        // `scale`. Measured rather than added up: it depends on how many cards
+        // wrapped, how many drives and accelerators there are, and which
+        // platform rows rendered.
+        let room = scrolled.inner_rect.height();
+        let fixed = scrolled.content_size.y - drawn_chart_height;
+
+        // The scale at which the charts exactly fill the room, held between the
+        // floor and natural size. Fixed content does not depend on it, so this
+        // lands in one step; repaint once to draw at it.
+        if natural_chart_height > 0.0 {
+            let fitted =
+                ((room - fixed) / natural_chart_height).clamp(OVERVIEW_MIN_CHART_SCALE, 1.0);
+            if (fitted - self.overview_chart_scale).abs() > 0.005 {
+                self.overview_chart_scale = fitted;
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // What the tab needs at natural size against what it was given.
+        // `autofit_to_overview_once` grows the window by the difference, so a
+        // large monitor still opens with full-height charts and only a screen
+        // too short for them gets the scaled ones; see there for why it is
+        // measured rather than computed.
+        self.overview_shortfall = Some(fixed + natural_chart_height - room);
     }
 
     fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {

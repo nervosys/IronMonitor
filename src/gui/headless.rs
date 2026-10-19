@@ -1388,3 +1388,120 @@ mod monochrome_tests {
         assert_grayscale(&ctx, output, "custom charts and widgets");
     }
 }
+
+/// The GUI on a 13" laptop: 1920x1080 at 150% is 1280x720 logical, and a
+/// window sized to that work area has a 1264 px client width.
+#[cfg(test)]
+mod laptop_fit_tests {
+    use super::*;
+
+    const LAPTOP_WIDTH: f32 = 1264.0;
+
+    /// How far down the window the tab strip pushes everything else.
+    fn header_height(app: &mut crate::gui::app::IronMonitorApp, ctx: &Context, width: f32) -> f32 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 720.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input.clone(), |ctx| app.draw_top_panel(ctx));
+        let mut top = 0.0;
+        let _ = ctx.run(input, |ctx| {
+            app.draw_top_panel(ctx);
+            top = ctx.available_rect().min.y;
+        });
+        top
+    }
+
+    /// Thirteen tabs at the theme's padding needed a 1400 px window to stay on
+    /// one row, so every 13" panel lost a second row of height to the strip.
+    #[test]
+    fn the_tab_strip_is_one_row_on_a_13_inch_laptop() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+
+        let laptop = header_height(&mut app, &ctx, LAPTOP_WIDTH);
+        let wide = header_height(&mut app, &ctx, 1600.0);
+        let narrow = header_height(&mut app, &ctx, 800.0);
+
+        // The control: the measurement can tell one row from two, or the
+        // assertion below would pass on a strip that always wraps.
+        assert!(
+            narrow > wide + 10.0,
+            "at 800 px the strip should wrap: {narrow:.0} vs {wide:.0} at 1600"
+        );
+        assert!(
+            (laptop - wide).abs() < 1.0,
+            "the strip wraps at {LAPTOP_WIDTH} px: {laptop:.0} px tall against {wide:.0} at 1600"
+        );
+    }
+
+    /// Bottom edge of everything painted, text and shapes, after the chart
+    /// scale has had frames to settle.
+    fn overview_bottom(
+        app: &mut crate::gui::app::IronMonitorApp,
+        ctx: &Context,
+        size: egui::Vec2,
+    ) -> f32 {
+        for _ in 0..3 {
+            let _ = painted_shape_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        }
+        // Text and strokes only: the panel paints a background rect the size of
+        // the whole canvas, which would report every canvas as exactly full.
+        painted_shape_rects(ctx, size, |ui| app.draw_current_tab(ui))
+            .into_iter()
+            .filter(|(kind, _)| matches!(*kind, "text" | "path" | "line" | "mesh"))
+            .map(|(_, rect)| rect.max.y)
+            .fold(0.0, f32::max)
+    }
+
+    /// The Overview's charts give up height before the tab scrolls, and only as
+    /// much as the room requires.
+    ///
+    /// Measured against this machine rather than a constant, because the tab's
+    /// height is not a property of the program: it grows a card per
+    /// accelerator and a row per drive.
+    #[test]
+    fn the_overview_charts_shrink_to_the_room_and_no_further() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("overview")
+            .expect("overview is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+
+        // Natural size: a canvas taller than the tab needs.
+        let natural = overview_bottom(&mut app, &ctx, egui::vec2(LAPTOP_WIDTH, 4000.0));
+        assert!(
+            natural > 300.0 && natural < 3000.0,
+            "the Overview should paint a windowful; got {natural:.0}"
+        );
+
+        // A room 120 px short of that. The chart rows alone are 180 px at
+        // natural height and may give up half, so this is reachable on any
+        // machine.
+        let room = natural - 120.0;
+        let fitted = overview_bottom(&mut app, &ctx, egui::vec2(LAPTOP_WIDTH, room));
+        // Four pixels of slack, for the sparkline's glow: it repeats the line
+        // 1-3 px lower at up to 2.5 px thick, so a series at zero overhangs its
+        // own graph by about 3.75 px at any chart height. It does here, where
+        // the last chart is network upload on an idle link.
+        assert!(
+            fitted <= room + 4.0,
+            "the charts did not shrink to fit: painted to {fitted:.0} in a {room:.0} px room"
+        );
+        assert!(
+            fitted > room - 30.0,
+            "the charts shrank further than the room required: painted to {fitted:.0} in {room:.0}"
+        );
+
+        // And back: given the room again, they return to natural height
+        // rather than staying at whatever they last shrank to.
+        let restored = overview_bottom(&mut app, &ctx, egui::vec2(LAPTOP_WIDTH, 4000.0));
+        assert!(
+            (restored - natural).abs() < 1.0,
+            "charts did not regrow: {restored:.0} against {natural:.0}"
+        );
+    }
+}

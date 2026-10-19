@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Open the GUI inside the Windows work area. The window was clamped to 92% of
+  the whole screen, so on a 13" laptop (1920x1080 at 150%, 1280x720 logical) it
+  was taller than the room above the taskbar and the status bar opened beneath
+  it. The Overview autofit grows the window toward the same limit, and a
+  clamped window is centred in the work area rather than cascaded off it.
+
+### Changed
+
+- Keep the tab strip on one row down to a 1264 px window, the width a 1280 px
+  laptop panel leaves, by tightening tab padding and the space reserved for the
+  host label. It previously wrapped to a second row below 1400 px.
+- Overview charts shrink toward half their natural height when the window is
+  too short for them, and return to full height when it is not, so large
+  monitors keep the existing chart dimensions. The scale is measured from the
+  previous frame rather than estimated, and the autofit still sizes the window
+  for full-height charts.
+- On Overview windows at least 1060 px wide, network download and upload share
+  the CPU and memory chart row instead of a separate section. Section spacing is
+  tighter. Together these take the Overview from 1058 px to 869 px tall at
+  1264 px wide on a three-GPU desktop.
+
 ## [7.0.18] - 2026-10-02
 
 ### Fixed

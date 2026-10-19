@@ -20,31 +20,119 @@ pub mod widgets;
 
 pub use app::IronMonitorApp;
 
-/// The primary monitor's size in logical pixels, if it can be read.
+/// Where a window can go on the primary monitor, in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScreenRoom {
+    /// The work area: the monitor less the taskbar and any docked app bars.
+    work_area: egui::Rect,
+    /// What the window frame adds around the client area — title bar and
+    /// resize borders — so a client size can be turned into an outer size.
+    frame: egui::Vec2,
+}
+
+impl ScreenRoom {
+    /// The largest client area whose window fits inside the work area.
+    fn max_inner_size(&self) -> egui::Vec2 {
+        (self.work_area.size() - self.frame).max(egui::Vec2::ZERO)
+    }
+}
+
+/// The largest client area a window can have and still fit on screen, once
+/// `gui::run` has read it. The Overview autofit grows the window toward this
+/// rather than toward a fraction of the monitor.
+pub(crate) static MAX_INNER_SIZE: std::sync::OnceLock<egui::Vec2> = std::sync::OnceLock::new();
+
+/// The primary monitor's work area and the window frame's thickness, if they
+/// can be read.
+///
+/// The work area rather than the screen: a 1920x1080 panel at 150% is 1280x720
+/// logical, the taskbar takes 48 of those, and the title bar another 31. Sizing
+/// to 92% of the screen gave a 662 px client area in a 741 px window on a 720 px
+/// screen, so the status bar opened under the taskbar on exactly the laptops the
+/// clamp was written for.
+///
+/// Logical pixels because this runs before winit declares the process DPI aware,
+/// so Windows reports both in the scaled coordinates egui lays out in.
 ///
 /// `None` rather than a guess: a fallback resolution would be a number nobody
 /// measured, and the caller's response to not knowing is simply to use its
 /// preferred size — which is what it did before this existed.
 #[cfg(windows)]
-fn screen_size() -> Option<egui::Vec2> {
-    // SAFETY: `GetSystemMetrics` reads a process-wide constant and cannot fail;
-    // it returns 0 for an unknown index, which the check below rejects.
-    unsafe {
-        const SM_CXSCREEN: i32 = 0;
-        const SM_CYSCREEN: i32 = 1;
-        unsafe extern "system" {
-            fn GetSystemMetrics(index: i32) -> i32;
-        }
-        let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        (w > 0 && h > 0).then(|| egui::vec2(w as f32, h as f32))
+fn screen_room() -> Option<ScreenRoom> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
     }
+    const SPI_GETWORKAREA: u32 = 0x0030;
+    const SM_CYCAPTION: i32 = 4;
+    const SM_CXSIZEFRAME: i32 = 32;
+    const SM_CYSIZEFRAME: i32 = 33;
+    const SM_CXPADDEDBORDER: i32 = 92;
+    unsafe extern "system" {
+        fn GetSystemMetrics(index: i32) -> i32;
+        fn SystemParametersInfoW(action: u32, param: u32, value: *mut Rect, ini: u32) -> i32;
+    }
+
+    let mut area = Rect::default();
+    // SAFETY: `SPI_GETWORKAREA` writes one `RECT` through the pointer, which
+    // points at a live, correctly laid out `Rect`. `GetSystemMetrics` reads a
+    // process-wide constant and returns 0 for an unknown index.
+    let (ok, caption, frame_x, frame_y, padding) = unsafe {
+        (
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area, 0),
+            GetSystemMetrics(SM_CYCAPTION),
+            GetSystemMetrics(SM_CXSIZEFRAME),
+            GetSystemMetrics(SM_CYSIZEFRAME),
+            GetSystemMetrics(SM_CXPADDEDBORDER),
+        )
+    };
+    if ok == 0 || area.right <= area.left || area.bottom <= area.top {
+        return None;
+    }
+    Some(ScreenRoom {
+        work_area: egui::Rect::from_min_max(
+            egui::pos2(area.left as f32, area.top as f32),
+            egui::pos2(area.right as f32, area.bottom as f32),
+        ),
+        frame: egui::vec2(
+            (2 * (frame_x + padding)) as f32,
+            (caption + 2 * (frame_y + padding)) as f32,
+        ),
+    })
 }
 
 #[cfg(not(windows))]
-fn screen_size() -> Option<egui::Vec2> {
+fn screen_room() -> Option<ScreenRoom> {
     // winit reports this only once a window exists, which is after the size has
     // to be chosen. Left unimplemented rather than guessed.
     None
+}
+
+/// The client size to open at, and where to put the window if it had to shrink.
+///
+/// Placement only when the clamp applied: a window that fits wherever the
+/// system cascades it is left to the system, while one sized to the whole work
+/// area is centred in it, because the cascade offset alone would push its
+/// bottom edge back under the taskbar.
+fn opening_geometry(
+    preferred: egui::Vec2,
+    room: Option<ScreenRoom>,
+) -> (egui::Vec2, Option<egui::Pos2>) {
+    let Some(room) = room else {
+        return (preferred, None);
+    };
+    let size = preferred.min(room.max_inner_size());
+    if size == preferred {
+        return (size, None);
+    }
+    let outer = size + room.frame;
+    let position =
+        room.work_area.min + ((room.work_area.size() - outer) * 0.5).max(egui::Vec2::ZERO);
+    (size, Some(position))
 }
 
 /// Run the IronMonitor GUI application
@@ -83,24 +171,27 @@ pub fn run() -> Result<(), eframe::Error> {
     const PREFERRED_HEIGHT: f32 = 900.0;
 
     let preferred = egui::vec2(PREFERRED_WIDTH, PREFERRED_HEIGHT);
-    let size = match screen_size() {
-        // 92%, leaving room for a title bar and a taskbar rather than filling the
-        // panel exactly and tucking the bottom edge under one.
-        //
-        // `[1400, 900]` unclamped is wider and taller than a 1366x768 laptop
-        // panel, so the window opened with its edges off-screen on exactly the
-        // machines least able to spare the room. `with_min_inner_size` does not
-        // help: a minimum is a floor, not a ceiling.
-        Some(screen) => preferred.min(screen * 0.92),
-        None => preferred,
-    };
+    // `[1400, 900]` unclamped is wider and taller than a 1366x768 laptop panel,
+    // so the window opened with its edges off-screen on exactly the machines
+    // least able to spare the room. `with_min_inner_size` does not help: a
+    // minimum is a floor, not a ceiling.
+    let room = screen_room();
+    if let Some(room) = room {
+        let _ = MAX_INNER_SIZE.set(room.max_inner_size());
+    }
+    let (size, position) = opening_geometry(preferred, room);
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([size.x, size.y])
+        .with_min_inner_size([800.0_f32.min(size.x), 600.0_f32.min(size.y)])
+        .with_title("IronMonitor")
+        .with_icon(load_icon());
+    if let Some(position) = position {
+        viewport = viewport.with_position(position);
+    }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([size.x, size.y])
-            .with_min_inner_size([800.0_f32.min(size.x), 600.0_f32.min(size.y)])
-            .with_title("IronMonitor")
-            .with_icon(load_icon()),
+        viewport,
         // Painting already goes through the GPU — egui tessellates on the CPU and
         // submits triangles via glow/OpenGL. Stated explicitly rather than inherited
         // from a default that can change.
@@ -149,5 +240,52 @@ fn load_icon() -> egui::IconData {
         rgba,
         width: size as u32,
         height: size as u32,
+    }
+}
+
+#[cfg(test)]
+mod opening_geometry_tests {
+    use super::*;
+
+    /// A 1920x1080 panel at 150%: 1280x720 logical, a 48 px taskbar at the
+    /// bottom, and the frame Windows 11 reports at that scale.
+    fn laptop() -> ScreenRoom {
+        ScreenRoom {
+            work_area: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 672.0)),
+            frame: egui::vec2(16.0, 39.0),
+        }
+    }
+
+    #[test]
+    fn the_window_fits_inside_the_work_area_on_a_13_inch_laptop() {
+        let (size, position) = opening_geometry(egui::vec2(1400.0, 900.0), Some(laptop()));
+        let position = position.expect("a clamped window is placed, not cascaded");
+        let outer = egui::Rect::from_min_size(position, size + laptop().frame);
+        assert!(
+            laptop().work_area.contains_rect(outer),
+            "window {outer:?} leaves the work area {:?}",
+            laptop().work_area
+        );
+        // And it uses the room rather than leaving a margin nobody asked for.
+        assert_eq!(size, egui::vec2(1264.0, 633.0));
+    }
+
+    #[test]
+    fn a_window_that_already_fits_is_left_where_the_system_puts_it() {
+        let desktop = ScreenRoom {
+            work_area: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(2560.0, 1392.0)),
+            frame: egui::vec2(16.0, 39.0),
+        };
+        let preferred = egui::vec2(1400.0, 900.0);
+        assert_eq!(
+            opening_geometry(preferred, Some(desktop)),
+            (preferred, None)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_screen_opens_at_the_preferred_size() {
+        let preferred = egui::vec2(1400.0, 900.0);
+        assert_eq!(opening_geometry(preferred, None), (preferred, None));
     }
 }
