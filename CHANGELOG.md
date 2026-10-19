@@ -74,6 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check, and are `None`; on Arm, EL2 support was asserted because "ARMv8 always
   has EL2", which the architecture does not promise, and the capability is now
   reported as not read.
+- Distributed-training detection reports what the environment says. An unset
+  `LOCAL_RANK` read as GPU 0 and an unnamed backend as NCCL; a `TF_CONFIG` job
+  was a world of one process at rank 0 without its JSON being read, and now
+  takes its world size from the cluster it lists.
+- IPMI: a sensor `ipmitool` prints as `na` has no value, where it read 0; the
+  hwmon fallback reports sensor status as unknown rather than OK; a DCMI power
+  reading with no instantaneous figure is an error rather than 0 W; and a
+  failing `ipmitool` is reported as failing. A remote BMC password is passed
+  to `ipmitool` through `IPMI_PASSWORD` and `-E`, not as `-P <password>`,
+  where any local user could read it from the process list.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

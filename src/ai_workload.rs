@@ -171,14 +171,16 @@ pub struct InferenceMetrics {
 /// Distributed training configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistributedConfig {
-    /// World size (total number of processes)
-    pub world_size: u32,
-    /// Rank of this process
-    pub rank: u32,
-    /// Local rank (GPU index on this node)
-    pub local_rank: u32,
-    /// Backend (nccl, gloo, mpi)
-    pub backend: String,
+    /// World size (total number of processes). `None` where the launcher's
+    /// configuration does not state it.
+    pub world_size: Option<u32>,
+    /// Rank of this process. TensorFlow has no global rank, only an index
+    /// within a role, so it is `None` there.
+    pub rank: Option<u32>,
+    /// Local rank (GPU index on this node), `None` when `LOCAL_RANK` is unset
+    pub local_rank: Option<u32>,
+    /// Backend (nccl, gloo, mpi), `None` when the environment does not name it
+    pub backend: Option<String>,
     /// Master address
     pub master_addr: Option<String>,
     /// Master port
@@ -783,31 +785,40 @@ impl AiWorkloadMonitor {
             env_vars.get("RANK").and_then(|s| s.parse().ok()),
         ) {
             return Some(DistributedConfig {
-                world_size,
-                rank,
-                local_rank: env_vars
-                    .get("LOCAL_RANK")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0),
+                world_size: Some(world_size),
+                rank: Some(rank),
+                // Unset is not GPU 0, and an unnamed backend is not NCCL: the
+                // process group is chosen in code, which the environment does
+                // not show. These were 0 and "nccl".
+                local_rank: env_vars.get("LOCAL_RANK").and_then(|s| s.parse().ok()),
                 backend: env_vars
                     .get("BACKEND")
                     .or_else(|| env_vars.get("NCCL_BACKEND"))
-                    .cloned()
-                    .unwrap_or_else(|| "nccl".to_string()),
+                    .cloned(),
                 master_addr: env_vars.get("MASTER_ADDR").cloned(),
                 master_port: env_vars.get("MASTER_PORT").and_then(|s| s.parse().ok()),
             });
         }
 
-        // TensorFlow distributed
-        if let Some(_tf_config) = env_vars.get("TF_CONFIG") {
-            // TF_CONFIG is JSON, would need to parse
-            // For now, just detect presence
+        // TensorFlow distributed: `TF_CONFIG` is JSON naming every task in the
+        // cluster by role. It used to be detected by presence alone and reported
+        // as a world of one process at rank 0 -- a single-machine job, for a
+        // configuration that exists only to describe a multi-machine one.
+        if let Some(tf_config) = env_vars.get("TF_CONFIG") {
+            let parsed: Option<serde_json::Value> = serde_json::from_str(tf_config).ok();
+            let world_size = parsed.as_ref().and_then(|v| {
+                let cluster = v.get("cluster")?.as_object()?;
+                let tasks: usize = cluster
+                    .values()
+                    .map(|role| role.as_array().map_or(0, Vec::len))
+                    .sum();
+                u32::try_from(tasks).ok().filter(|&n| n > 0)
+            });
             return Some(DistributedConfig {
-                world_size: 1,
-                rank: 0,
-                local_rank: 0,
-                backend: "tensorflow".to_string(),
+                world_size,
+                rank: None,
+                local_rank: None,
+                backend: Some("tensorflow".to_string()),
                 master_addr: None,
                 master_port: None,
             });
@@ -912,6 +923,39 @@ impl Default for AiWorkloadMonitor {
 #[cfg(test)]
 mod tpu_absence_tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn distributed_settings_are_read_from_the_environment_not_assumed() {
+        let monitor = AiWorkloadMonitor::new().unwrap();
+        let env = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+
+        let torch = monitor
+            .detect_distributed_config(&env(&[("WORLD_SIZE", "8"), ("RANK", "3")]))
+            .unwrap();
+        assert_eq!((torch.world_size, torch.rank), (Some(8), Some(3)));
+        assert_eq!(torch.local_rank, None, "unset LOCAL_RANK is not GPU 0");
+        assert_eq!(torch.backend, None, "an unnamed backend is not NCCL");
+
+        let tf = monitor
+            .detect_distributed_config(&env(&[(
+                "TF_CONFIG",
+                r#"{"cluster":{"chief":["a:1"],"worker":["b:1","c:1"],"ps":["d:1"]},"task":{"type":"worker","index":1}}"#,
+            )]))
+            .unwrap();
+        assert_eq!(tf.world_size, Some(4));
+        assert_eq!(tf.rank, None);
+
+        let unparsed = monitor
+            .detect_distributed_config(&env(&[("TF_CONFIG", "not json")]))
+            .unwrap();
+        assert_eq!(unparsed.world_size, None);
+    }
 
     fn detector() -> AiWorkloadMonitor {
         AiWorkloadMonitor::default()

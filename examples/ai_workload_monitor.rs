@@ -93,10 +93,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Show distributed training configuration
                 if let Some(dist) = &workload.distributed_config {
                     println!("\n  Distributed Training:");
-                    println!("    World Size:  {}", dist.world_size);
-                    println!("    Rank:        {}", dist.rank);
-                    println!("    Local Rank:  {}", dist.local_rank);
-                    println!("    Backend:     {}", dist.backend);
+                    let or_unset = |v: Option<String>| v.unwrap_or_else(|| "not set".into());
+                    println!(
+                        "    World Size:  {}",
+                        or_unset(dist.world_size.map(|n| n.to_string()))
+                    );
+                    println!(
+                        "    Rank:        {}",
+                        or_unset(dist.rank.map(|n| n.to_string()))
+                    );
+                    println!(
+                        "    Local Rank:  {}",
+                        or_unset(dist.local_rank.map(|n| n.to_string()))
+                    );
+                    println!("    Backend:     {}", or_unset(dist.backend.clone()));
                     if let Some(addr) = &dist.master_addr {
                         println!(
                             "    Master:      {}:{}",
