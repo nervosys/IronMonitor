@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
+  `cpu` line from `/proc/stat`. It was the mean over every online core, so a
+  core missing from `/proc/stat` added nothing to the sum and one to the
+  divisor; and with no ticks read at all it answered 100% idle. That case is now
+  an error, and on Windows `GetSystemTimes` reporting no CPU time is too, where
+  it used to report 0% busy.
+- macOS network interfaces no longer report transmit drops of zero. Darwin's
+  `if_data` has no output-drop counter, so `tx_drops` is now `Option` and
+  `None` there, `total_drops()` is `None` unless both directions are counted,
+  and the observability `dropped` figure follows. An interface whose link record
+  carried no statistics is left out instead of listed as never having moved a
+  byte.
+- `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
+  constructor and found sound, each with its reason. The seven network structs
+  moved there from the untriaged `BASELINE`.
 - Live Apple Silicon CPU, GPU and ANE figures are refused with their reason
   (`powermetrics` requires root, and IronMonitor does not elevate itself)
   instead of failing with a bare "file not found" on macOS and reading as zeros

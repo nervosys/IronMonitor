@@ -177,7 +177,9 @@ fn main() -> Result<()> {
         let total_rx: f64 = interfaces.iter().map(|i| i.rx_mb()).sum();
         let total_tx: f64 = interfaces.iter().map(|i| i.tx_mb()).sum();
         let total_errors: u64 = interfaces.iter().map(|i| i.total_errors()).sum();
-        let total_drops: u64 = interfaces.iter().map(|i| i.total_drops()).sum();
+        // `None` if any interface does not count drops in both directions.
+        let total_drops: Option<u64> = interfaces.iter().map(|i| i.total_drops()).sum();
+        let total_drops = total_drops.map_or_else(|| "not counted".to_string(), |d| d.to_string());
 
         println!("\n+--------------------------------------------------------------------------+");
         println!("|                        SUMMARY STATISTICS                               |");

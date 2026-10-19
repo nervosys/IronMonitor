@@ -184,8 +184,10 @@ pub struct NetworkInterfaceInfo {
     pub tx_packets: u64,
     /// Transmit errors
     pub tx_errors: u64,
-    /// Transmit drops
-    pub tx_drops: u64,
+    /// Transmit drops. `None` where the platform does not count them:
+    /// macOS's `if_data` has an input-queue drop counter and no output one,
+    /// and this read 0 there, a link that had never dropped a packet.
+    pub tx_drops: Option<u64>,
     /// Link speed in Mbps (if available)
     pub speed_mbps: Option<u32>,
     /// Maximum Transmission Unit
@@ -214,9 +216,9 @@ impl NetworkInterfaceInfo {
         self.rx_errors + self.tx_errors
     }
 
-    /// Get total drops (RX + TX)
-    pub fn total_drops(&self) -> u64 {
-        self.rx_drops + self.tx_drops
+    /// Get total drops (RX + TX), where both directions are counted.
+    pub fn total_drops(&self) -> Option<u64> {
+        self.tx_drops.map(|tx| self.rx_drops + tx)
     }
 
     /// Get RX bandwidth in megabytes
@@ -439,7 +441,7 @@ mod linux {
             tx_bytes,
             tx_packets,
             tx_errors,
-            tx_drops,
+            tx_drops: Some(tx_drops),
             speed_mbps,
             mtu,
             mac_address,
@@ -769,7 +771,7 @@ mod windows {
                     tx_bytes: row.out_octets,
                     tx_packets: row.out_ucast_pkts + row.out_nucast_pkts,
                     tx_errors: row.out_errors,
-                    tx_drops: row.out_discards,
+                    tx_drops: Some(row.out_discards),
                     speed_mbps,
                     mtu: Some(row.mtu),
                     mac_address,
@@ -862,6 +864,8 @@ mod macos {
         let mut interfaces = Vec::new();
         let mut seen_interfaces: std::collections::HashMap<String, NetworkInterfaceInfo> =
             std::collections::HashMap::new();
+        let mut with_link_stats: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         unsafe {
             let mut addrs: *mut ifaddrs = ptr::null_mut();
@@ -907,7 +911,7 @@ mod macos {
                             rx_errors: 0,
                             tx_errors: 0,
                             rx_drops: 0,
-                            tx_drops: 0,
+                            tx_drops: None,
                         });
 
                 if !ifa.ifa_addr.is_null() {
@@ -935,6 +939,7 @@ mod macos {
                             // Link layer info (MAC address and statistics)
                             // The ifa_data contains if_data structure with statistics
                             if !ifa.ifa_data.is_null() {
+                                with_link_stats.insert(name.clone());
                                 let if_data = &*(ifa.ifa_data as *const IfData);
                                 entry.rx_bytes = if_data.ifi_ibytes as u64;
                                 entry.tx_bytes = if_data.ifi_obytes as u64;
@@ -986,6 +991,13 @@ mod macos {
             freeifaddrs(addrs);
         }
 
+        // An interface whose `AF_LINK` record carried no `if_data` has no
+        // counters, and its entry still held the zeros it was created with —
+        // an idle link, reported for one nobody read. Every real macOS
+        // interface has that record; one without it is left out rather than
+        // published as traffic-free.
+        seen_interfaces.retain(|name, _| with_link_stats.contains(name));
+
         // Convert HashMap to Vec
         interfaces.extend(seen_interfaces.into_values());
 
@@ -1012,7 +1024,7 @@ mod tests {
             tx_bytes: 1024 * 1024 * 50,
             tx_packets: 3000,
             tx_errors: 1,
-            tx_drops: 0,
+            tx_drops: Some(0),
             speed_mbps: Some(1000),
             mtu: Some(1500),
             mac_address: Some("aa:bb:cc:dd:ee:ff".to_string()),
@@ -1042,7 +1054,7 @@ mod tests {
     #[test]
     fn test_total_drops() {
         let iface = make_test_iface();
-        assert_eq!(iface.total_drops(), 1);
+        assert_eq!(iface.total_drops(), Some(1));
     }
 
     #[test]
@@ -1087,7 +1099,7 @@ mod tests {
             tx_bytes: 0,
             tx_packets: 0,
             tx_errors: 0,
-            tx_drops: 0,
+            tx_drops: Some(0),
             speed_mbps: None,
             mtu: None,
             mac_address: None,
@@ -1097,7 +1109,16 @@ mod tests {
         assert_eq!(iface.total_bytes(), 0);
         assert_eq!(iface.total_packets(), 0);
         assert_eq!(iface.total_errors(), 0);
-        assert_eq!(iface.total_drops(), 0);
+        assert_eq!(iface.total_drops(), Some(0));
+        let uncounted = NetworkInterfaceInfo {
+            tx_drops: None,
+            ..iface.clone()
+        };
+        assert_eq!(
+            uncounted.total_drops(),
+            None,
+            "an uncounted direction is not zero drops"
+        );
         assert_eq!(iface.rx_mb(), 0.0);
         assert_eq!(iface.tx_mb(), 0.0);
     }

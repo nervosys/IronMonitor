@@ -505,8 +505,9 @@ pub struct NetworkMetrics {
     pub tx_packets: u64,
     /// Errors
     pub errors: u64,
-    /// Dropped packets
-    pub dropped: u64,
+    /// Dropped packets, where every interface counts drops in both
+    /// directions; macOS counts no transmit drops.
+    pub dropped: Option<u64>,
 }
 
 /// Process metrics

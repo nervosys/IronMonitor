@@ -1227,7 +1227,7 @@ impl ObservabilityApi {
                         rx_packets: iface.rx_packets,
                         tx_packets: iface.tx_packets,
                         errors: iface.rx_errors + iface.tx_errors,
-                        dropped: iface.rx_drops + iface.tx_drops,
+                        dropped: iface.total_drops(),
                     });
                 }
             }

@@ -21,6 +21,14 @@
 //! of the shape appears; and it fails when an entry shrinks or disappears, so
 //! the baseline only ever gets smaller.
 //!
+//! **`JUDGED` is the list of judged sites.** An entry there was traced to
+//! every constructor and its bare fields found read on every platform that
+//! builds the struct, and it carries the reason. It is held to the same exact
+//! match as `BASELINE`, so a judged struct that grows a field fails like any
+//! other. Moving an entry from `BASELINE` to `JUDGED` is triage; adding one
+//! that was never in `BASELINE` needs the same tracing and a reason that would
+//! survive a reader checking it.
+//!
 //! **What this does not see.** Fields declared over more than one line, types
 //! behind an alias, and structs whose fields are all bare -- the case the
 //! sweep called a type that could not say "not reported". A clean run says the
@@ -208,7 +216,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/agent/local/mod.rs", "InferenceResponse", "duration_ms"),
     ("src/agent/state.rs", "CpuState", "threads"),
     ("src/ai_api/types.rs", "MemorySummary", "total_mb used_mb usage_percent"),
-    ("src/ai_api/types.rs", "NetworkSummary", "rx_total_mb tx_total_mb"),
     ("src/ai_api/types.rs", "ProcessSummary", "cpu_percent memory_mb"),
     ("src/ai_api/types.rs", "SensorReading", "value"),
     ("src/ai_workload.rs", "DistributedConfig", "world_size local_rank"),
@@ -216,7 +223,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/anomaly.rs", "Anomaly", "current_value timestamp_secs"),
     ("src/backend.rs", "CpuState", "threads utilization"),
     ("src/backend.rs", "MemoryState", "total_bytes used_bytes available_bytes usage_percent"),
-    ("src/backend.rs", "NetworkState", "rx_bytes tx_bytes"),
     ("src/backend.rs", "ProcessState", "cpu_percent memory_bytes"),
     ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
@@ -247,7 +253,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/memory_bandwidth/mod.rs", "BandwidthAnalysis", "estimated_latency_ns"),
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
     ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
-    ("src/network_monitor.rs", "NetworkInterfaceInfo", "rx_bytes rx_packets rx_errors rx_drops tx_bytes tx_packets tx_errors tx_drops"),
     ("src/network_tools.rs", "CaptureConfig", "timeout_secs"),
     ("src/network_tools.rs", "CapturedPacket", "length"),
     ("src/network_tools.rs", "NmapScanResult", "scan_duration_secs"),
@@ -257,7 +262,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/observability/context.rs", "CpuMetrics", "utilization_percent"),
     ("src/observability/context.rs", "MemoryContext", "total_gb"),
     ("src/observability/context.rs", "MemoryMetrics", "used_mb total_mb"),
-    ("src/observability/context.rs", "NetworkMetrics", "rx_bytes_total tx_bytes_total rx_packets tx_packets errors dropped"),
     ("src/observability/context.rs", "ProcessMetrics", "cpu_percent memory_mb threads"),
     ("src/observability/metrics.rs", "CpuMetricSnapshot", "usage_percent"),
     ("src/observability/metrics.rs", "DiskMetricSnapshot", "used_bytes free_bytes total_bytes usage_percent"),
@@ -265,7 +269,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/pci_devices/mod.rs", "PciDeviceInfo", "sriov_vfs numa_node"),
     ("src/pcie.rs", "PcieBandwidthSummary", "gpu_devices downgraded_devices unreadable_devices"),
     ("src/pcie.rs", "PcieDevice", "numa_node current_link_width max_link_width"),
-    ("src/pipeline/mod.rs", "NetSnapshot", "rx_bytes tx_bytes"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
     ("src/process_monitor.rs", "CategoryStats", "total_cpu_percent total_memory_bytes"),
     ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes private_bytes cpu_time_us"),
@@ -277,14 +280,79 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/tsdb/mod.rs", "ProcessSnapshot", "cpu_percent memory_bytes"),
     ("src/tui/app.rs", "CpuInfo", "threads utilization"),
     ("src/tui/app.rs", "MemoryInfo", "total used available"),
-    ("src/tui/app.rs", "NetworkInfo", "total_rx_bytes total_tx_bytes"),
-    ("src/tui/app.rs", "NetworkInterfaceInfo", "rx_bytes tx_bytes"),
 ];
+
+/// Matches traced to every constructor and found sound: each bare field is
+/// read wherever the struct is built. `(file, struct, bare fields, why)`.
+const JUDGED: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/network_monitor.rs",
+        "NetworkInterfaceInfo",
+        "rx_bytes rx_packets rx_errors rx_drops tx_bytes tx_packets tx_errors",
+        "Linux reads each from /sys/class/net/<if>/statistics and fails the          interface if one is missing; Windows copies them from GetIfTable2's          MIB_IF_ROW2; macOS takes them from the AF_LINK if_data and leaves out          an interface that has none. tx_drops is Option: macOS does not count it.",
+    ),
+    (
+        "src/ai_api/types.rs",
+        "NetworkSummary",
+        "rx_total_mb tx_total_mb",
+        "built only in ai_api/mod.rs from NetworkInterfaceInfo's rx_bytes and tx_bytes",
+    ),
+    (
+        "src/backend.rs",
+        "NetworkState",
+        "rx_bytes tx_bytes",
+        "built only in get_full_system_state from NetworkInterfaceInfo",
+    ),
+    (
+        "src/observability/context.rs",
+        "NetworkMetrics",
+        "rx_bytes_total tx_bytes_total rx_packets tx_packets errors",
+        "built only in observability/api.rs as sums of NetworkInterfaceInfo          counters; dropped is Option because tx_drops is",
+    ),
+    (
+        "src/pipeline/mod.rs",
+        "NetSnapshot",
+        "rx_bytes tx_bytes",
+        "collect_network copies them from NetworkInterfaceInfo; the other          constructors are tests",
+    ),
+    (
+        "src/tui/app.rs",
+        "NetworkInfo",
+        "total_rx_bytes total_tx_bytes",
+        "sums over the TUI's interfaces, which come from NetSnapshot",
+    ),
+    (
+        "src/tui/app.rs",
+        "NetworkInterfaceInfo",
+        "rx_bytes tx_bytes",
+        "update_network copies them from the collector's NetSnapshot",
+    ),
+];
+
+fn known() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    BASELINE
+        .iter()
+        .copied()
+        .chain(JUDGED.iter().map(|&(f, s, b, _)| (f, s, b)))
+}
+
+#[test]
+fn judged_entries_say_why_and_are_not_also_untriaged() {
+    for &(f, s, b, why) in JUDGED {
+        assert!(
+            !why.trim().is_empty(),
+            "{f}: `{s}` is judged without a reason"
+        );
+        assert!(
+            !BASELINE.contains(&(f, s, b)),
+            "{f}: `{s}` is in both BASELINE and JUDGED"
+        );
+    }
+}
 
 #[test]
 fn no_struct_gains_a_bare_reading_beside_optional_ones() {
-    let baseline: BTreeSet<(String, String, String)> = BASELINE
-        .iter()
+    let baseline: BTreeSet<(String, String, String)> = known()
         .map(|(f, s, b)| (f.to_string(), s.to_string(), b.to_string()))
         .collect();
     let grown: Vec<String> = partial_corrections()
@@ -309,12 +377,9 @@ fn no_struct_gains_a_bare_reading_beside_optional_ones() {
 #[test]
 fn every_baseline_entry_still_matches() {
     let found = partial_corrections();
-    let stale: Vec<String> = BASELINE
-        .iter()
+    let stale: Vec<String> = known()
         .filter(|(f, s, b)| !found.contains(&(f.to_string(), s.to_string(), b.to_string())))
-        .map(|(f, s, b)| {
-            format!("{f}: `{s}` [{b}] no longer matches; update or remove its BASELINE entry")
-        })
+        .map(|(f, s, b)| format!("{f}: `{s}` [{b}] no longer matches; update or remove its entry"))
         .collect();
     assert!(stale.is_empty(), "{}", stale.join("\n"));
 }
