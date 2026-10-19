@@ -1411,11 +1411,12 @@ fn resolve_cpu_cache(out: &mut Vec<Reading>) {
         push_opt(
             out,
             *id,
-            kib(value),
+            value.and_then(kib),
             Some(Unit::Bytes),
-            "no aggregate was reported for this level; some platforms publish a \
-             combined L1 rather than separate data and instruction figures, in \
-             which case the per-instance entities below carry the sizes",
+            "no total for this level: the platform did not list every cache at it \
+             with a size (macOS publishes one representative size per level), or \
+             lists none, or publishes a combined L1 rather than separate data and \
+             instruction caches; the per-instance entities below carry the sizes",
         );
     }
 
@@ -1429,7 +1430,7 @@ fn resolve_cpu_cache(out: &mut Vec<Reading>) {
         push_opt(
             out,
             format!("{base}.size"),
-            kib(cache.size_kb),
+            cache.size_kb.and_then(kib),
             Some(Unit::Bytes),
             "the platform reported no size for this cache",
         );

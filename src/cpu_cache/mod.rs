@@ -17,10 +17,13 @@
 //!     // one leaves it `None` rather than standing in x86's 64-byte line.
 //!     let line = cache.line_size.map_or("?".to_string(), |b| format!("{b}-byte"));
 //!     let ways = cache.associativity.map_or("?".to_string(), |w| format!("{w}-way"));
-//!     println!("{} ({}): {} KB, {ways}, {line} lines",
-//!         cache.level, cache.cache_type, cache.size_kb);
+//!     let size = cache.size_kb.map_or("?".to_string(), |kb| format!("{kb} KB"));
+//!     println!("{} ({}): {size}, {ways}, {line} lines", cache.level, cache.cache_type);
 //! }
-//! println!("Total L3: {} KB", monitor.total_l3_kb());
+//! // `None` unless the platform listed every L3 with its size.
+//! if let Some(kb) = monitor.total_l3_kb() {
+//!     println!("Total L3: {kb} KB");
+//! }
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -56,8 +59,10 @@ pub struct CpuCacheInfo {
     pub level: CacheLevel,
     /// Cache type (Data, Instruction, Unified)
     pub cache_type: CacheType,
-    /// Cache size in KiB
-    pub size_kb: u64,
+    /// Cache size in KiB. `None` where the platform listed the cache without a
+    /// size it could parse; it was 0, which the ontology already had to treat
+    /// as "not reported" because the type could not.
+    pub size_kb: Option<u64>,
     /// Cache line size in bytes. `None` when the platform did not report it —
     /// never 64, which is x86's value and not Apple silicon's 128.
     pub line_size: Option<u32>,
@@ -79,19 +84,27 @@ pub struct CpuCacheInfo {
 pub struct CpuCacheTopology {
     /// All detected cache instances
     pub caches: Vec<CpuCacheInfo>,
-    /// Total L1 data cache across all cores (KiB)
-    pub total_l1d_kb: u64,
+    /// Total L1 data cache across all cores (KiB).
+    ///
+    /// Each total is `None` unless the platform enumerated every physical cache
+    /// at that level with its size. Linux used to read only cpu0's caches and
+    /// macOS reads one representative size per level, so these "totals across
+    /// all cores" were one core's figures; and a cache with no size added 0.
+    pub total_l1d_kb: Option<u64>,
     /// Total L1 instruction cache across all cores (KiB)
-    pub total_l1i_kb: u64,
+    pub total_l1i_kb: Option<u64>,
     /// Total L2 cache (KiB)
-    pub total_l2_kb: u64,
+    pub total_l2_kb: Option<u64>,
     /// Total L3 cache (KiB)
-    pub total_l3_kb: u64,
+    pub total_l3_kb: Option<u64>,
 }
 
 /// Monitor for CPU cache topology
 pub struct CpuCacheMonitor {
     topology: CpuCacheTopology,
+    /// Whether the last refresh listed every physical cache instance, not one
+    /// representative per level. Totals are summed only when it did.
+    every_instance: bool,
 }
 
 /// Render a processor affinity mask as a Linux-style CPU list.
@@ -137,11 +150,12 @@ impl CpuCacheMonitor {
         let mut monitor = Self {
             topology: CpuCacheTopology {
                 caches: Vec::new(),
-                total_l1d_kb: 0,
-                total_l1i_kb: 0,
-                total_l2_kb: 0,
-                total_l3_kb: 0,
+                total_l1d_kb: None,
+                total_l1i_kb: None,
+                total_l2_kb: None,
+                total_l3_kb: None,
             },
+            every_instance: false,
         };
         monitor.refresh()?;
         Ok(monitor)
@@ -150,6 +164,7 @@ impl CpuCacheMonitor {
     /// Refresh cache detection.
     pub fn refresh(&mut self) -> Result<(), IronError> {
         self.topology.caches.clear();
+        self.every_instance = false;
 
         #[cfg(target_os = "linux")]
         self.refresh_linux()?;
@@ -174,18 +189,18 @@ impl CpuCacheMonitor {
         &self.topology
     }
 
-    /// Total L1 data cache in KiB.
-    pub fn total_l1d_kb(&self) -> u64 {
+    /// Total L1 data cache in KiB; see [`CpuCacheTopology::total_l1d_kb`].
+    pub fn total_l1d_kb(&self) -> Option<u64> {
         self.topology.total_l1d_kb
     }
 
     /// Total L2 cache in KiB.
-    pub fn total_l2_kb(&self) -> u64 {
+    pub fn total_l2_kb(&self) -> Option<u64> {
         self.topology.total_l2_kb
     }
 
     /// Total L3 cache in KiB.
-    pub fn total_l3_kb(&self) -> u64 {
+    pub fn total_l3_kb(&self) -> Option<u64> {
         self.topology.total_l3_kb
     }
 
@@ -199,45 +214,69 @@ impl CpuCacheMonitor {
     }
 
     fn compute_totals(&mut self) {
-        // Deduplicate by shared_cpu_list to avoid counting the same cache twice
-        let mut seen_l3: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        self.topology.total_l1d_kb = 0;
-        self.topology.total_l1i_kb = 0;
-        self.topology.total_l2_kb = 0;
-        self.topology.total_l3_kb = 0;
-
-        for cache in &self.topology.caches {
-            match (cache.level, cache.cache_type) {
-                (CacheLevel::L1, CacheType::Data) => {
-                    self.topology.total_l1d_kb += cache.size_kb;
-                }
-                (CacheLevel::L1, CacheType::Instruction) => {
-                    self.topology.total_l1i_kb += cache.size_kb;
-                }
-                (CacheLevel::L2, _) => {
-                    self.topology.total_l2_kb += cache.size_kb;
-                }
-                (CacheLevel::L3, _) if seen_l3.insert(cache.shared_cpu_list.clone()) => {
-                    self.topology.total_l3_kb += cache.size_kb;
-                }
-                _ => {}
+        let topology = &mut self.topology;
+        let caches = &topology.caches;
+        let every_instance = self.every_instance;
+        let total = |at: &dyn Fn(&CpuCacheInfo) -> bool| -> Option<u64> {
+            if !every_instance {
+                return None;
             }
-        }
+            let mut members = caches.iter().filter(|c| at(c)).peekable();
+            // No cache at this level is no total, as before: the ontology
+            // reports it as not reported rather than as 0 bytes.
+            members.peek()?;
+            // One cache of unknown size makes the sum an undercount, not a total.
+            members.map(|c| c.size_kb).sum()
+        };
+        topology.total_l1d_kb =
+            total(&|c| c.level == CacheLevel::L1 && c.cache_type == CacheType::Data);
+        topology.total_l1i_kb =
+            total(&|c| c.level == CacheLevel::L1 && c.cache_type == CacheType::Instruction);
+        topology.total_l2_kb = total(&|c| c.level == CacheLevel::L2);
+        topology.total_l3_kb = total(&|c| c.level == CacheLevel::L3);
     }
 
+    /// Every physical cache, from every CPU's `cache/index*`.
+    ///
+    /// This read cpu0's directory alone, so the list held one core's caches
+    /// and the totals summed to one core's L1 and L2 -- on a 16-core part, a
+    /// sixteenth of what `cpu.cache.l1d` says it is. Each CPU lists the caches
+    /// it can reach; one shared by several CPUs appears under each of them,
+    /// and is the same cache wherever its level, type and `shared_cpu_list`
+    /// agree, which is how it is counted once here.
     #[cfg(target_os = "linux")]
     fn refresh_linux(&mut self) -> Result<(), IronError> {
-        // Read from cpu0's cache hierarchy (representative)
-        let cpu_base = std::path::Path::new("/sys/devices/system/cpu/cpu0/cache");
-        if !cpu_base.exists() {
+        let cpu_root = std::path::Path::new("/sys/devices/system/cpu");
+        if !cpu_root.join("cpu0/cache").exists() {
             // A real answer: this kernel publishes no cache topology.
             return Ok(());
         }
 
-        {
-            let entries = std::fs::read_dir(cpu_base)
-                .map_err(|e| IronError::System(format!("cannot read {cpu_base:?}: {e}")))?;
+        let mut cpus: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(cpu_root)
+            .map_err(|e| IronError::System(format!("cannot read {cpu_root:?}: {e}")))?
+            .flatten()
+            .filter_map(|e| {
+                let n = e
+                    .file_name()
+                    .to_string_lossy()
+                    .strip_prefix("cpu")?
+                    .parse()
+                    .ok()?;
+                Some((n, e.path()))
+            })
+            .collect();
+        cpus.sort();
+
+        let mut every_instance = true;
+        let mut seen = std::collections::HashSet::new();
+        for (_, cpu) in cpus {
+            let cpu_base = cpu.join("cache");
+            let Ok(entries) = std::fs::read_dir(&cpu_base) else {
+                // An offline CPU publishes no cache directory, so the caches
+                // only it can reach are not listed and no total is complete.
+                every_instance = false;
+                continue;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if !name.starts_with("index") {
@@ -290,6 +329,17 @@ impl CpuCacheMonitor {
                         .ok();
 
                 let shared_cpu_list = Self::read_trimmed(&base.join("shared_cpu_list"));
+                if shared_cpu_list.is_empty() {
+                    // Without it the same cache cannot be told apart from a
+                    // sibling's, so it may be listed more than once.
+                    every_instance = false;
+                } else if !seen.insert((
+                    level_str.clone(),
+                    type_str.clone(),
+                    shared_cpu_list.clone(),
+                )) {
+                    continue;
+                }
 
                 self.topology.caches.push(CpuCacheInfo {
                     level,
@@ -305,6 +355,7 @@ impl CpuCacheMonitor {
             }
         }
 
+        self.every_instance = every_instance;
         self.topology.caches.sort_by_key(|c| (c.level, c.index));
         Ok(())
     }
@@ -317,15 +368,16 @@ impl CpuCacheMonitor {
             .to_string()
     }
 
+    /// sysfs's `size`, such as `48K` or `32M`, in KiB; `None` if it is not one.
     #[cfg(target_os = "linux")]
-    fn parse_size_kb(s: &str) -> u64 {
+    fn parse_size_kb(s: &str) -> Option<u64> {
         let s = s.trim();
         if let Some(kb) = s.strip_suffix('K') {
-            kb.parse().unwrap_or(0)
+            kb.parse().ok()
         } else if let Some(mb) = s.strip_suffix('M') {
-            mb.parse::<u64>().unwrap_or(0) * 1024
+            mb.parse::<u64>().ok().map(|mb| mb * 1024)
         } else {
-            s.parse().unwrap_or(0)
+            s.parse().ok()
         }
     }
 
@@ -442,7 +494,7 @@ impl CpuCacheMonitor {
                 self.topology.caches.push(CpuCacheInfo {
                     level,
                     cache_type,
-                    size_kb: (cache.CacheSize as u64) / 1024,
+                    size_kb: Some((cache.CacheSize as u64) / 1024),
                     line_size: (cache.LineSize > 0).then_some(cache.LineSize as u32),
                     associativity,
                     // Neither is derivable from this API; sysfs publishes them
@@ -466,6 +518,8 @@ impl CpuCacheMonitor {
         // The Win32 API is the better source; WMI stays as the fallback for a
         // machine where it returns nothing.
         if self.refresh_windows_logical_processor_info()? {
+            // One record per physical cache.
+            self.every_instance = true;
             return Ok(());
         }
 
@@ -515,7 +569,7 @@ impl CpuCacheMonitor {
                 }
             };
 
-            let size_kb = item["InstalledSize"].as_u64().unwrap_or(0);
+            let size_kb = item["InstalledSize"].as_u64();
             let line_size = item["LineSize"].as_u64().map(|v| v as u32);
             let assoc = item["Associativity"].as_u64().map(|v| v as u32);
 
@@ -554,7 +608,7 @@ impl CpuCacheMonitor {
             self.topology.caches.push(CpuCacheInfo {
                 level: CacheLevel::L1,
                 cache_type: CacheType::Data,
-                size_kb: l1d / 1024,
+                size_kb: Some(l1d / 1024),
                 line_size,
                 // sysctl publishes none of these three.
                 associativity: None,
@@ -570,7 +624,7 @@ impl CpuCacheMonitor {
             self.topology.caches.push(CpuCacheInfo {
                 level: CacheLevel::L1,
                 cache_type: CacheType::Instruction,
-                size_kb: l1i / 1024,
+                size_kb: Some(l1i / 1024),
                 line_size,
                 // sysctl publishes none of these three.
                 associativity: None,
@@ -586,7 +640,7 @@ impl CpuCacheMonitor {
             self.topology.caches.push(CpuCacheInfo {
                 level: CacheLevel::L2,
                 cache_type: CacheType::Unified,
-                size_kb: l2 / 1024,
+                size_kb: Some(l2 / 1024),
                 line_size,
                 // sysctl publishes none of these three.
                 associativity: None,
@@ -602,7 +656,7 @@ impl CpuCacheMonitor {
             self.topology.caches.push(CpuCacheInfo {
                 level: CacheLevel::L3,
                 cache_type: CacheType::Unified,
-                size_kb: l3 / 1024,
+                size_kb: Some(l3 / 1024),
                 line_size,
                 // sysctl publishes none of these three.
                 associativity: None,
@@ -621,11 +675,12 @@ impl Default for CpuCacheMonitor {
         Self::new().unwrap_or(Self {
             topology: CpuCacheTopology {
                 caches: Vec::new(),
-                total_l1d_kb: 0,
-                total_l1i_kb: 0,
-                total_l2_kb: 0,
-                total_l3_kb: 0,
+                total_l1d_kb: None,
+                total_l1i_kb: None,
+                total_l2_kb: None,
+                total_l3_kb: None,
             },
+            every_instance: false,
         })
     }
 }
@@ -716,7 +771,7 @@ mod tests {
         let cache = CpuCacheInfo {
             level: CacheLevel::L2,
             cache_type: CacheType::Unified,
-            size_kb: 256,
+            size_kb: Some(256),
             line_size: Some(64),
             associativity: Some(8),
             sets: Some(512),
@@ -733,10 +788,10 @@ mod tests {
     fn test_topology_serialization() {
         let topo = CpuCacheTopology {
             caches: Vec::new(),
-            total_l1d_kb: 128,
-            total_l1i_kb: 128,
-            total_l2_kb: 1024,
-            total_l3_kb: 8192,
+            total_l1d_kb: Some(128),
+            total_l1i_kb: Some(128),
+            total_l2_kb: Some(1024),
+            total_l3_kb: Some(8192),
         };
         let json = serde_json::to_string(&topo).unwrap();
         assert!(json.contains("8192"));
@@ -751,7 +806,7 @@ mod tests {
         let unread = CpuCacheInfo {
             level: CacheLevel::L1,
             cache_type: CacheType::Data,
-            size_kb: 64,
+            size_kb: Some(64),
             line_size: None,
             associativity: None,
             sets: None,
@@ -767,5 +822,77 @@ mod tests {
             ..unread.clone()
         };
         assert_ne!(fully.associativity, unread.associativity);
+    }
+
+    fn cache(
+        level: CacheLevel,
+        cache_type: CacheType,
+        size_kb: Option<u64>,
+        shared: &str,
+    ) -> CpuCacheInfo {
+        CpuCacheInfo {
+            level,
+            cache_type,
+            size_kb,
+            line_size: None,
+            associativity: None,
+            sets: None,
+            partitions: None,
+            shared_cpu_list: shared.into(),
+            index: 0,
+        }
+    }
+
+    fn monitor(caches: Vec<CpuCacheInfo>, every_instance: bool) -> CpuCacheMonitor {
+        let mut m = CpuCacheMonitor {
+            topology: CpuCacheTopology {
+                caches,
+                total_l1d_kb: None,
+                total_l1i_kb: None,
+                total_l2_kb: None,
+                total_l3_kb: None,
+            },
+            every_instance,
+        };
+        m.compute_totals();
+        m
+    }
+
+    #[test]
+    fn totals_sum_every_instance_and_only_then() {
+        let two_cores = || {
+            vec![
+                cache(CacheLevel::L1, CacheType::Data, Some(48), "0"),
+                cache(CacheLevel::L1, CacheType::Data, Some(48), "1"),
+                cache(CacheLevel::L2, CacheType::Unified, Some(1280), "0"),
+                cache(CacheLevel::L2, CacheType::Unified, Some(1280), "1"),
+                cache(CacheLevel::L3, CacheType::Unified, Some(24576), "0-1"),
+            ]
+        };
+        let m = monitor(two_cores(), true);
+        assert_eq!(m.total_l1d_kb(), Some(96));
+        assert_eq!(m.total_l2_kb(), Some(2560));
+        assert_eq!(m.total_l3_kb(), Some(24576));
+        // No L1 instruction cache was listed: no total, not 0 bytes.
+        assert_eq!(m.topology().total_l1i_kb, None);
+
+        // One representative per level is not every core's cache.
+        let m = monitor(two_cores(), false);
+        assert_eq!((m.total_l1d_kb(), m.total_l3_kb()), (None, None));
+
+        // A cache listed without a size makes its level's sum an undercount.
+        let mut caches = two_cores();
+        caches[1].size_kb = None;
+        let m = monitor(caches, true);
+        assert_eq!(m.total_l1d_kb(), None);
+        assert_eq!(m.total_l2_kb(), Some(2560));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_size_sysfs_does_not_print_is_unread() {
+        assert_eq!(CpuCacheMonitor::parse_size_kb("48K"), Some(48));
+        assert_eq!(CpuCacheMonitor::parse_size_kb("32M"), Some(32768));
+        assert_eq!(CpuCacheMonitor::parse_size_kb(""), None);
     }
 }

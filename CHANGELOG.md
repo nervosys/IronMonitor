@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and tcpdump lines without one read 0, and every WinDump packet read 0 although
   WinDump prints tcpdump's `length N`. A capture's `total_bytes` is `None`
   unless every packet's length was read.
+- CPU cache totals are totals. `cpu.cache.l1d` says "across all cores", and on
+  Linux it was cpu0's L1 alone -- 48 KiB on a 12-core part with 576 KiB -- because
+  only `cpu0/cache` was read; L1i and L2 likewise. Every CPU's caches are now
+  read and a shared cache counted once. macOS publishes one size per level, so
+  its totals are unavailable rather than one core's figure, and a total is
+  unavailable wherever any cache at the level has no size. `size_kb` and the
+  four totals are `Option`.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.
