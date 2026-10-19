@@ -1478,10 +1478,12 @@ mod laptop_fit_tests {
             "the Overview should paint a windowful; got {natural:.0}"
         );
 
-        // A room 120 px short of that. The chart rows alone are 180 px at
-        // natural height and may give up half, so this is reachable on any
-        // machine.
-        let room = natural - 120.0;
+        // A room 40 px short of that. The one chart row every machine has, CPU
+        // and memory, is 100 px and may give up half, so this is reachable
+        // without a GPU. The first version asked for 120 px, counting the
+        // GPU row this desktop has and CI runners do not, and failed on all
+        // three of them.
+        let room = natural - 40.0;
         let fitted = overview_bottom(&mut app, &ctx, egui::vec2(LAPTOP_WIDTH, room));
         // Four pixels of slack, for the sparkline's glow: it repeats the line
         // 1-3 px lower at up to 2.5 px thick, so a series at zero overhangs its
