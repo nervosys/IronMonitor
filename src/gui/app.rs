@@ -2039,6 +2039,9 @@ impl eframe::App for IronMonitorApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
+                // Readings, so the bold data face; the buttons and help text
+                // set their own small style and are unaffected.
+                ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
                 // Quick stats
                 let cpu_usage = self.cpu_usage();
                 ui.label(
@@ -2093,7 +2096,7 @@ impl eframe::App for IronMonitorApp {
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new("F1=Help")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                            .color(theme::text_color(&palette_ctx, CyberColors::TEXT_MUTED))
                             .small(),
                     );
                 });
@@ -2693,6 +2696,7 @@ impl IronMonitorApp {
 
             // System status bar (htop-style)
             ui.horizontal(|ui| {
+                ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
                 // Uptime
                 let uptime = self.start_time.elapsed();
                 let hours = uptime.as_secs() / 3600;
@@ -2700,7 +2704,7 @@ impl IronMonitorApp {
                 let seconds = uptime.as_secs() % 60;
                 ui.label(
                     RichText::new(format!("⏱ {:02}:{:02}:{:02}", hours, minutes, seconds))
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                        .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                 );
                 ui.separator();
 
@@ -2713,7 +2717,7 @@ impl IronMonitorApp {
 
                 ui.label(
                     RichText::new(format!("Tasks: {}", self.process_list.len()))
-                        .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                        .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                 );
                 // Platforms that do not report per-process scheduling state mark it
                 // 'U'. Showing "0R 0S" there would be as wrong as the "420R 0S" this
@@ -2723,29 +2727,29 @@ impl IronMonitorApp {
                 {
                     ui.label(
                         RichText::new(format!("{}R", running_count))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                     );
                     ui.label(
                         RichText::new(format!("{}S", sleeping_count))
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                     );
                 }
                 if zombie_count > 0 {
                     ui.label(
                         RichText::new(format!("{}Z", zombie_count))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
                     );
                 }
                 if disk_wait_count > 0 {
                     ui.label(
                         RichText::new(format!("{}D", disk_wait_count))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
                     );
                 }
                 if stopped_count > 0 {
                     ui.label(
                         RichText::new(format!("{}T", stopped_count))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                     );
                 }
                 ui.separator();
@@ -2753,7 +2757,7 @@ impl IronMonitorApp {
                 // Connections count
                 ui.label(
                     RichText::new(format!("🔌 {} Conn", self.connections.len()))
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
                 );
                 ui.separator();
 
@@ -2761,7 +2765,7 @@ impl IronMonitorApp {
                 if !self.gpu_static_info.is_empty() {
                     ui.label(
                         RichText::new(format!("⚡ {} Accel", self.gpu_static_info.len()))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                     );
                 }
             });
@@ -2954,6 +2958,7 @@ impl IronMonitorApp {
 
             // System info row
             ui.horizontal(|ui| {
+                ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
                 // Load Average (htop/uptime style)
                 if let Some(ref stats) = self.system_stats {
                     if let Some(ref load) = stats.load_average {
@@ -2962,7 +2967,7 @@ impl IronMonitorApp {
                                 "⚖ Load: {:.2}, {:.2}, {:.2}",
                                 load.one, load.five, load.fifteen
                             ))
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.separator();
                     }
@@ -2979,7 +2984,7 @@ impl IronMonitorApp {
                         };
                         ui.label(
                             RichText::new(uptime_str)
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         ui.separator();
                     }
@@ -2998,7 +3003,7 @@ impl IronMonitorApp {
                     if let Some(tasks) = tasks {
                         ui.label(
                             RichText::new(tasks)
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
                         );
                         ui.separator();
                     }
@@ -3007,7 +3012,7 @@ impl IronMonitorApp {
                     if stats.num_cpus > 0 {
                         ui.label(
                             RichText::new(format!("💻 {} CPUs", stats.num_cpus))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
                     }
                 }
@@ -3021,65 +3026,65 @@ impl IronMonitorApp {
                     let total = cpu_time.total() as f32;
                     if total > 0.0 {
                         ui.horizontal(|ui| {
+                            ui.style_mut().override_font_id =
+                                Some(theme::data_font(ui.ctx(), 12.0));
                             ui.label(
-                                RichText::new("CPU Time: ")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                                RichText::new("CPU Time: ").color(theme::text_color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_PRIMARY,
+                                )),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "us:{:.1}%",
                                     (cpu_time.user as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "sy:{:.1}%",
                                     (cpu_time.system as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "ni:{:.1}%",
                                     (cpu_time.nice as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "id:{:.1}%",
                                     (cpu_time.idle as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .small(),
+                                .color(theme::text_color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "wa:{:.1}%",
                                     (cpu_time.iowait as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_RED))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "hi:{:.1}%",
                                     (cpu_time.irq as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::MAGENTA)),
                             );
                             ui.label(
                                 RichText::new(format!(
                                     "si:{:.1}%",
                                     (cpu_time.softirq as f32 / total) * 100.0
                                 ))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
                             );
                             if cpu_time.steal > 0 {
                                 ui.label(
@@ -3087,8 +3092,10 @@ impl IronMonitorApp {
                                         "st:{:.1}%",
                                         (cpu_time.steal as f32 / total) * 100.0
                                     ))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                    .small(),
+                                    .color(theme::text_color(
+                                        &palette_ctx,
+                                        CyberColors::NEON_YELLOW,
+                                    )),
                                 );
                             }
                         });
@@ -3098,45 +3105,43 @@ impl IronMonitorApp {
                 // VMstat info (context switches, interrupts, etc.)
                 if let Some(ref vm) = stats.vm_stats {
                     ui.horizontal(|ui| {
+                        ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 12.0));
                         ui.label(
                             RichText::new("VMstat: ")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                                .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         // Show rates per second
                         let ctx_rate = self.context_switches_history.back().unwrap_or(&0.0);
                         let int_rate = self.interrupts_history.back().unwrap_or(&0.0);
                         ui.label(
                             RichText::new(format!("ctx/s:{:.0}", ctx_rate))
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.label(
                             RichText::new(format!("int/s:{:.0}", int_rate))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         if vm.processes_blocked > 0 {
                             ui.label(
                                 RichText::new(format!("blocked:{}", vm.processes_blocked))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_RED))
-                                    .small(),
+                                    .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
                             );
                         }
                         ui.label(
                             RichText::new(format!("pgpgin:{}", vm.pages_in))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
                         );
                         ui.label(
                             RichText::new(format!("pgpgout:{}", vm.pages_out))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                .small(),
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
                         if vm.swap_in > 0 || vm.swap_out > 0 {
                             ui.label(
                                 RichText::new(format!("swin:{} swout:{}", vm.swap_in, vm.swap_out))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                    .small(),
+                                    .color(theme::text_color(
+                                        &palette_ctx,
+                                        CyberColors::NEON_YELLOW,
+                                    )),
                             );
                         }
                     });
@@ -3182,7 +3187,7 @@ impl IronMonitorApp {
                     RichText::new(
                         "Context switch and interrupt counters are not exposed by this platform",
                     )
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
+                    .color(theme::text_color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                     .small(),
                 );
             }
@@ -8642,14 +8647,17 @@ fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSna
                         rate(disk.write_rate),
                     ));
                 }
-                ui.add(egui::Label::new(summary).truncate())
+                let data_font = theme::data_font(ui.ctx(), 12.0);
+                ui.add(egui::Label::new(RichText::new(summary).font(data_font.clone())).truncate())
                     .on_hover_text(details);
 
                 if let Some((total, used)) = disk.total.zip(used).filter(|(total, _)| *total > 0) {
                     let fraction = used as f64 / total as f64;
                     let usage = format!("Space used: {:.1}%", fraction * 100.0);
-                    ui.add(egui::Label::new(&usage).truncate())
-                        .on_hover_text(&usage);
+                    ui.add(
+                        egui::Label::new(RichText::new(&usage).font(data_font.clone())).truncate(),
+                    )
+                    .on_hover_text(&usage);
                     ui.add(
                         CyberProgressBar::new(fraction as f32)
                             .with_threshold_color()
@@ -8657,7 +8665,10 @@ fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSna
                             .show_percentage(false),
                     );
                 } else {
-                    ui.add(egui::Label::new("Space used: unavailable").truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new("Space used: unavailable").font(data_font))
+                            .truncate(),
+                    );
                     // Keep unknown and measured disks aligned without an empty
                     // usage bar implying a measured zero.
                     ui.allocate_space(egui::vec2(ui.available_width(), 8.0));

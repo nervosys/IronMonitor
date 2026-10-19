@@ -13,6 +13,143 @@ fn theme_id() -> egui::Id {
     egui::Id::new("ironmonitor_color_theme")
 }
 
+/// The family data labels are painted in: a bold face, because egui's only
+/// bundled proportional font is Ubuntu Light.
+///
+/// That was what made values hard to read. A light weight is fine for a
+/// paragraph at 13 px and not for a chart scale at 10 px drawn in the dimmest
+/// text colour, and egui has no bold to fall back on — `RichText::strong`
+/// changes the colour, not the weight.
+const DATA_FAMILY: &str = "data";
+
+/// The smallest size a data label is painted at. The chart scales were 10 px,
+/// the legend ranges 9.
+pub const DATA_LABEL_MIN_SIZE: f32 = 11.0;
+
+fn data_font_id() -> egui::Id {
+    egui::Id::new("ironmonitor_data_font")
+}
+
+/// Install the fonts every theme shares: the emoji fallback, and the bold
+/// family `data_font` paints with.
+fn set_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+
+    fonts.font_data.insert(
+        "emoji".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/NotoEmoji-VariableFont.ttf"
+        ))),
+    );
+    // SIL Open Font License; see assets/fonts/OFL.txt.
+    fonts.font_data.insert(
+        "noto-sans-bold".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/NotoSans-Bold.ttf"
+        ))),
+    );
+
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push("emoji".to_owned());
+
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("emoji".to_owned());
+
+    // Bold first, then the proportional chain, so a glyph Noto Sans lacks
+    // (an arrow, a symbol) still renders rather than painting as a box.
+    let mut data = vec!["noto-sans-bold".to_owned()];
+    data.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts
+        .families
+        .insert(FontFamily::Name(DATA_FAMILY.into()), data);
+
+    ctx.set_fonts(fonts);
+    ctx.data_mut(|d| d.insert_temp(data_font_id(), true));
+}
+
+/// The contrast `legible` holds data labels to: WCAG AA for body text, which
+/// leaves margin over the 3:1 a bold face is entitled to.
+pub const LEGIBLE_CONTRAST: f32 = 4.5;
+
+/// WCAG 2 contrast ratio between two opaque colours.
+fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    fn luminance(c: Color32) -> f32 {
+        let channel = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// A text colour that can be read on this theme's panels and cards.
+///
+/// Threshold and accent colours are chosen for a dark surface, and every
+/// theme but Cyber passed them through unchanged — so on the Light theme a
+/// healthy reading was neon green on white, 1.5:1, and the value a user most
+/// wants to see was the one they could not. A colour that already reads is
+/// returned as is; one that does not is blended toward the theme's strong
+/// text colour just far enough to, which keeps its hue as the threshold cue.
+///
+/// Translucent colours are returned untouched: they are shadows painted
+/// beneath a label, not the label.
+pub fn legible(ctx: &egui::Context, color: Color32) -> Color32 {
+    if color.a() < 255 {
+        return color;
+    }
+    let style = ctx.style();
+    let visuals = &style.visuals;
+    let backgrounds = [visuals.panel_fill, visuals.faint_bg_color];
+    let toward = visuals.strong_text_color();
+    let reads = |c: Color32| {
+        backgrounds
+            .iter()
+            .all(|b| contrast_ratio(c, *b) >= LEGIBLE_CONTRAST)
+    };
+    if reads(color) {
+        return color;
+    }
+    (1..=10)
+        .map(|step| color.lerp_to_gamma(toward, step as f32 / 10.0))
+        .find(|c| reads(*c))
+        .unwrap_or(toward)
+}
+
+/// `color`, made `legible`: the colour to paint a reading's text in.
+pub fn text_color(ctx: &egui::Context, base: Color32) -> Color32 {
+    legible(ctx, color(ctx, base))
+}
+
+/// The font for a data label: a value, a unit, a scale tick, a legend entry.
+///
+/// Bold, and never smaller than `DATA_LABEL_MIN_SIZE`. Falls back to the
+/// regular proportional font on a context no theme has been applied to,
+/// because egui panics on a family that was never registered and a label is
+/// not worth a crash.
+pub fn data_font(ctx: &egui::Context, size: f32) -> FontId {
+    let size = size.max(DATA_LABEL_MIN_SIZE);
+    if ctx
+        .data(|d| d.get_temp::<bool>(data_font_id()))
+        .unwrap_or(false)
+    {
+        FontId::new(size, FontFamily::Name(DATA_FAMILY.into()))
+    } else {
+        FontId::proportional(size)
+    }
+}
+
 /// Apply the selected palette without changing typography or widget geometry.
 pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
     if selected == ColorTheme::Light {
@@ -276,28 +413,7 @@ pub fn trend_indicator(current: f32, previous: f32) -> (&'static str, Color32) {
 
 pub fn apply_cyber_theme(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(theme_id(), ColorTheme::Cyber));
-    let mut fonts = FontDefinitions::default();
-
-    fonts.font_data.insert(
-        "emoji".to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/fonts/NotoEmoji-VariableFont.ttf"
-        ))),
-    );
-
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .push("emoji".to_owned());
-
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .push("emoji".to_owned());
-
-    ctx.set_fonts(fonts);
+    set_fonts(ctx);
 
     let mut style = Style::default();
     let mut visuals = Visuals::dark();
@@ -434,24 +550,7 @@ impl LightColors {
 /// Apply light theme to the egui context
 pub fn apply_light_theme(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(theme_id(), ColorTheme::Light));
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "emoji".to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/fonts/NotoEmoji-VariableFont.ttf"
-        ))),
-    );
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .push("emoji".to_owned());
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .push("emoji".to_owned());
-    ctx.set_fonts(fonts);
+    set_fonts(ctx);
 
     let mut style = Style::default();
     let mut visuals = Visuals::light();

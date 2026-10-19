@@ -1505,3 +1505,204 @@ mod laptop_fit_tests {
         );
     }
 }
+
+/// Data labels — values, units, scale ticks, legend entries — are bold, big
+/// enough to read, and in a colour that stands off the surface behind them.
+#[cfg(test)]
+mod data_label_tests {
+    use super::*;
+    use crate::gui::theme::{CyberColors, DATA_LABEL_MIN_SIZE};
+    use crate::gui::widgets::{
+        CyberProgressBar, MetricCard, QuickLookPanel, SparklineChart, ThresholdLegend,
+    };
+
+    /// Every text section painted by `body`: its text, font and colour.
+    fn painted_sections(
+        ctx: &Context,
+        body: impl FnMut(&mut egui::Ui),
+    ) -> Vec<(String, egui::FontId, egui::Color32)> {
+        let mut body = body;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 4000.0),
+            )),
+            ..Default::default()
+        };
+        let mut run = || {
+            ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| body(ui));
+            })
+        };
+        let _warmup = run();
+        let output = run();
+
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::FontId, egui::Color32)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let job = &text.galley.job;
+                    for section in &job.sections {
+                        let s = job.text[section.byte_range.clone()].trim().to_string();
+                        if !s.is_empty() {
+                            // `PLACEHOLDER` means "the shape's fallback colour",
+                            // resolved at paint time; that is what is drawn.
+                            let color = if section.format.color == egui::Color32::PLACEHOLDER {
+                                text.fallback_color
+                            } else {
+                                section.format.color
+                            };
+                            out.push((s, section.format.font_id.clone(), color));
+                        }
+                    }
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// WCAG 2 contrast ratio between two opaque colours.
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        fn luminance(c: egui::Color32) -> f32 {
+            let channel = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        }
+        let (hi, lo) = {
+            let (x, y) = (luminance(a), luminance(b));
+            (x.max(y), x.min(y))
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    fn draw_data_widgets(ui: &mut egui::Ui) {
+        ui.add(MetricCard::new("GPU 0 Temp", 63).unit("°C"));
+        ui.add(
+            SparklineChart::new(vec![10.0, 40.0, 90.0, 20.0])
+                .title("CPU Usage")
+                .unit("%")
+                .max_value(100.0)
+                .show_scale(true)
+                .show_min_max(true)
+                .height(80.0),
+        );
+        ui.add(QuickLookPanel::new(42.0, 63.0, Some(5.0), 1.5));
+        ui.add(ThresholdLegend);
+        ui.add(CyberProgressBar::new(0.42).label("Used"));
+    }
+
+    #[test]
+    fn data_labels_are_bold_sized_and_legible_in_every_base_theme() {
+        let surfaces = [
+            ("cyber", None, CyberColors::SURFACE),
+            ("light", Some(()), crate::gui::theme::LightColors::SURFACE),
+        ];
+        for (name, light, surface) in surfaces {
+            let ctx = Context::default();
+            if light.is_some() {
+                crate::gui::theme::apply_light_theme(&ctx);
+            } else {
+                crate::gui::theme::apply_cyber_theme(&ctx);
+            }
+            let sections = painted_sections(&ctx, draw_data_widgets);
+            // The control: the widgets painted their data at all, or every
+            // assertion below would pass over an empty list.
+            for expected in ["63 °C", "CPU Usage", "42%", "CAREFUL", "90%+"] {
+                assert!(
+                    sections.iter().any(|(text, ..)| text.contains(expected)),
+                    "{name}: {expected:?} was not painted: {:?}",
+                    sections.iter().map(|(t, ..)| t).collect::<Vec<_>>()
+                );
+            }
+            for (text, font, color) in &sections {
+                assert_eq!(
+                    font.family,
+                    egui::FontFamily::Name("data".into()),
+                    "{name}: data label {text:?} is not in the bold data face"
+                );
+                assert!(
+                    font.size >= DATA_LABEL_MIN_SIZE,
+                    "{name}: data label {text:?} is {} px",
+                    font.size
+                );
+                // A translucent section is a drop shadow painted 1 px under the
+                // label it belongs to; the label itself is checked on its own.
+                if color.a() < 255 {
+                    continue;
+                }
+                // 3:1 is WCAG's floor for large or bold text; the bold face is
+                // what entitles these labels to it.
+                let ratio = contrast(*color, surface);
+                assert!(
+                    ratio >= 3.0,
+                    "{name}: data label {text:?} in {color:?} is {ratio:.2}:1 against {surface:?}"
+                );
+            }
+        }
+    }
+
+    /// The fallback: a context no theme has run on has no bold family, and
+    /// egui panics on an unregistered family rather than substituting one.
+    #[test]
+    fn data_labels_paint_on_an_unthemed_context_rather_than_panicking() {
+        let ctx = Context::default();
+        let sections = painted_sections(&ctx, draw_data_widgets);
+        assert!(sections.iter().any(|(text, ..)| text.contains("63 °C")));
+    }
+
+    /// The Overview's own reading rows use the same face, and read on both
+    /// base themes.
+    #[test]
+    fn overview_reading_rows_are_bold_and_legible() {
+        for light in [false, true] {
+            let ctx = themed_context();
+            let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+            let surface = if light {
+                crate::gui::theme::apply_light_theme(&ctx);
+                crate::gui::theme::LightColors::SURFACE
+            } else {
+                CyberColors::SURFACE
+            };
+            app.select_tab_by_name("overview")
+                .expect("overview is a tab");
+            assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+            let sections = painted_sections(&ctx, |ui| app.draw_current_tab(ui));
+
+            let readings: Vec<_> = sections
+                .iter()
+                .filter(|(text, ..)| {
+                    text.starts_with("Tasks:")
+                        || text.starts_with("Capacity:")
+                        || text.starts_with("Space used:")
+                })
+                .collect();
+            assert!(
+                readings.iter().any(|(text, ..)| text.starts_with("Tasks:")),
+                "light={light}: the Overview status row was not painted"
+            );
+            for (text, font, color) in readings {
+                assert_eq!(
+                    font.family,
+                    egui::FontFamily::Name("data".into()),
+                    "light={light}: Overview reading {text:?} is not in the bold data face"
+                );
+                let ratio = contrast(*color, surface);
+                assert!(
+                    ratio >= 3.0,
+                    "light={light}: Overview reading {text:?} in {color:?} is {ratio:.2}:1"
+                );
+            }
+        }
+    }
+}

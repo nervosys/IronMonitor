@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Data labels in the GUI are bold and legible. egui's only bundled proportional
+  font is Ubuntu Light and it has no bold, so chart scales, min/max, card titles,
+  QuickLook values and legend ranges were drawn thin at 9-10 px, several in the
+  dimmest text colour. They are now Noto Sans Bold (SIL OFL, bundled under
+  `assets/fonts/`) at 11 px or more, and so are the Overview's status, CPU-time,
+  VMstat and drive readings and the status bar.
+- Reading colours stay readable on the Light theme. Threshold colours were drawn
+  unchanged on white, so a healthy value was neon green at 1.5:1 contrast. A
+  colour below 4.5:1 is now blended toward the theme's text colour just far
+  enough to reach it, keeping its hue; dark themes are unchanged.
+
 - Open the GUI inside the Windows work area. The window was clamped to 92% of
   the whole screen, so on a 13" laptop (1920x1080 at 150%, 1280x720 logical) it
   was taller than the room above the taskbar and the status bar opened beneath

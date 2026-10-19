@@ -220,15 +220,15 @@ impl Widget for CyberProgressBar {
                     Pos2::new(rect.min.x + 9.0, rect.center().y + 1.0),
                     egui::Align2::LEFT_CENTER,
                     &label_with_trend,
-                    egui::FontId::proportional(12.0),
+                    theme::data_font(ui.ctx(), 12.0),
                     Color32::from_black_alpha(180),
                 );
                 painter.text(
                     Pos2::new(rect.min.x + 8.0, rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     &label_with_trend,
-                    egui::FontId::proportional(12.0),
-                    text_color,
+                    theme::data_font(ui.ctx(), 12.0),
+                    theme::legible(ui.ctx(), text_color),
                 );
             }
 
@@ -239,15 +239,15 @@ impl Widget for CyberProgressBar {
                     Pos2::new(rect.max.x - 7.0, rect.center().y + 1.0),
                     egui::Align2::RIGHT_CENTER,
                     &percent_text,
-                    egui::FontId::proportional(12.0),
+                    theme::data_font(ui.ctx(), 12.0),
                     Color32::from_black_alpha(180),
                 );
                 painter.text(
                     Pos2::new(rect.max.x - 8.0, rect.center().y),
                     egui::Align2::RIGHT_CENTER,
                     percent_text,
-                    egui::FontId::proportional(12.0),
-                    text_color,
+                    theme::data_font(ui.ctx(), 12.0),
+                    theme::legible(ui.ctx(), text_color),
                 );
             }
         }
@@ -336,8 +336,11 @@ impl Widget for MetricCard<'_> {
                 Pos2::new(rect.min.x + 12.0, rect.min.y + 12.0),
                 egui::Align2::LEFT_TOP,
                 self.title,
-                egui::FontId::proportional(11.0),
-                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                theme::data_font(ui.ctx(), 11.0),
+                theme::legible(
+                    ui.ctx(),
+                    theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                ),
             );
 
             // Value with unit
@@ -351,8 +354,8 @@ impl Widget for MetricCard<'_> {
                 Pos2::new(rect.min.x + 12.0, rect.max.y - 12.0),
                 egui::Align2::LEFT_BOTTOM,
                 value_text,
-                egui::FontId::proportional(18.0),
-                widget_color,
+                theme::data_font(ui.ctx(), 18.0),
+                theme::legible(ui.ctx(), widget_color),
             );
         }
 
@@ -534,8 +537,11 @@ impl Widget for SparklineChart<'_> {
                         title_rect.left_center() + Vec2::new(y_axis_width + 5.0, 0.0),
                         egui::Align2::LEFT_CENTER,
                         title,
-                        egui::FontId::proportional(13.0),
-                        theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                        theme::data_font(ui.ctx(), 13.0),
+                        theme::legible(
+                            ui.ctx(),
+                            theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                        ),
                     );
 
                     // Min/max info (if enabled and data has variance)
@@ -545,8 +551,11 @@ impl Widget for SparklineChart<'_> {
                             title_rect.center() + Vec2::new(20.0, 0.0),
                             egui::Align2::LEFT_CENTER,
                             min_max_text,
-                            egui::FontId::proportional(10.0),
-                            theme::color(ui.ctx(), CyberColors::TEXT_MUTED),
+                            theme::data_font(ui.ctx(), 10.0),
+                            theme::legible(
+                                ui.ctx(),
+                                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                            ),
                         );
                     }
 
@@ -556,8 +565,8 @@ impl Widget for SparklineChart<'_> {
                         title_rect.right_center() - Vec2::new(10.0, 0.0),
                         egui::Align2::RIGHT_CENTER,
                         value_text,
-                        egui::FontId::proportional(14.0),
-                        widget_color,
+                        theme::data_font(ui.ctx(), 14.0),
+                        theme::legible(ui.ctx(), widget_color),
                     );
                 }
 
@@ -586,8 +595,8 @@ impl Widget for SparklineChart<'_> {
 
             // Draw Y-axis scale labels
             if self.show_scale {
-                let scale_color = theme::color(ui.ctx(), CyberColors::TEXT_MUTED);
-                let font = egui::FontId::proportional(10.0);
+                let scale_color = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
+                let font = theme::data_font(ui.ctx(), 10.0);
 
                 // Max value at top
                 // Three digits or more reads fine without a decimal; below that the
@@ -1036,8 +1045,11 @@ impl Widget for QuickLookPanel {
                     Pos2::new(x_start, y_center - 10.0),
                     egui::Align2::LEFT_CENTER,
                     &label_text,
-                    egui::FontId::proportional(10.0),
-                    theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                    theme::data_font(ui.ctx(), 10.0),
+                    theme::legible(
+                        ui.ctx(),
+                        theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                    ),
                 );
 
                 // Mini bar
@@ -1077,8 +1089,11 @@ impl Widget for QuickLookPanel {
                     Pos2::new(x_start + section_width * 0.65, y_center + bar_height * 0.5),
                     egui::Align2::LEFT_CENTER,
                     percent_text,
-                    egui::FontId::proportional(11.0),
-                    theme::color(ui.ctx(), threshold_color(percent.unwrap_or(0.0))),
+                    theme::data_font(ui.ctx(), 13.0),
+                    theme::legible(
+                        ui.ctx(),
+                        theme::color(ui.ctx(), threshold_color(percent.unwrap_or(0.0))),
+                    ),
                 );
             }
 
@@ -1140,13 +1155,13 @@ impl Widget for ThresholdLegend {
                     Pos2::new(x + 14.0, y),
                     egui::Align2::LEFT_CENTER,
                     label,
-                    egui::FontId::proportional(10.0),
-                    color,
+                    theme::data_font(ui.ctx(), 10.0),
+                    theme::legible(ui.ctx(), color),
                 );
 
                 // Range
                 let label_width = painter
-                    .layout_no_wrap(label.to_string(), egui::FontId::proportional(10.0), color)
+                    .layout_no_wrap(label.to_string(), theme::data_font(ui.ctx(), 10.0), color)
                     .rect
                     .width();
 
@@ -1154,8 +1169,11 @@ impl Widget for ThresholdLegend {
                     Pos2::new(x + 16.0 + label_width, y),
                     egui::Align2::LEFT_CENTER,
                     range,
-                    egui::FontId::proportional(9.0),
-                    theme::color(ui.ctx(), CyberColors::TEXT_MUTED),
+                    theme::data_font(ui.ctx(), 9.0),
+                    theme::legible(
+                        ui.ctx(),
+                        theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                    ),
                 );
 
                 x += 90.0;
