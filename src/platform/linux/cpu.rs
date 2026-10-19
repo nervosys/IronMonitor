@@ -26,7 +26,13 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     }
 
     // Calculate totals
-    stats.total = calculate_total(&stats.cores);
+    stats.total = calculate_total(&cpu_times, &stats.cores).ok_or_else(|| {
+        crate::error::IronError::Parse(
+            "/proc/stat gave no CPU times to total: neither the aggregate line nor any \
+             online core could be read"
+                .to_string(),
+        )
+    })?;
 
     Ok(stats)
 }
@@ -339,8 +345,10 @@ fn calculate_cpu_percentages(
 
     let total = times.iter().sum::<u64>() as f32;
 
+    // No ticks at all is no information, not an idle machine. This answered
+    // 100% idle, which a caller turned into 0% busy.
     if total == 0.0 {
-        return (Some(0.0), Some(0.0), Some(0.0), Some(100.0));
+        return (None, None, None, None);
     }
 
     (
@@ -351,26 +359,46 @@ fn calculate_cpu_percentages(
     )
 }
 
-fn calculate_total(cores: &[CpuCore]) -> CpuTotal {
-    let online_cores: Vec<&CpuCore> = cores.iter().filter(|c| c.online).collect();
-
-    if online_cores.is_empty() {
-        return CpuTotal {
-            user: 0.0,
-            nice: 0.0,
-            system: 0.0,
-            idle: 100.0,
-        };
+/// The whole-CPU split, or `None` if nothing was read to make it from.
+///
+/// The kernel's own aggregate `cpu` line first: it is the sum of every CPU's
+/// ticks, which is the total this is meant to be. Failing that, the mean over
+/// the online cores whose four figures were all read.
+///
+/// It used to average every online core's figures over the count of online
+/// cores, read or not, so a core missing from `/proc/stat` added nothing to the
+/// sum and one to the divisor and the machine read idler than it was; and with
+/// no online core at all it answered 100% idle, a machine doing nothing,
+/// assembled from no reading.
+fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Option<CpuTotal> {
+    if let Some((_, times)) = cpu_times.iter().find(|(name, _)| name == "cpu") {
+        if let (Some(user), Some(nice), Some(system), Some(idle)) = calculate_cpu_percentages(times)
+        {
+            return Some(CpuTotal {
+                user,
+                nice,
+                system,
+                idle,
+            });
+        }
     }
 
-    let count = online_cores.len() as f32;
-
-    CpuTotal {
-        user: online_cores.iter().filter_map(|c| c.user).sum::<f32>() / count,
-        nice: online_cores.iter().filter_map(|c| c.nice).sum::<f32>() / count,
-        system: online_cores.iter().filter_map(|c| c.system).sum::<f32>() / count,
-        idle: online_cores.iter().filter_map(|c| c.idle).sum::<f32>() / count,
+    let read: Vec<(f32, f32, f32, f32)> = cores
+        .iter()
+        .filter(|c| c.online)
+        .filter_map(|c| Some((c.user?, c.nice?, c.system?, c.idle?)))
+        .collect();
+    if read.is_empty() {
+        return None;
     }
+    let count = read.len() as f32;
+    let mean = |pick: fn(&(f32, f32, f32, f32)) -> f32| read.iter().map(pick).sum::<f32>() / count;
+    Some(CpuTotal {
+        user: mean(|r| r.0),
+        nice: mean(|r| r.1),
+        system: mean(|r| r.2),
+        idle: mean(|r| r.3),
+    })
 }
 
 #[cfg(test)]
@@ -433,6 +461,34 @@ mod tests {
         assert!(core.idle.is_some(), "cpu0 has a line and must be measured");
         // 425 idle of 500 total.
         assert!((core.idle.unwrap() - 85.0).abs() < 0.01, "{:?}", core.idle);
+    }
+
+    #[test]
+    fn the_total_comes_from_the_kernel_aggregate() {
+        let times = parse_proc_stat("cpu  100 0 50 850\ncpu0 50 0 25 425\n").unwrap();
+        let total = calculate_total(&times, &[]).expect("the aggregate line was read");
+        // 850 idle of 1000 ticks.
+        assert!((total.idle - 85.0).abs() < 0.01, "{total:?}");
+    }
+
+    #[test]
+    fn an_unread_core_does_not_dilute_the_mean() {
+        // No aggregate line: the fallback averages only the cores it read.
+        let times = parse_proc_stat("cpu0 50 0 25 425\n").unwrap();
+        let read = read_cpu_core(0, &times).unwrap();
+        let unread = read_cpu_core(1, &times).unwrap();
+        let total = calculate_total(&times, &[read, unread]).expect("cpu0 was read");
+        assert!((total.idle - 85.0).abs() < 0.01, "{total:?}");
+    }
+
+    #[test]
+    fn no_reading_is_no_total_rather_than_an_idle_machine() {
+        let times = parse_proc_stat("cpu  0 0 0 0\n").unwrap();
+        assert!(calculate_total(&times, &[]).is_none());
+        assert_eq!(
+            calculate_cpu_percentages(&[0, 0, 0, 0]),
+            (None, None, None, None)
+        );
     }
 
     #[test]

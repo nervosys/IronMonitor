@@ -498,9 +498,12 @@ fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
     };
 
     if total_basis == 0 {
-        // Genuinely no elapsed CPU time to apportion. Only reachable if the kernel
-        // reports all-zero counters.
-        return Ok((0.0, 0.0, 100.0));
+        // No elapsed CPU time to apportion: only reachable if the kernel reports
+        // all-zero counters. That is no reading, and this answered 100% idle,
+        // which every caller turned into 0% busy.
+        return Err(IronError::Parse(
+            "GetSystemTimes reported no CPU time to apportion".to_string(),
+        ));
     }
 
     let basis = total_basis as f64;
