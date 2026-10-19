@@ -7173,7 +7173,9 @@ impl IronMonitorApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(format!("{} packets", result.total_packets)).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
                             ui.label(RichText::new(format!("({:.1} pkt/s)", result.packets_per_sec)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
-                            ui.label(RichText::new(format!("{} bytes", result.total_bytes)).color(theme::color(&palette_ctx, CyberColors::CYAN)));
+                            if let Some(bytes) = result.total_bytes {
+                                ui.label(RichText::new(format!("{} bytes", bytes)).color(theme::color(&palette_ctx, CyberColors::CYAN)));
+                            }
                             ui.label(RichText::new(format!("in {:.2}s", result.duration_secs)).color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)));
                         });
 
@@ -7226,7 +7228,7 @@ impl IronMonitorApp {
                                             ui.label(RichText::new(&pkt.source).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)).small());
                                             ui.label(RichText::new(&pkt.destination).color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)).small());
                                             ui.label(RichText::new(&pkt.protocol).color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)).small());
-                                            ui.label(RichText::new(format!("{}", pkt.length)).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)).small());
+                                            ui.label(RichText::new(pkt.length.map_or_else(|| "—".to_string(), |l| l.to_string())).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)).small());
                                             ui.end_row();
                                         }
                                     });

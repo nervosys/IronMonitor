@@ -2734,16 +2734,14 @@ fn print_engine_info(engines: &ironmonitor::core::engine::EngineStats) {
                 } else {
                     "OFFLINE".red()
                 };
+                let current = info
+                    .current
+                    .map_or_else(|| "— MHz".to_string(), |mhz| format!("{mhz} MHz"));
                 let freq_info = match (info.min, info.max) {
                     (Some(min), Some(max)) => {
-                        format!(
-                            "{} ({}-{} MHz)",
-                            format!("{} MHz", info.current).cyan(),
-                            min,
-                            max
-                        )
+                        format!("{} ({}-{} MHz)", current.cyan(), min, max)
                     }
-                    _ => format!("{} MHz", info.current).cyan().to_string(),
+                    _ => current.cyan().to_string(),
                 };
 
                 println!("    {:<15} {} {}", engine_name.white(), status, freq_info);

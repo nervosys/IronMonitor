@@ -1390,8 +1390,9 @@ pub struct CapturedPacket {
     pub destination: String,
     /// Protocol (TCP, UDP, ICMP, etc.)
     pub protocol: String,
-    /// Packet length in bytes
-    pub length: u32,
+    /// Packet length in bytes, as the capture tool printed it. `None` where
+    /// its line carried none; it was 0, a packet with no bytes.
+    pub length: Option<u32>,
     /// Additional info (flags, ports, etc.)
     pub info: String,
     /// Source port (if applicable)
@@ -1455,8 +1456,9 @@ pub struct CaptureResult {
     pub duration_secs: f64,
     /// Packets per second
     pub packets_per_sec: f64,
-    /// Total bytes captured
-    pub total_bytes: u64,
+    /// Total bytes captured: `None` unless every packet's length was read,
+    /// since a sum over the ones that were is not the total.
+    pub total_bytes: Option<u64>,
     /// Protocol statistics
     pub protocol_stats: HashMap<String, u32>,
     /// Top talkers (by packet count)
@@ -1743,7 +1745,7 @@ fn parse_tshark_output(output: &str) -> Result<Vec<CapturedPacket>> {
                 source: parts[2].to_string(),
                 destination: parts[3].to_string(),
                 protocol: parts[4].to_string(),
-                length: parts[5].parse().unwrap_or(0),
+                length: parts[5].parse().ok(),
                 src_port: parts.get(6).and_then(|s| s.parse().ok()),
                 dst_port: parts.get(7).and_then(|s| s.parse().ok()),
                 tcp_flags: parts
@@ -1860,20 +1862,15 @@ fn parse_tcpdump_addresses(line: &str) -> (String, String, String) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn extract_length_from_tcpdump(line: &str) -> u32 {
-    // Look for "length X" pattern
-    if let Some(idx) = line.find("length ") {
-        let after = &line[idx + 7..];
-        after
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0)
-    } else {
-        0
-    }
+/// The `length N` tcpdump and WinDump print, if the line has one.
+fn extract_length_from_tcpdump(line: &str) -> Option<u32> {
+    let after = &line[line.find("length ")? + 7..];
+    after
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn extract_tcp_flags(line: &str) -> Option<String> {
@@ -1945,7 +1942,8 @@ fn parse_windump_output(output: &str) -> Result<Vec<CapturedPacket>> {
                 source: String::new(),
                 destination: String::new(),
                 protocol: parts.get(2).unwrap_or(&"").to_string(),
-                length: 0,
+                // WinDump prints tcpdump's `length N`; this was 0 for every packet.
+                length: extract_length_from_tcpdump(parts.get(3).unwrap_or(&"")),
                 src_port: None,
                 dst_port: None,
                 tcp_flags: extract_tcp_flags(parts.get(3).unwrap_or(&"")),
@@ -1979,7 +1977,7 @@ fn finalize_capture_result(
 ) -> Result<CaptureResult> {
     let duration = start.elapsed().as_secs_f64();
     let total_packets = packets.len() as u32;
-    let total_bytes: u64 = packets.iter().map(|p| p.length as u64).sum();
+    let total_bytes: Option<u64> = packets.iter().map(|p| p.length.map(u64::from)).sum();
 
     // Calculate protocol statistics
     let mut protocol_stats: HashMap<String, u32> = HashMap::new();

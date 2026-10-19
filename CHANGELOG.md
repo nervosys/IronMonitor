@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verdict; and loss is computed from those counts. Windows's 0 ms average for a
   sub-millisecond reply is kept instead of being replaced by its `time<1ms`
   upper bound.
+- Jetson engine clocks are reported in MHz. debugfs `clk_rate` is in Hz and
+  was divided by 1000, so `ironmon engines` showed a 1.0368 GHz NVENC clock as
+  1036800 MHz; `current` is `None` rather than 0 when `clk_rate` is unreadable.
+- Captured packets carry the length the capture tool printed, or none. tshark
+  and tcpdump lines without one read 0, and every WinDump packet read 0 although
+  WinDump prints tcpdump's `length N`. A capture's `total_bytes` is `None`
+  unless every packet's length was read.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

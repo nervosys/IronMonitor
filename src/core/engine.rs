@@ -15,8 +15,9 @@ use crate::platform::common::{path_exists, read_file_u32};
 pub struct EngineInfo {
     /// Engine online status
     pub online: bool,
-    /// Current frequency in MHz
-    pub current: u32,
+    /// Current frequency in MHz, `None` if `clk_rate` could not be read. It was
+    /// 0, a stopped clock, for a clock nobody read.
+    pub current: Option<u32>,
     /// Maximum frequency in MHz (optional)
     pub max: Option<u32>,
     /// Minimum frequency in MHz (optional)
@@ -163,10 +164,14 @@ pub(crate) mod linux {
     fn read_engine_info(path: &str) -> Result<EngineInfo> {
         let mut info = EngineInfo {
             online: false,
-            current: 0,
+            current: None,
             max: None,
             min: None,
         };
+
+        // debugfs clock rates are in Hz. These were divided by 1000 -- kHz --
+        // and labelled MHz, so a 1.0368 GHz NVENC clock read 1036800 MHz.
+        const HZ_PER_MHZ: u32 = 1_000_000;
 
         // Read online status
         let enable_count_path = format!("{}/clk_enable_count", path);
@@ -180,7 +185,7 @@ pub(crate) mod linux {
         let rate_path = format!("{}/clk_rate", path);
         if path_exists(&rate_path) {
             if let Ok(rate) = read_file_u32(&rate_path) {
-                info.current = rate / 1000; // Hz to MHz
+                info.current = Some(rate / HZ_PER_MHZ);
             }
         }
 
@@ -190,7 +195,7 @@ pub(crate) mod linux {
             if let Ok(rate) = read_file_u32(&max_rate_path) {
                 // Check for invalid value (FFFF_FFFF_FFFF_FFFF)
                 if rate != u32::MAX && rate != 0 {
-                    info.max = Some(rate / 1000);
+                    info.max = Some(rate / HZ_PER_MHZ);
                 }
             }
         }
@@ -201,12 +206,54 @@ pub(crate) mod linux {
             if path_exists(&min_rate_path) {
                 if let Ok(rate) = read_file_u32(&min_rate_path) {
                     if rate != 0 {
-                        info.min = Some(rate / 1000);
+                        info.min = Some(rate / HZ_PER_MHZ);
                     }
                 }
             }
         }
 
         Ok(info)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn clock_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "ironmon-engine-{}-{}",
+                std::process::id(),
+                files.len()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            for (name, value) in files {
+                fs::write(dir.join(name), value).unwrap();
+            }
+            dir
+        }
+
+        #[test]
+        fn clock_rates_are_hz_and_reported_in_mhz() {
+            let dir = clock_dir(&[
+                ("clk_rate", "1036800000\n"),
+                ("clk_max_rate", "1203200000\n"),
+                ("clk_min_rate", "115200000\n"),
+            ]);
+            let info = read_engine_info(dir.to_str().unwrap()).unwrap();
+            assert_eq!(
+                (info.current, info.max, info.min),
+                (Some(1036), Some(1203), Some(115))
+            );
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn an_unread_clock_is_not_a_stopped_one() {
+            let dir = clock_dir(&[]);
+            let info = read_engine_info(dir.to_str().unwrap()).unwrap();
+            assert_eq!(info.current, None);
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }

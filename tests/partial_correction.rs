@@ -227,7 +227,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
     ("src/consent.rs", "ConsentConfig", "consent_version"),
-    ("src/core/engine.rs", "EngineInfo", "current"),
     ("src/core/memory.rs", "IramInfo", "total used"),
     ("src/core/memory.rs", "RamInfo", "total used"),
     ("src/core/temperature.rs", "TemperatureSensor", "temp"),
@@ -254,7 +253,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
     ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
     ("src/network_tools.rs", "CaptureConfig", "timeout_secs"),
-    ("src/network_tools.rs", "CapturedPacket", "length"),
     ("src/network_tools.rs", "NmapScanResult", "scan_duration_secs"),
     ("src/network_tools.rs", "OsFingerprint", "confidence"),
     ("src/network_tools.rs", "PingResult", "packets_sent packets_received packets_lost packet_loss_percent"),
@@ -310,6 +308,12 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "built only in observability/api.rs as sums of NetworkInterfaceInfo          counters; dropped is Option because tx_drops is",
     ),
     (
+        "src/network_tools.rs",
+        "CaptureResult",
+        "total_packets duration_secs packets_per_sec",
+        "finalize_capture_result produces all three: the number of packets          parsed, the wall-clock time since the capture began, and their ratio;          total_bytes is Option because a packet's length may be unprinted",
+    ),
+    (
         "src/pipeline/mod.rs",
         "NetSnapshot",
         "rx_bytes tx_bytes",
@@ -363,7 +367,7 @@ fn no_struct_gains_a_bare_reading_beside_optional_ones() {
                     "{}: `{}` has bare numeric field(s) [{}] beside `Option` ones. ",
                     "If the value can fail to be read, make it `Option` too. If it ",
                     "cannot, that is a naming rule for is_identifier or is_produced, ",
-                    "not a new BASELINE entry."
+                    "or a JUDGED entry saying why -- never a new BASELINE entry."
                 ),
                 f, s, b
             )
