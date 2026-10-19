@@ -230,7 +230,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/core/memory.rs", "IramInfo", "total used"),
     ("src/core/memory.rs", "RamInfo", "total used"),
     ("src/core/temperature.rs", "TemperatureSensor", "temp"),
-    ("src/cpu_microarch/mod.rs", "CpuMicroarchReport", "physical_cores logical_cores"),
     ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
     ("src/cpufreq.rs", "CpuIdleState", "latency_us usage time_us"),
     ("src/datacenter/ipmi.rs", "IpmiSensor", "value"),

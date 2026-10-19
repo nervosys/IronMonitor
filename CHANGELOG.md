@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its totals are unavailable rather than one core's figure, and a total is
   unavailable wherever any cache at the level has no size. `size_kb` and the
   four totals are `Option`.
+- An unread logical core count is no longer the physical one. Every platform
+  filled a missing `siblings` line or `NumberOfLogicalProcessors` with the
+  physical count, so SMT read as off. The microarch counts and `smt_enabled`
+  are `Option`, replacing the 0 every reader had to know meant "not read".
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

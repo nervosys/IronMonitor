@@ -22,8 +22,8 @@ type CpuInfoFields = (
     Option<u32>,
     Option<u32>,
     Vec<String>,
-    u32,
-    u32,
+    Option<u32>,
+    Option<u32>,
 );
 
 /// CPU vendor/designer.
@@ -159,12 +159,18 @@ pub struct CpuMicroarchReport {
     pub extensions: Vec<IsaExtension>,
     /// Inferred performance.
     pub performance: InferredPerformance,
-    /// Physical core count.
-    pub physical_cores: u32,
-    /// Logical core count (with SMT/HT).
-    pub logical_cores: u32,
-    /// Whether SMT/Hyper-Threading is enabled.
-    pub smt_enabled: bool,
+    /// Physical core count, `None` where the platform did not report it.
+    ///
+    /// Both counts were `u32` with 0 for "not read", which every reader had to
+    /// know to test; and each platform filled an unread logical count with the
+    /// physical one, so a machine whose logical count was not read had SMT
+    /// "off".
+    pub physical_cores: Option<u32>,
+    /// Logical core count (with SMT/HT), `None` where not reported.
+    pub logical_cores: Option<u32>,
+    /// Whether SMT/Hyper-Threading is enabled: `None` unless both counts were
+    /// read, since it is judged by comparing them.
+    pub smt_enabled: Option<bool>,
 }
 
 /// CPU microarchitecture monitor.
@@ -207,8 +213,10 @@ impl CpuMicroarchMonitor {
         let (model_name, family, model, stepping, flags, cores, threads) = Self::read_cpu_info()?;
         let microarch = Self::identify_microarch(&model_name, family, model, stepping);
         let extensions = Self::detect_extensions(&flags, &microarch);
-        let performance = Self::infer_performance(&model_name, &microarch, cores);
-        let smt_enabled = threads > cores && cores > 0;
+        // An unknown count takes the smallest scaling bucket, as 0 always did;
+        // the estimate is inferred either way, and is labelled so.
+        let performance = Self::infer_performance(&model_name, &microarch, cores.unwrap_or(0));
+        let smt_enabled = cores.zip(threads).map(|(c, t)| t > c);
 
         Ok(Self {
             report: CpuMicroarchReport {
@@ -1007,8 +1015,9 @@ impl CpuMicroarchMonitor {
         let mut model: Option<u32> = None;
         let mut stepping: Option<u32> = None;
         let mut flags = Vec::new();
-        let mut siblings = 0u32;
-        let mut cores = 0u32;
+        // ARM kernels commonly omit both lines.
+        let mut siblings: Option<u32> = None;
+        let mut cores: Option<u32> = None;
 
         for line in cpuinfo.lines() {
             if let Some((key, val)) = line.split_once(':') {
@@ -1028,21 +1037,19 @@ impl CpuMicroarchMonitor {
                     "flags" if flags.is_empty() => {
                         flags = val.split_whitespace().map(String::from).collect();
                     }
-                    "siblings" if siblings == 0 => {
-                        siblings = val.parse().unwrap_or(0);
+                    "siblings" if siblings.is_none() => {
+                        siblings = val.parse().ok().filter(|&n| n > 0);
                     }
-                    "cpu cores" if cores == 0 => {
-                        cores = val.parse().unwrap_or(0);
+                    "cpu cores" if cores.is_none() => {
+                        cores = val.parse().ok().filter(|&n| n > 0);
                     }
                     _ => {}
                 }
             }
         }
 
-        if siblings == 0 {
-            siblings = cores;
-        }
-
+        // No `siblings` line is no logical count. It used to become the
+        // physical count, which made SMT "off" on any kernel that omits it.
         Ok((model_name, family, model, stepping, flags, cores, siblings))
     }
 
@@ -1067,20 +1074,14 @@ impl CpuMicroarchMonitor {
             .unwrap_or("Unknown CPU")
             .trim()
             .to_string();
-        // `0`, not `1`. The resolver decides whether a core count was read by
-        // testing `physical_cores > 0` and reports "the platform reported no
-        // physical core count" when it is zero -- so a fallback of 1 does not
-        // merely guess low, it **defeats the guard**: `cpu.cores.physical`,
-        // `cpu.microarch.physical_cores` and `cpu.microarch.logical_cores` all
-        // publish 1 as a measurement, and `smt_enabled` publishes false.
-        //
-        // Same shape as the cache line size that sat at a sentinel of 64 and
-        // slipped past the guard written to catch it. The Linux arm has always
-        // used 0 here, and so does `Default`.
-        let cores = val["NumberOfCores"].as_u64().unwrap_or(0) as u32;
-        let threads = val["NumberOfLogicalProcessors"]
-            .as_u64()
-            .unwrap_or(cores as u64) as u32;
+        // `None`, never `1`. A fallback of 1 was published as a measurement of
+        // a single-core machine by `cpu.cores.physical` and both microarch
+        // counts, with SMT off -- the same shape as the cache line size that
+        // sat at a sentinel of 64. A WMI count of 0 is not a processor either.
+        let count = |key: &str| val[key].as_u64().map(|v| v as u32).filter(|&n| n > 0);
+        let cores = count("NumberOfCores");
+        // Not the physical count when absent: that made SMT "off".
+        let threads = count("NumberOfLogicalProcessors");
 
         // WMI does expose the CPUID triple, and the comment that used to sit
         // here said it does not. `Win32_Processor.Description` is the string
@@ -1175,22 +1176,17 @@ impl CpuMicroarchMonitor {
             .map(|s| s.to_lowercase())
             .collect();
 
-        // `0` for the same reason as the Windows arm above: the resolver reads
-        // zero as "not reported" and says so, and a fallback of 1 publishes a
-        // single-core machine instead.
-        let cores = std::process::Command::new("sysctl")
-            .args(["-n", "hw.physicalcpu"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-            .unwrap_or(0);
-
-        let threads = std::process::Command::new("sysctl")
-            .args(["-n", "hw.logicalcpu"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-            .unwrap_or(cores);
+        // `None` when unread, for the same reason as the Windows arm above.
+        let count = |key: &str| {
+            std::process::Command::new("sysctl")
+                .args(["-n", key])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+                .filter(|&n: &u32| n > 0)
+        };
+        let cores = count("hw.physicalcpu");
+        let threads = count("hw.logicalcpu");
 
         Ok((brand, family, model, stepping, flags, cores, threads))
     }
@@ -1203,7 +1199,7 @@ impl CpuMicroarchMonitor {
     /// exactly that reason; the two counts were the exception.
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
-        Ok((String::new(), 0, 0, 0, Vec::new(), 0, 0))
+        Ok((String::new(), None, None, None, Vec::new(), None, None))
     }
 }
 
@@ -1247,7 +1243,7 @@ pub fn cpu_identity() -> &'static CpuIdentity {
         let report = monitor.report();
         CpuIdentity {
             model_name: Some(report.model_name.trim().to_string()).filter(|n| !n.is_empty()),
-            physical_cores: Some(report.physical_cores as usize).filter(|&p| p > 0),
+            physical_cores: report.physical_cores.map(|p| p as usize),
         }
     })
 }
@@ -1299,9 +1295,9 @@ impl Default for CpuMicroarchMonitor {
                     target_workloads: Vec::new(),
                     notes: Vec::new(),
                 },
-                physical_cores: 0,
-                logical_cores: 0,
-                smt_enabled: false,
+                physical_cores: None,
+                logical_cores: None,
+                smt_enabled: None,
             },
         })
     }

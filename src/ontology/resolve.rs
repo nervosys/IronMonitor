@@ -378,13 +378,13 @@ fn resolve_cpu(out: &mut Vec<Reading>) {
     // `tests/ontology_conformance.rs::non_nullable_entities_are_never_null`, which
     // is the whole argument for deriving tests from the schema: a declared,
     // non-nullable id that no resolver touched is invisible to a hand-written suite.
-    match crate::cpu_microarch::CpuMicroarchMonitor::new() {
-        Ok(m) if m.report().physical_cores > 0 => out.push(Reading::measured(
+    match crate::cpu_microarch::CpuMicroarchMonitor::new().map(|m| m.report().physical_cores) {
+        Ok(Some(physical)) => out.push(Reading::measured(
             "cpu.cores.physical",
-            serde_json::json!(m.report().physical_cores),
+            serde_json::json!(physical),
             Some(Unit::Count),
         )),
-        Ok(_) => out.push(Reading::unavailable(
+        Ok(None) => out.push(Reading::unavailable(
             "cpu.cores.physical",
             Some(Unit::Count),
             "the platform reported no physical core count distinct from the \
@@ -3615,12 +3615,11 @@ fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicr
             "the CPUID family/model/stepping triple was not read on this platform",
         );
     }
-    // The readers fill these with `.unwrap_or(0)`, and ARM Linux kernels
-    // commonly omit the `cpu cores` line from /proc/cpuinfo. Published as-is,
-    // an unread count was a specification of **zero cores**, and
-    // `smt_enabled` -- computed as `threads > cores && cores > 0` -- a
-    // measurement that SMT was off. A processor has at least one of each, so
-    // zero is the reader's "not read".
+    // ARM Linux kernels commonly omit the `cpu cores` line from /proc/cpuinfo.
+    // When the readers filled these with `.unwrap_or(0)`, an unread count was
+    // published as a specification of **zero cores**, and `smt_enabled` -- then
+    // computed as `threads > cores && cores > 0` -- as a measurement that SMT
+    // was off. The counts are `Option` now, and so is `smt_enabled`.
     for (suffix, value) in [
         ("physical_cores", report.physical_cores),
         ("logical_cores", report.logical_cores),
@@ -3628,7 +3627,7 @@ fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicr
         push_spec_opt(
             out,
             format!("cpu.microarch.{suffix}"),
-            (value > 0).then(|| serde_json::json!(value)),
+            value.map(|v| serde_json::json!(v)),
             Some(Unit::Count),
             "the platform's processor description did not include this count",
         );
@@ -3636,8 +3635,7 @@ fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicr
     push_opt(
         out,
         "cpu.microarch.smt_enabled",
-        (report.physical_cores > 0 && report.logical_cores > 0)
-            .then(|| serde_json::json!(report.smt_enabled)),
+        report.smt_enabled.map(|smt| serde_json::json!(smt)),
         None,
         "SMT is judged by comparing logical to physical cores, and one of the two was not read",
     );
@@ -4068,9 +4066,9 @@ mod tests {
         use crate::cpu_microarch::{CpuMicroarchMonitor, CpuVendor};
         let mut report = CpuMicroarchMonitor::default().report().clone();
         report.microarch.vendor = CpuVendor::Unknown;
-        report.physical_cores = 0;
-        report.logical_cores = 16;
-        report.smt_enabled = false;
+        report.physical_cores = None;
+        report.logical_cores = Some(16);
+        report.smt_enabled = None;
 
         let mut out = Vec::new();
         push_microarch(&mut out, &report);
