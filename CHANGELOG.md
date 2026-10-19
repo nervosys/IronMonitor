@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filled a missing `siblings` line or `NumberOfLogicalProcessors` with the
   physical count, so SMT read as off. The microarch counts and `smt_enabled`
   are `Option`, replacing the 0 every reader had to know meant "not read".
+- PCI devices off Linux no longer claim to lack SR-IOV. Windows and macOS
+  listings reported `sriov_capable: false` and zero virtual functions for every
+  device without reading either; both are `Option` and `None` there. `numa_node`
+  is `Option` too, replacing Linux's -1 for "no affinity".
+- CPU virtualization capabilities report only what CPUID was asked. EPT/NPT,
+  IOMMU, SR-IOV and nested virtualization were `false` on every machine from no
+  check, and are `None`; on Arm, EL2 support was asserted because "ARMv8 always
+  has EL2", which the architecture does not promise, and the capability is now
+  reported as not read.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

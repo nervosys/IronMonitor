@@ -117,12 +117,16 @@ pub struct PciDeviceInfo {
     pub iommu_group: Option<u32>,
     /// PCIe link information (if PCIe device)
     pub link_info: Option<PciLinkInfo>,
-    /// Whether the device supports SR-IOV
-    pub sriov_capable: bool,
-    /// Number of SR-IOV virtual functions
-    pub sriov_vfs: u32,
-    /// NUMA node affinity (-1 if not applicable)
-    pub numa_node: i32,
+    /// Whether the device supports SR-IOV. `None` where the platform's device
+    /// listing does not say -- Windows and macOS here, which reported `false`
+    /// for every device, a claim nobody had checked.
+    pub sriov_capable: Option<bool>,
+    /// Number of SR-IOV virtual functions enabled: `Some(0)` for a device that
+    /// is not SR-IOV capable, `None` where that, or the count, was not read.
+    pub sriov_vfs: Option<u32>,
+    /// NUMA node affinity, `None` where the platform reports none. Linux
+    /// writes -1 for that, and this passed the -1 through as a node number.
+    pub numa_node: Option<u32>,
     /// Power state (e.g., "D0", "D3hot")
     pub power_state: String,
 }
@@ -222,7 +226,10 @@ impl PciDeviceMonitor {
 
     /// Get SR-IOV capable devices.
     pub fn sriov_devices(&self) -> Vec<&PciDeviceInfo> {
-        self.devices.iter().filter(|d| d.sriov_capable).collect()
+        self.devices
+            .iter()
+            .filter(|d| d.sriov_capable == Some(true))
+            .collect()
     }
 
     /// Classify a PCI device by its class byte.
@@ -294,21 +301,20 @@ impl PciDeviceMonitor {
                 .and_then(|p| p.file_name().and_then(|n| n.to_string_lossy().parse().ok()));
 
             // NUMA node
-            let numa_node: i32 = Self::read_trimmed(&base.join("numa_node"))
-                .parse()
-                .unwrap_or(-1);
+            let numa_node = Self::read_trimmed(&base.join("numa_node"))
+                .parse::<i32>()
+                .ok()
+                .and_then(|n| u32::try_from(n).ok());
 
             // Power state
             let power_state = Self::read_trimmed(&base.join("power_state"));
 
             // SR-IOV
             let sriov_capable = base.join("sriov_totalvfs").exists();
-            let sriov_vfs: u32 = if sriov_capable {
-                Self::read_trimmed(&base.join("sriov_numvfs"))
-                    .parse()
-                    .unwrap_or(0)
+            let sriov_vfs = if sriov_capable {
+                Self::read_trimmed(&base.join("sriov_numvfs")).parse().ok()
             } else {
-                0
+                Some(0)
             };
 
             // PCIe link info
@@ -361,7 +367,7 @@ impl PciDeviceMonitor {
                 revision,
                 iommu_group,
                 link_info,
-                sriov_capable,
+                sriov_capable: Some(sriov_capable),
                 sriov_vfs,
                 numa_node,
                 power_state,
@@ -471,9 +477,9 @@ impl PciDeviceMonitor {
                 revision: String::new(),
                 iommu_group: None,
                 link_info: Self::devnode_link_info(pnp_id),
-                sriov_capable: false,
-                sriov_vfs: 0,
-                numa_node: -1,
+                sriov_capable: None,
+                sriov_vfs: None,
+                numa_node: None,
                 power_state: item["Status"].as_str().unwrap_or("").to_string(),
             });
         }
@@ -783,9 +789,9 @@ impl PciDeviceMonitor {
                     revision: String::new(),
                     iommu_group: None,
                     link_info,
-                    sriov_capable: false,
-                    sriov_vfs: 0,
-                    numa_node: -1,
+                    sriov_capable: None,
+                    sriov_vfs: None,
+                    numa_node: None,
                     power_state: String::new(),
                 });
             }
@@ -983,9 +989,9 @@ mod tests {
             revision: "00".into(),
             iommu_group: Some(1),
             link_info: None,
-            sriov_capable: false,
-            sriov_vfs: 0,
-            numa_node: 0,
+            sriov_capable: Some(false),
+            sriov_vfs: Some(0),
+            numa_node: Some(0),
             power_state: "D0".into(),
         };
         let json = serde_json::to_string(&dev).unwrap();

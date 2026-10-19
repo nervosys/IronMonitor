@@ -1109,12 +1109,12 @@ fn resolve_pci(out: &mut Vec<Reading>) {
             }
         }
 
-        // The reader uses -1 for "no affinity". Passing that through would give an
-        // agent a node number that does not exist.
+        // Linux writes -1 for "no affinity"; the reader turns it into `None`
+        // rather than hand an agent a node number that does not exist.
         push_opt(
             out,
             format!("{base}.numa_node"),
-            (dev.numa_node >= 0).then(|| serde_json::json!(dev.numa_node)),
+            dev.numa_node.map(|n| serde_json::json!(n)),
             Some(Unit::Count),
             "the platform reports no NUMA affinity for this device",
         );

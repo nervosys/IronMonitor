@@ -262,7 +262,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/observability/metrics.rs", "CpuMetricSnapshot", "usage_percent"),
     ("src/observability/metrics.rs", "DiskMetricSnapshot", "used_bytes free_bytes total_bytes usage_percent"),
     ("src/observability/metrics.rs", "GpuMetricSnapshot", "usage_percent memory_used_mb memory_total_mb"),
-    ("src/pci_devices/mod.rs", "PciDeviceInfo", "sriov_vfs numa_node"),
     ("src/pcie.rs", "PcieBandwidthSummary", "gpu_devices downgraded_devices unreadable_devices"),
     ("src/pcie.rs", "PcieDevice", "numa_node current_link_width max_link_width"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),

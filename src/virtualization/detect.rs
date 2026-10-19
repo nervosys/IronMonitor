@@ -156,11 +156,19 @@ pub struct HypervisorInfo {
 /// CPU virtualization capabilities
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuVirtCapability {
+    /// VT-x or AMD-V, from CPUID.
     pub hardware_virt: bool,
-    pub ept_npt: bool,
-    pub iommu: bool,
-    pub sriov: bool,
-    pub nested: bool,
+    /// Second-level address translation. `None`: Intel reports EPT in a VMX
+    /// MSR that needs ring 0, and this does not read AMD's leaf either. These
+    /// four were `false` -- "this CPU lacks EPT, an IOMMU, SR-IOV and nested
+    /// virtualization" -- on every machine, from no check at all.
+    pub ept_npt: Option<bool>,
+    /// Whether an IOMMU is present; not read here.
+    pub iommu: Option<bool>,
+    /// Whether SR-IOV is available; not read here.
+    pub sriov: Option<bool>,
+    /// Whether nested virtualization is available; not read here.
+    pub nested: Option<bool>,
     pub technology: String,
 }
 
@@ -341,25 +349,18 @@ pub fn detect_cpu_virt_caps() -> Option<CpuVirtCapability> {
 
         Some(CpuVirtCapability {
             hardware_virt: hw_virt,
-            ept_npt: false, // Would need deeper CPUID checks
-            iommu: false,
-            sriov: false,
-            nested: false,
+            ept_npt: None,
+            iommu: None,
+            sriov: None,
+            nested: None,
             technology: tech.into(),
         })
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        Some(CpuVirtCapability {
-            hardware_virt: true, // ARMv8 always has EL2
-            ept_npt: true,       // Stage-2 translation
-            iommu: false,
-            sriov: false,
-            nested: false,
-            technology: "ARM EL2".into(),
-        })
-    }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    // Not read on Arm. This returned EL2 support and stage-2 translation as
+    // facts, on the grounds that "ARMv8 always has EL2" -- but EL2 is optional
+    // in the architecture, firmware commonly keeps it from the OS, and nothing
+    // here asked. EL0 cannot read `ID_AA64PFR0_EL1` without the kernel's help.
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         None
     }
