@@ -38,7 +38,18 @@ impl ProfileProvider for MemoryProfileProvider {
         let mut groups = super::spd_xmp::scan_xmp_groups();
         let monitor = match crate::memory_topology::MemoryTopologyMonitor::new() {
             Ok(m) => m,
-            Err(_) => return groups,
+            Err(e) => {
+                // Shown as unavailable, not as a machine with no DIMMs.
+                let mut g = ProfileGroup::new(
+                    Subsystem::Memory,
+                    "DIMM topology",
+                    "DIMM SPD / configured",
+                    "SMBIOS Type 17",
+                );
+                g.note(format!("unavailable: {e}"));
+                groups.push(g);
+                return groups;
+            }
         };
         for dimm in monitor.populated_dimms() {
             let label = format!(

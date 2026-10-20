@@ -188,22 +188,38 @@ impl DimmInfo {
 /// Inferred memory configuration analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryAnalysis {
-    /// Total installed capacity in bytes.
-    pub total_capacity_bytes: u64,
-    /// Maximum supported capacity in bytes (from array info).
-    pub max_capacity_bytes: u64,
-    /// Number of populated slots.
+    /// Total installed capacity in bytes, summed over the populated modules.
+    ///
+    /// `None` when any populated module's size was not read. A sum that left
+    /// that module out would be short by an amount nothing reported.
+    pub total_capacity_bytes: Option<u64>,
+    /// Maximum supported capacity in bytes.
+    ///
+    /// Always `None`: the board's maximum is in the memory array record
+    /// (SMBIOS type 16, `Win32_PhysicalMemoryArray`), and no reader queries
+    /// it. This was a per-slot guess multiplied by the slot count.
+    pub max_capacity_bytes: Option<u64>,
+    /// Number of modules the reader enumerated as populated.
     pub populated_slots: usize,
-    /// Total number of slots.
-    pub total_slots: usize,
-    /// Whether running in dual-channel mode (inferred from slot population).
-    pub dual_channel: bool,
-    /// Whether running in quad-channel mode.
-    pub quad_channel: bool,
-    /// Whether all DIMMs are the same speed.
-    pub matched_speeds: bool,
-    /// Whether all DIMMs are the same capacity (optimal for interleaving).
-    pub matched_capacities: bool,
+    /// Total number of slots, or `None` where the source lists installed
+    /// modules only.
+    ///
+    /// SMBIOS type 17 and `system_profiler` list empty slots too. The Windows
+    /// reader queries `Win32_PhysicalMemory`, which does not, so it has no
+    /// slot count.
+    pub total_slots: Option<usize>,
+    /// Whether running in dual-channel mode, or `None` where the channel
+    /// count was not read.
+    pub dual_channel: Option<bool>,
+    /// Whether running in quad-channel mode, or `None` where the channel
+    /// count was not read.
+    pub quad_channel: Option<bool>,
+    /// Whether all DIMMs are the same speed, or `None` where fewer than two
+    /// speeds were read. One value is nothing to match.
+    pub matched_speeds: Option<bool>,
+    /// Whether all DIMMs are the same capacity (optimal for interleaving), or
+    /// `None` where fewer than two capacities were read.
+    pub matched_capacities: Option<bool>,
     /// Whether ECC is active.
     pub ecc_active: bool,
     /// Estimated peak bandwidth in GB/s, or `None` where no DIMM speed was
@@ -214,12 +230,17 @@ pub struct MemoryAnalysis {
     /// nothing. It was `0.0` when no speed was read, which is an estimate of no
     /// bandwidth at all.
     pub estimated_bandwidth_gbs: Option<f64>,
-    /// Inferred memory channel count.
-    pub channel_count: u32,
+    /// Inferred memory channel count, or `None` where no locator named a
+    /// channel and the count does not establish one.
+    ///
+    /// A count of modules does not: two modules may share a channel or not.
+    pub channel_count: Option<u32>,
     /// Upgrade recommendations.
     pub recommendations: Vec<String>,
-    /// Efficiency score 0-100 (how well the memory is configured).
-    pub efficiency_score: u32,
+    /// Efficiency score 0-100 (how well the memory is configured), or `None`
+    /// where it cannot be scored: fewer than two modules' speeds or
+    /// capacities were read, or the channel count was not.
+    pub efficiency_score: Option<u32>,
 }
 
 /// Full memory topology for the system.
@@ -237,6 +258,11 @@ pub struct MemoryTopologyMonitor {
 }
 
 impl MemoryTopologyMonitor {
+    /// Whether the platform's source lists empty slots as well as installed
+    /// modules. SMBIOS type 17 and `system_profiler` do. `Win32_PhysicalMemory`
+    /// lists only installed modules, so a Windows slot count would be a guess.
+    const SOURCE_LISTS_EMPTY_SLOTS: bool = !cfg!(target_os = "windows");
+
     /// Create a new memory topology monitor.
     pub fn new() -> Result<Self, IronError> {
         let dimms = Self::enumerate_dimms()?;
@@ -280,64 +306,66 @@ impl MemoryTopologyMonitor {
     fn analyze(dimms: &[DimmInfo]) -> MemoryAnalysis {
         let populated: Vec<&DimmInfo> =
             dimms.iter().filter(|d| d.populated == Some(true)).collect();
-        // Sums the sizes that were read; a module whose size was not is left
-        // out rather than counted as zero.
-        let total_capacity: u64 = populated.iter().filter_map(|d| d.capacity_bytes).sum();
+        // Sums the sizes that were read. One unread size makes the total
+        // unknown, rather than a total that quietly leaves that module out.
+        let total_capacity_bytes: Option<u64> = populated.iter().map(|d| d.capacity_bytes).sum();
         let populated_count = populated.len();
-        let total_slots = dimms.len();
+        // Only a source that lists empty slots can count them.
+        let total_slots = Self::SOURCE_LISTS_EMPTY_SLOTS.then_some(dimms.len());
 
-        // Check matched speeds and capacities
+        // Matched speeds and capacities need two values to compare. With fewer,
+        // there is no match to report, so the answer is unknown rather than
+        // "matched".
         let speeds: Vec<u32> = populated.iter().filter_map(|d| d.speed_mts).collect();
         let capacities: Vec<u64> = populated.iter().filter_map(|d| d.capacity_bytes).collect();
-        let matched_speeds = speeds.windows(2).all(|w| w[0] == w[1]) || speeds.len() <= 1;
+        let matched_speeds = (speeds.len() >= 2).then(|| speeds.windows(2).all(|w| w[0] == w[1]));
         let matched_capacities =
-            capacities.windows(2).all(|w| w[0] == w[1]) || capacities.len() <= 1;
+            (capacities.len() >= 2).then(|| capacities.windows(2).all(|w| w[0] == w[1]));
 
         // ECC detection. `any` over `Option` must ask for `Some(true)`: a DIMM
         // whose widths were not read is not a DIMM known to lack ECC.
         let ecc_active = populated.iter().any(|d| d.is_ecc() == Some(true));
 
-        // Channel inference from locator naming patterns
+        // Channel inference from locator naming patterns. `None` when no locator
+        // names a channel and the module count does not establish one.
         let channel_count = Self::infer_channels(&populated);
-        let dual_channel = channel_count >= 2;
-        let quad_channel = channel_count >= 4;
+        let dual_channel = channel_count.map(|c| c >= 2);
+        let quad_channel = channel_count.map(|c| c >= 4);
 
         // Bandwidth estimation
-        // No speed read on any DIMM means no estimate. `.max().unwrap_or(0)`
-        // fed `estimate_bandwidth(0, ..)`, which published 0.00 GB/s -- an
-        // estimate of no memory bandwidth for a machine whose DIMMs could not
-        // be read.
-        let estimated_bandwidth_gbs = speeds
-            .iter()
-            .copied()
-            .max()
-            .map(|max_speed| Self::estimate_bandwidth(max_speed, channel_count));
-
-        // Max capacity: assume 2x current or 128GB per slot, whichever is more reasonable
-        let max_per_slot: u64 = if populated
-            .iter()
-            .any(|d| matches!(d.memory_type, MemoryType::DDR5))
-        {
-            64 * 1024 * 1024 * 1024 // 64 GB per slot for DDR5
-        } else {
-            32 * 1024 * 1024 * 1024 // 32 GB per slot for DDR4
+        // No speed read on any DIMM, or no channel count, means no estimate.
+        // `.max().unwrap_or(0)` fed `estimate_bandwidth(0, ..)`, which published
+        // 0.00 GB/s -- an estimate of no memory bandwidth for a machine whose
+        // DIMMs could not be read.
+        let estimated_bandwidth_gbs = match (speeds.iter().copied().max(), channel_count) {
+            (Some(max_speed), Some(channels)) => {
+                Some(Self::estimate_bandwidth(max_speed, channels))
+            }
+            _ => None,
         };
-        let max_capacity_bytes = total_slots as u64 * max_per_slot;
 
         // Recommendations
         let mut recommendations = Vec::new();
-        let efficiency = Self::compute_efficiency(
-            &populated,
-            total_slots,
-            matched_speeds,
-            matched_capacities,
-            dual_channel,
-            &mut recommendations,
-        );
+        // Scored only when every input it weighs was read. Without the channel
+        // count, or with fewer than two modules to compare, a score would
+        // reward matches that nothing established.
+        let efficiency_score = match (matched_speeds, matched_capacities, dual_channel) {
+            (Some(speeds_match), Some(capacities_match), Some(dual)) => {
+                Some(Self::compute_efficiency(
+                    &populated,
+                    total_slots,
+                    speeds_match,
+                    capacities_match,
+                    dual,
+                    &mut recommendations,
+                ))
+            }
+            _ => None,
+        };
 
         MemoryAnalysis {
-            total_capacity_bytes: total_capacity,
-            max_capacity_bytes,
+            total_capacity_bytes,
+            max_capacity_bytes: None,
             populated_slots: populated_count,
             total_slots,
             dual_channel,
@@ -348,13 +376,13 @@ impl MemoryTopologyMonitor {
             estimated_bandwidth_gbs,
             channel_count,
             recommendations,
-            efficiency_score: efficiency,
+            efficiency_score,
         }
     }
 
-    fn infer_channels(populated: &[&DimmInfo]) -> u32 {
+    fn infer_channels(populated: &[&DimmInfo]) -> Option<u32> {
         if populated.is_empty() {
-            return 0;
+            return None;
         }
 
         // Try to detect channels from locator strings
@@ -379,18 +407,12 @@ impl MemoryTopologyMonitor {
         }
 
         if channels.is_empty() {
-            // Fallback: infer from populated count
-            match populated.len() {
-                1 => 1,
-                2 => 2,
-                3 => 2, // likely 2-channel with one extra
-                4 => 2, // commonly dual-channel with 2 DIMMs each
-                6 => 3, // triple channel
-                8 => 4, // quad channel
-                _ => 2, // default assumption
-            }
+            // A single module occupies one channel. Beyond that, a count of
+            // modules does not say how they are wired: two may share a channel
+            // or not, so the count is left unread rather than guessed.
+            (populated.len() == 1).then_some(1)
         } else {
-            channels.len() as u32
+            Some(channels.len() as u32)
         }
     }
 
@@ -403,7 +425,7 @@ impl MemoryTopologyMonitor {
 
     fn compute_efficiency(
         populated: &[&DimmInfo],
-        total_slots: usize,
+        total_slots: Option<usize>,
         matched_speeds: bool,
         matched_capacities: bool,
         dual_channel: bool,
@@ -411,14 +433,11 @@ impl MemoryTopologyMonitor {
     ) -> u32 {
         let mut score: i32 = 70; // Base score
 
-        if populated.is_empty() {
-            return 0;
-        }
-
-        // Dual-channel bonus
+        // Dual-channel bonus. Without a slot count, the populated modules are
+        // the only lower bound on the slots.
         if dual_channel {
             score += 10;
-        } else if total_slots >= 2 {
+        } else if total_slots.unwrap_or(populated.len()) >= 2 {
             score -= 15;
             recommendations.push("Enable dual-channel by populating matching DIMM pairs".into());
         }
@@ -440,14 +459,17 @@ impl MemoryTopologyMonitor {
                 .push("Mismatched DIMM capacities reduce interleaving efficiency".into());
         }
 
-        // Empty slots = upgrade potential
-        let empty = total_slots - populated.len();
-        if empty > 0 {
-            score += 5; // Upgrade headroom is a positive
-            recommendations.push(format!(
-                "{} empty DIMM slot(s) available for expansion",
-                empty
-            ));
+        // Empty slots = upgrade potential. Counted only where the source lists
+        // empty slots; otherwise no empty slot is known to exist.
+        if let Some(total) = total_slots {
+            let empty = total.saturating_sub(populated.len());
+            if empty > 0 {
+                score += 5; // Upgrade headroom is a positive
+                recommendations.push(format!(
+                    "{} empty DIMM slot(s) available for expansion",
+                    empty
+                ));
+            }
         }
 
         // ECC bonus for workstations/servers. Only credited where ECC was
@@ -471,10 +493,12 @@ impl MemoryTopologyMonitor {
                 let text = String::from_utf8_lossy(&out.stdout);
                 Ok(Self::parse_dmidecode(&text))
             }
-            _ => {
-                // Fallback: /proc/meminfo for total only
-                Ok(Vec::new())
-            }
+            Ok(out) => Err(IronError::CommandFailed(format!(
+                "dmidecode -t memory failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+            // dmidecode missing from PATH, or not runnable
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -493,7 +517,12 @@ impl MemoryTopologyMonitor {
                 let text = String::from_utf8_lossy(&out.stdout);
                 Ok(Self::parse_windows_wmi(&text))
             }
-            _ => Ok(Vec::new()),
+            Ok(out) => Err(IronError::CommandFailed(format!(
+                "Get-CimInstance Win32_PhysicalMemory failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+            // powershell missing from PATH, or not runnable
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -508,13 +537,20 @@ impl MemoryTopologyMonitor {
                 let text = String::from_utf8_lossy(&out.stdout);
                 Ok(Self::parse_macos_profiler(&text))
             }
-            _ => Ok(Vec::new()),
+            Ok(out) => Err(IronError::CommandFailed(format!(
+                "system_profiler SPMemoryDataType failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+            // system_profiler missing from PATH, or not runnable
+            Err(e) => Err(e.into()),
         }
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn enumerate_dimms() -> Result<Vec<DimmInfo>, IronError> {
-        Ok(Vec::new())
+        Err(IronError::UnsupportedPlatform(
+            "memory topology is not read on this platform".into(),
+        ))
     }
 
     #[allow(dead_code)]
@@ -899,31 +935,6 @@ impl MemoryTopologyMonitor {
     }
 }
 
-impl Default for MemoryTopologyMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            topology: MemoryTopology {
-                dimms: Vec::new(),
-                analysis: MemoryAnalysis {
-                    total_capacity_bytes: 0,
-                    max_capacity_bytes: 0,
-                    populated_slots: 0,
-                    total_slots: 0,
-                    dual_channel: false,
-                    quad_channel: false,
-                    matched_speeds: true,
-                    matched_capacities: true,
-                    ecc_active: false,
-                    estimated_bandwidth_gbs: None,
-                    channel_count: 0,
-                    recommendations: Vec::new(),
-                    efficiency_score: 0,
-                },
-            },
-        })
-    }
-}
-
 // DDR variant used only for Windows SMBIOS type 20
 #[allow(dead_code)]
 impl MemoryType {
@@ -1087,15 +1098,68 @@ mod tests {
         ];
         let analysis = MemoryTopologyMonitor::analyze(&dimms);
         assert_eq!(analysis.populated_slots, 2);
-        assert!(analysis.dual_channel);
-        assert!(analysis.matched_speeds);
-        assert!(analysis.matched_capacities);
+        assert_eq!(analysis.dual_channel, Some(true));
+        assert_eq!(analysis.matched_speeds, Some(true));
+        assert_eq!(analysis.matched_capacities, Some(true));
+        assert!(
+            analysis.efficiency_score.is_some(),
+            "two modules were read in full"
+        );
         assert!(
             analysis
                 .estimated_bandwidth_gbs
                 .expect("both DIMM speeds were read")
                 > 40.0
         );
+    }
+
+    fn analysed_dimm(locator: &str, capacity: Option<u64>, speed: Option<u32>) -> DimmInfo {
+        DimmInfo {
+            locator: locator.into(),
+            bank: String::new(),
+            capacity_bytes: capacity,
+            speed_mts: speed,
+            configured_speed_mts: None,
+            memory_type: MemoryType::DDR4,
+            form_factor: FormFactor::DIMM,
+            data_width_bits: Some(64),
+            total_width_bits: Some(64),
+            ranks: Some(1),
+            manufacturer: String::new(),
+            part_number: String::new(),
+            serial_number: String::new(),
+            populated: Some(true),
+            voltage: None,
+        }
+    }
+
+    /// One module is nothing to score or match, and a total with an unread
+    /// size is not a total.
+    #[test]
+    fn efficiency_and_totals_need_the_inputs_they_weigh() {
+        let one = [analysed_dimm("DIMM_A1", Some(8 << 30), Some(3200))];
+        let analysis = MemoryTopologyMonitor::analyze(&one);
+        assert_eq!(analysis.populated_slots, 1);
+        assert_eq!(analysis.total_capacity_bytes, Some(8 << 30));
+        assert_eq!(
+            analysis.matched_speeds, None,
+            "one speed is nothing to match"
+        );
+        assert_eq!(
+            analysis.matched_capacities, None,
+            "one size is nothing to match"
+        );
+        assert_eq!(analysis.efficiency_score, None);
+
+        let unread = [
+            analysed_dimm("DIMM_A1", Some(8 << 30), Some(3200)),
+            analysed_dimm("DIMM_B1", None, Some(3200)),
+        ];
+        let analysis = MemoryTopologyMonitor::analyze(&unread);
+        assert_eq!(analysis.total_capacity_bytes, None, "a size was not read");
+        assert_eq!(analysis.matched_capacities, None);
+        assert_eq!(analysis.efficiency_score, None);
+        assert_eq!(analysis.max_capacity_bytes, None);
     }
 
     /// An unreadable size is not an empty slot.
@@ -1156,27 +1220,21 @@ mod tests {
     }
 
     #[test]
-    fn test_monitor_default() {
-        let monitor = MemoryTopologyMonitor::default();
-        let _topo = monitor.topology();
-    }
-
-    #[test]
     fn test_serialization() {
         let analysis = MemoryAnalysis {
-            total_capacity_bytes: 32 * 1024 * 1024 * 1024,
-            max_capacity_bytes: 128 * 1024 * 1024 * 1024,
+            total_capacity_bytes: Some(32 * 1024 * 1024 * 1024),
+            max_capacity_bytes: None,
             populated_slots: 2,
-            total_slots: 4,
-            dual_channel: true,
-            quad_channel: false,
-            matched_speeds: true,
-            matched_capacities: true,
+            total_slots: Some(4),
+            dual_channel: Some(true),
+            quad_channel: Some(false),
+            matched_speeds: Some(true),
+            matched_capacities: Some(true),
             ecc_active: false,
             estimated_bandwidth_gbs: Some(51.2),
-            channel_count: 2,
+            channel_count: Some(2),
             recommendations: vec!["2 empty DIMM slot(s) available for expansion".into()],
-            efficiency_score: 85,
+            efficiency_score: Some(85),
         };
         let json = serde_json::to_string(&analysis).unwrap();
         assert!(json.contains("dual_channel"));

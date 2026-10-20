@@ -119,6 +119,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and spare members, spares are counted (they were always 0), the `[n/m]`
   wanted and working counts are read, and size is `None` when no blocks line
   was read.
+- GPU topology: NUMA node, PCIe generation, width, speed and bandwidth are
+  `None` when sysfs did not give them, replacing -1 and zeros. NVLink and
+  xGMI per-link bandwidths are `None` rather than fixed 25 and 23 GB/s
+  constants that ignored the generation; a GPU pair with no NUMA affinity
+  read 0 GB/s. Whether all GPUs share a NUMA node is `None` unless every
+  node was read.
+- Memory topology: a failed DIMM enumeration (typically `dmidecode` without
+  root) is an error rather than an analysis of zero modules. Maximum capacity
+  is `None` -- it was a per-slot guess; the Windows slot count is `None`, since
+  `Win32_PhysicalMemory` lists installed modules only; channel count is read
+  from locator names or `None`, not guessed from the module count; and the
+  efficiency score is `None` when its inputs were not read.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

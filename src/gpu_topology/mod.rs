@@ -59,16 +59,21 @@ pub struct GpuTopologyNode {
     pub name: String,
     /// Vendor (nvidia / amd / intel).
     pub vendor: String,
-    /// NUMA node affinity (-1 if unknown).
-    pub numa_node: i32,
-    /// PCIe generation.
-    pub pcie_gen: u32,
-    /// PCIe lane width.
-    pub pcie_width: u32,
-    /// PCIe link speed in GT/s.
-    pub pcie_speed_gts: f64,
-    /// Theoretical PCIe bandwidth in GB/s (one direction).
-    pub pcie_bandwidth_gbs: f64,
+    /// NUMA node affinity.
+    ///
+    /// `None` when the node was not read. The kernel writes `-1` for "no
+    /// affinity", which is not a node, so that is `None` too.
+    pub numa_node: Option<u32>,
+    /// PCIe generation, or `None` when the link speed was not read or is not
+    /// one this parser knows.
+    pub pcie_gen: Option<u8>,
+    /// PCIe lane width. `Some(0)` is the kernel reporting the link down.
+    pub pcie_width: Option<u8>,
+    /// PCIe link speed in GT/s, or `None` when it was not read or not recognised.
+    pub pcie_speed_gts: Option<f64>,
+    /// Theoretical PCIe bandwidth in GB/s (one direction). Computed only when
+    /// both the generation and the width are known.
+    pub pcie_bandwidth_gbs: Option<f64>,
     /// IOMMU group (if available).
     pub iommu_group: Option<u32>,
     /// Driver in use.
@@ -93,15 +98,16 @@ pub struct GpuLink {
     /// 3090 has 4 — so a typical value is not this pair's value. Reading it
     /// needs NVML's `nvmlDeviceGetNvLinkState` or `nvidia-smi nvlink -s`.
     pub num_links: Option<u32>,
-    /// Bandwidth per link in GB/s.
+    /// Bandwidth per link in GB/s, where it was read.
     ///
-    /// This one *is* a specification of the link type — NVLink 3.0 and 4.0 are
-    /// both ~25 GB/s per link, xGMI ~23 — and is the same for every board using
-    /// it, so it stays.
-    pub bandwidth_per_link_gbs: f64,
-    /// Total bandwidth in GB/s, where the link count is known.
+    /// `None` for NVLink and xGMI, where no per-link rate is read. For PCIe it
+    /// is the slower end's bandwidth, when both GPUs' `pcie_bandwidth_gbs` are
+    /// known.
+    pub bandwidth_per_link_gbs: Option<f64>,
+    /// Total bandwidth in GB/s, where the link count and the per-link rate are
+    /// both known.
     ///
-    /// `num_links * bandwidth_per_link_gbs`, so `None` whenever the count is.
+    /// `num_links * bandwidth_per_link_gbs`, so `None` whenever either is.
     /// This read 150 GB/s for any NVLink pair.
     pub total_bandwidth_gbs: Option<f64>,
 }
@@ -121,8 +127,11 @@ pub struct GpuTopologyOverview {
     pub has_nvlink: bool,
     /// Whether xGMI is present.
     pub has_xgmi: bool,
-    /// Whether all GPUs share the same NUMA node.
-    pub same_numa: bool,
+    /// Whether all GPUs share one NUMA node: `Some(false)` when two GPUs were
+    /// read on different nodes, `Some(true)` when every GPU's node was read and
+    /// they agree, `None` otherwise. A GPU with no node read is evidence for
+    /// neither answer.
+    pub same_numa: Option<bool>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -169,12 +178,13 @@ impl GpuTopologyMonitor {
             .collect()
     }
 
-    /// Get GPUs on a specific NUMA node.
-    pub fn gpus_on_numa(&self, node: i32) -> Vec<&GpuTopologyNode> {
+    /// Get GPUs whose NUMA node was read as `node`. A GPU with no node read is
+    /// on none of them.
+    pub fn gpus_on_numa(&self, node: u32) -> Vec<&GpuTopologyNode> {
         self.overview
             .gpus
             .iter()
-            .filter(|g| g.numa_node == node)
+            .filter(|g| g.numa_node == Some(node))
             .collect()
     }
 
@@ -215,20 +225,13 @@ impl GpuTopologyMonitor {
 
             let name = format!("{}:{} GPU {}", vendor, device_id, gpu_index);
 
-            // NUMA node
-            let numa_node = Self::read_sysfs_i32(&path.join("numa_node")).unwrap_or(-1);
+            // NUMA node. The kernel writes -1 for "no affinity", which is not a node.
+            let numa_node =
+                Self::read_sysfs_i32(&path.join("numa_node")).and_then(|n| u32::try_from(n).ok());
 
             // PCIe speed
             let (pcie_gen, pcie_width, pcie_speed_gts) = Self::read_pcie_info(&path);
-            let pcie_bandwidth_gbs = match pcie_gen {
-                1 => 0.25 * pcie_width as f64,
-                2 => 0.5 * pcie_width as f64,
-                3 => 0.985 * pcie_width as f64, // ~1 GB/s per lane
-                4 => 1.969 * pcie_width as f64,
-                5 => 3.938 * pcie_width as f64,
-                6 => 7.563 * pcie_width as f64,
-                _ => 0.0,
-            };
+            let pcie_bandwidth_gbs = pcie_bandwidth(pcie_gen, pcie_width);
 
             // IOMMU group
             let iommu_group = std::fs::read_link(path.join("iommu_group"))
@@ -266,7 +269,7 @@ impl GpuTopologyMonitor {
         for i in 0..gpus.len() {
             for j in (i + 1)..gpus.len() {
                 let link_type = Self::detect_link_type(&gpus[i], &gpus[j]);
-                let (num_links, bw_per_link) = Self::link_bandwidth(&link_type, &gpus[i]);
+                let (num_links, bw_per_link) = Self::link_bandwidth(&link_type, &gpus[i], &gpus[j]);
 
                 links.push(GpuLink {
                     from_gpu: gpus[i].index,
@@ -274,17 +277,14 @@ impl GpuTopologyMonitor {
                     link_type,
                     num_links,
                     bandwidth_per_link_gbs: bw_per_link,
-                    total_bandwidth_gbs: num_links.map(|n| n as f64 * bw_per_link),
+                    total_bandwidth_gbs: num_links.zip(bw_per_link).map(|(n, bw)| n as f64 * bw),
                 });
             }
         }
 
         let gpu_count = gpus.len() as u32;
-        let numa_nodes: std::collections::HashSet<i32> = gpus
-            .iter()
-            .map(|g| g.numa_node)
-            .filter(|n| *n >= 0)
-            .collect();
+        let numa_nodes: std::collections::HashSet<u32> =
+            gpus.iter().filter_map(|g| g.numa_node).collect();
         let numa_node_count = numa_nodes.len() as u32;
         let has_nvlink = links
             .iter()
@@ -292,10 +292,18 @@ impl GpuTopologyMonitor {
         let has_xgmi = links
             .iter()
             .any(|l| l.link_type == GpuInterconnectType::XGmi);
-        let same_numa = numa_nodes.len() <= 1;
+        // Only nodes that were read count. A GPU with no node read is not
+        // evidence that the GPUs sit on different nodes.
+        let same_numa = if numa_nodes.len() > 1 {
+            Some(false)
+        } else if gpus.iter().all(|g| g.numa_node.is_some()) {
+            Some(true)
+        } else {
+            None
+        };
 
         let mut recs = Vec::new();
-        if gpu_count > 1 && !same_numa {
+        if gpu_count > 1 && numa_nodes.len() > 1 {
             recs.push("GPUs span multiple NUMA nodes — consider NUMA-aware scheduling".into());
         }
         if gpu_count > 1 && !has_nvlink && !has_xgmi {
@@ -315,29 +323,11 @@ impl GpuTopologyMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_pcie_info(path: &std::path::Path) -> (u32, u32, f64) {
+    fn read_pcie_info(path: &std::path::Path) -> (Option<u8>, Option<u8>, Option<f64>) {
         let speed_str = Self::read_sysfs(&path.join("current_link_speed")).unwrap_or_default();
         let width_str = Self::read_sysfs(&path.join("current_link_width")).unwrap_or_default();
 
-        let width: u32 = width_str.trim_start_matches('x').parse().unwrap_or(0);
-
-        let (gen, speed_gts) = if speed_str.contains("64.0") {
-            (6, 64.0)
-        } else if speed_str.contains("32.0") {
-            (5, 32.0)
-        } else if speed_str.contains("16.0") {
-            (4, 16.0)
-        } else if speed_str.contains("8.0") {
-            (3, 8.0)
-        } else if speed_str.contains("5.0") {
-            (2, 5.0)
-        } else if speed_str.contains("2.5") {
-            (1, 2.5)
-        } else {
-            (0, 0.0)
-        };
-
-        (gen, width, speed_gts)
+        parse_link(&speed_str, &width_str)
     }
 
     #[cfg(target_os = "linux")]
@@ -350,8 +340,14 @@ impl GpuTopologyMonitor {
             }
         }
 
+        // Both nodes must have been read: an unread node is not the same as
+        // another unread node.
+        let numa_pair = (gpu_a.numa_node, gpu_b.numa_node);
+        let same_numa = matches!(numa_pair, (Some(a), Some(b)) if a == b);
+        let different_numa = matches!(numa_pair, (Some(a), Some(b)) if a != b);
+
         // Check for xGMI (both AMD)
-        if gpu_a.vendor == "amd" && gpu_b.vendor == "amd" && gpu_a.numa_node == gpu_b.numa_node {
+        if gpu_a.vendor == "amd" && gpu_b.vendor == "amd" && same_numa {
             // AMD GPUs on same NUMA node may have xGMI
             let xgmi_path = format!("/sys/bus/pci/devices/{}/xgmi_hive_info", gpu_a.bdf);
             if std::path::Path::new(&xgmi_path).exists() {
@@ -360,10 +356,10 @@ impl GpuTopologyMonitor {
         }
 
         // PCIe topology heuristics
-        if gpu_a.numa_node == gpu_b.numa_node && gpu_a.numa_node >= 0 {
+        if same_numa {
             // Same root complex access likely
             GpuInterconnectType::PciePeerToPeer
-        } else if gpu_a.numa_node >= 0 && gpu_b.numa_node >= 0 {
+        } else if different_numa {
             GpuInterconnectType::PcieThroughCpu
         } else {
             GpuInterconnectType::Unknown
@@ -374,25 +370,32 @@ impl GpuTopologyMonitor {
     /// Per-link bandwidth for an interconnect type, and its link count where
     /// that is known.
     ///
-    /// The per-link figure is a specification of the link type and is the same
-    /// on every board using it. The **count** is per-board and is not read
-    /// anywhere: this returned a flat 6 for NVLink and 2 for xGMI, so any pair
-    /// of NVLink GPUs reported 150 GB/s between them whatever they actually
-    /// had. PCIe peer-to-peer is a single link by definition, so that one is
-    /// known.
+    /// The **count** is per-board and is not read anywhere: this returned a
+    /// flat 6 for NVLink and 2 for xGMI, so any pair of NVLink GPUs reported
+    /// 150 GB/s between them whatever they actually had. PCIe peer-to-peer is
+    /// a single link by definition, so that one is known.
+    ///
+    /// The per-link rate is `None` for NVLink and xGMI. The 25 and 23 GB/s
+    /// constants this used were specification-sheet figures that ignored the
+    /// link generation, so they are not reported as readings. For PCIe the rate
+    /// is the slower end's bandwidth, and it is `None` unless both ends are known.
     fn link_bandwidth(
         link_type: &GpuInterconnectType,
-        gpu: &GpuTopologyNode,
-    ) -> (Option<u32>, f64) {
+        gpu_a: &GpuTopologyNode,
+        gpu_b: &GpuTopologyNode,
+    ) -> (Option<u32>, Option<f64>) {
         match link_type {
-            // NVLink 3.0 and 4.0 are both ~25 GB/s per link. How many this
-            // board has needs NVML.
-            GpuInterconnectType::NvLink => (None, 25.0),
-            GpuInterconnectType::XGmi => (None, 23.0),
+            // Nothing here reads a per-link rate for these, and how many links
+            // a board has needs NVML.
+            GpuInterconnectType::NvLink | GpuInterconnectType::XGmi => (None, None),
             GpuInterconnectType::PciePeerToPeer | GpuInterconnectType::PcieThroughCpu => {
-                (Some(1), gpu.pcie_bandwidth_gbs)
+                let bw = gpu_a
+                    .pcie_bandwidth_gbs
+                    .zip(gpu_b.pcie_bandwidth_gbs)
+                    .map(|(a, b)| a.min(b));
+                (Some(1), bw)
             }
-            _ => (None, 0.0),
+            _ => (None, None),
         }
     }
 
@@ -430,7 +433,7 @@ impl GpuTopologyMonitor {
             numa_node_count: 0,
             has_nvlink: false,
             has_xgmi: false,
-            same_numa: true,
+            same_numa: Some(true),
             recommendations: Vec::new(),
         }
     }
@@ -442,6 +445,53 @@ impl Default for GpuTopologyMonitor {
             overview: Self::empty_overview(),
         })
     }
+}
+
+/// Parses sysfs `current_link_speed` and `current_link_width` into the PCIe
+/// generation, lane width and speed in GT/s.
+///
+/// An empty or unrecognised speed gives `None` for the generation and the
+/// speed, not a generation of zero. The width is read on its own, and a width
+/// of 0 is the kernel reporting the link down, so it stays `Some(0)`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_link(speed: &str, width: &str) -> (Option<u8>, Option<u8>, Option<f64>) {
+    let width = width.trim_start_matches('x').parse::<u8>().ok();
+
+    let (generation, speed_gts) = if speed.contains("64.0") {
+        (6, 64.0)
+    } else if speed.contains("32.0") {
+        (5, 32.0)
+    } else if speed.contains("16.0") {
+        (4, 16.0)
+    } else if speed.contains("8.0") {
+        (3, 8.0)
+    } else if speed.contains("5.0") {
+        (2, 5.0)
+    } else if speed.contains("2.5") {
+        (1, 2.5)
+    } else {
+        return (None, width, None);
+    };
+
+    (Some(generation), width, Some(speed_gts))
+}
+
+/// Theoretical one-direction PCIe bandwidth in GB/s: the per-lane rate of the
+/// generation times the width. `None` unless both are known, and `None` for a
+/// generation this table does not cover.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn pcie_bandwidth(generation: Option<u8>, width: Option<u8>) -> Option<f64> {
+    let width = width? as f64;
+    let per_lane = match generation? {
+        1 => 0.25,
+        2 => 0.5,
+        3 => 0.985, // ~1 GB/s per lane
+        4 => 1.969,
+        5 => 3.938,
+        6 => 7.563,
+        _ => return None,
+    };
+    Some(per_lane * width)
 }
 
 #[cfg(test)]
@@ -464,11 +514,11 @@ mod tests {
                     index: 0,
                     name: "GPU0".into(),
                     vendor: "nvidia".into(),
-                    numa_node: 0,
-                    pcie_gen: 4,
-                    pcie_width: 16,
-                    pcie_speed_gts: 16.0,
-                    pcie_bandwidth_gbs: 31.5,
+                    numa_node: Some(0),
+                    pcie_gen: Some(4),
+                    pcie_width: Some(16),
+                    pcie_speed_gts: Some(16.0),
+                    pcie_bandwidth_gbs: Some(31.5),
                     iommu_group: Some(1),
                     driver: "nvidia".into(),
                 },
@@ -477,11 +527,11 @@ mod tests {
                     index: 1,
                     name: "GPU1".into(),
                     vendor: "nvidia".into(),
-                    numa_node: 1,
-                    pcie_gen: 4,
-                    pcie_width: 16,
-                    pcie_speed_gts: 16.0,
-                    pcie_bandwidth_gbs: 31.5,
+                    numa_node: Some(1),
+                    pcie_gen: Some(4),
+                    pcie_width: Some(16),
+                    pcie_speed_gts: Some(16.0),
+                    pcie_bandwidth_gbs: Some(31.5),
                     iommu_group: Some(2),
                     driver: "nvidia".into(),
                 },
@@ -491,14 +541,14 @@ mod tests {
                 to_gpu: 1,
                 link_type: GpuInterconnectType::PcieThroughCpu,
                 num_links: Some(1),
-                bandwidth_per_link_gbs: 31.5,
+                bandwidth_per_link_gbs: Some(31.5),
                 total_bandwidth_gbs: Some(31.5),
             }],
             gpu_count: 2,
             numa_node_count: 2,
             has_nvlink: false,
             has_xgmi: false,
-            same_numa: false,
+            same_numa: Some(false),
             recommendations: Vec::new(),
         };
         let monitor = GpuTopologyMonitor { overview };
@@ -515,11 +565,11 @@ mod tests {
                     index: 0,
                     name: "GPU0".into(),
                     vendor: "amd".into(),
-                    numa_node: 0,
-                    pcie_gen: 4,
-                    pcie_width: 16,
-                    pcie_speed_gts: 16.0,
-                    pcie_bandwidth_gbs: 31.5,
+                    numa_node: Some(0),
+                    pcie_gen: Some(4),
+                    pcie_width: Some(16),
+                    pcie_speed_gts: Some(16.0),
+                    pcie_bandwidth_gbs: Some(31.5),
                     iommu_group: None,
                     driver: "amdgpu".into(),
                 },
@@ -528,11 +578,11 @@ mod tests {
                     index: 1,
                     name: "GPU1".into(),
                     vendor: "amd".into(),
-                    numa_node: 0,
-                    pcie_gen: 4,
-                    pcie_width: 16,
-                    pcie_speed_gts: 16.0,
-                    pcie_bandwidth_gbs: 31.5,
+                    numa_node: Some(0),
+                    pcie_gen: Some(4),
+                    pcie_width: Some(16),
+                    pcie_speed_gts: Some(16.0),
+                    pcie_bandwidth_gbs: Some(31.5),
                     iommu_group: None,
                     driver: "amdgpu".into(),
                 },
@@ -542,7 +592,7 @@ mod tests {
             numa_node_count: 1,
             has_nvlink: false,
             has_xgmi: false,
-            same_numa: true,
+            same_numa: Some(true),
             recommendations: Vec::new(),
         };
         let monitor = GpuTopologyMonitor { overview };
@@ -556,17 +606,32 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_link_speed_is_not_read() {
+        // An unrecognised speed is "not read", not generation 0 at 0 GB/s.
+        let (generation, width, speed) = parse_link("unknown", "x16");
+        assert_eq!(generation, None);
+        assert_eq!(width, Some(16));
+        assert_eq!(speed, None);
+        assert_eq!(pcie_bandwidth(generation, width), None);
+
+        // A width of 0 is the kernel reporting the link down, which is a reading.
+        let (generation, width, _) = parse_link("8.0 GT/s PCIe", "x0");
+        assert_eq!(generation, Some(3));
+        assert_eq!(pcie_bandwidth(generation, width), Some(0.0));
+    }
+
+    #[test]
     fn test_serialization() {
         let node = GpuTopologyNode {
             bdf: "0000:01:00.0".into(),
             index: 0,
             name: "GPU0".into(),
             vendor: "nvidia".into(),
-            numa_node: 0,
-            pcie_gen: 5,
-            pcie_width: 16,
-            pcie_speed_gts: 32.0,
-            pcie_bandwidth_gbs: 63.0,
+            numa_node: Some(0),
+            pcie_gen: Some(5),
+            pcie_width: Some(16),
+            pcie_speed_gts: Some(32.0),
+            pcie_bandwidth_gbs: Some(63.0),
             iommu_group: Some(10),
             driver: "nvidia".into(),
         };

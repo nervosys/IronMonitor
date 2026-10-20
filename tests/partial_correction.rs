@@ -223,13 +223,10 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/core/memory.rs", "RamInfo", "total used"),
     ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
     ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
-    ("src/gpu_topology/mod.rs", "GpuLink", "from_gpu to_gpu bandwidth_per_link_gbs"),
-    ("src/gpu_topology/mod.rs", "GpuTopologyNode", "numa_node pcie_gen pcie_width pcie_speed_gts pcie_bandwidth_gbs"),
     ("src/hardware_ai/mod.rs", "HardwareAge", "estimated_age_years confidence"),
     ("src/interconnect/mod.rs", "ChipletTopology", "compute_dies io_dies on_package_bandwidth_gbs"),
     ("src/memory_bandwidth/mod.rs", "BandwidthAnalysis", "estimated_latency_ns"),
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
-    ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
     ("src/network_tools.rs", "OsFingerprint", "confidence"),
     ("src/observability/context.rs", "ProcessMetrics", "cpu_percent memory_mb threads"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
@@ -504,6 +501,18 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
             "parse_psi returns None unless all four fields of the some line ",
             "parsed; the optional full line is the Option beside them"
         ),
+    ),
+    (
+        "src/gpu_topology/mod.rs",
+        "GpuLink",
+        "from_gpu to_gpu",
+        "indices of the GPUs the scan enumerated; each pair is built from its two nodes' index",
+    ),
+    (
+        "src/memory_topology/mod.rs",
+        "MemoryAnalysis",
+        "populated_slots",
+        "a count of the modules the reader enumerated; enumeration failure is an Err",
     ),
     (
         "src/network_tools.rs",

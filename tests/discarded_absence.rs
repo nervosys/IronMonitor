@@ -200,12 +200,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "numa_node -1 is the kernel's own 'no affinity'; library API only, not in the ontology (a second read, behind a closure, is not seen by this scan)",
     ),
     (
-        "src/gpu_topology/mod.rs",
-        "read_sysfs_i32",
-        1,
-        "numa_node -1, as in dma_engine; library API only",
-    ),
-    (
         "src/pcie.rs",
         "read_hex_file",
         3,
