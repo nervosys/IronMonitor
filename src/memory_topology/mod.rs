@@ -495,7 +495,7 @@ impl MemoryTopologyMonitor {
             }
             Ok(out) => Err(IronError::CommandFailed(format!(
                 "dmidecode -t memory failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                one_line(&out.stderr)
             ))),
             // dmidecode missing from PATH, or not runnable
             Err(e) => Err(e.into()),
@@ -519,7 +519,7 @@ impl MemoryTopologyMonitor {
             }
             Ok(out) => Err(IronError::CommandFailed(format!(
                 "Get-CimInstance Win32_PhysicalMemory failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                one_line(&out.stderr)
             ))),
             // powershell missing from PATH, or not runnable
             Err(e) => Err(e.into()),
@@ -539,7 +539,7 @@ impl MemoryTopologyMonitor {
             }
             Ok(out) => Err(IronError::CommandFailed(format!(
                 "system_profiler SPMemoryDataType failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                one_line(&out.stderr)
             ))),
             // system_profiler missing from PATH, or not runnable
             Err(e) => Err(e.into()),
@@ -941,8 +941,37 @@ impl MemoryType {
     const DDR: MemoryType = MemoryType::Unknown; // DDR1 is too old to specifically handle
 }
 
+/// A tool's stderr as one line. dmidecode writes one message per line, and
+/// the error text ships to readers as a single note.
+#[cfg_attr(
+    not(any(target_os = "linux", windows, target_os = "macos")),
+    allow(dead_code)
+)]
+fn one_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::one_line;
+
+    #[test]
+    fn tool_stderr_becomes_one_line() {
+        assert_eq!(
+            one_line(
+                b"smbios_entry_point: Permission denied
+Can't read memory from /dev/mem
+"
+            ),
+            "smbios_entry_point: Permission denied; Can't read memory from /dev/mem"
+        );
+    }
+
     use super::*;
 
     #[test]
