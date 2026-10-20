@@ -169,11 +169,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let top_procs = monitor.top_processes(10);
     for proc in top_procs {
         println!(
-            "   {:>6}  {:>10}  {:>10}  {:>5.1}%  {}",
+            "   {:>6}  {:>10}  {:>10}  {:>6}  {}",
             proc.pid,
-            format_bytes(proc.rss),
-            format_bytes(proc.vms),
-            proc.memory_percent,
+            shown_bytes(proc.rss),
+            shown_bytes(proc.vms),
+            shown_percent(proc.memory_percent),
             if proc.name.len() > 20 {
                 &proc.name[..20]
             } else {

@@ -860,13 +860,10 @@ impl GpuCollection {
     pub fn detect_apple(&mut self) -> Result<(), crate::Error> {
         #[cfg(target_os = "macos")]
         {
-            match apple::AppleGpu::detect_gpus() {
-                Ok(gpus) => {
-                    for gpu in gpus {
-                        self.add_gpu(Box::new(gpu));
-                    }
-                }
-                Err(_) => {} // Silently skip if no Apple GPU found
+            // Enumeration failure is an error, not an absent GPU: propagate it
+            // as detect_nvidia does rather than reporting an empty machine.
+            for gpu in apple::AppleGpu::detect_gpus()? {
+                self.add_gpu(Box::new(gpu));
             }
         }
         Ok(())

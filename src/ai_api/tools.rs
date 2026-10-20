@@ -1474,9 +1474,7 @@ impl AiDataApi {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
                     "free_mb": stats.ram.free.map(|v| v / 1024),
-                    "usage_percent": if stats.ram.total > 0 {
-                        (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
-                    } else { 0.0 },
+                    "usage_percent": stats.ram_usage_percent(),
                 },
                 // `null`, not `0`. `SwapInfo` carries `Option` since 15a60ab
                 // precisely so an unread pagefile is distinguishable from an
@@ -1505,9 +1503,7 @@ impl AiDataApi {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
                     "free_mb": stats.ram.free.map(|v| v / 1024),
-                    "usage_percent": if stats.ram.total > 0 {
-                        (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
-                    } else { 0.0 },
+                    "usage_percent": stats.ram_usage_percent(),
                 },
                 // `null`, not `0`. `SwapInfo` carries `Option` since 15a60ab
                 // precisely so an unread pagefile is distinguishable from an
@@ -1546,9 +1542,7 @@ impl AiDataApi {
                     "total_mb": stats.ram.total / 1024,
                     "used_mb": stats.ram.used / 1024,
                     "free_mb": stats.ram.free.map(|v| v / 1024),
-                    "usage_percent": if stats.ram.total > 0 {
-                        (stats.ram.used as f64 / stats.ram.total as f64) * 100.0
-                    } else { 0.0 },
+                    "usage_percent": stats.ram_usage_percent(),
                 },
                 // `null` rather than 0 where the platform reported no swap
                 // figure. An agent reading 0 cannot tell "no swap configured"

@@ -154,10 +154,10 @@ pub struct ComputeCapability {
     pub metal_compute: bool,
     /// DirectCompute version (Windows)
     pub direct_compute: String,
-    /// Estimated TFLOPS (FP32)
-    pub estimated_tflops_fp32: f32,
-    /// Estimated TFLOPS (FP16 / half precision)
-    pub estimated_tflops_fp16: f32,
+    /// Estimated TFLOPS (FP32); `None` for a generation the table does not know
+    pub estimated_tflops_fp32: Option<f32>,
+    /// Estimated TFLOPS (FP16 / half precision); `None` when FP32 is unknown
+    pub estimated_tflops_fp16: Option<f32>,
     /// Tensor core / AI accelerator present
     pub has_tensor_cores: bool,
     /// Ray tracing hardware acceleration
@@ -251,8 +251,12 @@ impl CodecMonitor {
             .unwrap_or(MaxResolution::Unknown)
     }
 
-    /// Get estimated TFLOPS (FP32) across all devices.
-    pub fn total_tflops_fp32(&self) -> f32 {
+    /// Get estimated TFLOPS (FP32) across all devices. `None` unless every
+    /// device has a figure: a partial sum would read as the machine's total.
+    pub fn total_tflops_fp32(&self) -> Option<f32> {
+        if self.compute_caps.is_empty() {
+            return None;
+        }
         self.compute_caps
             .iter()
             .map(|c| c.estimated_tflops_fp32)
@@ -658,25 +662,27 @@ impl CodecMonitor {
             || lower.contains("quadro")
             || lower.contains("tesla")
         {
+            // A generation the table does not know gets no figures: a guessed
+            // TFLOPS reads the same as a spec-sheet value once it is printed.
             let (cuda, tflops_32, tflops_16, tensor, rt) =
                 if lower.contains("rtx 40") || lower.contains("rtx 4090") {
-                    ("8.9", 82.6_f32, 165.2_f32, true, true)
+                    ("8.9", Some(82.6_f32), Some(165.2_f32), true, true)
                 } else if lower.contains("rtx 4080") {
-                    ("8.9", 48.7, 97.5, true, true)
+                    ("8.9", Some(48.7), Some(97.5), true, true)
                 } else if lower.contains("rtx 4070") {
-                    ("8.9", 29.1, 58.3, true, true)
+                    ("8.9", Some(29.1), Some(58.3), true, true)
                 } else if lower.contains("rtx 30") || lower.contains("rtx 3090") {
-                    ("8.6", 35.6, 71.2, true, true)
+                    ("8.6", Some(35.6), Some(71.2), true, true)
                 } else if lower.contains("rtx 3080") {
-                    ("8.6", 29.8, 59.6, true, true)
+                    ("8.6", Some(29.8), Some(59.6), true, true)
                 } else if lower.contains("rtx 20") || lower.contains("rtx 2080") {
-                    ("7.5", 14.2, 28.4, true, true)
+                    ("7.5", Some(14.2), Some(28.4), true, true)
                 } else if lower.contains("gtx 1080") {
-                    ("6.1", 8.9, 0.0, false, false)
+                    ("6.1", Some(8.9), Some(0.0), false, false)
                 } else if lower.contains("gtx 10") {
-                    ("6.1", 6.5, 0.0, false, false)
+                    ("6.1", Some(6.5), Some(0.0), false, false)
                 } else {
-                    ("6.0", 5.0, 0.0, false, false)
+                    ("6.0", None, None, false, false)
                 };
 
             self.compute_caps.push(ComputeCapability {
@@ -701,13 +707,15 @@ impl CodecMonitor {
             || lower.contains("m4")
         {
             let tflops = if lower.contains("m4") || lower.contains("ultra") {
-                27.0_f32
+                Some(27.0_f32)
             } else if lower.contains("m3") || lower.contains("max") {
-                14.2
+                Some(14.2)
             } else if lower.contains("m2") || lower.contains("pro") {
-                6.8
+                Some(6.8)
+            } else if lower.contains("m1") {
+                Some(2.6)
             } else {
-                2.6
+                None
             };
 
             self.compute_caps.push(ComputeCapability {
@@ -718,7 +726,7 @@ impl CodecMonitor {
                 metal_compute: true,
                 direct_compute: String::new(),
                 estimated_tflops_fp32: tflops,
-                estimated_tflops_fp16: tflops * 2.0,
+                estimated_tflops_fp16: tflops.map(|t| t * 2.0),
                 has_tensor_cores: true, // Apple Neural Engine
                 has_ray_tracing: lower.contains("m3") || lower.contains("m4"),
                 source: CapabilitySource::Inferred,
@@ -889,7 +897,23 @@ mod tests {
         assert!(!monitor.compute_caps.is_empty());
         assert!(monitor.compute_caps[0].has_tensor_cores);
         assert!(monitor.compute_caps[0].has_ray_tracing);
-        assert!(monitor.compute_caps[0].estimated_tflops_fp32 > 50.0);
+        assert!(matches!(
+            monitor.compute_caps[0].estimated_tflops_fp32,
+            Some(t) if t > 50.0
+        ));
+    }
+
+    #[test]
+    fn test_compute_unknown_generation_has_no_figures() {
+        let mut monitor = CodecMonitor {
+            codec_caps: Vec::new(),
+            compute_caps: Vec::new(),
+        };
+        monitor.infer_compute_from_gpu("NVIDIA Quadro Unknown 9000");
+        assert!(!monitor.compute_caps.is_empty());
+        assert_eq!(monitor.compute_caps[0].estimated_tflops_fp32, None);
+        assert_eq!(monitor.compute_caps[0].estimated_tflops_fp16, None);
+        assert_eq!(monitor.total_tflops_fp32(), None);
     }
 
     #[test]

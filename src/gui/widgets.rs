@@ -523,7 +523,8 @@ impl Widget for SparklineChart<'_> {
             let data_min = self.data.iter().cloned().fold(f32::MAX, f32::min);
             let data_max = self.data.iter().cloned().fold(0.0_f32, f32::max);
             let max_val = self.fixed_max.unwrap_or_else(|| data_max.max(1.0));
-            let current_val = self.data.last().cloned().unwrap_or(0.0);
+            // None for an empty series: nothing was read, so nothing is shown.
+            let current_val = self.data.last().cloned();
             let unit_str = self.unit.as_deref().unwrap_or("");
 
             // Title area
@@ -560,7 +561,10 @@ impl Widget for SparklineChart<'_> {
                     }
 
                     // Current value on right side of title
-                    let value_text = format!("{:.1}{}", current_val, unit_str);
+                    let value_text = match current_val {
+                        Some(v) => format!("{:.1}{}", v, unit_str),
+                        None => "-".to_string(),
+                    };
                     painter.text(
                         title_rect.right_center() - Vec2::new(10.0, 0.0),
                         egui::Align2::RIGHT_CENTER,

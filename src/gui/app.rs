@@ -26,6 +26,16 @@ use crate::process_monitor::ProcessMonitorInfo;
 use crate::system_stats::SystemStats;
 
 const HISTORY_SIZE: usize = 60;
+
+/// Append a sample and drop the oldest beyond `HISTORY_SIZE`. Histories start
+/// empty and grow as samples arrive; they used to be pre-filled with zeros,
+/// which every chart drew as a minute of measured idle.
+fn push_sample(history: &mut VecDeque<f32>, value: f32) {
+    history.push_back(value);
+    while history.len() > HISTORY_SIZE {
+        history.pop_front();
+    }
+}
 // A full collection tick costs ~500ms on a three-GPU Windows box even with the
 // process table decimated, so a 500ms interval asked for more than the hardware can
 // deliver and the collector thread never slept. 1s matches what the sources can
@@ -1087,28 +1097,6 @@ impl IronMonitorApp {
             crate::ai_api::observation_tools::register_gui_source(collector.handle());
         }
 
-        // Initialize history with zeros
-        for _ in 0..HISTORY_SIZE {
-            app.cpu_history.push_back(0.0);
-            app.memory_history.push_back(0.0);
-            app.network_rx_history.push_back(0.0);
-            app.network_tx_history.push_back(0.0);
-            app.context_switches_history.push_back(0.0);
-            app.interrupts_history.push_back(0.0);
-            for hist in &mut app.gpu_history {
-                hist.push_back(0.0);
-            }
-            for hist in &mut app.gpu_memory_history {
-                hist.push_back(0.0);
-            }
-            for hist in &mut app.gpu_temp_history {
-                hist.push_back(0.0);
-            }
-            for hist in &mut app.per_core_history {
-                hist.push_back(0.0);
-            }
-        }
-
         // Initialize previous context switch/interrupt values
         if let Some(ref stats) = app.system_stats {
             if let Some(ref vm) = stats.vm_stats {
@@ -1168,14 +1156,17 @@ impl IronMonitorApp {
         // === CPU ===
         if let Some(ref stats) = snapshot.cpu {
             let cpu_usage = 100.0 - stats.total.idle;
-            self.cpu_history.pop_front();
-            self.cpu_history.push_back(cpu_usage);
+            push_sample(&mut self.cpu_history, cpu_usage);
 
             for (i, core) in stats.cores.iter().enumerate() {
                 if i < self.per_core_history.len() {
-                    let util = core.user.unwrap_or(0.0) + core.system.unwrap_or(0.0);
-                    self.per_core_history[i].pop_front();
-                    self.per_core_history[i].push_back(util);
+                    // A core with neither figure read contributes no sample
+                    // rather than a zero.
+                    let util = match (core.user, core.system) {
+                        (None, None) => continue,
+                        (user, system) => user.unwrap_or(0.0) + system.unwrap_or(0.0),
+                    };
+                    push_sample(&mut self.per_core_history[i], util);
                 }
             }
 
@@ -1187,8 +1178,7 @@ impl IronMonitorApp {
             // No RAM total read means no sample: nothing is pushed, rather
             // than a zero the chart would draw as idle memory.
             if let Some(usage) = stats.ram_usage_percent() {
-                self.memory_history.pop_front();
-                self.memory_history.push_back(usage);
+                push_sample(&mut self.memory_history, usage);
             }
             self.memory_stats = Some(stats.clone());
         }
@@ -1202,13 +1192,7 @@ impl IronMonitorApp {
             let new_count = snapshot.gpu_static.len();
             self.gpu_static_info = snapshot.gpu_static.clone();
 
-            let fresh_series = || {
-                let mut v = VecDeque::with_capacity(HISTORY_SIZE);
-                for _ in 0..HISTORY_SIZE {
-                    v.push_back(0.0);
-                }
-                v
-            };
+            let fresh_series = || VecDeque::with_capacity(HISTORY_SIZE);
             self.gpu_history.resize_with(new_count, fresh_series);
             self.gpu_memory_history.resize_with(new_count, fresh_series);
             self.gpu_temp_history.resize_with(new_count, fresh_series);
@@ -1230,11 +1214,10 @@ impl IronMonitorApp {
         for (i, info) in snapshot.gpu_dynamic.iter().enumerate() {
             let Some(info) = info.as_ref() else { continue };
 
-            if i < self.gpu_history.len() {
-                self.gpu_history[i].pop_front();
-                if let Some(util) = info.utilization {
-                    self.gpu_history[i].push_back(util as f32);
-                }
+            // An unreported utilization contributes no sample. This used to pop
+            // regardless, so a GPU without the figure shrank its own chart.
+            if let (Some(history), Some(util)) = (self.gpu_history.get_mut(i), info.utilization) {
+                push_sample(history, util as f32);
             }
 
             if i < self.gpu_memory_history.len() {
@@ -1242,16 +1225,14 @@ impl IronMonitorApp {
                 // series holds its last value rather than dropping to zero,
                 // which is what the CPU and GPU histories elsewhere do.
                 if let Some(mem_pct) = info.memory.utilization {
-                    self.gpu_memory_history[i].pop_front();
-                    self.gpu_memory_history[i].push_back(mem_pct as f32);
+                    push_sample(&mut self.gpu_memory_history[i], mem_pct as f32);
                 }
             }
 
             if let (Some(history), Some(temp)) =
                 (self.gpu_temp_history.get_mut(i), info.thermal.temperature)
             {
-                history.pop_front();
-                history.push_back(temp as f32);
+                push_sample(history, temp as f32);
             }
         }
 
@@ -1259,18 +1240,13 @@ impl IronMonitorApp {
         // The previous code charted `(cumulative_bytes / 1MB) % 10000`, which is a
         // sawtooth of a running total rather than a throughput series. These are now
         // actual rates in MB/s, matching the axis label.
-        // A tick with no established rate advances neither series: popping and
-        // pushing a zero would draw a trough that did not happen, and popping
-        // without pushing would shrink a fixed-width history.
+        // A tick with no established rate advances neither series: pushing a
+        // zero would draw a trough that did not happen.
         if let Some(rx) = snapshot.total_rx_rate() {
-            self.network_rx_history.pop_front();
-            self.network_rx_history
-                .push_back((rx / 1024.0 / 1024.0) as f32);
+            push_sample(&mut self.network_rx_history, (rx / 1024.0 / 1024.0) as f32);
         }
         if let Some(tx) = snapshot.total_tx_rate() {
-            self.network_tx_history.pop_front();
-            self.network_tx_history
-                .push_back((tx / 1024.0 / 1024.0) as f32);
+            push_sample(&mut self.network_tx_history, (tx / 1024.0 / 1024.0) as f32);
         }
 
         self.network_rates.clear();
@@ -1311,11 +1287,8 @@ impl IronMonitorApp {
                     .saturating_sub(self.prev_context_switches);
                 let int_delta = vm.interrupts.saturating_sub(self.prev_interrupts);
 
-                self.context_switches_history.pop_front();
-                self.context_switches_history.push_back(ctx_delta as f32);
-
-                self.interrupts_history.pop_front();
-                self.interrupts_history.push_back(int_delta as f32);
+                push_sample(&mut self.context_switches_history, ctx_delta as f32);
+                push_sample(&mut self.interrupts_history, int_delta as f32);
 
                 self.prev_context_switches = vm.context_switches;
                 self.prev_interrupts = vm.interrupts;
@@ -3150,14 +3123,20 @@ impl IronMonitorApp {
                                 .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         // Show rates per second
-                        let ctx_rate = self.context_switches_history.back().unwrap_or(&0.0);
-                        let int_rate = self.interrupts_history.back().unwrap_or(&0.0);
+                        // No interval sampled yet reads "--", not a rate of 0.
+                        let rate = |h: &VecDeque<f32>| {
+                            h.back()
+                                .map_or_else(|| "--".to_string(), |r| format!("{r:.0}"))
+                        };
                         ui.label(
-                            RichText::new(format!("ctx/s:{:.0}", ctx_rate))
-                                .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
+                            RichText::new(format!(
+                                "ctx/s:{}",
+                                rate(&self.context_switches_history)
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.label(
-                            RichText::new(format!("int/s:{:.0}", int_rate))
+                            RichText::new(format!("int/s:{}", rate(&self.interrupts_history)))
                                 .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         if vm.processes_blocked > 0 {
@@ -3340,13 +3319,12 @@ impl IronMonitorApp {
                         for (i, hist) in self.per_core_history.iter().enumerate() {
                             let col = i % num_cols;
                             if col < columns.len() {
-                                let core_usage = hist.back().copied().unwrap_or(0.0);
+                                let core_color = hist
+                                    .back()
+                                    .map_or(CyberColors::TEXT_SECONDARY, |&u| theme::cpu_color(u));
                                 columns[col].add(
                                     SparklineChart::from_history(hist)
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            theme::cpu_color(core_usage),
-                                        ))
+                                        .color(theme::color(&palette_ctx, core_color))
                                         .height(60.0)
                                         .title(format!("Core {}", i))
                                         .unit("%")
@@ -7093,7 +7071,9 @@ impl IronMonitorApp {
                                 _ => "Unknown".to_string(),
                             };
                             ui.label(RichText::new(os_text).color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)));
-                            ui.label(RichText::new(format!("({}% confidence)", os.confidence)).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
+                            // os.confidence is the fixed OS_CONFIDENCE_* constant of the rule that
+                            // matched, not a measured probability, so the label does not show it.
+                            ui.label(RichText::new("(heuristic match)").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
                         });
                     }
 

@@ -196,6 +196,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unknown), where 70 ns stood in for all of them.
 - A macOS socket bound to `*` has no local or remote port (`None`), where it
   read as port 0.
+- GUI histories start empty and fill as samples arrive. Every chart was
+  pre-filled with a minute of zeros, drawn as measured idle; a sparkline with
+  no sample shows `-`, the vmstat rates `--`. A GPU reporting no utilization
+  no longer shrinks its own chart, and a core with neither user nor system
+  time read adds no sample rather than 0%.
+- The GUI's OS guess reads "(heuristic match)": the percentage it showed was
+  the matching rule's fixed constant, not a measured confidence.
+- The AI memory tool's `usage_percent` is null when no RAM total was read,
+  where it was 0.
+- `ProcessMemory` figures are `Option`: VmSize and VmSwap that were not read
+  are `None` (they were 0), `memory_percent` is `None` without a RAM total,
+  `shared` and `private` are `None` (no reader produces them; `private` was a
+  copy of RSS), and macOS swap is `None` (`ps` does not report it). A Windows
+  or macOS row whose pid or RSS does not parse is skipped, where it was
+  ranked as pid 0 with 0 bytes.
+- Codec compute estimates are `None` for an unknown NVIDIA generation or an
+  Apple GPU without a tier, where 5.0 and 2.6 TFLOPS stood in; the total is
+  `None` unless every device has a figure.
+- A failed Apple GPU enumeration is an error from `auto_detect`, as an NVIDIA
+  one is, where it was discarded and read as "no GPU".
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

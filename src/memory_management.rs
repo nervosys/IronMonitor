@@ -281,18 +281,19 @@ pub struct ProcessMemory {
     pub pid: u32,
     /// Process name
     pub name: String,
-    /// Resident Set Size (physical memory)
-    pub rss: u64,
-    /// Virtual memory size
-    pub vms: u64,
-    /// Shared memory
-    pub shared: u64,
-    /// Private memory
-    pub private: u64,
-    /// Swap usage
-    pub swap: u64,
-    /// Percentage of total memory
-    pub memory_percent: f64,
+    /// Resident Set Size (physical memory); `None` when not read
+    pub rss: Option<u64>,
+    /// Virtual memory size; `None` when not read
+    pub vms: Option<u64>,
+    /// Shared memory; no platform reader produces it, so it is always `None`
+    pub shared: Option<u64>,
+    /// Private memory; no reader produces it (this was a copy of `rss`), so it
+    /// is always `None`
+    pub private: Option<u64>,
+    /// Swap usage; `None` when not read
+    pub swap: Option<u64>,
+    /// Percentage of total memory; `None` when total memory was not read
+    pub memory_percent: Option<f64>,
 }
 
 /// Memory monitor for comprehensive memory management
@@ -708,16 +709,22 @@ impl MemoryMonitor {
                             .unwrap_or("unknown")
                             .to_string();
 
+                        // `rss` stays 0 when VmRSS is absent or unparseable, and such a process
+                        // is skipped below. The other figures stay `None` rather than 0.
                         let mut rss = 0u64;
-                        let mut vms = 0u64;
-                        let mut swap = 0u64;
+                        let mut vms = None;
+                        let mut swap = None;
 
                         for line in status.lines() {
                             if let Some((key, value)) = line.split_once(':') {
-                                let value = value.trim().replace(" kB", "");
-                                let kb = value.parse::<u64>().unwrap_or(0) * 1024;
+                                let kb = value
+                                    .trim()
+                                    .replace(" kB", "")
+                                    .parse::<u64>()
+                                    .ok()
+                                    .map(|v| v * 1024);
                                 match key {
-                                    "VmRSS" => rss = kb,
+                                    "VmRSS" => rss = kb.unwrap_or(0),
                                     "VmSize" => vms = kb,
                                     "VmSwap" => swap = kb,
                                     _ => {}
@@ -726,19 +733,17 @@ impl MemoryMonitor {
                         }
 
                         if rss > 0 {
-                            let memory_percent = if self.memory.total > 0 {
-                                (rss as f64 / self.memory.total as f64) * 100.0
-                            } else {
-                                0.0
-                            };
+                            // `None`, not 0.0, when total is unread: 0.0 would say the process uses none of it.
+                            let memory_percent = (self.memory.total > 0)
+                                .then(|| (rss as f64 / self.memory.total as f64) * 100.0);
 
                             processes.push(ProcessMemory {
                                 pid,
                                 name,
-                                rss,
+                                rss: Some(rss),
                                 vms,
-                                shared: 0,
-                                private: rss,
+                                shared: None,
+                                private: None,
                                 swap,
                                 memory_percent,
                             });
@@ -915,25 +920,27 @@ impl MemoryMonitor {
                 // Skip header
                 let parts: Vec<&str> = line.split(',').collect();
                 if parts.len() >= 5 {
-                    let pid = parts[0].trim_matches('"').parse::<u32>().unwrap_or(0);
-                    let name = parts[1].trim_matches('"').to_string();
-                    let rss = parts[2].trim_matches('"').parse::<u64>().unwrap_or(0);
-                    let vms = parts[3].trim_matches('"').parse::<u64>().unwrap_or(0);
-                    let paged = parts[4].trim_matches('"').parse::<u64>().unwrap_or(0);
-
-                    let memory_percent = if self.memory.total > 0 {
-                        (rss as f64 / self.memory.total as f64) * 100.0
-                    } else {
-                        0.0
+                    // A row whose id or working set did not parse is skipped, not ranked as pid 0.
+                    let (Ok(pid), Ok(rss)) = (
+                        parts[0].trim_matches('"').parse::<u32>(),
+                        parts[2].trim_matches('"').parse::<u64>(),
+                    ) else {
+                        continue;
                     };
+                    let name = parts[1].trim_matches('"').to_string();
+                    let vms = parts[3].trim_matches('"').parse::<u64>().ok();
+                    let paged = parts[4].trim_matches('"').parse::<u64>().ok();
+
+                    let memory_percent = (self.memory.total > 0)
+                        .then(|| (rss as f64 / self.memory.total as f64) * 100.0);
 
                     processes.push(ProcessMemory {
                         pid,
                         name,
-                        rss,
+                        rss: Some(rss),
                         vms,
-                        shared: 0,
-                        private: rss,
+                        shared: None,
+                        private: None,
                         swap: paged,
                         memory_percent,
                     });
@@ -1038,25 +1045,26 @@ impl MemoryMonitor {
             for line in stdout.lines().skip(1).take(limit) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 4 {
-                    let pid = parts[0].parse::<u32>().unwrap_or(0);
-                    let rss = parts[1].parse::<u64>().unwrap_or(0) * 1024;
-                    let vms = parts[2].parse::<u64>().unwrap_or(0) * 1024;
+                    // A row whose pid or RSS did not parse is skipped, not ranked as pid 0.
+                    let (Ok(pid), Ok(rss_kb)) = (parts[0].parse::<u32>(), parts[1].parse::<u64>())
+                    else {
+                        continue;
+                    };
+                    let rss = rss_kb * 1024;
+                    let vms = parts[2].parse::<u64>().ok().map(|kb| kb * 1024);
                     let name = parts[3..].join(" ");
 
-                    let memory_percent = if self.memory.total > 0 {
-                        (rss as f64 / self.memory.total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
+                    let memory_percent = (self.memory.total > 0)
+                        .then(|| (rss as f64 / self.memory.total as f64) * 100.0);
 
                     processes.push(ProcessMemory {
                         pid,
                         name,
-                        rss,
+                        rss: Some(rss),
                         vms,
-                        shared: 0,
-                        private: rss,
-                        swap: 0,
+                        shared: None,
+                        private: None,
+                        swap: None,
                         memory_percent,
                     });
                 }
