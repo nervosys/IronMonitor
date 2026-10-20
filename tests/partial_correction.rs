@@ -212,20 +212,9 @@ fn partial_corrections() -> BTreeSet<(String, String, String)> {
 /// Every match when this test was written. Not a list of approvals -- see the
 /// module doc. Remove an entry when its struct is fixed; never add one.
 const BASELINE: &[(&str, &str, &str)] = &[
-    (
-        "src/ai_api/types.rs",
-        "MemorySummary",
-        "total_mb used_mb usage_percent",
-    ),
     ("src/backend.rs", "CpuState", "threads utilization"),
-    (
-        "src/backend.rs",
-        "MemoryState",
-        "total_bytes used_bytes available_bytes usage_percent",
-    ),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
     ("src/core/memory.rs", "RamInfo", "total used"),
-    ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
     (
         "src/hardware_ai/mod.rs",
         "HardwareAge",
@@ -635,6 +624,41 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "ProcessSnapshot",
         "memory_bytes",
         "copied from ProcessMonitorInfo.memory_bytes, which every reader fills from a read or skips the process",
+    ),
+    (
+        "src/ai_api/types.rs",
+        "MemorySummary",
+        "total_mb used_mb",
+        concat!(
+            "copied from the Linux reader's ram.total and ram.used, and built only ",
+            "inside if-let Ok in ai_api/mod.rs; that reader fails when MemTotal is missing"
+        ),
+    ),
+    (
+        "src/backend.rs",
+        "MemoryState",
+        "total_bytes used_bytes available_bytes",
+        concat!(
+            "copied from the platform reader's RamInfo, and built only when memory_stats ",
+            "is Some; each reader returns Err rather than a total it did not read ",
+            "(MemTotal, hw.memsize, GlobalMemoryStatusEx)"
+        ),
+    ),
+    (
+        "src/fleet_store/rows.rs",
+        "MetricRow",
+        "collected_at_us",
+        "non-test rows are built only in rows_from_snapshot, which yields none for a snapshot whose collected_at is None",
+    ),
+    (
+        "src/pipeline/mod.rs",
+        "Snapshot",
+        "collect_us",
+        concat!(
+            "collect_once measures it with started.elapsed(); the default snapshot's 0 ",
+            "never reaches a row, because rows_from_snapshot refuses a snapshot with no ",
+            "collected_at"
+        ),
     ),
     (
         "src/network_tools.rs",

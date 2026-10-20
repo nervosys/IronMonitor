@@ -623,7 +623,7 @@ mod app_tab_tests {
                 assert!((ui.available_width() - full_width).abs() < 1.0);
                 assert_eq!(ui.style().text_styles, fonts);
                 let dashboard = ui.add(crate::gui::widgets::QuickLookPanel::new(
-                    0.0, 0.0, None, 0.0,
+                    None, None, None, None,
                 ));
                 assert!((dashboard.rect.width() - full_width).abs() < 1.0);
                 assert_eq!(dashboard.rect.height(), 48.0);
@@ -1599,7 +1599,12 @@ mod data_label_tests {
                 .show_min_max(true)
                 .height(80.0),
         );
-        ui.add(QuickLookPanel::new(42.0, 63.0, Some(5.0), 1.5));
+        ui.add(QuickLookPanel::new(
+            Some(42.0),
+            Some(63.0),
+            Some(5.0),
+            Some(1.5),
+        ));
         ui.add(ThresholdLegend);
         ui.add(CyberProgressBar::new(0.42).label("Used"));
     }

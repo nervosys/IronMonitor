@@ -114,8 +114,8 @@ pub struct MemoryState {
     /// Available RAM (bytes)
     pub available_bytes: u64,
 
-    /// Usage percentage
-    pub usage_percent: f32,
+    /// Usage percentage, or `None` where no RAM total was read.
+    pub usage_percent: Option<f32>,
 
     /// Total swap (bytes)
     /// Swap total in bytes, or `None` where the platform reported none.
@@ -337,9 +337,12 @@ impl FullSystemState {
         if let Some(ref mem) = self.memory {
             let used_gb = mem.used_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
             let total_gb = mem.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+            let pct = mem
+                .usage_percent
+                .map_or_else(|| "not read".to_string(), |p| format!("{:.1}%", p));
             ctx.push_str(&format!(
-                "Memory: {:.1}GB / {:.1}GB ({:.1}%)\n",
-                used_gb, total_gb, mem.usage_percent
+                "Memory: {:.1}GB / {:.1}GB ({})\n",
+                used_gb, total_gb, pct
             ));
             // Written out only where the pagefile was read. The `> 0` test
             // could not tell an unread pagefile from an absent one, so a
@@ -878,8 +881,10 @@ impl MonitoringBackend {
         {
             if let Ok(stats) = crate::platform::windows::read_memory_stats() {
                 self.memory_stats = Some(stats.clone());
-                let usage = stats.ram_usage_percent();
-                self.memory_history.push(usage);
+                // No sample where no RAM total was read.
+                if let Some(usage) = stats.ram_usage_percent() {
+                    self.memory_history.push(usage);
+                }
             }
         }
 
@@ -887,8 +892,10 @@ impl MonitoringBackend {
         {
             if let Ok(stats) = crate::platform::linux::read_memory_stats() {
                 self.memory_stats = Some(stats.clone());
-                let usage = stats.ram_usage_percent();
-                self.memory_history.push(usage);
+                // No sample where no RAM total was read.
+                if let Some(usage) = stats.ram_usage_percent() {
+                    self.memory_history.push(usage);
+                }
             }
         }
 
@@ -901,8 +908,10 @@ impl MonitoringBackend {
         {
             if let Ok(stats) = crate::platform::macos::read_memory_stats() {
                 self.memory_stats = Some(stats.clone());
-                let usage = stats.ram_usage_percent();
-                self.memory_history.push(usage);
+                // No sample where no RAM total was read.
+                if let Some(usage) = stats.ram_usage_percent() {
+                    self.memory_history.push(usage);
+                }
             }
         }
 
@@ -916,7 +925,9 @@ impl MonitoringBackend {
     /// RAM utilisation, or `None` before a sample has been taken. See
     /// [`Self::cpu_utilization`].
     pub fn memory_utilization(&self) -> Option<f32> {
-        self.memory_stats.as_ref().map(|s| s.ram_usage_percent())
+        self.memory_stats
+            .as_ref()
+            .and_then(|s| s.ram_usage_percent())
     }
 
     pub fn memory_history(&self) -> &HistoryBuffer<f32> {

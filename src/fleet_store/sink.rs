@@ -207,7 +207,7 @@ mod tests {
         let (_warehouse, store) = in_memory_store("gap").await;
         let (src, slot) = source(Snapshot {
             generation: 1,
-            collected_at: 1_700_000_000,
+            collected_at: Some(1_700_000_000),
             ..Default::default()
         });
         let sink = FleetSink::new(store, src);
@@ -220,7 +220,7 @@ mod tests {
         // still running; only 4 is ever observed.
         slot.store(Arc::new(Snapshot {
             generation: 4,
-            collected_at: 1_700_000_003,
+            collected_at: Some(1_700_000_003),
             ..Default::default()
         }));
         sink.append_latest().await.expect("second");
@@ -239,7 +239,7 @@ mod tests {
         let (_warehouse, store) = in_memory_store("dup").await;
         let (src, _slot) = source(Snapshot {
             generation: 9,
-            collected_at: 1_700_000_000,
+            collected_at: Some(1_700_000_000),
             ..Default::default()
         });
         let sink = FleetSink::new(store, src);

@@ -176,6 +176,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constants, documented as such rather than as measured probabilities; the GPU
   clock-degradation alert reports the threshold it compared against, where it
   reported 0.
+- RAM usage is `None` when no RAM total was read, where it was 0%: in the AI
+  summary and backend state, the CLI, the GUI's quick-look, cards, memory tab
+  and history, and the system summary. The memory chart skips the sample
+  rather than drawing idle memory, and the health report skips the check.
+  The GUI's CPU reading is likewise `None` before the first sample (it read
+  0%, and fed the alerts and history), and its load average is `None` where
+  the OS has none (Windows), where it showed a load of 0.
+- A pipeline snapshot whose clock could not be read has no `collected_at`,
+  where it was 0 (1970). The fleet store builds no rows from it rather than
+  recording them at the epoch, and freshness checks treat it as stale.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

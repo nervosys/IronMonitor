@@ -971,23 +971,26 @@ impl Widget for SectionHeader<'_> {
 /// Glances-style QuickLook summary panel
 /// Shows CPU, MEM, SWAP, LOAD in a compact horizontal bar format
 pub struct QuickLookPanel {
-    cpu_percent: f32,
-    mem_percent: f32,
+    /// CPU usage, or `None` before the first CPU sample.
+    cpu_percent: Option<f32>,
+    /// Memory usage, or `None` where RAM was not read.
+    mem_percent: Option<f32>,
     /// Swap usage, or `None` where the pagefile was not read.
     ///
     /// A summary panel showing `SWAP 0%` for a machine whose swap could not be
     /// read is the most reassuring possible rendering of an unknown.
     swap_percent: Option<f32>,
-    load_1m: f32,
+    /// One-minute load, or `None` where the OS has none (Windows).
+    load_1m: Option<f32>,
     cpu_trend: Option<&'static str>,
     mem_trend: Option<&'static str>,
 }
 
 impl QuickLookPanel {
-    pub fn new(cpu: f32, mem: f32, swap: Option<f32>, load: f32) -> Self {
+    pub fn new(cpu: Option<f32>, mem: Option<f32>, swap: Option<f32>, load: Option<f32>) -> Self {
         Self {
-            cpu_percent: cpu.clamp(0.0, 100.0),
-            mem_percent: mem.clamp(0.0, 100.0),
+            cpu_percent: cpu.map(|c| c.clamp(0.0, 100.0)),
+            mem_percent: mem.map(|m| m.clamp(0.0, 100.0)),
             swap_percent: swap.map(|s| s.clamp(0.0, 100.0)),
             load_1m: load,
             cpu_trend: None,
@@ -1020,11 +1023,11 @@ impl Widget for QuickLookPanel {
 
             // Draw each metric
             let metrics = [
-                ("CPU", Some(self.cpu_percent), self.cpu_trend),
-                ("MEM", Some(self.mem_percent), self.mem_trend),
+                ("CPU", self.cpu_percent, self.cpu_trend),
+                ("MEM", self.mem_percent, self.mem_trend),
                 ("SWAP", self.swap_percent, None),
                 // Scale load to 0-100
-                ("LOAD", Some((self.load_1m * 10.0).min(100.0)), None),
+                ("LOAD", self.load_1m.map(|l| (l * 10.0).min(100.0)), None),
             ];
 
             for (i, (label, percent, trend)) in metrics.iter().enumerate() {
@@ -1080,7 +1083,9 @@ impl Widget for QuickLookPanel {
 
                 // Percentage text
                 let percent_text = match (percent, *label == "LOAD") {
-                    (_, true) => format!("{:.2}", self.load_1m),
+                    (_, true) => self
+                        .load_1m
+                        .map_or_else(|| "-".to_string(), |l| format!("{l:.2}")),
                     (Some(pct), false) => format!("{pct:.0}%"),
                     (None, false) => "-".to_string(),
                 };

@@ -164,7 +164,10 @@ fn observation(id: String, value: Option<Value>, time: Option<u64>, reason: &str
 }
 
 fn pipeline_readings(snapshot: &Snapshot) -> (Vec<Observation>, usize) {
-    let time = (snapshot.generation > 0).then_some(snapshot.collected_at.saturating_mul(1000));
+    let time = snapshot
+        .collected_at
+        .filter(|_| snapshot.generation > 0)
+        .map(|at| at.saturating_mul(1000));
     let mut out = Vec::new();
     let missing = "The collector supplied no reading in this generation; provider error details are not available";
     macro_rules! push {
@@ -221,8 +224,8 @@ fn pipeline_readings(snapshot: &Snapshot) -> (Vec<Observation>, usize) {
         snapshot
             .memory
             .as_ref()
-            .filter(|m| m.ram.total > 0)
-            .map(|m| json!(m.ram_usage_percent())),
+            .and_then(|m| m.ram_usage_percent())
+            .map(|v| json!(v)),
         missing
     );
     for (index, descriptor) in snapshot.gpu_static.iter().enumerate() {
@@ -415,12 +418,12 @@ impl ObservationService {
             return;
         }
         let (readings, omitted) = pipeline_readings(&snapshot);
-        let at_ms = snapshot.collected_at.saturating_mul(1000);
+        let at_ms = snapshot.collected_at.map(|at| at.saturating_mul(1000));
         if snapshot.process_sampled && !snapshot.warmup {
-            store.process_at_ms = Some(at_ms);
+            store.process_at_ms = at_ms;
         }
         if snapshot.connections_sampled && !snapshot.warmup {
-            store.connections_at_ms = Some(at_ms);
+            store.connections_at_ms = at_ms;
             if let Some(errors) = &snapshot.connection_errors {
                 store.connection_errors = errors.clone();
             }
@@ -479,14 +482,18 @@ impl ObservationService {
                 .collect();
             let bytes =
                 serde_json::to_vec(&readings).map_or(0, |v| v.len()) + identities.len() * 32 + 64;
-            store.bytes += bytes;
-            store.history.push_back(HistoryBatch {
-                generation: snapshot.generation,
-                at_ms,
-                readings: readings.clone(),
-                identities,
-                bytes,
-            });
+            // A batch with no time cannot be placed in a time range, so the
+            // history does not keep it.
+            if let Some(at_ms) = at_ms {
+                store.bytes += bytes;
+                store.history.push_back(HistoryBatch {
+                    generation: snapshot.generation,
+                    at_ms,
+                    readings: readings.clone(),
+                    identities,
+                    bytes,
+                });
+            }
             while store.bytes > HISTORY_BYTES || store.history.len() > HISTORY_BATCHES {
                 if let Some(old) = store.history.pop_front() {
                     store.bytes -= old.bytes;
@@ -670,12 +677,15 @@ impl AiDataApi {
         let service = self.observation_service();
         service.wait(p.wait_ms);
         let store = service.store.lock().unwrap_or_else(|e| e.into_inner());
-        let age = now_ms().saturating_sub(store.latest.collected_at.saturating_mul(1000));
+        let age = store
+            .latest
+            .collected_at
+            .map(|at| now_ms().saturating_sub(at.saturating_mul(1000)));
         let readings: Vec<_> = p
             .ids
             .iter()
             .map(|id| {
-                if store.latest.generation == 0 || age > p.max_age_ms {
+                if store.latest.generation == 0 || age.is_none_or(|a| a > p.max_age_ms) {
                     return observation(
                         id.clone(),
                         None,
@@ -697,8 +707,8 @@ impl AiDataApi {
         Ok(
             json!({"schema_version": ONTOLOGY_VERSION, "session": service.session,
             "generation": store.latest.generation, "warmup": store.latest.warmup,
-            "snapshot_at_ms": (store.latest.generation > 0).then_some(store.latest.collected_at.saturating_mul(1000)),
-            "timestamp_precision_ms": 1000, "age_ms": (store.latest.generation > 0).then_some(age),
+            "snapshot_at_ms": store.latest.collected_at.filter(|_| store.latest.generation > 0).map(|at| at.saturating_mul(1000)),
+            "timestamp_precision_ms": 1000, "age_ms": age.filter(|_| store.latest.generation > 0),
             "readings": readings, "collector_readings_omitted": store.omitted,
             "collected_ids": p.include_collected_ids.then(||store.readings.iter().take(128).map(|r|&r.reading.id).collect::<Vec<_>>()),
             "collected_ids_truncated": p.include_collected_ids && store.readings.len()>128 }),
@@ -712,8 +722,11 @@ impl AiDataApi {
         service.refresh();
         let store = service.store.lock().unwrap_or_else(|e| e.into_inner());
         let ready = store.latest.generation > 0;
-        let age =
-            ready.then(|| now_ms().saturating_sub(store.latest.collected_at.saturating_mul(1000)));
+        let age = store
+            .latest
+            .collected_at
+            .filter(|_| ready)
+            .map(|at| now_ms().saturating_sub(at.saturating_mul(1000)));
         let stopped = service
             .source
             .as_ref()
@@ -1078,7 +1091,7 @@ mod tests {
     fn sample(generation: u64, at: u64, idle: Option<f32>) -> Arc<Snapshot> {
         Arc::new(Snapshot {
             generation,
-            collected_at: at,
+            collected_at: Some(at),
             warmup: false,
             cpu: idle.map(|idle| CpuStats {
                 cores: Vec::new(),

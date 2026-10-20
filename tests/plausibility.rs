@@ -194,11 +194,14 @@ fn memory_readings_are_self_consistent() {
          removed, not a measurement"
     );
 
-    let usage = mem.ram_usage_percent();
-    assert!(
-        (0.0..=100.0).contains(&usage),
-        "RAM usage {usage}% outside 0-100"
-    );
+    // None when no RAM total was read. On hardware platforms that is already
+    // a failure above, so this only checks readings that exist.
+    if let Some(usage) = mem.ram_usage_percent() {
+        assert!(
+            (0.0..=100.0).contains(&usage),
+            "RAM usage {usage}% outside 0-100"
+        );
+    }
 }
 
 #[test]

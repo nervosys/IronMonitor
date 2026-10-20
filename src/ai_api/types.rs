@@ -114,8 +114,8 @@ pub struct MemorySummary {
     /// Used swap in MB
     /// Swap in use, in MB. See [`Self::swap_total_mb`].
     pub swap_used_mb: Option<u64>,
-    /// Memory usage percentage
-    pub usage_percent: f32,
+    /// Memory usage percentage, or `None` where RAM was not read.
+    pub usage_percent: Option<f32>,
 }
 
 /// Network interface summary

@@ -296,7 +296,7 @@ mod tests {
 
         let snapshot = Snapshot {
             generation: 3,
-            collected_at: 1_700_000_000,
+            collected_at: Some(1_700_000_000),
             ..Default::default()
         };
 
@@ -381,7 +381,7 @@ mod tests {
         // One card reporting 0% and one reporting nothing, in the same tick.
         let snapshot = Snapshot {
             generation: 1,
-            collected_at: 1_700_000_000,
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![
                 super::super::rows::fixtures::card(0, "idle"),
                 super::super::rows::fixtures::card(1, "unread"),
@@ -436,7 +436,7 @@ mod tests {
         let (_warehouse, store) = in_memory_store("gpuless-rt").await;
         let snapshot = Snapshot {
             generation: 1,
-            collected_at: 1_700_000_000,
+            collected_at: Some(1_700_000_000),
             ..Default::default()
         };
         assert_eq!(store.append(&snapshot).await.expect("append"), 1);
@@ -470,7 +470,7 @@ mod tests {
         for generation in 1..=3 {
             let snapshot = Snapshot {
                 generation,
-                collected_at: 1_700_000_000 + generation,
+                collected_at: Some(1_700_000_000 + generation),
                 ..Default::default()
             };
             total += store.append(&snapshot).await.expect("append");

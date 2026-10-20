@@ -255,8 +255,10 @@ pub struct Snapshot {
     /// Monotonically increasing tick counter. Readers compare this against a cached
     /// value to decide whether any recomputation (formatting, layout) is needed.
     pub generation: u64,
-    /// Wall-clock capture time, seconds since the Unix epoch.
-    pub collected_at: u64,
+    /// Wall-clock capture time, seconds since the Unix epoch. `None` when the
+    /// clock could not be read, and in a default snapshot: a snapshot with no
+    /// time is never stored at the epoch.
+    pub collected_at: Option<u64>,
     /// Total wall-clock cost of this tick.
     pub collect_us: u64,
     /// Per-collector breakdown of this tick.
@@ -328,7 +330,7 @@ impl Snapshot {
     /// Memory utilization percentage, or `None` when memory was not read.
     /// See [`Self::cpu_utilization`].
     pub fn memory_utilization(&self) -> Option<f32> {
-        self.memory.as_ref().map(|m| m.ram_usage_percent())
+        self.memory.as_ref().and_then(|m| m.ram_usage_percent())
     }
 
     /// Aggregate receive rate across all interfaces, in bytes/sec.
@@ -804,7 +806,11 @@ fn collect_once(
         push_capped(&mut histories.cpu, 100.0 - c.total.idle, cap);
     }
     if let Some(ref m) = memory {
-        push_capped(&mut histories.memory, m.ram_usage_percent(), cap);
+        // No RAM total read means no sample: the history skips the tick rather
+        // than plotting a zero.
+        if let Some(pct) = m.ram_usage_percent() {
+            push_capped(&mut histories.memory, pct, cap);
+        }
     }
     for (i, info) in gpu_dynamic.iter().enumerate() {
         // A device that failed this tick contributes no sample; its series simply
@@ -852,8 +858,8 @@ fn collect_once(
         warmup: false,
         collected_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+            .ok()
+            .map(|d| d.as_secs()),
         collect_us: started.elapsed().as_micros() as u64,
         timings,
         process_sampled,

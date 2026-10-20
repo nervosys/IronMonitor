@@ -228,7 +228,11 @@ fn memory_totals_are_internally_consistent() {
         memory.ram.total
     );
 
-    let percent = memory.ram_usage_percent();
+    // The total was checked above (used > 0 and used <= total), so a None here
+    // means the reader failed to fill it, which this test should report.
+    let percent = memory
+        .ram_usage_percent()
+        .expect("RAM total was read on a running system");
     assert!(
         (0.0..=100.0).contains(&percent),
         "usage of {percent}% is not a percentage"

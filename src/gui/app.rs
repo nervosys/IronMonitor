@@ -737,8 +737,8 @@ impl Default for AlertSettings {
 #[derive(Debug, Clone)]
 pub struct HistoricalDataPoint {
     pub timestamp: std::time::Instant,
-    pub cpu_usage: f32,
-    pub memory_usage: f32,
+    pub cpu_usage: Option<f32>,
+    pub memory_usage: Option<f32>,
     pub gpu_temps: Vec<f32>,
     pub gpu_utils: Vec<f32>,
 }
@@ -1184,9 +1184,12 @@ impl IronMonitorApp {
 
         // === Memory ===
         if let Some(ref stats) = snapshot.memory {
-            let usage = stats.ram_usage_percent();
-            self.memory_history.pop_front();
-            self.memory_history.push_back(usage);
+            // No RAM total read means no sample: nothing is pushed, rather
+            // than a zero the chart would draw as idle memory.
+            if let Some(usage) = stats.ram_usage_percent() {
+                self.memory_history.pop_front();
+                self.memory_history.push_back(usage);
+            }
             self.memory_stats = Some(stats.clone());
         }
 
@@ -1716,18 +1719,17 @@ impl IronMonitorApp {
         std::thread::spawn(move || collect_system_info(tx));
     }
 
-    fn cpu_usage(&self) -> f32 {
-        self.cpu_stats
-            .as_ref()
-            .map(|s| 100.0 - s.total.idle)
-            .unwrap_or(0.0)
+    /// CPU utilisation, or `None` before the first CPU sample. This read 0.0
+    /// then, which the quick stats, alerts, history and cards showed as idle.
+    fn cpu_usage(&self) -> Option<f32> {
+        self.cpu_stats.as_ref().map(|s| 100.0 - s.total.idle)
     }
 
-    fn memory_usage(&self) -> f32 {
+    /// RAM utilisation, or `None` when no RAM total was read.
+    fn memory_usage(&self) -> Option<f32> {
         self.memory_stats
             .as_ref()
-            .map(|s| s.ram_usage_percent())
-            .unwrap_or(0.0)
+            .and_then(|s| s.ram_usage_percent())
     }
     /// Export current system data to JSON format
     fn export_to_json(&self) -> Result<String, String> {
@@ -1828,11 +1830,10 @@ impl IronMonitorApp {
                 mem.ram.used * 1024,
                 timestamp
             ));
-            csv.push_str(&format!(
-                "memory_usage,{:.1},percent,{}\n",
-                mem.ram_usage_percent(),
-                timestamp
-            ));
+            // No row rather than a row of zero, as with the CPU clock above.
+            if let Some(pct) = mem.ram_usage_percent() {
+                csv.push_str(&format!("memory_usage,{:.1},percent,{}\n", pct, timestamp));
+            }
         }
 
         for (i, (static_info, dynamic)) in self
@@ -2043,22 +2044,34 @@ impl eframe::App for IronMonitorApp {
                 // set their own small style and are unaffected.
                 ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
                 // Quick stats
-                let cpu_usage = self.cpu_usage();
-                ui.label(
-                    RichText::new(format!("CPU: {:.1}%", cpu_usage)).color(theme::color(
-                        &palette_ctx,
-                        theme::utilization_color(cpu_usage),
-                    )),
-                );
+                match self.cpu_usage() {
+                    Some(cpu_usage) => {
+                        ui.label(RichText::new(format!("CPU: {:.1}%", cpu_usage)).color(
+                            theme::color(&palette_ctx, theme::utilization_color(cpu_usage)),
+                        ));
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("CPU: --")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                        );
+                    }
+                }
                 ui.separator();
 
-                let mem_usage = self.memory_usage();
-                ui.label(
-                    RichText::new(format!("RAM: {:.1}%", mem_usage)).color(theme::color(
-                        &palette_ctx,
-                        theme::utilization_color(mem_usage),
-                    )),
-                );
+                match self.memory_usage() {
+                    Some(mem_usage) => {
+                        ui.label(RichText::new(format!("RAM: {:.1}%", mem_usage)).color(
+                            theme::color(&palette_ctx, theme::utilization_color(mem_usage)),
+                        ));
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("RAM: --")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                        );
+                    }
+                }
                 ui.separator();
 
                 for (i, gpu) in self.gpu_dynamic_info.iter().enumerate() {
@@ -2326,22 +2339,27 @@ impl IronMonitorApp {
         let mut new_alerts: Vec<(AlertSeverity, String)> = Vec::new();
 
         // Check CPU usage
-        let cpu_usage = self.cpu_usage();
-        if cpu_usage >= settings.cpu_critical_threshold {
-            new_alerts.push((
-                AlertSeverity::Critical,
-                format!("CPU usage critical: {:.1}%", cpu_usage),
-            ));
-        } else if cpu_usage >= settings.cpu_warning_threshold {
-            new_alerts.push((
-                AlertSeverity::Warning,
-                format!("CPU usage high: {:.1}%", cpu_usage),
-            ));
+        // No CPU sample yet: nothing to alert on.
+        if let Some(cpu_usage) = self.cpu_usage() {
+            if cpu_usage >= settings.cpu_critical_threshold {
+                new_alerts.push((
+                    AlertSeverity::Critical,
+                    format!("CPU usage critical: {:.1}%", cpu_usage),
+                ));
+            } else if cpu_usage >= settings.cpu_warning_threshold {
+                new_alerts.push((
+                    AlertSeverity::Warning,
+                    format!("CPU usage high: {:.1}%", cpu_usage),
+                ));
+            }
         }
 
         // Check memory usage
-        if let Some(ref mem) = self.memory_stats {
-            let mem_percent = mem.ram_usage_percent();
+        if let Some(mem_percent) = self
+            .memory_stats
+            .as_ref()
+            .and_then(|m| m.ram_usage_percent())
+        {
             if mem_percent >= settings.memory_critical_threshold {
                 new_alerts.push((
                     AlertSeverity::Critical,
@@ -2400,8 +2418,7 @@ impl IronMonitorApp {
         let memory_usage = self
             .memory_stats
             .as_ref()
-            .map(|m| m.ram_usage_percent())
-            .unwrap_or(0.0);
+            .and_then(|m| m.ram_usage_percent());
         let gpu_temps: Vec<f32> = self
             .gpu_dynamic_info
             .iter()
@@ -2438,11 +2455,17 @@ impl IronMonitorApp {
         for point in self.historical_data.iter().rev() {
             let age = now.duration_since(point.timestamp);
             if age >= target_duration {
+                let memory = point
+                    .memory_usage
+                    .map_or_else(|| "not read".to_string(), |m| format!("{:.1}%", m));
+                let cpu = point
+                    .cpu_usage
+                    .map_or_else(|| "not read".to_string(), |c| format!("{:.1}%", c));
                 let mut summary = format!(
-                    "Historical data from {} minutes ago:\n- CPU: {:.1}%\n- Memory: {:.1}%",
+                    "Historical data from {} minutes ago:\n- CPU: {}\n- Memory: {}",
                     age.as_secs() / 60,
-                    point.cpu_usage,
-                    point.memory_usage
+                    cpu,
+                    memory
                 );
                 if !point.gpu_temps.is_empty() {
                     summary.push_str(&format!("\n- GPU temps: {:?}°C", point.gpu_temps));
@@ -2648,8 +2671,7 @@ impl IronMonitorApp {
             let mem_usage = self
                 .memory_stats
                 .as_ref()
-                .map(|m| m.ram_usage_percent())
-                .unwrap_or(0.0);
+                .and_then(|m| m.ram_usage_percent());
             // `swap_usage_percent()` already returns `Option` and already
             // handles a zero total; this recomputed it from `*_or_zero()` and
             // answered 0% for an unread pagefile.
@@ -2657,27 +2679,32 @@ impl IronMonitorApp {
                 .memory_stats
                 .as_ref()
                 .and_then(|m| m.swap_usage_percent());
+            // `None` where the OS has no load average (Windows), which read as
+            // a load of 0.
             let load_avg = self
                 .system_stats
                 .as_ref()
                 .and_then(|s| s.load_average.as_ref())
-                .map(|l| l.one as f32)
-                .unwrap_or(0.0);
+                .map(|l| l.one as f32);
 
             // Calculate trends from history
-            let cpu_trend = self
-                .cpu_history
-                .iter()
-                .rev()
-                .nth(1)
-                .map(|&prev| trend_indicator(cpu_usage, prev).0)
+            let cpu_trend = cpu_usage
+                .and_then(|usage| {
+                    self.cpu_history
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .map(|&prev| trend_indicator(usage, prev).0)
+                })
                 .unwrap_or("→");
-            let mem_trend = self
-                .memory_history
-                .iter()
-                .rev()
-                .nth(1)
-                .map(|&prev| trend_indicator(mem_usage, prev).0)
+            let mem_trend = mem_usage
+                .and_then(|usage| {
+                    self.memory_history
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .map(|&prev| trend_indicator(usage, prev).0)
+                })
                 .unwrap_or("→");
 
             ui.add(
@@ -2777,12 +2804,17 @@ impl IronMonitorApp {
             // Top metric cards
             ui.horizontal_wrapped(|ui| {
                 // CPU Card
-                let cpu_usage = self.cpu_usage();
-                ui.add(
-                    MetricCard::new("CPU Usage", format!("{:.1}", cpu_usage))
-                        .unit("%")
-                        .color(theme::color(&palette_ctx, theme::cpu_color(cpu_usage))),
-                );
+                let (value, color) = match self.cpu_usage() {
+                    Some(cpu_usage) => (
+                        format!("{:.1}", cpu_usage),
+                        theme::color(&palette_ctx, theme::cpu_color(cpu_usage)),
+                    ),
+                    None => (
+                        "--".to_string(),
+                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                    ),
+                };
+                ui.add(MetricCard::new("CPU Usage", value).unit("%").color(color));
 
                 // Memory Card
                 if let Some(ref mem) = self.memory_stats {
@@ -2791,11 +2823,18 @@ impl IronMonitorApp {
                     // labelled MB and read "78.6 MB" next to a bar showing 84% of
                     // 93.6 GB.
                     let used_gb = mem.ram.used as f64 / 1024.0 / 1024.0;
-                    ui.add(
-                        MetricCard::new("Memory", format!("{:.1}", used_gb))
-                            .unit("GB")
-                            .color(theme::color(&palette_ctx, theme::memory_color(usage))),
-                    );
+                    // No RAM total, no usage: the card reads "--" rather than 0.0 GB.
+                    let (value, color) = match usage {
+                        Some(usage) => (
+                            format!("{:.1}", used_gb),
+                            theme::color(&palette_ctx, theme::memory_color(usage)),
+                        ),
+                        None => (
+                            "--".to_string(),
+                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                        ),
+                    };
+                    ui.add(MetricCard::new("Memory", value).unit("GB").color(color));
                 }
 
                 // Accelerator Cards
@@ -3650,7 +3689,13 @@ impl IronMonitorApp {
         let palette_ctx = ui.ctx().clone();
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref mem) = self.memory_stats {
-                let usage = mem.ram_usage_percent();
+                let Some(usage) = mem.ram_usage_percent() else {
+                    ui.label(
+                        RichText::new("RAM not read")
+                            .color(theme::text_color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                    );
+                    return;
+                };
                 let total_mb = mem.ram.total as f64 / 1024.0;
                 let used_mb = mem.ram.used as f64 / 1024.0;
                 let free_mb = mem.ram.free.map(|v| v as f64 / 1024.0);

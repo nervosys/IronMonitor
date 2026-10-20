@@ -1576,27 +1576,32 @@ fn print_memory_info(memory: &ironmonitor::core::memory::MemoryStats) {
     println!("{}", "═══ Memory Information ═══".cyan().bold());
 
     let ram_usage = memory.ram_usage_percent();
-    let ram_bar = create_usage_bar(ram_usage, 20);
     let ram_used_gb = memory.ram.used as f64 / 1024.0 / 1024.0;
     let ram_total_gb = memory.ram.total as f64 / 1024.0 / 1024.0;
 
-    let ram_pct_str = format!("{:.1}%", ram_usage);
-    let ram_pct_colored = if ram_usage > 90.0 {
-        ram_pct_str.red().bold()
-    } else if ram_usage > 75.0 {
-        ram_pct_str.yellow()
-    } else {
-        ram_pct_str.green()
-    };
-
-    println!(
-        "  {} {} {:.2} / {:.2} GB {}",
-        "RAM:".white().bold(),
-        ram_bar,
-        ram_used_gb,
-        ram_total_gb,
-        ram_pct_colored
-    );
+    // Nothing read is said so; it is not printed as 0%.
+    match ram_usage {
+        Some(usage) => {
+            let ram_bar = create_usage_bar(usage, 20);
+            let ram_pct_str = format!("{:.1}%", usage);
+            let ram_pct_colored = if usage > 90.0 {
+                ram_pct_str.red().bold()
+            } else if usage > 75.0 {
+                ram_pct_str.yellow()
+            } else {
+                ram_pct_str.green()
+            };
+            println!(
+                "  {} {} {:.2} / {:.2} GB {}",
+                "RAM:".white().bold(),
+                ram_bar,
+                ram_used_gb,
+                ram_total_gb,
+                ram_pct_colored
+            );
+        }
+        None => println!("  {} {}", "RAM:".white().bold(), "not read".dimmed()),
+    }
 
     // Three cases, and the old `total_or_zero() > 0` collapsed two of them:
     // a pagefile in use, a machine with none configured, and a pagefile this
@@ -2082,27 +2087,32 @@ fn print_memory_info_backend(backend: &ironmonitor::backend::MonitoringBackend) 
 
     if let Some(memory) = backend.memory_stats() {
         let ram_usage = memory.ram_usage_percent();
-        let ram_bar = create_usage_bar(ram_usage, 20);
         let ram_used_gb = memory.ram.used as f64 / 1024.0 / 1024.0;
         let ram_total_gb = memory.ram.total as f64 / 1024.0 / 1024.0;
 
-        let ram_pct_str = format!("{:.1}%", ram_usage);
-        let ram_pct_colored = if ram_usage > 90.0 {
-            ram_pct_str.red().bold()
-        } else if ram_usage > 75.0 {
-            ram_pct_str.yellow()
-        } else {
-            ram_pct_str.green()
-        };
-
-        println!(
-            "  {} {} {:.2} / {:.2} GB {}",
-            "RAM:".white().bold(),
-            ram_bar,
-            ram_used_gb,
-            ram_total_gb,
-            ram_pct_colored
-        );
+        // Nothing read is said so; it is not printed as 0%.
+        match ram_usage {
+            Some(usage) => {
+                let ram_bar = create_usage_bar(usage, 20);
+                let ram_pct_str = format!("{:.1}%", usage);
+                let ram_pct_colored = if usage > 90.0 {
+                    ram_pct_str.red().bold()
+                } else if usage > 75.0 {
+                    ram_pct_str.yellow()
+                } else {
+                    ram_pct_str.green()
+                };
+                println!(
+                    "  {} {} {:.2} / {:.2} GB {}",
+                    "RAM:".white().bold(),
+                    ram_bar,
+                    ram_used_gb,
+                    ram_total_gb,
+                    ram_pct_colored
+                );
+            }
+            None => println!("  {} {}", "RAM:".white().bold(), "not read".dimmed()),
+        }
 
         // Second copy of the block above, and it had the same three-into-two
         // collapse: an unreported pagefile printed nothing.

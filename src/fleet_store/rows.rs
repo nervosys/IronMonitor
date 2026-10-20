@@ -89,10 +89,17 @@ fn kib_to_bytes(kib: u64) -> Option<i64> {
 /// On a machine with accelerators there is one row per card, carrying the
 /// host-level columns repeated. See [`super::schema`] for why the layout is flat
 /// and what that repetition costs a careless `SUM`.
+///
+/// Empty when the snapshot has no collection time (`collected_at` is `None`):
+/// a row needs a time, and one stamped at the epoch would be a fabricated
+/// reading. Nothing is stored for such a snapshot.
 pub fn rows_from_snapshot(snapshot: &Snapshot, host: &HostId) -> Vec<MetricRow> {
+    let Some(collected_at) = snapshot.collected_at else {
+        return Vec::new();
+    };
     let base = MetricRow {
         host_id: host.as_str().to_owned(),
-        collected_at_us: (snapshot.collected_at as i64).saturating_mul(1_000_000),
+        collected_at_us: (collected_at as i64).saturating_mul(1_000_000),
         generation: snapshot.generation as i64,
 
         cpu_utilization: snapshot.cpu_utilization().map(f64::from),
@@ -262,8 +269,8 @@ mod tests {
     #[test]
     fn a_gpu_less_host_still_produces_a_row() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             generation: 7,
-            collected_at: 1_700_000_000,
             ..Default::default()
         };
 
@@ -278,6 +285,7 @@ mod tests {
     #[test]
     fn each_accelerator_gets_its_own_row() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             generation: 1,
             gpu_static: vec![
                 card(0, "NVIDIA A"),
@@ -304,6 +312,7 @@ mod tests {
     #[test]
     fn an_idle_card_and_an_unread_card_are_different_rows() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![card(0, "idle"), card(1, "unread")],
             gpu_dynamic: vec![Some(reading(Some(0), Some(40))), Some(reading(None, None))],
             ..Default::default()
@@ -325,6 +334,7 @@ mod tests {
     #[test]
     fn a_card_that_did_not_answer_is_still_named() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![card(0, "NVIDIA A"), card(1, "NVIDIA B")],
             // The second device failed entirely; the slot is kept by contract.
             gpu_dynamic: vec![Some(reading(Some(50), Some(60))), None],
@@ -350,6 +360,7 @@ mod tests {
     #[test]
     fn no_hardware_identifier_reaches_a_row() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![card(0, "NVIDIA A")],
             gpu_dynamic: vec![Some(reading(Some(10), Some(40)))],
             ..Default::default()
@@ -367,6 +378,7 @@ mod tests {
     #[test]
     fn a_shorter_dynamic_vector_reads_as_unmeasured() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![card(0, "a"), card(1, "b")],
             // Deliberately violating the index-alignment contract.
             gpu_dynamic: vec![Some(reading(Some(10), Some(40)))],
@@ -383,6 +395,7 @@ mod tests {
     fn every_row_carries_the_host_id() {
         let id = host();
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             gpu_static: vec![card(0, "a"), card(1, "b")],
             gpu_dynamic: vec![None, None],
             ..Default::default()
@@ -398,6 +411,7 @@ mod tests {
         use crate::core::memory::{MemoryStats, RamInfo, SwapInfo};
 
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             memory: Some(MemoryStats {
                 ram: RamInfo {
                     total: 1024,
@@ -434,6 +448,7 @@ mod tests {
     #[test]
     fn unread_memory_stays_null() {
         let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
             memory: None,
             ..Default::default()
         };

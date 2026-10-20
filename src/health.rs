@@ -221,34 +221,37 @@ impl SystemHealth {
         // Memory Health Check
         // Reads the platform, for the reason above.
         if let Ok(mem) = crate::stats::platform_memory_stats() {
-            let mem_usage = mem.ram_usage_percent();
-            let (status, message) = if mem_usage >= thresholds.memory_critical {
-                (
-                    HealthStatus::Critical,
-                    format!("Memory usage critically high: {:.1}%", mem_usage),
-                )
-            } else if mem_usage >= thresholds.memory_warning {
-                (
-                    HealthStatus::Warning,
-                    format!("Memory usage elevated: {:.1}%", mem_usage),
-                )
-            } else if mem_usage >= 60.0 {
-                (
-                    HealthStatus::Good,
-                    format!("Memory usage moderate: {:.1}%", mem_usage),
-                )
-            } else {
-                (
-                    HealthStatus::Healthy,
-                    format!("Memory usage normal: {:.1}%", mem_usage),
-                )
-            };
+            // No RAM total was read, so there is no usage to judge. The check is
+            // skipped rather than passed or failed on a guess.
+            if let Some(mem_usage) = mem.ram_usage_percent() {
+                let (status, message) = if mem_usage >= thresholds.memory_critical {
+                    (
+                        HealthStatus::Critical,
+                        format!("Memory usage critically high: {:.1}%", mem_usage),
+                    )
+                } else if mem_usage >= thresholds.memory_warning {
+                    (
+                        HealthStatus::Warning,
+                        format!("Memory usage elevated: {:.1}%", mem_usage),
+                    )
+                } else if mem_usage >= 60.0 {
+                    (
+                        HealthStatus::Good,
+                        format!("Memory usage moderate: {:.1}%", mem_usage),
+                    )
+                } else {
+                    (
+                        HealthStatus::Healthy,
+                        format!("Memory usage normal: {:.1}%", mem_usage),
+                    )
+                };
 
-            checks.push(
-                HealthCheck::new("Memory Usage", "Memory")
-                    .with_status(status, &message)
-                    .with_value(mem_usage as f64, Some(thresholds.memory_warning as f64)),
-            );
+                checks.push(
+                    HealthCheck::new("Memory Usage", "Memory")
+                        .with_status(status, &message)
+                        .with_value(mem_usage as f64, Some(thresholds.memory_warning as f64)),
+                );
+            }
 
             // Swap check.
             //

@@ -570,11 +570,7 @@ impl AiDataApi {
                     cached_mb: mem.ram.cached.map(|v| v / 1024),
                     swap_total_mb: mem.swap.total.map(|v| v / 1024),
                     swap_used_mb: mem.swap.used.map(|v| v / 1024),
-                    usage_percent: if mem.ram.total > 0 {
-                        (mem.ram.used as f32 / mem.ram.total as f32) * 100.0
-                    } else {
-                        0.0
-                    },
+                    usage_percent: mem.ram_usage_percent(),
                 });
             }
         }

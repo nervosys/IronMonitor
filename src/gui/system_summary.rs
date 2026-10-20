@@ -31,13 +31,15 @@ fn rows(snapshot: &Snapshot) -> [(&'static str, String); 7] {
         .unwrap_or_else(|| unavailable("CPU utilization was not reported"));
     // MemoryStats uses KiB; converting to GiB divides by 1024 twice.
     let ram = memory
-        .map(|memory| {
-            format!(
-                "{:.2} / {:.2} GiB ({:.1}%)",
-                memory.ram.used as f64 / 1_048_576.0,
-                memory.ram.total as f64 / 1_048_576.0,
-                memory.ram_usage_percent()
-            )
+        .and_then(|memory| {
+            memory.ram_usage_percent().map(|percent| {
+                format!(
+                    "{:.2} / {:.2} GiB ({:.1}%)",
+                    memory.ram.used as f64 / 1_048_576.0,
+                    memory.ram.total as f64 / 1_048_576.0,
+                    percent
+                )
+            })
         })
         .unwrap_or_else(|| unavailable("RAM usage was not reported"));
     let swap = snapshot

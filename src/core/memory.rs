@@ -163,12 +163,15 @@ impl MemoryStats {
         }
     }
 
-    /// Get RAM usage percentage
-    pub fn ram_usage_percent(&self) -> f32 {
+    /// RAM usage percentage, or `None` when no RAM total was read.
+    ///
+    /// `empty()` and `Default` carry a total of zero, which is no reading, so
+    /// that answers `None` rather than `0.0`.
+    pub fn ram_usage_percent(&self) -> Option<f32> {
         if self.ram.total == 0 {
-            0.0
+            None
         } else {
-            (self.ram.used as f32 / self.ram.total as f32) * 100.0
+            Some((self.ram.used as f32 / self.ram.total as f32) * 100.0)
         }
     }
 
