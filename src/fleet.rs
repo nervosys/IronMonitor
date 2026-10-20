@@ -81,7 +81,8 @@ pub struct HostSummary {
     pub host_id: String,
     pub hostname: String,
     pub status: HostStatus,
-    pub health_score: f64,
+    /// `None` for a host whose status is unknown or that has sent no metrics.
+    pub health_score: Option<f64>,
     pub alert_count: usize,
 }
 
@@ -91,8 +92,12 @@ pub struct TagGroupMetrics {
     pub tag_key: String,
     pub tag_value: String,
     pub host_count: usize,
-    pub avg_cpu: f64,
-    pub avg_memory: f64,
+    /// Mean over the group's hosts that have reported metrics, `None` if none
+    /// has. This divided by every host in the group, so a host that never
+    /// reported counted as idle.
+    pub avg_cpu: Option<f64>,
+    /// As `avg_cpu`, for memory.
+    pub avg_memory: Option<f64>,
     pub avg_gpu_temp: Option<f64>,
     pub total_alerts: usize,
 }
@@ -140,7 +145,8 @@ pub struct FleetSnapshot {
     pub fleet_name: String,
     pub host_count: usize,
     pub online_count: usize,
-    pub health_score: f64,
+    /// See [`FleetManager::fleet_health`].
+    pub health_score: Option<f64>,
     pub hosts: Vec<HostSummary>,
     pub alerts: Vec<FleetAlert>,
     pub tag_groups: Vec<TagGroupMetrics>,
@@ -264,15 +270,17 @@ impl FleetManager {
         }
     }
 
-    /// Calculate health score for a host (0-100)
-    fn host_health_score(host: &HostInfo) -> f64 {
+    /// Calculate health score for a host (0-100).
+    ///
+    /// `None` for a host whose status is unknown or that has sent no metrics.
+    /// Both scored 50, a midpoint that described no host -- and averaged into
+    /// the fleet's score as though it had been measured.
+    fn host_health_score(host: &HostInfo) -> Option<f64> {
         match host.status {
-            HostStatus::Offline => 0.0,
-            HostStatus::Unknown => 50.0,
+            HostStatus::Offline => Some(0.0),
+            HostStatus::Unknown => None,
             _ => {
-                let Some(m) = &host.latest_metrics else {
-                    return 50.0;
-                };
+                let m = host.latest_metrics.as_ref()?;
                 let cpu_score = 100.0 - m.cpu_usage_percent;
                 let mem_score = 100.0 - m.memory_usage_percent;
                 let disk_score = 100.0 - m.disk_usage_percent;
@@ -298,18 +306,24 @@ impl FleetManager {
                     weighted += gpu_score * 0.2;
                     weight += 0.2;
                 }
-                (weighted / weight).clamp(0.0, 100.0)
+                Some((weighted / weight).clamp(0.0, 100.0))
             }
         }
     }
 
-    /// Fleet-level health score
-    pub fn fleet_health(&self) -> f64 {
+    /// Fleet-level health score: the mean over every host, or `None` when the
+    /// fleet is empty or any host could not be scored -- the mean of the rest
+    /// would not be the fleet's. An empty fleet scored 100, perfectly healthy.
+    pub fn fleet_health(&self) -> Option<f64> {
         if self.hosts.is_empty() {
-            return 100.0;
+            return None;
         }
-        let sum: f64 = self.hosts.values().map(Self::host_health_score).sum();
-        sum / self.hosts.len() as f64
+        let scores: Vec<f64> = self
+            .hosts
+            .values()
+            .map(Self::host_health_score)
+            .collect::<Option<_>>()?;
+        Some(scores.iter().sum::<f64>() / scores.len() as f64)
     }
 
     /// Get hosts grouped by tag
@@ -325,16 +339,15 @@ impl FleetManager {
             .into_iter()
             .map(|(val, hosts)| {
                 let count = hosts.len();
-                let avg_cpu = hosts
-                    .iter()
-                    .filter_map(|h| h.latest_metrics.as_ref().map(|m| m.cpu_usage_percent))
-                    .sum::<f64>()
-                    / count.max(1) as f64;
-                let avg_mem = hosts
-                    .iter()
-                    .filter_map(|h| h.latest_metrics.as_ref().map(|m| m.memory_usage_percent))
-                    .sum::<f64>()
-                    / count.max(1) as f64;
+                let mean = |pick: fn(&HostMetrics) -> f64| {
+                    let values: Vec<f64> = hosts
+                        .iter()
+                        .filter_map(|h| h.latest_metrics.as_ref().map(pick))
+                        .collect();
+                    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+                };
+                let avg_cpu = mean(|m| m.cpu_usage_percent);
+                let avg_mem = mean(|m| m.memory_usage_percent);
                 let gpu_temps: Vec<f64> = hosts
                     .iter()
                     .filter_map(|h| {
@@ -455,9 +468,10 @@ mod tests {
     /// 85 C.
     #[test]
     fn a_missing_gpu_temperature_is_not_a_cool_gpu() {
-        let cool = FleetManager::host_health_score(&host(Some(40.0)));
-        let hot = FleetManager::host_health_score(&host(Some(90.0)));
-        let unread = FleetManager::host_health_score(&host(None));
+        let score = |h: HostInfo| FleetManager::host_health_score(&h).expect("scored");
+        let cool = score(host(Some(40.0)));
+        let hot = score(host(Some(90.0)));
+        let unread = score(host(None));
 
         assert!(
             hot < cool,
@@ -478,11 +492,27 @@ mod tests {
         );
     }
 
+    /// A host nobody has heard from is unscored, not a 50, and a fleet with one
+    /// is not given the mean of the others.
+    #[test]
+    fn an_unheard_host_is_unscored_and_so_is_its_fleet() {
+        let silent = HostInfo {
+            latest_metrics: None,
+            ..host(None)
+        };
+        assert_eq!(FleetManager::host_health_score(&silent), None);
+        let unknown = HostInfo {
+            status: HostStatus::Unknown,
+            ..host(Some(40.0))
+        };
+        assert_eq!(FleetManager::host_health_score(&unknown), None);
+    }
+
     /// The weights still sum to one when every component is present.
     #[test]
     fn a_host_with_every_component_is_scored_on_all_of_them() {
         // 80 + 80 + 80 across cpu/memory/disk, and a cool GPU at 100.
-        let score = FleetManager::host_health_score(&host(Some(40.0)));
+        let score = FleetManager::host_health_score(&host(Some(40.0))).unwrap();
         assert!(
             (score - 84.0).abs() < 0.001,
             "0.3*80 + 0.3*80 + 0.2*80 + 0.2*100 = 84, got {score}"

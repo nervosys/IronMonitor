@@ -213,54 +213,36 @@ fn partial_corrections() -> BTreeSet<(String, String, String)> {
 /// module doc. Remove an entry when its struct is fixed; never add one.
 const BASELINE: &[(&str, &str, &str)] = &[
     ("src/agent/backend.rs", "BackendCapabilities", "max_context_length"),
-    ("src/agent/local/mod.rs", "InferenceResponse", "duration_ms"),
-    ("src/agent/state.rs", "CpuState", "threads"),
     ("src/ai_api/types.rs", "MemorySummary", "total_mb used_mb usage_percent"),
     ("src/ai_api/types.rs", "ProcessSummary", "cpu_percent memory_mb"),
     ("src/ai_api/types.rs", "SensorReading", "value"),
     ("src/ai_workload.rs", "TrainingMetrics", "current_epoch total_epochs current_step steps_per_epoch current_loss"),
-    ("src/anomaly.rs", "Anomaly", "current_value timestamp_secs"),
     ("src/backend.rs", "CpuState", "threads utilization"),
     ("src/backend.rs", "MemoryState", "total_bytes used_bytes available_bytes usage_percent"),
     ("src/backend.rs", "ProcessState", "cpu_percent memory_bytes"),
     ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
-    ("src/consent.rs", "ConsentConfig", "consent_version"),
     ("src/core/memory.rs", "IramInfo", "total used"),
     ("src/core/memory.rs", "RamInfo", "total used"),
-    ("src/core/temperature.rs", "TemperatureSensor", "temp"),
     ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
     ("src/cpufreq.rs", "CpuIdleState", "latency_us usage time_us"),
-    ("src/disk/nvme_log.rs", "HealthLog", "critical_warning available_spare_percent available_spare_threshold_percent percentage_used"),
-    ("src/fan_control.rs", "FanSummary", "total_fans running_fans"),
-    ("src/fan_control.rs", "TripPoint", "temp_celsius"),
-    ("src/firmware/mod.rs", "FirmwareEntry", "inferred_risk_score"),
     ("src/fleet.rs", "HostMetrics", "cpu_usage_percent memory_usage_percent disk_usage_percent network_rx_bytes_sec network_tx_bytes_sec uptime_seconds"),
-    ("src/fleet.rs", "TagGroupMetrics", "avg_cpu avg_memory total_alerts"),
     ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
-    ("src/gpu/traits.rs", "PciInfo", "domain bus device function"),
     ("src/gpu_topology/mod.rs", "GpuLink", "from_gpu to_gpu bandwidth_per_link_gbs"),
     ("src/gpu_topology/mod.rs", "GpuTopologyNode", "numa_node pcie_gen pcie_width pcie_speed_gts pcie_bandwidth_gbs"),
     ("src/hardware_ai/mod.rs", "HardwareAge", "estimated_age_years confidence"),
-    ("src/hwmon/mod.rs", "HwSensor", "value"),
     ("src/interconnect/mod.rs", "ChipletTopology", "compute_dies io_dies on_package_bandwidth_gbs"),
     ("src/memory_bandwidth/mod.rs", "BandwidthAnalysis", "estimated_latency_ns"),
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
     ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
-    ("src/network_tools.rs", "CaptureConfig", "timeout_secs"),
-    ("src/network_tools.rs", "NmapScanResult", "scan_duration_secs"),
     ("src/network_tools.rs", "OsFingerprint", "confidence"),
     ("src/network_tools.rs", "PingResult", "packets_sent packets_received packets_lost packet_loss_percent"),
-    ("src/network_tools.rs", "TracerouteHop", "ttl"),
     ("src/observability/context.rs", "CpuMetrics", "utilization_percent"),
-    ("src/observability/context.rs", "MemoryContext", "total_gb"),
-    ("src/observability/context.rs", "MemoryMetrics", "used_mb total_mb"),
     ("src/observability/context.rs", "ProcessMetrics", "cpu_percent memory_mb threads"),
     ("src/observability/metrics.rs", "CpuMetricSnapshot", "usage_percent"),
     ("src/observability/metrics.rs", "DiskMetricSnapshot", "used_bytes free_bytes total_bytes usage_percent"),
     ("src/observability/metrics.rs", "GpuMetricSnapshot", "usage_percent memory_used_mb memory_total_mb"),
     ("src/pcie.rs", "PcieBandwidthSummary", "gpu_devices downgraded_devices unreadable_devices"),
-    ("src/pcie.rs", "PcieDevice", "numa_node current_link_width max_link_width"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
     ("src/process_monitor.rs", "CategoryStats", "total_cpu_percent total_memory_bytes"),
     ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes cpu_time_us"),
@@ -268,7 +250,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/scheduler/mod.rs", "PressureInfo", "some_avg10 some_avg60 some_avg300 some_total_us"),
     ("src/silicon/mod.rs", "NetworkSilicon", "rx_bandwidth_mbps tx_bandwidth_mbps packet_rate"),
     ("src/storage_controller/mod.rs", "RaidArrayInfo", "active_devices failed_devices spare_devices size_bytes"),
-    ("src/tsdb/mod.rs", "DatabaseStats", "max_size current_size"),
     ("src/tsdb/mod.rs", "ProcessSnapshot", "cpu_percent memory_bytes"),
     ("src/tui/app.rs", "CpuInfo", "threads utilization"),
     ("src/tui/app.rs", "MemoryInfo", "total used available"),
@@ -281,7 +262,12 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "src/network_monitor.rs",
         "NetworkInterfaceInfo",
         "rx_bytes rx_packets rx_errors rx_drops tx_bytes tx_packets tx_errors",
-        "Linux reads each from /sys/class/net/<if>/statistics and fails the          interface if one is missing; Windows copies them from GetIfTable2's          MIB_IF_ROW2; macOS takes them from the AF_LINK if_data and leaves out          an interface that has none. tx_drops is Option: macOS does not count it.",
+        concat!(
+            "Linux reads each from /sys/class/net/<if>/statistics and fails the ",
+            "interface if one is missing; Windows copies them from GetIfTable2's ",
+            "MIB_IF_ROW2; macOS takes them from the AF_LINK if_data and leaves out ",
+            "an interface that has none. tx_drops is Option: macOS does not count it."
+        ),
     ),
     (
         "src/ai_api/types.rs",
@@ -299,25 +285,170 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "src/observability/context.rs",
         "NetworkMetrics",
         "rx_bytes_total tx_bytes_total rx_packets tx_packets errors",
-        "built only in observability/api.rs as sums of NetworkInterfaceInfo          counters; dropped is Option because tx_drops is",
+        concat!(
+            "built only in observability/api.rs as sums of NetworkInterfaceInfo ",
+            "counters; dropped is Option because tx_drops is"
+        ),
     ),
     (
         "src/datacenter/ipmi.rs",
         "PowerReading",
         "current_watts",
-        "parse_power_reading fails rather than build one without an          instantaneous reading; the sampling-period figures are Option",
+        concat!(
+            "parse_power_reading fails rather than build one without an ",
+            "instantaneous reading; the sampling-period figures are Option"
+        ),
+    ),
+    (
+        "src/fleet.rs",
+        "TagGroupMetrics",
+        "total_alerts",
+        "hosts_by_tag counts the manager's own alerts raised for the group's \
+         hosts; the averages beside it are Option",
+    ),
+    (
+        "src/agent/local/mod.rs",
+        "InferenceResponse",
+        "duration_ms",
+        "every backend measures it with start.elapsed() around its own request",
+    ),
+    (
+        "src/agent/state.rs",
+        "CpuState",
+        "threads",
+        concat!(
+            "the number of logical cores the CPU reader enumerated, or ",
+            "num_cpus::get() on macOS",
+        ),
+    ),
+    (
+        "src/anomaly.rs",
+        "Anomaly",
+        "current_value timestamp_secs",
+        concat!(
+            "the last sample the caller recorded, and the detector's own ",
+            "elapsed time since it started",
+        ),
+    ),
+    (
+        "src/consent.rs",
+        "ConsentConfig",
+        "consent_version",
+        concat!(
+            "a schema version the program writes (CURRENT_PROMPT_VERSION) or ",
+            "reads back from its own config file",
+        ),
+    ),
+    (
+        "src/core/temperature.rs",
+        "TemperatureSensor",
+        "temp",
+        concat!(
+            "the OHM/LHM Sensor.Value field (required on deserialisation), the ",
+            "range-filtered thermal-zone counters, or a Linux thermal_zone temp ",
+            "read with ?",
+        ),
+    ),
+    (
+        "src/disk/nvme_log.rs",
+        "HealthLog",
+        "critical_warning available_spare_percent available_spare_threshold_percent percentage_used",
+        concat!(
+            "bytes 0, 3, 4 and 5 of the device's own log page; parse returns None ",
+            "for a buffer shorter than the page",
+        ),
+    ),
+    (
+        "src/fan_control.rs",
+        "FanSummary",
+        "total_fans running_fans",
+        concat!(
+            "counts of the fans enumerated, and of those whose is_running_opt() ",
+            "is Some(true) -- None when neither speed nor RPM was read",
+        ),
+    ),
+    (
+        "src/hwmon/mod.rs",
+        "HwSensor",
+        "value",
+        concat!(
+            "every constructor sits inside an if-let on its sysfs, NVML, PDH, WMI ",
+            "or SMART read",
+        ),
+    ),
+    (
+        "src/network_tools.rs",
+        "CaptureConfig",
+        "timeout_secs",
+        "a setting the caller supplies, not a reading",
+    ),
+    (
+        "src/network_tools.rs",
+        "NmapScanResult",
+        "scan_duration_secs",
+        "start.elapsed() around the scan the program ran",
+    ),
+    (
+        "src/network_tools.rs",
+        "TracerouteHop",
+        "ttl",
+        concat!(
+            "parsed from the hop line's first column inside an if-let; a line ",
+            "that does not parse is not a hop",
+        ),
+    ),
+    (
+        "src/observability/context.rs",
+        "MemoryContext",
+        "total_gb",
+        "the platform memory reader's ram.total, used only inside if-let Ok",
+    ),
+    (
+        "src/observability/context.rs",
+        "MemoryMetrics",
+        "used_mb total_mb",
+        concat!(
+            "the platform memory reader's ram.used and ram.total, used only ",
+            "inside if-let Ok",
+        ),
+    ),
+    (
+        "src/tsdb/mod.rs",
+        "DatabaseStats",
+        "max_size current_size",
+        concat!(
+            "the configured maximum, and the header plus the data size the ",
+            "database tracks as it writes",
+        ),
+    ),
+    (
+        "src/gpu/traits.rs",
+        "PciInfo",
+        "domain bus device function",
+        concat!(
+            "all three constructors (AMD, Intel, NVIDIA) take the four parts from ",
+            "PciInfo::parse_address or NVML's own fields, and fail rather than ",
+            "build one from an address that did not parse"
+        ),
     ),
     (
         "src/network_tools.rs",
         "CaptureResult",
         "total_packets duration_secs packets_per_sec",
-        "finalize_capture_result produces all three: the number of packets          parsed, the wall-clock time since the capture began, and their ratio;          total_bytes is Option because a packet's length may be unprinted",
+        concat!(
+            "finalize_capture_result produces all three: the number of packets ",
+            "parsed, the wall-clock time since the capture began, and their ratio; ",
+            "total_bytes is Option because a packet's length may be unprinted"
+        ),
     ),
     (
         "src/pipeline/mod.rs",
         "NetSnapshot",
         "rx_bytes tx_bytes",
-        "collect_network copies them from NetworkInterfaceInfo; the other          constructors are tests",
+        concat!(
+            "collect_network copies them from NetworkInterfaceInfo; the other ",
+            "constructors are tests"
+        ),
     ),
     (
         "src/tui/app.rs",

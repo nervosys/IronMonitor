@@ -126,11 +126,12 @@
 //!
 //! for iface in interfaces {
 //!     let total_errors = iface.total_errors();
+//!     // `None` where a direction's drops are not counted (macOS transmit).
 //!     let total_drops = iface.total_drops();
-//!     
-//!     if total_errors > 0 || total_drops > 0 {
-//!         println!("[!] {}: {} errors, {} drops",
-//!             iface.name, total_errors, total_drops);
+//!
+//!     if total_errors > 0 || total_drops.is_some_and(|d| d > 0) {
+//!         let drops = total_drops.map_or_else(|| "uncounted".to_string(), |d| d.to_string());
+//!         println!("[!] {}: {} errors, {} drops", iface.name, total_errors, drops);
 //!     }
 //! }
 //! # Ok(())

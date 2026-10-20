@@ -109,11 +109,17 @@ impl Device for NvidiaGpu {
             .pci_info()
             .map_err(|e| Error::QueryFailed(format!("Failed to get PCI info: {}", e)))?;
 
+        // NVML's struct has no function field, and this reported 0 for every
+        // device -- wrong for any function past the first. Its bus id string
+        // carries the function.
+        let (_, _, _, function) = PciInfo::parse_address(&pci.bus_id).ok_or_else(|| {
+            Error::QueryFailed(format!("NVML bus id {:?} is not a PCI address", pci.bus_id))
+        })?;
         Ok(PciInfo {
             domain: pci.domain,
             bus: pci.bus as u8,
             device: pci.device as u8,
-            function: 0, // Not exposed in pci_info
+            function,
             bus_id: pci.bus_id,
             pcie_generation: self.device.current_pcie_link_gen().ok(),
             pcie_link_width: self.device.current_pcie_link_width().ok(),

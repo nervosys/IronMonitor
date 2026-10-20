@@ -150,33 +150,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             for zone in &zones {
-                let temp_icon = if zone.temp_celsius > 80.0 {
-                    "🔴"
-                } else if zone.temp_celsius > 60.0 {
-                    "🟠"
-                } else if zone.temp_celsius > 40.0 {
-                    "🟡"
-                } else {
-                    "🟢"
+                let celsius = |t: Option<f32>| {
+                    t.map_or_else(|| "unread".to_string(), |t| format!("{t:.1}°C"))
+                };
+                let temp_icon = match zone.temp_celsius {
+                    None => "⚪",
+                    Some(t) if t > 80.0 => "🔴",
+                    Some(t) if t > 60.0 => "🟠",
+                    Some(t) if t > 40.0 => "🟡",
+                    Some(_) => "🟢",
                 };
 
                 println!(
-                    "\n{} {} ({}) - {:.1}°C",
-                    temp_icon, zone.name, zone.zone_type, zone.temp_celsius
+                    "\n{} {} ({}) - {}",
+                    temp_icon,
+                    zone.name,
+                    zone.zone_type,
+                    celsius(zone.temp_celsius)
                 );
 
                 // Trip points
                 if !zone.trip_points.is_empty() {
                     println!("   Trip points:");
                     for trip in &zone.trip_points {
-                        let status = if zone.temp_celsius >= trip.temp_celsius {
-                            "⚠️"
-                        } else {
-                            "✅"
+                        let status = match (zone.temp_celsius, trip.temp_celsius) {
+                            (Some(t), Some(trip)) if t >= trip => "⚠️",
+                            (Some(_), Some(_)) => "✅",
+                            _ => "?",
                         };
                         println!(
-                            "     {} {}: {:.1}°C",
-                            status, trip.trip_type, trip.temp_celsius
+                            "     {} {}: {}",
+                            status,
+                            trip.trip_type,
+                            celsius(trip.temp_celsius)
                         );
                     }
                 }

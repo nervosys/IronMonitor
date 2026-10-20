@@ -98,8 +98,11 @@ pub struct FirmwareEntry {
     pub updateable: bool,
     /// Estimated age in days (inferred from date)
     pub estimated_age_days: Option<u32>,
-    /// Security risk level (0 = low, 100 = critical)
-    pub inferred_risk_score: u8,
+    /// Security risk level (0 = low, 100 = critical), inferred from the
+    /// firmware's age. `None` when the age is unknown: the score started at 0,
+    /// the figure for firmware under six months old, so firmware of unknown
+    /// date ranked as the freshest on the machine.
+    pub inferred_risk_score: Option<u8>,
 }
 
 /// Firmware inventory for the system.
@@ -169,13 +172,23 @@ impl FirmwareInventory {
     }
 
     /// Overall inferred firmware risk score (max across all components), or
-    /// `None` when no firmware entry was read.
+    /// `None` when no firmware entry was read or any entry went unscored --
+    /// an unscored entry may be the riskiest, so the maximum over the rest is
+    /// not the overall score.
     ///
     /// This returned `0` for an empty inventory, and zero is the *safest*
     /// score there is: a machine whose firmware could not be read at all
     /// would have been reported as carrying no risk.
     pub fn risk_score(&self) -> Option<u8> {
-        self.entries.iter().map(|e| e.inferred_risk_score).max()
+        if self.entries.is_empty() {
+            return None;
+        }
+        self.entries
+            .iter()
+            .map(|e| e.inferred_risk_score)
+            .collect::<Option<Vec<u8>>>()?
+            .into_iter()
+            .max()
     }
 
     /// Average firmware age in days.
@@ -196,7 +209,7 @@ impl FirmwareInventory {
     pub fn high_risk_entries(&self) -> Vec<&FirmwareEntry> {
         self.entries
             .iter()
-            .filter(|e| e.inferred_risk_score > 50)
+            .filter(|e| e.inferred_risk_score.is_some_and(|r| r > 50))
             .collect()
     }
 
@@ -270,20 +283,16 @@ impl FirmwareInventory {
     }
 
     /// Infer security risk from firmware entry.
-    fn infer_risk(entry: &FirmwareEntry) -> u8 {
-        let mut risk: u8 = 0;
-
-        // Age-based risk
-        if let Some(age_days) = entry.estimated_age_days {
-            risk = match age_days {
-                0..=180 => 0,      // < 6 months: low risk
-                181..=365 => 10,   // 6-12 months
-                366..=730 => 25,   // 1-2 years
-                731..=1095 => 45,  // 2-3 years
-                1096..=1825 => 65, // 3-5 years
-                _ => 85,           // 5+ years: high risk
-            };
-        }
+    fn infer_risk(entry: &FirmwareEntry) -> Option<u8> {
+        // Age-based risk; no age, no score.
+        let mut risk: u8 = match entry.estimated_age_days? {
+            0..=180 => 0,      // < 6 months: low risk
+            181..=365 => 10,   // 6-12 months
+            366..=730 => 25,   // 1-2 years
+            731..=1095 => 45,  // 2-3 years
+            1096..=1825 => 65, // 3-5 years
+            _ => 85,           // 5+ years: high risk
+        };
 
         // Component-specific risk amplifiers
         match &entry.component {
@@ -309,7 +318,7 @@ impl FirmwareInventory {
             _ => {}
         }
 
-        risk.min(100)
+        Some(risk.min(100))
     }
 
     /// Boot mode and Secure Boot from sysfs alone -- no helper processes.
@@ -391,7 +400,7 @@ impl FirmwareInventory {
                 device: "System BIOS".into(),
                 updateable: true,
                 estimated_age_days: None,
-                inferred_risk_score: 0,
+                inferred_risk_score: None,
             });
         }
 
@@ -413,7 +422,7 @@ impl FirmwareInventory {
                             device: "CPU Microcode".into(),
                             updateable: true,
                             estimated_age_days: None,
-                            inferred_risk_score: 0,
+                            inferred_risk_score: None,
                         });
                         break;
                     }
@@ -452,7 +461,7 @@ impl FirmwareInventory {
                             device: iface,
                             updateable: false,
                             estimated_age_days: None,
-                            inferred_risk_score: 0,
+                            inferred_risk_score: None,
                         });
                     }
                 }
@@ -501,7 +510,7 @@ impl FirmwareInventory {
                                     })
                                     .unwrap_or(false),
                                 estimated_age_days: None,
-                                inferred_risk_score: 0,
+                                inferred_risk_score: None,
                             });
                         }
                     }
@@ -593,7 +602,7 @@ impl FirmwareInventory {
                 device: "System BIOS".into(),
                 updateable: true,
                 estimated_age_days: None,
-                inferred_risk_score: 0,
+                inferred_risk_score: None,
             });
         }
         Ok(())
@@ -621,7 +630,7 @@ impl FirmwareInventory {
                     device: name.to_string(),
                     updateable: false,
                     estimated_age_days: None,
-                    inferred_risk_score: 0,
+                    inferred_risk_score: None,
                 });
             }
         }
@@ -702,7 +711,7 @@ impl FirmwareInventory {
                         device: "Boot ROM".into(),
                         updateable: true,
                         estimated_age_days: None,
-                        inferred_risk_score: 0,
+                        inferred_risk_score: None,
                     });
                 }
             }
@@ -728,7 +737,7 @@ impl FirmwareInventory {
                         device: "T2/Secure Enclave".into(),
                         updateable: true,
                         estimated_age_days: None,
-                        inferred_risk_score: 0,
+                        inferred_risk_score: None,
                     });
                     break;
                 }
@@ -846,10 +855,14 @@ mod tests {
             device: "BIOS".into(),
             updateable: true,
             estimated_age_days: Some(2000), // ~5.5 years
-            inferred_risk_score: 0,
+            inferred_risk_score: None,
         };
         entry.inferred_risk_score = FirmwareInventory::infer_risk(&entry);
-        assert!(entry.inferred_risk_score > 80); // Old BIOS = high risk
+        assert!(entry.inferred_risk_score.unwrap() > 80); // Old BIOS = high risk
+
+        // An undated BIOS is unscored, not the lowest risk there is.
+        entry.estimated_age_days = None;
+        assert_eq!(FirmwareInventory::infer_risk(&entry), None);
     }
 
     #[test]
@@ -862,7 +875,7 @@ mod tests {
             device: "System BIOS".into(),
             updateable: true,
             estimated_age_days: Some(365),
-            inferred_risk_score: 20,
+            inferred_risk_score: Some(20),
         };
         let json = serde_json::to_string(&entry).unwrap();
         let _: FirmwareEntry = serde_json::from_str(&json).unwrap();

@@ -1284,10 +1284,12 @@ cargo run --release --features full --example agent_simple
 
 **Apple:**
 
-- **macOS**: `powermetrics` + `system_profiler` for GPU detection and monitoring
-- **Metrics**: Utilization, frequency, power draw (via powermetrics plist output)
+- **macOS**: `system_profiler` for GPU detection
+- **Metrics**: Name and GPU core count only. Utilisation, frequency, power and
+  temperature come from `powermetrics`, which requires root; IronMonitor does not
+  elevate itself, so they are reported unavailable
 - **Devices**: Apple Silicon M1/M2/M3/M4 (Base, Pro, Max, Ultra) integrated GPUs
-- **Requirements**: macOS with Apple Silicon; sudo for full powermetrics data
+- **Requirements**: macOS with Apple Silicon
 
 ## Architecture
 

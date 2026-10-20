@@ -7,7 +7,7 @@
 //!
 //! The README has a "What IronMonitor cannot do" section, and prose is the wrong
 //! medium for an agent. An agent deciding whether to trust a reading needs to
-//! know *before asking* that macOS has no GPU reader and that the Windows CPU
+//! know *before asking* that macOS GPUs report identity only and that the Windows CPU
 //! frequency is a rated figure rather than a measured one. Parsing that out of
 //! English is exactly the guessing this crate's ontology exists to remove.
 //!
@@ -308,8 +308,14 @@ pub fn catalogue() -> Vec<Capability> {
                     (Platform::Windows, Support::Implemented),
                     (
                         Platform::MacOS,
-                        Support::Unimplemented {
-                            reason: "no GPU reader is written for macOS".into(),
+                        Support::Partial {
+                            missing: concat!(
+                                "Apple GPUs are listed from system_profiler with their ",
+                                "name and core count; utilisation, clocks, power and ",
+                                "temperature come from powermetrics, which requires root, ",
+                                "and IronMonitor does not elevate itself"
+                            )
+                            .into(),
                         },
                     ),
                 ]),

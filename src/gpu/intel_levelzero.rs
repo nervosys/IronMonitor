@@ -217,32 +217,18 @@ impl Device for IntelGpu {
         let path_str = link.to_string_lossy();
 
         // Find PCI address pattern (0000:00:00.0)
+        // The device's own directory is the last component that is an address.
         for component in path_str.split('/').rev() {
-            let parts: Vec<&str> = component.split(':').collect();
-            if parts.len() == 3 {
-                let domain_bus = parts[0];
-                let device_func = parts[2].split('.').collect::<Vec<&str>>();
-
-                if domain_bus.len() == 7 && device_func.len() == 2 {
-                    if let (Ok(domain), Ok(bus), Ok(device), Ok(function)) = (
-                        u16::from_str_radix(&domain_bus[0..4], 16),
-                        u8::from_str_radix(&domain_bus[5..7], 16),
-                        u8::from_str_radix(parts[1], 16),
-                        u8::from_str_radix(device_func[1], 16),
-                    ) {
-                        let bus_id =
-                            format!("{:04x}:{:02x}:{:02x}.{}", domain, bus, device, function);
-                        return Ok(PciInfo {
-                            domain: domain as u32,
-                            bus,
-                            device,
-                            function,
-                            bus_id,
-                            pcie_generation: None,
-                            pcie_link_width: None,
-                        });
-                    }
-                }
+            if let Some((domain, bus, device, function)) = PciInfo::parse_address(component) {
+                return Ok(PciInfo {
+                    domain,
+                    bus,
+                    device,
+                    function,
+                    bus_id: format!("{:04x}:{:02x}:{:02x}.{}", domain, bus, device, function),
+                    pcie_generation: None,
+                    pcie_link_width: None,
+                });
             }
         }
 

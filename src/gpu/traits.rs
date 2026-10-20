@@ -198,6 +198,38 @@ pub struct PciInfo {
     pub pcie_link_width: Option<u32>,
 }
 
+impl PciInfo {
+    /// Split a PCI address, `DDDD:BB:DD.F`, into domain, bus, device and
+    /// function. The domain may be four hex digits, as sysfs writes it, or
+    /// eight, as NVML does.
+    ///
+    /// The AMD and Intel readers split on `:` and then looked for a seven-
+    /// character `DDDD:BB` part, which splitting on `:` cannot produce: they
+    /// never matched, and `pci_info` failed on every device. Had it matched,
+    /// it would have read the bus as the device.
+    pub fn parse_address(address: &str) -> Option<(u32, u8, u8, u8)> {
+        let mut parts = address.trim().split(':');
+        let (domain, bus, slot) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let (device, function) = slot.split_once('.')?;
+        if !matches!(domain.len(), 4 | 8)
+            || bus.len() != 2
+            || device.len() != 2
+            || function.len() != 1
+        {
+            return None;
+        }
+        Some((
+            u32::from_str_radix(domain, 16).ok()?,
+            u8::from_str_radix(bus, 16).ok()?,
+            u8::from_str_radix(device, 16).ok()?,
+            u8::from_str_radix(function, 16).ok()?,
+        ))
+    }
+}
+
 /// Temperature readings from various sensors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Temperature {
@@ -572,6 +604,24 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pci_addresses_split_into_their_four_parts() {
+        assert_eq!(PciInfo::parse_address("0000:03:00.0"), Some((0, 3, 0, 0)));
+        assert_eq!(
+            PciInfo::parse_address("0000:c1:1f.7"),
+            Some((0, 0xc1, 0x1f, 7))
+        );
+        // NVML's eight-digit domain.
+        assert_eq!(
+            PciInfo::parse_address("00000000:01:00.1"),
+            Some((0, 1, 0, 1))
+        );
+        // Path components that are not addresses.
+        assert_eq!(PciInfo::parse_address("pci0000:00"), None);
+        assert_eq!(PciInfo::parse_address("card0"), None);
+        assert_eq!(PciInfo::parse_address("0000:03:00"), None);
+    }
 
     // === Temperature tests ===
 

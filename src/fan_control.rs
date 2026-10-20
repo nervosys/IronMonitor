@@ -409,8 +409,9 @@ pub struct ThermalZone {
     pub name: String,
     /// Zone type (CPU, GPU, etc.)
     pub zone_type: String,
-    /// Current temperature (°C)
-    pub temp_celsius: f32,
+    /// Current temperature (°C), `None` where the zone's temperature could
+    /// not be read. It was 0 °C, a reading a zone near freezing would give.
+    pub temp_celsius: Option<f32>,
     /// Trip points
     pub trip_points: Vec<TripPoint>,
     /// Cooling devices linked to this zone
@@ -424,8 +425,9 @@ pub struct ThermalZone {
 pub struct TripPoint {
     /// Trip point type (active, passive, hot, critical)
     pub trip_type: String,
-    /// Temperature threshold (°C)
-    pub temp_celsius: f32,
+    /// Temperature threshold (°C), `None` where it could not be read; it was
+    /// 0 °C, a threshold every running zone is already above.
+    pub temp_celsius: Option<f32>,
     /// Hysteresis (°C)
     pub hysteresis: Option<f32>,
 }
@@ -775,8 +777,7 @@ impl FanMonitor {
             let temp = fs::read_to_string(path.join("temp"))
                 .ok()
                 .and_then(|s| s.trim().parse::<i32>().ok())
-                .map(|t| t as f32 / 1000.0)
-                .unwrap_or(0.0);
+                .map(|t| t as f32 / 1000.0);
 
             // Read trip points
             let mut trip_points = Vec::new();
@@ -795,8 +796,7 @@ impl FanMonitor {
                 let trip_temp = fs::read_to_string(&trip_temp_file)
                     .ok()
                     .and_then(|s| s.trim().parse::<i32>().ok())
-                    .map(|t| t as f32 / 1000.0)
-                    .unwrap_or(0.0);
+                    .map(|t| t as f32 / 1000.0);
 
                 let hyst_file = path.join(format!("trip_point_{}_hyst", i));
                 let hysteresis = fs::read_to_string(&hyst_file)
@@ -1045,7 +1045,7 @@ impl FanMonitor {
                         let mut tz = ThermalZone {
                             name: format!("zone{}", idx),
                             zone_type: name.clone(),
-                            temp_celsius: 0.0,
+                            temp_celsius: None,
                             trip_points: Vec::new(),
                             cooling_devices: Vec::new(),
                             policy: None,
@@ -1054,24 +1054,26 @@ impl FanMonitor {
                         // Convert from tenths of Kelvin to Celsius
                         if let Some(temp_tenths_k) = zone.current_temperature {
                             let temp_c = (temp_tenths_k as f32 / 10.0) - 273.15;
-                            tz.temp_celsius = temp_c;
+                            tz.temp_celsius = Some(temp_c);
                         }
 
                         // Add trip points if available
-                        if let Some(crit) = zone.critical_trip_point {
+                        // 0 is firmware declaring no trip point, not one at
+                        // absolute zero.
+                        if let Some(crit) = zone.critical_trip_point.filter(|&t| t > 0) {
                             let crit_c = (crit as f32 / 10.0) - 273.15;
                             tz.trip_points.push(TripPoint {
                                 trip_type: "critical".to_string(),
-                                temp_celsius: crit_c,
+                                temp_celsius: Some(crit_c),
                                 hysteresis: None,
                             });
                         }
 
-                        if let Some(passive) = zone.passive_trip_point {
+                        if let Some(passive) = zone.passive_trip_point.filter(|&t| t > 0) {
                             let passive_c = (passive as f32 / 10.0) - 273.15;
                             tz.trip_points.push(TripPoint {
                                 trip_type: "passive".to_string(),
-                                temp_celsius: passive_c,
+                                temp_celsius: Some(passive_c),
                                 hysteresis: None,
                             });
                         }

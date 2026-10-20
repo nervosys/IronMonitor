@@ -15,14 +15,12 @@
 //!     println!("{} [{:04x}:{:04x}]", dev.name, dev.vendor_id, dev.device_id);
 //!     println!("  BDF: {}", dev.bdf);
 //!     // A link speed sysfs did not give us reads as `None`, not as Gen0.
-//!     match (dev.current_link_speed.gen_number(), dev.max_bandwidth_gbps()) {
-//!         (Some(gen), Some(bw)) => println!(
-//!             "  Link: Gen{} x{} ({:.1} GB/s max)", gen, dev.current_link_width, bw
-//!         ),
-//!         _ => println!("  Link: speed not read, x{}", dev.current_link_width),
+//!     match (dev.current_link_speed.gen_number(), dev.current_link_width) {
+//!         (Some(gen), Some(width)) => println!("  Link: Gen{} x{}", gen, width),
+//!         _ => println!("  Link: not fully read"),
 //!     }
-//!     if let Some(gen) = dev.max_link_speed.and_then(|s| s.gen_number()) {
-//!         println!("  Capable: Gen{} x{}", gen, dev.max_link_width);
+//!     if let Some(bw) = dev.max_bandwidth_gbps() {
+//!         println!("  {:.1} GB/s max", bw);
 //!     }
 //! }
 //! # Ok(())
@@ -219,18 +217,22 @@ pub struct PcieDevice {
     pub name: String,
     /// Vendor name
     pub vendor_name: String,
-    /// NUMA node (-1 if not applicable)
-    pub numa_node: i32,
+    /// NUMA node, or `None` when sysfs did not give one -- either the file was
+    /// unreadable or the kernel wrote `-1`, its value for no NUMA affinity.
+    /// This was `-1` for both, an integer that read like a node index.
+    pub numa_node: Option<u32>,
     /// IOMMU group
     pub iommu_group: Option<u32>,
     /// Current negotiated link speed
     pub current_link_speed: PcieLinkSpeed,
     /// Maximum device-capable link speed
     pub max_link_speed: Option<PcieLinkSpeed>,
-    /// Current negotiated link width (number of lanes)
-    pub current_link_width: u8,
-    /// Maximum device-capable link width
-    pub max_link_width: u8,
+    /// Current negotiated link width (number of lanes), or `None` when sysfs
+    /// did not give one. `Some(0)` is the kernel's own report of a link that is
+    /// down; an unreadable width was also `0`, which made it the same thing.
+    pub current_link_width: Option<u8>,
+    /// Maximum device-capable link width, or `None` when sysfs did not give one.
+    pub max_link_width: Option<u8>,
     /// Driver currently bound to this device
     pub driver: Option<String>,
     /// Subsystem vendor:device
@@ -241,15 +243,15 @@ pub struct PcieDevice {
 
 impl PcieDevice {
     /// Bandwidth in GB/s at the current link speed and width, or `None` when
-    /// the speed was not read.
+    /// either was not read.
     pub fn max_bandwidth_gbps(&self) -> Option<f64> {
-        Some(self.current_link_speed.per_lane_gbps()? * self.current_link_width as f64)
+        Some(self.current_link_speed.per_lane_gbps()? * f64::from(self.current_link_width?))
     }
 
     /// Bandwidth in GB/s the device is capable of. See [`Self::max_bandwidth_gbps`].
     pub fn capable_bandwidth_gbps(&self) -> Option<f64> {
         let speed = self.max_link_speed.unwrap_or(self.current_link_speed);
-        Some(speed.per_lane_gbps()? * self.max_link_width as f64)
+        Some(speed.per_lane_gbps()? * f64::from(self.max_link_width?))
     }
 
     /// Whether the link is running below its maximum capability, or `None` when
@@ -262,20 +264,29 @@ impl PcieDevice {
     /// Gen0 against a known maximum and was reported as degraded -- an alarm
     /// raised about a link nobody measured.
     ///
-    /// Width is the cheaper signal and still settles it alone: a link narrower
-    /// than its maximum is downgraded whatever the speeds turn out to be. Only
-    /// when width says no does the speed comparison matter, and that needs both
-    /// speeds.
+    /// Width and speed are separate signals, and either one settles it alone: a
+    /// link narrower than its maximum, or slower, is downgraded whatever the
+    /// other turns out to be. Saying it is *not* downgraded needs both. Widths
+    /// had the same flaw as speeds -- an unread width was `0`, so an unread
+    /// maximum could never look downgraded and an unread current width always
+    /// did.
     pub fn is_downgraded(&self) -> Option<bool> {
-        if self.current_link_width < self.max_link_width {
-            return Some(true);
-        }
-        match &self.max_link_speed {
-            Some(max_speed) => {
-                Some(max_speed.gen_number()? > self.current_link_speed.gen_number()?)
-            }
-            // No maximum to compare against, and width is at its full value.
+        let width = match (self.current_link_width, self.max_link_width) {
+            (Some(current), Some(max)) => Some(current < max),
+            _ => None,
+        };
+        let speed = match &self.max_link_speed {
+            Some(max_speed) => max_speed
+                .gen_number()
+                .zip(self.current_link_speed.gen_number())
+                .map(|(max, current)| max > current),
+            // No maximum to compare against.
             None => Some(false),
+        };
+        match (width, speed) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
         }
     }
 
@@ -371,12 +382,11 @@ impl PcieMonitor {
                 Some(PcieLinkSpeed::from_sysfs(&max_speed_str))
             };
 
-            let current_link_width = current_width_str.trim().parse::<u8>().unwrap_or(0);
-            let max_link_width = max_width_str.trim().parse::<u8>().unwrap_or(0);
+            let current_link_width = current_width_str.trim().parse::<u8>().ok();
+            let max_link_width = max_width_str.trim().parse::<u8>().ok();
 
-            // Skip devices with no link info (bridges, etc. with width 0)
-            // but include if class is known
-            if current_link_width == 0 && !device_class.is_gpu() {
+            // Skip pure bridges with no live link (no width, or a width of 0).
+            if !matches!(current_link_width, Some(w) if w > 0) && !device_class.is_gpu() {
                 // Still include bridges and endpoint devices
                 if matches!(device_class, PcieDeviceClass::Bridge) {
                     // skip pure bridges
@@ -392,8 +402,8 @@ impl PcieMonitor {
             // Read NUMA node
             let numa_node = fs::read_to_string(path.join("numa_node"))
                 .ok()
-                .and_then(|s| s.trim().parse::<i32>().ok())
-                .unwrap_or(-1);
+                // -1, the kernel's "no affinity", fails to parse as u32.
+                .and_then(|s| s.trim().parse::<u32>().ok());
 
             // Read IOMMU group
             let iommu_group = fs::read_link(path.join("iommu_group")).ok().and_then(|p| {
@@ -571,12 +581,12 @@ mod tests {
             device_class: PcieDeviceClass::VgaCompatible,
             name: "NVIDIA RTX 4090".into(),
             vendor_name: "NVIDIA".into(),
-            numa_node: 0,
+            numa_node: Some(0),
             iommu_group: None,
             current_link_speed: PcieLinkSpeed::Gen4,
             max_link_speed: Some(PcieLinkSpeed::Gen4),
-            current_link_width: 16,
-            max_link_width: 16,
+            current_link_width: Some(16),
+            max_link_width: Some(16),
             driver: Some("nvidia".into()),
             subsystem: None,
             power_state: Some("D0".into()),
@@ -595,12 +605,12 @@ mod tests {
             device_class: PcieDeviceClass::VgaCompatible,
             name: "Test GPU".into(),
             vendor_name: "NVIDIA".into(),
-            numa_node: 0,
+            numa_node: Some(0),
             iommu_group: None,
             current_link_speed: PcieLinkSpeed::Gen3,
             max_link_speed: Some(PcieLinkSpeed::Gen4),
-            current_link_width: 8,
-            max_link_width: 16,
+            current_link_width: Some(8),
+            max_link_width: Some(16),
             driver: None,
             subsystem: None,
             power_state: None,
@@ -624,12 +634,12 @@ mod tests {
             device_class: PcieDeviceClass::VgaCompatible,
             name: "GPU".into(),
             vendor_name: "NVIDIA".into(),
-            numa_node: 0,
+            numa_node: Some(0),
             iommu_group: None,
             current_link_speed: PcieLinkSpeed::Gen4,
             max_link_speed: Some(PcieLinkSpeed::Gen4),
-            current_link_width: 16,
-            max_link_width: 16,
+            current_link_width: Some(16),
+            max_link_width: Some(16),
             driver: None,
             subsystem: None,
             power_state: None,
@@ -643,6 +653,32 @@ mod tests {
 
     /// A device whose link speed did not parse must not read as a healthy Gen0
     /// contributing 0 GB/s.
+    #[test]
+    fn an_unread_width_is_absent_and_settles_nothing_alone() {
+        let mut dev = PcieDevice {
+            bdf: "0000:01:00.0".into(),
+            vendor_id: 0x10de,
+            device_id: 0x2684,
+            device_class: PcieDeviceClass::VgaCompatible,
+            name: "Unread width".into(),
+            vendor_name: "NVIDIA".into(),
+            numa_node: None,
+            iommu_group: None,
+            current_link_speed: PcieLinkSpeed::Gen4,
+            max_link_speed: Some(PcieLinkSpeed::Gen4),
+            current_link_width: None,
+            max_link_width: Some(16),
+            driver: None,
+            subsystem: None,
+            power_state: None,
+        };
+        assert_eq!(dev.max_bandwidth_gbps(), None);
+        assert_eq!(dev.is_downgraded(), None);
+        // A slower link is downgraded whatever the width.
+        dev.current_link_speed = PcieLinkSpeed::Gen3;
+        assert_eq!(dev.is_downgraded(), Some(true));
+    }
+
     #[test]
     fn an_unread_link_speed_is_absent_rather_than_zero() {
         let unknown = PcieLinkSpeed::from_sysfs("something the kernel did not give us");
@@ -658,12 +694,12 @@ mod tests {
             device_class: PcieDeviceClass::VgaCompatible,
             name: "Unreadable link".into(),
             vendor_name: "Intel".into(),
-            numa_node: 0,
+            numa_node: Some(0),
             iommu_group: None,
             current_link_speed: PcieLinkSpeed::Unknown,
             max_link_speed: Some(PcieLinkSpeed::Gen4),
-            current_link_width: 16,
-            max_link_width: 16,
+            current_link_width: Some(16),
+            max_link_width: Some(16),
             driver: None,
             subsystem: None,
             power_state: None,

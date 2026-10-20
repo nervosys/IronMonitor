@@ -84,6 +84,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing `ipmitool` is reported as failing. A remote BMC password is passed
   to `ipmitool` through `IPMI_PASSWORD` and `-E`, not as `-P <password>`,
   where any local user could read it from the process list.
+- Thermal zones: a zone or trip point whose temperature was not read has none,
+  where it read 0 C. Windows ACPI trip points the firmware leaves at zero are
+  left out rather than listed as a 0 C critical threshold.
+- Firmware risk scores are `None` for an entry with no known age, where it
+  scored 0 -- the lowest risk -- from no evidence; the aggregate score is
+  `None` unless every entry was scored.
+- Fleet health: a host that has never reported, or has no metrics, is unscored
+  where it scored 50, and the fleet's score is `None` while any host is
+  unscored -- an empty fleet scored 100. Tag-group CPU and memory averages
+  divide by the hosts that reported, not by every host in the group.
+- GPU PCI addresses are parsed. The AMD and Intel readers looked for a
+  seven-character `domain:bus` part after splitting on `:`, which cannot
+  exist, so `pci_info` failed on every device; NVIDIA reported function 0 for
+  every device and now takes the function from NVML's bus id.
+- PCIe link widths that sysfs did not give are `None` rather than 0, which was
+  also the kernel's value for a link that is down. A device with an unread
+  maximum width could never look downgraded, and one with an unread current
+  width always did; `is_downgraded` now needs both widths to say no, and
+  either a narrower or a slower link to say yes. `numa_node` is `Option`,
+  replacing -1.
+- The capability catalogue lists macOS GPUs as partial (enumerated through
+  `system_profiler`; live figures need `powermetrics` and root), agreeing with
+  the README, which CI checks.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.
