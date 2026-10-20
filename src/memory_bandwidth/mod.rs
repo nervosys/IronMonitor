@@ -159,8 +159,11 @@ pub struct BandwidthAnalysis {
     pub estimate: BandwidthEstimate,
     /// Live measurement (if hardware counters available).
     pub measurement: Option<BandwidthMeasurement>,
-    /// Latency estimate in nanoseconds.
-    pub estimated_latency_ns: f64,
+    /// Typical latency in nanoseconds for this memory generation, from a
+    /// per-generation table in this module. It is not a measurement: the live
+    /// reading, when the hardware counters allow one, is `measurement`. `None`
+    /// for a generation the table does not list.
+    pub estimated_latency_ns: Option<f64>,
     /// Score (0-100) based on bandwidth per core, or `None` when the core count
     /// could not be read.
     ///
@@ -248,15 +251,18 @@ impl MemoryBandwidthMonitor {
         let measurement = Self::try_measure(&estimate);
 
         // Latency estimate
+        // Typical latency for the generation, not a measurement. Generations the
+        // table does not list (GDDR, Unknown) have none, rather than the 70 ns
+        // that used to stand in for every one of them.
         let latency_ns = match generation {
-            MemoryGeneration::DDR5 => 85.0, // CAS latency offset by higher speed
-            MemoryGeneration::DDR4 => 70.0,
-            MemoryGeneration::DDR3 => 55.0,
-            MemoryGeneration::LPDDR5 | MemoryGeneration::LPDDR5X => 90.0,
-            MemoryGeneration::LPDDR4 | MemoryGeneration::LPDDR4X => 80.0,
-            MemoryGeneration::HBM2 | MemoryGeneration::HBM2E => 30.0,
-            MemoryGeneration::HBM3 | MemoryGeneration::HBM3E => 25.0,
-            _ => 70.0,
+            MemoryGeneration::DDR5 => Some(85.0), // CAS latency offset by higher speed
+            MemoryGeneration::DDR4 => Some(70.0),
+            MemoryGeneration::DDR3 => Some(55.0),
+            MemoryGeneration::LPDDR5 | MemoryGeneration::LPDDR5X => Some(90.0),
+            MemoryGeneration::LPDDR4 | MemoryGeneration::LPDDR4X => Some(80.0),
+            MemoryGeneration::HBM2 | MemoryGeneration::HBM2E => Some(30.0),
+            MemoryGeneration::HBM3 | MemoryGeneration::HBM3E => Some(25.0),
+            _ => None,
         };
 
         // Score: bandwidth per core. Absent when either side of the quotient
@@ -599,7 +605,7 @@ impl Default for MemoryBandwidthMonitor {
                     stream_triad_estimate_gbs: None,
                 },
                 measurement: None,
-                estimated_latency_ns: 0.0,
+                estimated_latency_ns: None,
                 bandwidth_score: None,
                 potential_bottleneck: None,
                 recommendations: Vec::new(),

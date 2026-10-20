@@ -142,6 +142,11 @@ fn safe_percent(value: f32) -> u16 {
 /// The `sep` prefix is included only alongside a real reading so the separator does
 /// not dangle. Previously every one of these sites was `unwrap_or(0)`, which printed
 /// "0 MHz" — indistinguishable from a genuinely stalled core — for a value the
+/// The logical processor count, or a dash where it was not read.
+fn threads_text(threads: Option<usize>) -> String {
+    threads.map_or_else(|| "--".to_string(), |t| t.to_string())
+}
+
 /// The core count, in the one form that is true on every machine.
 ///
 /// Five call sites printed `"{} cores"` from `cpu_info.cores`, which held the
@@ -154,7 +159,7 @@ fn safe_percent(value: f32) -> u16 {
 fn cores_text(cpu: &crate::tui::app::CpuInfo) -> String {
     match cpu.cores {
         Some(cores) => format!("{cores} cores"),
-        None => format!("{} threads", cpu.threads),
+        None => format!("{} threads", threads_text(cpu.threads)),
     }
 }
 
@@ -255,15 +260,15 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = app.tabs.iter().map(|t| Line::from(*t)).collect();
 
-    let cpu_pct = app.cpu_info.utilization;
-    let mem_pct = if app.memory_info.total > 0 {
-        (app.memory_info.used as f64 / app.memory_info.total as f64) * 100.0
-    } else {
-        0.0
-    };
+    let cpu_pct = app
+        .cpu_info
+        .utilization
+        .map_or_else(|| "--".to_string(), |p| format!("{p:.0}%"));
+    let mem_pct = disk_percent(app.memory_info.used, app.memory_info.total)
+        .map_or_else(|| "--".to_string(), |p| format!("{p:.0}%"));
 
     let title_text = format!(
-        "IronMonitor │ CPU:{:.0}% MEM:{:.0}% GPU:{} │ {}",
+        "IronMonitor │ CPU:{} MEM:{} GPU:{} │ {}",
         cpu_pct,
         mem_pct,
         app.accelerators.len(),
@@ -349,7 +354,9 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
                     .title("CPU History (60s)"),
             )
             .data(&cpu_data)
-            .style(Style::default().fg(cpu_color(app.cpu_info.utilization)));
+            .style(
+                Style::default().fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color)),
+            );
         f.render_widget(sparkline, spark_chunks[0]);
     } else {
         let empty = Block::default()
@@ -360,11 +367,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
 
     // Memory history sparkline
     let mem_data: Vec<u64> = app.memory_history.iter().copied().collect();
-    let mem_pct = if app.memory_info.total > 0 {
-        (app.memory_info.used as f64 / app.memory_info.total as f64 * 100.0) as f32
-    } else {
-        0.0
-    };
+    let mem_pct = disk_percent(app.memory_info.used, app.memory_info.total).map(|p| p as f32);
     if !mem_data.is_empty() {
         let sparkline = Sparkline::default()
             .block(
@@ -373,7 +376,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
                     .title("Memory History (60s)"),
             )
             .data(&mem_data)
-            .style(Style::default().fg(memory_color(mem_pct)));
+            .style(Style::default().fg(mem_pct.map_or(Color::DarkGray, memory_color)));
         f.render_widget(sparkline, spark_chunks[1]);
     } else {
         let empty = Block::default()
@@ -415,13 +418,13 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
             Some(cores) => format!(
                 " │ {} cores/{} threads{}{}",
                 cores,
-                app.cpu_info.threads,
+                threads_text(app.cpu_info.threads),
                 opt_mhz(app.cpu_info.frequency, " │ "),
                 opt_celsius(app.cpu_info.temperature, " │ "),
             ),
             None => format!(
                 " │ {} threads{}{}",
-                app.cpu_info.threads,
+                threads_text(app.cpu_info.threads),
                 opt_mhz(app.cpu_info.frequency, " │ "),
                 opt_celsius(app.cpu_info.temperature, " │ "),
             ),
@@ -479,7 +482,9 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
                     .title("CPU Utilization History (60s)"),
             )
             .data(&cpu_data)
-            .style(Style::default().fg(cpu_color(app.cpu_info.utilization)));
+            .style(
+                Style::default().fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color)),
+            );
         f.render_widget(sparkline, chunks[2]);
     }
 }
@@ -555,9 +560,18 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
     draw_memory_bar(f, app, chunks[0]);
 
     // Detailed memory info with visual bars
-    let used_gb = app.memory_info.used as f64 / (1024.0 * 1024.0 * 1024.0);
-    let total_gb = app.memory_info.total as f64 / (1024.0 * 1024.0 * 1024.0);
-    let avail_gb = app.memory_info.available as f64 / (1024.0 * 1024.0 * 1024.0);
+    let used_gb = app
+        .memory_info
+        .used
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let total_gb = app
+        .memory_info
+        .total
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let avail_gb = app
+        .memory_info
+        .available
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
     let swap_used_gb = app
         .memory_info
         .swap_used
@@ -566,11 +580,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
         .memory_info
         .swap_total
         .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
-    let mem_pct = if total_gb > 0.0 {
-        (used_gb / total_gb) * 100.0
-    } else {
-        0.0
-    };
+    let mem_pct = disk_percent(app.memory_info.used, app.memory_info.total);
     // Absent when either figure is, rather than 0% for an unread pagefile.
     let swap_pct = match (swap_used_gb, swap_total_gb) {
         (Some(used), Some(total)) if total > 0.0 => Some((used / total) * 100.0),
@@ -578,7 +588,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let bar_width: usize = 40;
-    let ram_filled = (mem_pct / 100.0 * bar_width as f64) as usize;
+    let ram_filled = (mem_pct.unwrap_or(0.0) / 100.0 * bar_width as f64) as usize;
     let ram_bar: String =
         "█".repeat(ram_filled) + &"░".repeat(bar_width.saturating_sub(ram_filled));
     // An empty bar where nothing was read, which the "-" beside it explains.
@@ -594,18 +604,27 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
                     .fg(glances_colors::MEMORY_TITLE)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(ram_bar, Style::default().fg(memory_color(mem_pct as f32))),
             Span::styled(
-                format!(" {:.1}%", mem_pct),
+                ram_bar,
+                Style::default().fg(mem_pct.map_or(Color::DarkGray, |p| memory_color(p as f32))),
+            ),
+            Span::styled(
+                match mem_pct {
+                    Some(p) => format!(" {p:.1}%"),
+                    None => " --".to_string(),
+                },
                 Style::default()
-                    .fg(memory_color(mem_pct as f32))
+                    .fg(mem_pct.map_or(Color::DarkGray, |p| memory_color(p as f32)))
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(format!(
-            "      Total: {:.2} GB │ Used: {:.2} GB │ Available: {:.2} GB",
-            total_gb, used_gb, avail_gb
-        )),
+        Line::from(match (total_gb, used_gb, avail_gb) {
+            (Some(total), Some(used), Some(avail)) => format!(
+                "      Total: {:.2} GB │ Used: {:.2} GB │ Available: {:.2} GB",
+                total, used, avail
+            ),
+            _ => "      Total: -- GB │ Used: -- GB │ Available: -- GB".to_string(),
+        }),
         Line::from(""),
         Line::from(vec![
             Span::styled(
@@ -658,7 +677,9 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
                     .title("Memory Usage History (60s)"),
             )
             .data(&mem_data)
-            .style(Style::default().fg(memory_color(mem_pct as f32)));
+            .style(
+                Style::default().fg(mem_pct.map_or(Color::DarkGray, |p| memory_color(p as f32))),
+            );
         f.render_widget(sparkline, chunks[2]);
     }
 }
@@ -1029,14 +1050,11 @@ fn draw_system_graphs(f: &mut Frame, app: &App, area: Rect) {
 /// Draw CPU utilization bar gauge with Glances-style formatting and per-core mini-bars
 fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
     // Get previous CPU value for trend indicator
-    let prev_cpu = app
-        .cpu_history
-        .iter()
-        .rev()
-        .nth(1)
-        .map(|&v| v as f32)
-        .unwrap_or(app.cpu_info.utilization);
-    let (trend_arrow, _trend_color) = trend_indicator(app.cpu_info.utilization, prev_cpu);
+    let prev_cpu = app.cpu_history.iter().rev().nth(1).map(|&v| v as f32);
+    let trend_arrow = match app.cpu_info.utilization {
+        Some(cpu) => trend_indicator(cpu, prev_cpu.unwrap_or(cpu)).0,
+        None => "",
+    };
 
     // Build per-core mini display (compact, shows as colored blocks)
     let per_core_display: String = if !app.cpu_info.per_core_usage.is_empty() {
@@ -1073,17 +1091,21 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
+    let cpu_pct_text = app
+        .cpu_info
+        .utilization
+        .map_or_else(|| "--".to_string(), |u| format!("{u:.0}%"));
     let cpu_label = format!(
-        "CPU {} {:.0}% │ {}{}{} {}",
+        "CPU {} {} │ {}{}{} {}",
         trend_arrow,
-        app.cpu_info.utilization,
+        cpu_pct_text,
         cores_text(&app.cpu_info),
         opt_mhz(app.cpu_info.frequency, " @ "),
         opt_celsius(app.cpu_info.temperature, " │ "),
         per_core_display
     );
 
-    let cpu_clr = cpu_color(app.cpu_info.utilization);
+    let cpu_clr = app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color);
 
     let cpu_gauge = Gauge::default()
         .block(
@@ -1095,7 +1117,7 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
             )),
         )
         .gauge_style(Style::default().fg(cpu_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(app.cpu_info.utilization))
+        .percent(safe_percent(app.cpu_info.utilization.unwrap_or(0.0)))
         .label(cpu_label);
 
     f.render_widget(cpu_gauge, area);
@@ -1103,28 +1125,26 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
 
 /// Draw memory utilization bar gauge with Glances-style formatting
 fn draw_memory_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mem_percent = (app.memory_info.used as f64 / app.memory_info.total.max(1) as f64) * 100.0;
+    let mem_percent = disk_percent(app.memory_info.used, app.memory_info.total);
 
     // Get previous memory value for trend indicator
-    let prev_mem = app
-        .memory_history
-        .iter()
-        .rev()
-        .nth(1)
-        .map(|&v| v as f32)
-        .unwrap_or(mem_percent as f32);
-    let (trend_arrow, _) = trend_indicator(mem_percent as f32, prev_mem);
+    let prev_mem = app.memory_history.iter().rev().nth(1).map(|&v| v as f32);
+    let trend_arrow = match mem_percent {
+        Some(mem) => trend_indicator(mem as f32, prev_mem.unwrap_or(mem as f32)).0,
+        None => "",
+    };
+    let mem_pct_text = mem_percent.map_or_else(|| "--".to_string(), |p| format!("{p:.0}%"));
 
     let mem_label = format!(
-        "MEM {} {:.0}% │ {}/{} │ SWAP: {}",
+        "MEM {} {} │ {}/{} │ SWAP: {}",
         trend_arrow,
-        mem_percent,
-        auto_unit(app.memory_info.used),
-        auto_unit(app.memory_info.total),
+        mem_pct_text,
+        auto_unit_or_unknown(app.memory_info.used),
+        auto_unit_or_unknown(app.memory_info.total),
         auto_unit_opt(app.memory_info.swap_used)
     );
 
-    let mem_clr = memory_color(mem_percent as f32);
+    let mem_clr = mem_percent.map_or(Color::DarkGray, |p| memory_color(p as f32));
 
     let mem_gauge = Gauge::default()
         .block(
@@ -1136,7 +1156,7 @@ fn draw_memory_bar(f: &mut Frame, app: &App, area: Rect) {
             )),
         )
         .gauge_style(Style::default().fg(mem_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(mem_percent as f32))
+        .percent(safe_percent(mem_percent.unwrap_or(0.0) as f32))
         .label(mem_label);
 
     f.render_widget(mem_gauge, area);
@@ -1390,7 +1410,10 @@ fn draw_cpu_graph(f: &mut Frame, app: &App, area: Rect) {
 
     // CPU info
     let mut cpu_text = vec![
-        Line::from(format!("CPU: {:.0}%", app.cpu_info.utilization)),
+        Line::from(match app.cpu_info.utilization {
+            Some(u) => format!("CPU: {u:.0}%"),
+            None => "CPU: --".to_string(),
+        }),
         Line::from(cores_text(&app.cpu_info)),
     ];
     if let Some(mhz) = app.cpu_info.frequency {
@@ -1407,7 +1430,12 @@ fn draw_cpu_graph(f: &mut Frame, app: &App, area: Rect) {
         let sparkline = Sparkline::default()
             .block(Block::default().borders(Borders::TOP | Borders::RIGHT | Borders::BOTTOM))
             .data(&cpu_data)
-            .style(Style::default().fg(usage_color(app.cpu_info.utilization)));
+            .style(
+                Style::default().fg(app
+                    .cpu_info
+                    .utilization
+                    .map_or(Color::DarkGray, usage_color)),
+            );
         f.render_widget(sparkline, inner_chunks[1]);
     }
 }
@@ -1424,14 +1452,29 @@ fn draw_memory_graph(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Memory info
-    let mem_used_gb = app.memory_info.used as f64 / (1024.0 * 1024.0 * 1024.0);
-    let mem_total_gb = app.memory_info.total as f64 / (1024.0 * 1024.0 * 1024.0);
-    let mem_percent = (mem_used_gb / mem_total_gb) * 100.0;
+    let mem_used_gb = app
+        .memory_info
+        .used
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let mem_total_gb = app
+        .memory_info
+        .total
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let mem_percent = disk_percent(app.memory_info.used, app.memory_info.total);
 
     let mem_text = vec![
-        Line::from(format!("RAM: {:.0}%", mem_percent)),
-        Line::from(format!("{:.1} GB", mem_used_gb)),
-        Line::from(format!("/ {:.1} GB", mem_total_gb)),
+        Line::from(match mem_percent {
+            Some(p) => format!("RAM: {:.0}%", p),
+            None => "RAM: --".to_string(),
+        }),
+        Line::from(match mem_used_gb {
+            Some(v) => format!("{:.1} GB", v),
+            None => "-- GB".to_string(),
+        }),
+        Line::from(match mem_total_gb {
+            Some(v) => format!("/ {:.1} GB", v),
+            None => "/ -- GB".to_string(),
+        }),
     ];
     let mem_info = Paragraph::new(mem_text)
         .block(Block::default().borders(Borders::ALL).title("Memory"))
@@ -1444,7 +1487,9 @@ fn draw_memory_graph(f: &mut Frame, app: &App, area: Rect) {
         let sparkline = Sparkline::default()
             .block(Block::default().borders(Borders::TOP | Borders::RIGHT | Borders::BOTTOM))
             .data(&mem_data)
-            .style(Style::default().fg(usage_color(mem_percent as f32)));
+            .style(
+                Style::default().fg(mem_percent.map_or(Color::DarkGray, |p| usage_color(p as f32))),
+            );
         f.render_widget(sparkline, inner_chunks[1]);
     }
 }
@@ -2380,14 +2425,16 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         .block(cpu_block)
         .gauge_style(
             Style::default()
-                .fg(cpu_color(app.cpu_info.utilization))
+                .fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color))
                 .bg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )
-        .percent(safe_percent(app.cpu_info.utilization))
+        .percent(safe_percent(app.cpu_info.utilization.unwrap_or(0.0)))
         .label(format!(
-            "{:.1}% | {}{}",
-            app.cpu_info.utilization,
+            "{} | {}{}",
+            app.cpu_info
+                .utilization
+                .map_or_else(|| "--".to_string(), |u| format!("{u:.1}%")),
             cores_text(&app.cpu_info),
             opt_celsius(app.cpu_info.temperature, " | ")
         ));
@@ -2395,24 +2442,29 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(cpu_gauge, chunks[0]);
 
     // Memory Overview
-    let mem_percent = (app.memory_info.used as f64 / app.memory_info.total.max(1) as f64) * 100.0;
+    let mem_percent = disk_percent(app.memory_info.used, app.memory_info.total);
     let mem_block = Block::default().borders(Borders::ALL).title("Memory");
 
     let mem_gauge = Gauge::default()
         .block(mem_block)
         .gauge_style(
             Style::default()
-                .fg(usage_color(mem_percent as f32))
+                .fg(mem_percent.map_or(Color::DarkGray, |p| usage_color(p as f32)))
                 .bg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )
-        .percent(safe_percent(mem_percent as f32))
-        .label(format!(
-            "{:.1} GB / {:.1} GB ({:.0}%)",
-            app.memory_info.used as f64 / (1024.0 * 1024.0 * 1024.0),
-            app.memory_info.total as f64 / (1024.0 * 1024.0 * 1024.0),
-            mem_percent
-        ));
+        .percent(safe_percent(mem_percent.unwrap_or(0.0) as f32))
+        .label(
+            match (app.memory_info.used, app.memory_info.total, mem_percent) {
+                (Some(used), Some(total), Some(p)) => format!(
+                    "{:.1} GB / {:.1} GB ({:.0}%)",
+                    used as f64 / (1024.0 * 1024.0 * 1024.0),
+                    total as f64 / (1024.0 * 1024.0 * 1024.0),
+                    p
+                ),
+                _ => "-- GB / -- GB (--)".to_string(),
+            },
+        );
 
     f.render_widget(mem_gauge, chunks[1]);
 
@@ -2462,10 +2514,20 @@ fn draw_cpu(f: &mut Frame, app: &App, area: Rect) {
         // The detail pane names the absence, the way the temperature line
         // below it does: an omitted count reads as an oversight.
         Line::from(match app.cpu_info.cores {
-            Some(cores) => format!("Cores: {} ({} threads)", cores, app.cpu_info.threads),
-            None => format!("Cores: not reported ({} threads)", app.cpu_info.threads),
+            Some(cores) => format!(
+                "Cores: {} ({} threads)",
+                cores,
+                threads_text(app.cpu_info.threads)
+            ),
+            None => format!(
+                "Cores: not reported ({} threads)",
+                threads_text(app.cpu_info.threads)
+            ),
         }),
-        Line::from(format!("Utilization: {:.1}%", app.cpu_info.utilization)),
+        Line::from(match app.cpu_info.utilization {
+            Some(u) => format!("Utilization: {u:.1}%"),
+            None => "Utilization: not measured".to_string(),
+        }),
     ];
     // A detail pane is the one place worth naming the absence: "not measured" tells
     // the reader the sensor was queried, where an omitted line alone would not.
@@ -2603,9 +2665,18 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Memory Info
-    let used_gb = app.memory_info.used as f64 / (1024.0 * 1024.0 * 1024.0);
-    let total_gb = app.memory_info.total as f64 / (1024.0 * 1024.0 * 1024.0);
-    let avail_gb = app.memory_info.available as f64 / (1024.0 * 1024.0 * 1024.0);
+    let used_gb = app
+        .memory_info
+        .used
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let total_gb = app
+        .memory_info
+        .total
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
+    let avail_gb = app
+        .memory_info
+        .available
+        .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
     let swap_used_gb = app
         .memory_info
         .swap_used
@@ -2616,10 +2687,24 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
         .map(|v| v as f64 / (1024.0 * 1024.0 * 1024.0));
 
     let info_text = vec![
-        Line::from(format!("Total: {:.2} GB", total_gb)),
-        Line::from(format!("Used: {:.2} GB", used_gb)),
-        Line::from(format!("Available: {:.2} GB", avail_gb)),
-        Line::from(format!("Usage: {:.1}%", (used_gb / total_gb) * 100.0)),
+        Line::from(match total_gb {
+            Some(v) => format!("Total: {v:.2} GB"),
+            None => "Total: -- GB".to_string(),
+        }),
+        Line::from(match used_gb {
+            Some(v) => format!("Used: {v:.2} GB"),
+            None => "Used: -- GB".to_string(),
+        }),
+        Line::from(match avail_gb {
+            Some(v) => format!("Available: {v:.2} GB"),
+            None => "Available: -- GB".to_string(),
+        }),
+        Line::from(
+            match disk_percent(app.memory_info.used, app.memory_info.total) {
+                Some(p) => format!("Usage: {p:.1}%"),
+                None => "Usage: --".to_string(),
+            },
+        ),
         Line::from(""),
         Line::from(match swap_total_gb {
             Some(v) => format!("Swap Total: {v:.2} GB"),

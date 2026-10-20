@@ -103,19 +103,20 @@ pub fn current_listeners() -> Result<BTreeSet<Listener>, String> {
     let mut out = BTreeSet::new();
     for c in connections {
         // An unbound socket is not a listener. macOS reports these as `*.*` and
-        // they parse to port 0; nothing can connect to them, and including them
-        // would put entries in every baseline that differ between runs for
+        // they have no port (`local_port` is None); nothing can connect to them,
+        // and including them would put entries in every baseline that differ
+        // between runs for
         // reasons no reader could act on.
         //
         // Found because a test asserted no listener has port 0 — true on
         // Windows, false on macOS, and only CI could say so.
-        if c.local_port == 0 {
+        let Some(local_port) = c.local_port else {
             continue;
-        }
+        };
         let externally_reachable = !c.local_ip.is_loopback();
         out.insert(Listener {
             protocol: format!("{:?}", c.protocol).to_lowercase(),
-            local_port: c.local_port,
+            local_port,
             externally_reachable,
             process: c.process_name.clone(),
         });

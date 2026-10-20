@@ -161,6 +161,16 @@ pub struct WorkloadSuitability {
     pub strengths: Vec<String>,
 }
 
+/// Confidence in an age estimate when both the CPU and the GPU model matched a
+/// year table. A constant of that rule, chosen for it; it is not a measured
+/// probability.
+const AGE_CONFIDENCE_CPU_AND_GPU: f32 = 0.85;
+
+/// Confidence in an age estimate when only one of the CPU and GPU models matched
+/// a year table. A constant of that rule, chosen for it; it is not a measured
+/// probability.
+const AGE_CONFIDENCE_CPU_OR_GPU: f32 = 0.65;
+
 /// Inferred hardware age.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareAge {
@@ -168,10 +178,14 @@ pub struct HardwareAge {
     pub cpu_year: Option<u16>,
     /// Estimated GPU generation year
     pub gpu_year: Option<u16>,
-    /// Overall system age estimate (years)
-    pub estimated_age_years: f32,
-    /// Confidence
-    pub confidence: f32,
+    /// Overall system age estimate (years), from the release year of the CPU
+    /// and/or GPU model that matched a table. `None` when neither matched: the
+    /// age is not guessed from core count or drive type.
+    pub estimated_age_years: Option<f32>,
+    /// Confidence in `estimated_age_years`: one of the `AGE_CONFIDENCE_*`
+    /// constants, fixed by which rule matched. It is a constant of the rule, not
+    /// a measured probability. `None` when no model table matched.
+    pub confidence: Option<f32>,
     /// Reasoning
     pub reasoning: String,
 }
@@ -1858,28 +1872,21 @@ impl HardwareInferenceEngine {
         let years = match (cpu_year, gpu_year) {
             (Some(cy), Some(gy)) => {
                 let avg = (cy + gy) as f32 / 2.0;
-                (current - avg).max(0.0)
+                Some((current - avg).max(0.0))
             }
-            (Some(cy), None) => (current - cy as f32).max(0.0),
-            (None, Some(gy)) => (current - gy as f32).max(0.0),
-            (None, None) => {
-                // Guess from specs
-                if f.cpu_cores_physical >= 16 && f.has_nvme {
-                    1.0
-                } else if f.cpu_cores_physical >= 8 && f.has_ssd {
-                    3.0
-                } else if f.cpu_cores_physical >= 4 {
-                    5.0
-                } else {
-                    7.0
-                }
-            }
+            (Some(cy), None) => Some((current - cy as f32).max(0.0)),
+            (None, Some(gy)) => Some((current - gy as f32).max(0.0)),
+            // No model table matched, so there is no release year to age the
+            // machine from. The figure that used to stand here was a guess from
+            // core count and drive type, which says nothing about the machine's
+            // age, so it is None rather than a number.
+            (None, None) => None,
         };
 
         let confidence = match (cpu_year, gpu_year) {
-            (Some(_), Some(_)) => 0.85,
-            (Some(_), None) | (None, Some(_)) => 0.65,
-            (None, None) => 0.3,
+            (Some(_), Some(_)) => Some(AGE_CONFIDENCE_CPU_AND_GPU),
+            (Some(_), None) | (None, Some(_)) => Some(AGE_CONFIDENCE_CPU_OR_GPU),
+            (None, None) => None,
         };
 
         let reasoning = format!(

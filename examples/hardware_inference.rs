@@ -35,10 +35,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let age = &report.hardware_age;
     println!("  CPU year:   {:?}", age.cpu_year);
     println!("  GPU year:   {:?}", age.gpu_year);
-    println!(
-        "  age:        {:.1} years (confidence {:.2})",
-        age.estimated_age_years, age.confidence
-    );
+    match (age.estimated_age_years, age.confidence) {
+        (Some(years), Some(confidence)) => println!(
+            "  age:        {:.1} years (confidence {:.2})",
+            years, confidence
+        ),
+        _ => println!("  age:        unknown (no model table matched)"),
+    }
     println!("  reasoning:  {}", age.reasoning);
 
     println!("\n--- Thermal envelope ---");

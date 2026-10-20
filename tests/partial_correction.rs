@@ -211,27 +211,33 @@ fn partial_corrections() -> BTreeSet<(String, String, String)> {
 
 /// Every match when this test was written. Not a list of approvals -- see the
 /// module doc. Remove an entry when its struct is fixed; never add one.
-const BASELINE: &[(&str, &str, &str)] = &[
-    ("src/backend.rs", "CpuState", "threads utilization"),
-    ("src/connections.rs", "ConnectionInfo", "local_port"),
-    ("src/core/memory.rs", "RamInfo", "total used"),
-    (
-        "src/hardware_ai/mod.rs",
-        "HardwareAge",
-        "estimated_age_years confidence",
-    ),
-    (
-        "src/memory_bandwidth/mod.rs",
-        "BandwidthAnalysis",
-        "estimated_latency_ns",
-    ),
-    ("src/tui/app.rs", "CpuInfo", "threads utilization"),
-    ("src/tui/app.rs", "MemoryInfo", "total used available"),
-];
+const BASELINE: &[(&str, &str, &str)] = &[];
 
 /// Matches traced to every constructor and found sound: each bare field is
 /// read wherever the struct is built. `(file, struct, bare fields, why)`.
 const JUDGED: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/backend.rs",
+        "CpuState",
+        "threads utilization",
+        concat!(
+            "Built only inside `if let Some(ref cpu) = self.cpu_stats`, from a CPU ",
+            "sample that was read: threads is that sample's per-core row count and ",
+            "utilization its aggregate. With no sample the whole struct is None."
+        ),
+    ),
+    (
+        "src/core/memory.rs",
+        "RamInfo",
+        "total used",
+        concat!(
+            "Linux errors without MemTotal/MemFree/MemAvailable, macOS without ",
+            "vm_stat or hw.memsize, Windows when GlobalMemoryStatusEx fails, so a ",
+            "reader never returns these unread. MemoryStats::empty() is documented ",
+            "as reading nothing and its zero total is what consumers test for: ",
+            "ram_usage_percent and the summaries are None at total 0."
+        ),
+    ),
     (
         "src/network_monitor.rs",
         "NetworkInterfaceInfo",

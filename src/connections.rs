@@ -38,8 +38,10 @@ pub struct ConnectionInfo {
     pub local_address: String,
     /// Local IP only
     pub local_ip: IpAddr,
-    /// Local port
-    pub local_port: u16,
+    /// Local port. `None` when the socket reports it as `*` (unbound, any
+    /// address) rather than as a number. Only the macOS netstat parser produces
+    /// that; the Linux and Windows tables always carry a port.
+    pub local_port: Option<u16>,
     /// Remote address (IP:port), None for UDP listeners
     pub remote_address: Option<String>,
     /// Remote IP only
@@ -315,7 +317,7 @@ impl ConnectionMonitor {
                 protocol: Protocol::Tcp,
                 local_address: format!("{}:{}", local_ip, local_port),
                 local_ip: IpAddr::V4(local_ip),
-                local_port,
+                local_port: Some(local_port),
                 remote_address: if state != ConnectionState::Listen {
                     Some(format!("{}:{}", remote_ip, remote_port))
                 } else {
@@ -403,7 +405,7 @@ impl ConnectionMonitor {
                 protocol: Protocol::Tcp6,
                 local_address: format!("[{}]:{}", local_ip, local_port),
                 local_ip: IpAddr::V6(local_ip),
-                local_port,
+                local_port: Some(local_port),
                 remote_address: if state != ConnectionState::Listen {
                     Some(format!("[{}]:{}", remote_ip, remote_port))
                 } else {
@@ -488,7 +490,7 @@ impl ConnectionMonitor {
                 protocol: Protocol::Udp,
                 local_address: format!("{}:{}", local_ip, local_port),
                 local_ip: IpAddr::V4(local_ip),
-                local_port,
+                local_port: Some(local_port),
                 remote_address: None,
                 remote_ip: None,
                 remote_port: None,
@@ -561,7 +563,7 @@ impl ConnectionMonitor {
                 protocol: Protocol::Udp6,
                 local_address: format!("[{}]:{}", local_ip, local_port),
                 local_ip: IpAddr::V6(local_ip),
-                local_port,
+                local_port: Some(local_port),
                 remote_address: None,
                 remote_ip: None,
                 remote_port: None,
@@ -687,7 +689,7 @@ impl ConnectionMonitor {
             protocol,
             local_address: format!("{}:{}", local_ip, local_port),
             local_ip,
-            local_port,
+            local_port: Some(local_port),
             remote_address: if state != ConnectionState::Listen && remote_port != 0 {
                 Some(format!("{}:{}", remote_ip, remote_port))
             } else {
@@ -861,7 +863,7 @@ impl ConnectionMonitor {
 
             let (remote_ip, remote_port) = if let Some(addr) = remote_addr_str {
                 match Self::parse_macos_address(addr, &protocol) {
-                    Some(v) => (Some(v.0), Some(v.1)),
+                    Some(v) => (Some(v.0), v.1),
                     None => (None, None),
                 }
             } else {
@@ -893,21 +895,19 @@ impl ConnectionMonitor {
         Ok(connections)
     }
 
-    fn parse_macos_address(addr: &str, protocol: &Protocol) -> Option<(IpAddr, u16)> {
+    fn parse_macos_address(addr: &str, protocol: &Protocol) -> Option<(IpAddr, Option<u16>)> {
         // macOS format: IP.port or [IPv6]:port or *.port
         if let Some(last_dot) = addr.rfind('.') {
             let ip_part = &addr[..last_dot];
             let port_str = &addr[last_dot + 1..];
-            let port: u16 = match port_str.parse() {
-                Ok(p) => p,
-                Err(_) => {
-                    // Could be a service name like "https"
-                    if port_str == "*" {
-                        0
-                    } else {
-                        return None;
-                    }
-                }
+            // `*` is an unbound or any-address socket, which has no port number.
+            // It is None, not 0, which would read as a port. Anything else must
+            // parse as one; a service name such as "https" does not, so it is
+            // rejected as it was before.
+            let port: Option<u16> = if port_str == "*" {
+                None
+            } else {
+                Some(port_str.parse().ok()?)
             };
 
             let ip = if ip_part == "*" {
@@ -1040,7 +1040,7 @@ mod tests {
             protocol: Protocol::Tcp,
             local_address: "127.0.0.1:8080".into(),
             local_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            local_port: 8080,
+            local_port: Some(8080),
             remote_address: Some("10.0.0.1:443".into()),
             remote_ip: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
             remote_port: Some(443),
@@ -1051,7 +1051,7 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         let parsed: ConnectionInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.protocol, Protocol::Tcp);
-        assert_eq!(parsed.local_port, 8080);
+        assert_eq!(parsed.local_port, Some(8080));
         assert_eq!(parsed.state, ConnectionState::Established);
         assert_eq!(parsed.pid, Some(1234));
     }

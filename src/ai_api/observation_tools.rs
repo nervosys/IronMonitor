@@ -644,7 +644,7 @@ impl AiDataApi {
             .connections
             .iter()
             .filter(|c| p.pid.is_none_or(|pid| c.pid == Some(pid)))
-            .filter(|c| p.local_port.is_none_or(|port| c.local_port == port))
+            .filter(|c| p.local_port.is_none_or(|port| c.local_port == Some(port)))
             .filter(|c| p.remote_ip.is_none_or(|ip| c.remote_ip == Some(ip)))
             .filter(|c| !p.listening_only || c.state == crate::connections::ConnectionState::Listen)
             .collect();
@@ -1140,7 +1140,7 @@ mod tests {
             protocol: Protocol::Tcp,
             local_address: "127.0.0.1:11434".into(),
             local_ip: "127.0.0.1".parse().unwrap(),
-            local_port: 11434,
+            local_port: Some(11434),
             remote_address: None,
             remote_ip: None,
             remote_port: None,

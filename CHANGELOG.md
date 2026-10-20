@@ -186,9 +186,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A pipeline snapshot whose clock could not be read has no `collected_at`,
   where it was 0 (1970). The fleet store builds no rows from it rather than
   recording them at the epoch, and freshness checks treat it as stale.
+- The TUI's CPU and memory figures are `None` before the first sample, where
+  they read 0 threads, 0% and 0 B; the header, gauges, bars and memory tab show
+  `--`, and an unread sample adds nothing to the history graphs.
+- Hardware age is `None` when no CPU or GPU model matched a release-year table,
+  where it was guessed from core count and drive type (1 to 7 years, at 0.3
+  confidence). The matched-rule confidences are named constants.
+- Memory latency is `None` for a generation the table does not list (GDDR,
+  unknown), where 70 ns stood in for all of them.
+- A macOS socket bound to `*` has no local or remote port (`None`), where it
+  read as port 0.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
-  moved there from the untriaged `BASELINE`.
+  moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
+  every struct it listed was either fixed or traced and moved to `JUDGED`.
 - Live Apple Silicon CPU, GPU and ANE figures are refused with their reason
   (`powermetrics` requires root, and IronMonitor does not elevate itself)
   instead of failing with a bare "file not found" on macOS and reading as zeros

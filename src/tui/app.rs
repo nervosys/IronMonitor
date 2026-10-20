@@ -757,9 +757,11 @@ pub struct CpuInfo {
     /// to the surface in front of it rather than to the cause — the sixth time
     /// this file records that shape. Found by rendering a frame and reading it.
     pub cores: Option<usize>,
-    /// Logical processors: the number of per-core rows the stats reader returned.
-    pub threads: usize,
-    pub utilization: f32,
+    /// Logical processors: the number of per-core rows the stats reader returned,
+    /// or `None` before the first sample.
+    pub threads: Option<usize>,
+    /// Aggregate utilization, or `None` before the first sample.
+    pub utilization: Option<f32>,
     pub temperature: Option<f32>,
     pub frequency: Option<u64>,
     /// Per-core utilization, `None` for a core whose idle time was not read.
@@ -773,9 +775,12 @@ pub struct CpuInfo {
 
 #[derive(Clone, Default)]
 pub struct MemoryInfo {
-    pub total: u64,
-    pub used: u64,
-    pub available: u64,
+    /// Physical memory in bytes, or `None` before the first sample.
+    pub total: Option<u64>,
+    /// Physical memory in use in bytes, or `None` before the first sample.
+    pub used: Option<u64>,
+    /// Physical memory available in bytes, or `None` before the first sample.
+    pub available: Option<u64>,
     /// Swap total in bytes, or `None` where the pagefile was not read.
     pub swap_total: Option<u64>,
     /// Swap in use in bytes, or `None` where the pagefile was not read.
@@ -1472,8 +1477,8 @@ impl App {
             // once because the count cannot change. `threads` is the logical
             // count, which is what `stats.cores` actually holds.
             cores: physical_cores(),
-            threads: num_cpus,
-            utilization: 100.0 - stats.total.idle,
+            threads: Some(num_cpus),
+            utilization: Some(100.0 - stats.total.idle),
             temperature: None, // Requires admin for WMI thermal zone access
             frequency: stats
                 .cores
@@ -1487,9 +1492,12 @@ impl App {
                 .collect(),
         };
 
-        self.cpu_history.push_back(self.cpu_info.utilization as u64);
-        if self.cpu_history.len() > MAX_HISTORY {
-            self.cpu_history.pop_front();
+        // A sample that was not read adds nothing to the history rather than a zero.
+        if let Some(utilization) = self.cpu_info.utilization {
+            self.cpu_history.push_back(utilization as u64);
+            if self.cpu_history.len() > MAX_HISTORY {
+                self.cpu_history.pop_front();
+            }
         }
 
         Ok(())
@@ -1507,23 +1515,28 @@ impl App {
 
         // Platform collectors report KB; the display layer works in bytes.
         self.memory_info = MemoryInfo {
-            total: stats.ram.total * 1024,
-            used: stats.ram.used * 1024,
+            total: Some(stats.ram.total * 1024),
+            used: Some(stats.ram.used * 1024),
             // `total - used`, not `free`: the readers define `used` as total
             // minus each platform's own available figure, so this recovers it
             // exactly. `free` on Linux excludes reclaimable cache. Same rule as
             // `agent::state::MemoryState::from_ram` and the GUI.
-            available: stats.ram.total.saturating_sub(stats.ram.used) * 1024,
+            available: Some(stats.ram.total.saturating_sub(stats.ram.used) * 1024),
             swap_total: stats.swap.total.map(|v| v * 1024),
             swap_used: stats.swap.used.map(|v| v * 1024),
         };
 
-        let used_percent = (self.memory_info.used * 100)
-            .checked_div(self.memory_info.total)
-            .unwrap_or(0);
-        self.memory_history.push_back(used_percent);
-        if self.memory_history.len() > MAX_HISTORY {
-            self.memory_history.pop_front();
+        // A zero or unread total is not a percentage, so it adds no history sample.
+        if let Some(used_percent) = self
+            .memory_info
+            .used
+            .zip(self.memory_info.total)
+            .and_then(|(used, total)| (used * 100).checked_div(total))
+        {
+            self.memory_history.push_back(used_percent);
+            if self.memory_history.len() > MAX_HISTORY {
+                self.memory_history.pop_front();
+            }
         }
 
         Ok(())
@@ -2676,18 +2689,20 @@ mod tests {
             // never silently the logical one standing in for it.
             if let Some(cores) = app.cpu_info.cores {
                 assert!(cores > 0, "a reported physical core count must be real");
-                assert!(
-                    cores <= app.cpu_info.threads,
-                    concat!(
-                        "physical cores ({}) cannot exceed threads ({}) — ",
-                        "that is the logical count wearing the wrong label"
-                    ),
-                    cores,
-                    app.cpu_info.threads
-                );
+                if let Some(threads) = app.cpu_info.threads {
+                    assert!(
+                        cores <= threads,
+                        concat!(
+                            "physical cores ({}) cannot exceed threads ({}) — ",
+                            "that is the logical count wearing the wrong label"
+                        ),
+                        cores,
+                        threads
+                    );
+                }
             }
             assert!(
-                app.cpu_info.threads > 0,
+                app.cpu_info.threads.is_some_and(|t| t > 0),
                 "logical processor count did not reach the display state"
             );
             assert!(
@@ -2695,20 +2710,22 @@ mod tests {
                 "per-core usage did not reach the display state"
             );
             assert!(
-                app.memory_info.total > 0,
+                app.memory_info.total.is_some_and(|t| t > 0),
                 "memory total did not reach the display state"
             );
         }
 
-        // This one holds everywhere: on a platform with no reader both are zero,
-        // and zero does not exceed zero. A used figure above total would be wrong
-        // on any platform.
-        assert!(
-            app.memory_info.used <= app.memory_info.total,
-            "memory used {} exceeds total {}",
-            app.memory_info.used,
-            app.memory_info.total
-        );
+        // This one holds everywhere: on a platform with no reader both are None,
+        // and an unread pair asserts nothing. A used figure above total would be
+        // wrong on any platform.
+        if let (Some(used), Some(total)) = (app.memory_info.used, app.memory_info.total) {
+            assert!(
+                used <= total,
+                "memory used {} exceeds total {}",
+                used,
+                total
+            );
+        }
 
         // The generation guard must make a second sync of the *same* generation
         // a no-op, otherwise the render loop would repaint identical frames.
