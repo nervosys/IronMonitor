@@ -1074,7 +1074,13 @@ mod tests {
                 let until = Instant::now() + Duration::from_secs(10);
                 let mut stream = loop {
                     match listener.accept() {
-                        Ok((stream, _)) => break stream,
+                        Ok((stream, _)) => {
+                            // Windows hands out sockets accepted from a non-blocking
+                            // listener still non-blocking, so a read can fail with
+                            // WouldBlock before the client has written.
+                            stream.set_nonblocking(false).unwrap();
+                            break stream;
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             assert!(Instant::now() < until, "missing MLX request");
                             std::thread::sleep(Duration::from_millis(5));
@@ -1166,7 +1172,13 @@ mod tests {
                     let until = Instant::now() + Duration::from_secs(10);
                     let mut stream = loop {
                         match listener.accept() {
-                            Ok((stream, _)) => break stream,
+                            Ok((stream, _)) => {
+                                // Windows hands out sockets accepted from a non-blocking
+                                // listener still non-blocking, so a read can fail with
+                                // WouldBlock before the client has written.
+                                stream.set_nonblocking(false).unwrap();
+                                break stream;
+                            }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                 assert!(Instant::now() < until, "missing retry request");
                                 std::thread::sleep(Duration::from_millis(5));
@@ -1542,7 +1554,13 @@ mod tests {
                         let until = Instant::now() + Duration::from_secs(5);
                         let mut stream = loop {
                             match listener.accept() {
-                                Ok((s, _)) => break s,
+                                Ok((s, _)) => {
+                                    // Windows hands out sockets accepted from a non-blocking
+                                    // listener still non-blocking, so a read can fail with
+                                    // WouldBlock before the client has written.
+                                    s.set_nonblocking(false).unwrap();
+                                    break s;
+                                }
                                 Err(e)
                                     if e.kind() == std::io::ErrorKind::WouldBlock
                                         && Instant::now() < until =>
@@ -1675,7 +1693,13 @@ mod tests {
                     let deadline = Instant::now() + Duration::from_secs(5);
                     let mut stream = loop {
                         match listener.accept() {
-                            Ok((stream, _)) => break stream,
+                            Ok((stream, _)) => {
+                                // Windows hands out sockets accepted from a non-blocking
+                                // listener still non-blocking, so a read can fail with
+                                // WouldBlock before the client has written.
+                                stream.set_nonblocking(false).unwrap();
+                                break stream;
+                            }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                 assert!(
                                     Instant::now() < deadline,
@@ -1963,7 +1987,13 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(3);
                 let mut stream = loop {
                     match listener.accept() {
-                        Ok((stream, _)) => break stream,
+                        Ok((stream, _)) => {
+                            // Windows hands out sockets accepted from a non-blocking
+                            // listener still non-blocking, so a read can fail with
+                            // WouldBlock before the client has written.
+                            stream.set_nonblocking(false).unwrap();
+                            break stream;
+                        }
                         Err(_) if Instant::now() < deadline => {
                             std::thread::sleep(Duration::from_millis(5))
                         }
