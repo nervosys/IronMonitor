@@ -131,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Win32_PhysicalMemory` lists installed modules only; channel count is read
   from locator names or `None`, not guessed from the module count; and the
   efficiency score is `None` when its inputs were not read.
+- RAPL domains whose directory suffix does not parse are skipped rather than
+  attributed to socket 0.
+- Chiplet topology comes from the model table only on a match. An unlisted
+  AMD part was given one CCD, one IOD and 16 GB/s, and an unlisted Apple chip
+  100 GB/s. The Apple unified-memory figures are corrected to Apple's
+  published numbers -- a base M1 read 200 GB/s (68.25), an M4 Pro 400 (273)
+  -- variants no longer match their base chip's entry, and the M3 and M4 Max,
+  sold at two bandwidths the name does not distinguish, have none. The AMD
+  table matched "ZEN 5" inside every "RYZEN 5" and Threadripper PRO's "PRO 7"
+  inside laptop names such as "Ryzen 7 PRO 7840U", and gave monolithic APUs
+  (5600G, 5700G) the chiplet layout of the parts that share their numbers.
+- `MemoryMonitor` reports what each platform read. A failed
+  `GlobalMemoryStatusEx`, `vm_stat` or missing `MemTotal` is an error rather
+  than a monitor of zeros scored 75 (healthy); fields a platform does not
+  provide (Windows free, cached and buffers) are `None` rather than 0 or
+  available memory relabelled as free; Linux no longer substitutes `MemFree`
+  for a missing `MemAvailable`; usage, pressure and health are `None` when
+  their inputs were not read; zram and swap-device fields that did not parse
+  are `None`; macOS no longer appends a duplicate swap device on every
+  refresh. The zero-filled `Default` is removed.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

@@ -212,28 +212,69 @@ fn partial_corrections() -> BTreeSet<(String, String, String)> {
 /// Every match when this test was written. Not a list of approvals -- see the
 /// module doc. Remove an entry when its struct is fixed; never add one.
 const BASELINE: &[(&str, &str, &str)] = &[
-    ("src/agent/backend.rs", "BackendCapabilities", "max_context_length"),
-    ("src/ai_api/types.rs", "MemorySummary", "total_mb used_mb usage_percent"),
-    ("src/ai_api/types.rs", "ProcessSummary", "cpu_percent memory_mb"),
+    (
+        "src/agent/backend.rs",
+        "BackendCapabilities",
+        "max_context_length",
+    ),
+    (
+        "src/ai_api/types.rs",
+        "MemorySummary",
+        "total_mb used_mb usage_percent",
+    ),
+    (
+        "src/ai_api/types.rs",
+        "ProcessSummary",
+        "cpu_percent memory_mb",
+    ),
     ("src/backend.rs", "CpuState", "threads utilization"),
-    ("src/backend.rs", "MemoryState", "total_bytes used_bytes available_bytes usage_percent"),
+    (
+        "src/backend.rs",
+        "MemoryState",
+        "total_bytes used_bytes available_bytes usage_percent",
+    ),
     ("src/backend.rs", "ProcessState", "cpu_percent memory_bytes"),
     ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
     ("src/core/memory.rs", "RamInfo", "total used"),
     ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
     ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
-    ("src/hardware_ai/mod.rs", "HardwareAge", "estimated_age_years confidence"),
-    ("src/interconnect/mod.rs", "ChipletTopology", "compute_dies io_dies on_package_bandwidth_gbs"),
-    ("src/memory_bandwidth/mod.rs", "BandwidthAnalysis", "estimated_latency_ns"),
-    ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
+    (
+        "src/hardware_ai/mod.rs",
+        "HardwareAge",
+        "estimated_age_years confidence",
+    ),
+    (
+        "src/memory_bandwidth/mod.rs",
+        "BandwidthAnalysis",
+        "estimated_latency_ns",
+    ),
     ("src/network_tools.rs", "OsFingerprint", "confidence"),
-    ("src/observability/context.rs", "ProcessMetrics", "cpu_percent memory_mb threads"),
-    ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
-    ("src/process_monitor.rs", "CategoryStats", "total_cpu_percent total_memory_bytes"),
-    ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes cpu_time_us"),
-    ("src/rapl/mod.rs", "EnergyReading", "socket energy_uj"),
-    ("src/tsdb/mod.rs", "ProcessSnapshot", "cpu_percent memory_bytes"),
+    (
+        "src/observability/context.rs",
+        "ProcessMetrics",
+        "cpu_percent memory_mb threads",
+    ),
+    (
+        "src/predictive.rs",
+        "MaintenanceAlert",
+        "current_value threshold confidence",
+    ),
+    (
+        "src/process_monitor.rs",
+        "CategoryStats",
+        "total_cpu_percent total_memory_bytes",
+    ),
+    (
+        "src/process_monitor.rs",
+        "ProcessMonitorInfo",
+        "cpu_percent memory_bytes virtual_memory_bytes cpu_time_us",
+    ),
+    (
+        "src/tsdb/mod.rs",
+        "ProcessSnapshot",
+        "cpu_percent memory_bytes",
+    ),
     ("src/tui/app.rs", "CpuInfo", "threads utilization"),
     ("src/tui/app.rs", "MemoryInfo", "total used available"),
 ];
@@ -513,6 +554,49 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "MemoryAnalysis",
         "populated_slots",
         "a count of the modules the reader enumerated; enumeration failure is an Err",
+    ),
+    (
+        "src/rapl/mod.rs",
+        "EnergyReading",
+        "socket energy_uj",
+        concat!(
+            "socket is parsed from the intel-rapl directory name, and a domain ",
+            "whose name does not parse is skipped; energy_uj is parsed with `?`"
+        ),
+    ),
+    (
+        "src/interconnect/mod.rs",
+        "ChipletTopology",
+        "compute_dies io_dies",
+        concat!(
+            "values from the model table only on a match, None otherwise; the two ",
+            "compute dies of an Apple Ultra are fixed by UltraFusion, not read"
+        ),
+    ),
+    (
+        "src/memory_management.rs",
+        "MemoryInfo",
+        "total",
+        "read on every platform that reports memory (MemTotal, GlobalMemoryStatusEx, hw.memsize), or the refresh fails",
+    ),
+    (
+        "src/memory_management.rs",
+        "ZramInfo",
+        "disksize compressed_bytes original_bytes mem_used_bytes",
+        concat!(
+            "linux_read_zram builds the device only when all four of these files parse, ",
+            "and leaves it None otherwise; the Option fields beside them are None where ",
+            "they cannot be read or computed"
+        ),
+    ),
+    (
+        "src/memory_management.rs",
+        "MemorySummary",
+        "total_memory total_swap used_swap",
+        concat!(
+            "copied from MemoryInfo's total and SwapInfo's total and used, which are read ",
+            "or the refresh fails; memory_summary is the only constructor"
+        ),
     ),
     (
         "src/network_tools.rs",

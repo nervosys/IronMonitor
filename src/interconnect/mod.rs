@@ -114,6 +114,10 @@ pub struct InterconnectLink {
 }
 
 /// Chiplet/die topology for multi-die packages.
+///
+/// Present only where the CPU model matched an entry in the model table. The
+/// die counts and bandwidth are specification values from that table, not
+/// readings from this machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChipletTopology {
     /// Number of compute dies/chiplets per package.
@@ -131,8 +135,9 @@ pub struct ChipletTopology {
     pub cores_per_die: Option<u32>,
     /// On-package interconnect type.
     pub on_package_interconnect: InterconnectType,
-    /// On-package bandwidth per link in GB/s.
-    pub on_package_bandwidth_gbs: f64,
+    /// On-package bandwidth per link in GB/s, or `None` where the die count is
+    /// known but the table has no bandwidth for the model (Apple M1/M2 Ultra).
+    pub on_package_bandwidth_gbs: Option<f64>,
 }
 
 /// Full interconnect topology report.
@@ -363,14 +368,41 @@ impl InterconnectMonitor {
         }
     }
 
+    /// An AMD part the table does not describe: no chiplet topology and no
+    /// link figures.
+    fn unlisted_amd(sockets: u32) -> InterconnectTopology {
+        InterconnectTopology {
+            sockets,
+            links: Vec::new(),
+            chiplet_topology: None,
+            coherence_protocol: CoherenceProtocol::MOESI,
+            // Nothing is described for this model, so no links are summed.
+            total_bandwidth_gbs: 0.0,
+            is_numa: sockets > 1,
+            generation: "Unknown".into(),
+        }
+    }
+
     fn infer_amd(name: &str, sockets: u32, physical_cores: Option<u32>) -> InterconnectTopology {
-        // AMD Infinity Fabric inference
-        let (if_speed_gts, compute_dies, io_dies, _max_cores_per_die, gen, on_pkg_bw) = if name
-            .contains("9950")
+        // AMD Infinity Fabric inference.
+        //
+        // APUs (a model number ending in G or GE, such as 5600G) are one
+        // monolithic die, not the chiplet parts that share their numbers, so
+        // they take the unlisted path below.
+        let apu = name.split_whitespace().any(|token| {
+            let digits = token.trim_end_matches("GE").trim_end_matches('G');
+            digits.len() < token.len()
+                && digits.len() >= 4
+                && digits.chars().all(|c| c.is_ascii_digit())
+        });
+        let (if_speed_gts, compute_dies, io_dies, _max_cores_per_die, gen, on_pkg_bw) = if apu {
+            return Self::unlisted_amd(sockets);
+        } else if name.contains("9950")
             || name.contains("9900")
             || name.contains("9700")
             || name.contains("9600")
-            || name.contains("ZEN 5")
+            // With the space: "RYZEN 5" contains "ZEN 5".
+            || name.contains(" ZEN 5")
         {
             (32.0, 2, 1, 8, "IF 4.0", 64.0)
         } else if name.contains("7950") || name.contains("7900") {
@@ -385,12 +417,16 @@ impl InterconnectMonitor {
             (32.0, 12, 1, 8, "IF 4.0", 64.0)
         } else if name.contains("EPYC 7") {
             (16.0, 8, 1, 8, "IF 2.0", 32.0)
-        } else if name.contains("THREADRIPPER 7") || name.contains("PRO 7") {
+        // "THREADRIPPER PRO", not "PRO": "RYZEN 7 PRO 7840U" contains "PRO 7".
+        } else if name.contains("THREADRIPPER 7") || name.contains("THREADRIPPER PRO 7") {
             (32.0, 8, 1, 8, "IF 3.5", 36.0)
-        } else if name.contains("THREADRIPPER 5") || name.contains("PRO 5") {
+        } else if name.contains("THREADRIPPER 5") || name.contains("THREADRIPPER PRO 5") {
             (32.0, 4, 1, 8, "IF 3.0", 32.0)
         } else {
-            (16.0, 1, 1, 8, "IF", 16.0)
+            // A model the table does not list gets no chiplet topology and no
+            // link figures. The table's default row is not a description of any
+            // part, so it is not applied to one.
+            return Self::unlisted_amd(sockets);
         };
 
         let mut links = Vec::new();
@@ -445,7 +481,7 @@ impl InterconnectMonitor {
                     .filter(|_| compute_dies > 0)
                     .map(|c| c / compute_dies),
                 on_package_interconnect: InterconnectType::InfinityFabricOnPackage,
-                on_package_bandwidth_gbs: on_pkg_bw,
+                on_package_bandwidth_gbs: Some(on_pkg_bw),
             })
         } else {
             None
@@ -463,39 +499,62 @@ impl InterconnectMonitor {
     }
 
     fn infer_apple(name: &str) -> InterconnectTopology {
-        let bw = if name.contains("M4 ULTRA") {
-            800.0
-        } else if name.contains("M4 MAX") || name.contains("M3 ULTRA") {
-            546.0
-        } else if name.contains("M4 PRO")
-            || name.contains("M3 MAX")
-            || name.contains("M3 PRO")
-            || name.contains("M2 MAX")
-        {
-            400.0
-        } else if name.contains("M2 PRO") || name.contains("M2") || name.contains("M1") {
-            200.0
-        } else {
-            100.0
-        };
+        // Apple's published unified-memory bandwidth, GB/s. Variants are
+        // matched before base chips, because "M2 ULTRA" also contains "M2".
+        // The table read 200 GB/s for a base M1 (68.25) and M2 (100), and
+        // 400 for an M4 Pro (273). M3 Max and M4 Max ship at two bandwidths
+        // depending on the bin, which the name does not say, so they have no
+        // entry; neither does any chip not listed.
+        const TABLE: &[(&str, f64)] = &[
+            ("M1 ULTRA", 800.0),
+            ("M2 ULTRA", 800.0),
+            ("M3 ULTRA", 819.0),
+            ("M1 MAX", 400.0),
+            ("M2 MAX", 400.0),
+            ("M1 PRO", 200.0),
+            ("M2 PRO", 200.0),
+            ("M3 PRO", 150.0),
+            ("M4 PRO", 273.0),
+            ("M1", 68.25),
+            ("M2", 100.0),
+            ("M3", 100.0),
+            ("M4", 120.0),
+        ];
+        let variant = ["ULTRA", "MAX", "PRO"]
+            .into_iter()
+            .find(|v| name.contains(v));
+        let bw: Option<f64> = TABLE
+            .iter()
+            .find(|(chip, _)| {
+                // A base-chip entry only matches a name with no variant.
+                name.contains(chip) && (chip.contains(' ') || variant.is_none())
+            })
+            .map(|&(_, bw)| bw);
 
-        let links = vec![InterconnectLink {
-            link_type: InterconnectType::AppleUMA,
-            source: "CPU Cluster".into(),
-            destination: "Unified Memory".into(),
-            bandwidth_gbs: bw,
-            bidirectional_bandwidth_gbs: bw,
-            width: 0,
-            speed_gts: 0.0,
-            estimated_latency_ns: 20.0,
-            active: true,
-        }];
+        // Without a bandwidth there is no link to describe, so none is built
+        // rather than one carrying a guessed figure.
+        let links = match bw {
+            Some(bw) => vec![InterconnectLink {
+                link_type: InterconnectType::AppleUMA,
+                source: "CPU Cluster".into(),
+                destination: "Unified Memory".into(),
+                bandwidth_gbs: bw,
+                bidirectional_bandwidth_gbs: bw,
+                width: 0,
+                speed_gts: 0.0,
+                estimated_latency_ns: 20.0,
+                active: true,
+            }],
+            None => Vec::new(),
+        };
 
         InterconnectTopology {
             sockets: 1,
             links,
             chiplet_topology: if name.contains("ULTRA") {
                 Some(ChipletTopology {
+                    // Ultra is two dies fused by UltraFusion, so this count is
+                    // fixed by the design rather than read.
                     compute_dies: 2,
                     io_dies: 0,
                     // Apple's core counts vary by bin within a generation
@@ -508,7 +567,8 @@ impl InterconnectMonitor {
                 None
             },
             coherence_protocol: CoherenceProtocol::Directory,
-            total_bandwidth_gbs: bw,
+            // Zero only where no bandwidth is tabled and no link was described.
+            total_bandwidth_gbs: bw.unwrap_or(0.0),
             is_numa: false,
             generation: "UMA".into(),
         }
@@ -720,7 +780,7 @@ mod tests {
         let chiplet = topo.chiplet_topology.unwrap();
         assert_eq!(chiplet.compute_dies, 2);
         assert_eq!(chiplet.cores_per_die, Some(8));
-        assert!(chiplet.on_package_bandwidth_gbs > 0.0);
+        assert_eq!(chiplet.on_package_bandwidth_gbs, Some(36.0));
     }
 
     /// A partially-enabled part is not the generation's maximum CCD size.
@@ -747,6 +807,30 @@ mod tests {
         let topo = InterconnectMonitor::infer_amd("AMD RYZEN 9 9900X", 1, None);
         let chiplet = topo.chiplet_topology.expect("a 9900X has chiplets");
         assert_eq!(chiplet.cores_per_die, None);
+    }
+
+    /// A model the table does not list has no chiplet topology.
+    ///
+    /// The table's default row used to apply to any AMD name it did not match,
+    /// so a Ryzen 5 8600G was reported with one CCD, one IOD and 16 GB/s.
+    #[test]
+    fn an_unlisted_amd_model_has_no_chiplet_topology() {
+        let topo = InterconnectMonitor::infer_amd("AMD RYZEN 5 8600G", 1, Some(6));
+        assert!(topo.chiplet_topology.is_none());
+        assert!(topo.links.is_empty());
+        assert_eq!(topo.generation, "Unknown");
+
+        // Substrings of other names: "RYZEN 5" contains "ZEN 5", and
+        // "RYZEN 7 PRO 7840U" contains "PRO 7" (a Threadripper PRO row).
+        for name in ["AMD RYZEN 7 PRO 7840U", "AMD RYZEN 5 PRO 5650U"] {
+            let topo = InterconnectMonitor::infer_amd(name, 1, Some(8));
+            assert!(topo.chiplet_topology.is_none(), "{name}");
+        }
+        // An APU is one die, whatever chiplet part shares its number.
+        let topo = InterconnectMonitor::infer_amd("AMD RYZEN 7 5700G", 1, Some(8));
+        assert!(topo.chiplet_topology.is_none());
+        let topo = InterconnectMonitor::infer_amd("AMD RYZEN 7 5700X", 1, Some(8));
+        assert!(topo.chiplet_topology.is_some());
     }
 
     /// AMD writes the core count into the model string, and the Intel test
@@ -791,6 +875,38 @@ mod tests {
         assert!(!topo.is_numa);
         assert_eq!(topo.coherence_protocol, CoherenceProtocol::Directory);
         assert!(topo.total_bandwidth_gbs > 0.0);
+    }
+
+    /// "M2 ULTRA" contains "M2", which the base-chip arm used to match first,
+    /// so an M2 Ultra was given the M2's figure. Variants match their own
+    /// entry, and a base chip's entry matches only a name with no variant.
+    #[test]
+    fn an_apple_variant_does_not_take_its_base_chips_bandwidth() {
+        let topo = InterconnectMonitor::infer_apple("APPLE M2 ULTRA");
+        let chiplet = topo.chiplet_topology.expect("an Ultra is two dies");
+        assert_eq!(chiplet.compute_dies, 2);
+        assert_eq!(chiplet.on_package_bandwidth_gbs, Some(800.0));
+        let bw = |name| {
+            InterconnectMonitor::infer_apple(name)
+                .links
+                .first()
+                .map(|l| l.bandwidth_gbs)
+        };
+        assert_eq!(bw("APPLE M1"), Some(68.25));
+        assert_eq!(bw("APPLE M4 PRO"), Some(273.0));
+        // Binned at two bandwidths that the name does not distinguish.
+        assert_eq!(bw("APPLE M4 MAX"), None);
+        assert_eq!(bw("APPLE M3 MAX"), None);
+        assert_eq!(bw("APPLE M4 ULTRA"), None);
+    }
+
+    /// A name the table does not list has no bandwidth and no topology, rather
+    /// than the 100 GB/s the fallback used to report.
+    #[test]
+    fn an_unlisted_apple_model_has_no_bandwidth() {
+        let topo = InterconnectMonitor::infer_apple("APPLE M9");
+        assert!(topo.links.is_empty());
+        assert!(topo.chiplet_topology.is_none());
     }
 
     #[test]

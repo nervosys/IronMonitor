@@ -84,29 +84,28 @@ pub struct SwapDevice {
     pub path: String,
     /// Type of swap
     pub swap_type: SwapType,
-    /// Total size in bytes
-    pub total_bytes: u64,
-    /// Used size in bytes
-    pub used_bytes: u64,
-    /// Priority (higher = preferred)
-    pub priority: i32,
+    /// Total size in bytes, `None` when the reader did not give it
+    pub total_bytes: Option<u64>,
+    /// Used size in bytes, `None` when the reader did not give it
+    pub used_bytes: Option<u64>,
+    /// Priority (higher = preferred), `None` when the reader did not give it
+    pub priority: Option<i32>,
     /// Whether the swap is currently active
     pub active: bool,
 }
 
 impl SwapDevice {
-    /// Get usage percentage
-    pub fn usage_percent(&self) -> f64 {
-        if self.total_bytes == 0 {
-            0.0
-        } else {
-            (self.used_bytes as f64 / self.total_bytes as f64) * 100.0
+    /// Get usage percentage; `None` unless both the total and the used size were read
+    pub fn usage_percent(&self) -> Option<f64> {
+        match (self.total_bytes, self.used_bytes) {
+            (Some(total), Some(used)) if total > 0 => Some((used as f64 / total as f64) * 100.0),
+            _ => None,
         }
     }
 
-    /// Get available bytes
-    pub fn available_bytes(&self) -> u64 {
-        self.total_bytes.saturating_sub(self.used_bytes)
+    /// Get available bytes; `None` unless both the total and the used size were read
+    pub fn available_bytes(&self) -> Option<u64> {
+        Some(self.total_bytes?.saturating_sub(self.used_bytes?))
     }
 
     /// Format size for display
@@ -128,6 +127,9 @@ impl SwapDevice {
 }
 
 /// ZRAM (compressed RAM) information
+///
+/// Built only when all four of `disksize`, `compr_data_size`, `orig_data_size` and
+/// `mem_used_total` were read, so the sizes below are always figures from the device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZramInfo {
     /// Device name (e.g., zram0)
@@ -140,12 +142,12 @@ pub struct ZramInfo {
     pub original_bytes: u64,
     /// Memory used for compressed storage
     pub mem_used_bytes: u64,
-    /// Compression algorithm
-    pub algorithm: String,
-    /// Number of streams
-    pub streams: u32,
-    /// Compression ratio (original/compressed)
-    pub compression_ratio: f64,
+    /// Compression algorithm, `None` when the device's list could not be read
+    pub algorithm: Option<String>,
+    /// Number of streams; not parsed yet, so `None`
+    pub streams: Option<u32>,
+    /// Compression ratio (original/compressed); `None` while nothing is compressed
+    pub compression_ratio: Option<f64>,
 }
 
 impl ZramInfo {
@@ -154,73 +156,70 @@ impl ZramInfo {
         self.original_bytes.saturating_sub(self.mem_used_bytes)
     }
 
-    /// Get memory savings percentage
-    pub fn savings_percent(&self) -> f64 {
-        if self.original_bytes == 0 {
-            0.0
-        } else {
-            (self.memory_savings() as f64 / self.original_bytes as f64) * 100.0
-        }
+    /// Get memory savings percentage; `None` when there is no original data to save from
+    pub fn savings_percent(&self) -> Option<f64> {
+        (self.original_bytes > 0)
+            .then(|| (self.memory_savings() as f64 / self.original_bytes as f64) * 100.0)
     }
 }
 
 /// Detailed memory information
+///
+/// `total` is read on every platform that reports memory, or the read fails. Every other
+/// field is `None` where the platform does not report it, or where the source omitted it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryInfo {
     /// Total physical RAM in bytes
     pub total: u64,
     /// Available memory in bytes (includes cached)
-    pub available: u64,
+    pub available: Option<u64>,
     /// Free memory in bytes (not counting cached)
-    pub free: u64,
+    pub free: Option<u64>,
     /// Used memory in bytes
-    pub used: u64,
+    pub used: Option<u64>,
     /// Cached memory in bytes
-    pub cached: u64,
+    pub cached: Option<u64>,
     /// Buffer memory in bytes
-    pub buffers: u64,
+    pub buffers: Option<u64>,
     /// Shared memory in bytes
-    pub shared: u64,
+    pub shared: Option<u64>,
     /// Slab reclaimable memory (Linux)
-    pub slab_reclaimable: u64,
+    pub slab_reclaimable: Option<u64>,
     /// Active memory
-    pub active: u64,
+    pub active: Option<u64>,
     /// Inactive memory
-    pub inactive: u64,
+    pub inactive: Option<u64>,
     /// Dirty pages awaiting write
-    pub dirty: u64,
+    pub dirty: Option<u64>,
     /// Memory currently being written back
-    pub writeback: u64,
+    pub writeback: Option<u64>,
     /// Mapped memory (memory-mapped files)
-    pub mapped: u64,
+    pub mapped: Option<u64>,
     /// Memory locked in RAM
-    pub mlocked: u64,
+    pub mlocked: Option<u64>,
     /// Huge pages total
-    pub hugepages_total: u64,
+    pub hugepages_total: Option<u64>,
     /// Huge pages free
-    pub hugepages_free: u64,
+    pub hugepages_free: Option<u64>,
     /// Huge page size
-    pub hugepage_size: u64,
+    pub hugepage_size: Option<u64>,
 }
 
 impl MemoryInfo {
-    /// Get usage percentage
-    pub fn usage_percent(&self) -> f64 {
-        if self.total == 0 {
-            0.0
-        } else {
-            (self.used as f64 / self.total as f64) * 100.0
-        }
+    /// Get usage percentage; `None` when the used figure or the total is unknown
+    pub fn usage_percent(&self) -> Option<f64> {
+        let used = self.used?;
+        (self.total > 0).then(|| (used as f64 / self.total as f64) * 100.0)
     }
 
-    /// Get memory pressure level
-    pub fn pressure(&self) -> MemoryPressure {
-        MemoryPressure::from_usage(self.usage_percent())
+    /// Get memory pressure level; `None` when usage could not be determined
+    pub fn pressure(&self) -> Option<MemoryPressure> {
+        self.usage_percent().map(MemoryPressure::from_usage)
     }
 
-    /// Get effective available memory (includes reclaimable)
-    pub fn effective_available(&self) -> u64 {
-        self.available + self.slab_reclaimable
+    /// Get effective available memory (includes reclaimable); `None` unless both were read
+    pub fn effective_available(&self) -> Option<u64> {
+        Some(self.available? + self.slab_reclaimable?)
     }
 }
 
@@ -240,13 +239,9 @@ pub struct SwapInfo {
 }
 
 impl SwapInfo {
-    /// Get usage percentage
-    pub fn usage_percent(&self) -> f64 {
-        if self.total == 0 {
-            0.0
-        } else {
-            (self.used as f64 / self.total as f64) * 100.0
-        }
+    /// Get usage percentage; `None` when there is no swap to be used
+    pub fn usage_percent(&self) -> Option<f64> {
+        (self.total > 0).then(|| (self.used as f64 / self.total as f64) * 100.0)
     }
 
     /// Check if swap is configured
@@ -260,23 +255,23 @@ impl SwapInfo {
     }
 }
 
-/// Memory statistics over time
+/// Memory statistics over time. A counter is `None` unless its key was in the last read.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryStats {
     /// Page faults (minor)
-    pub page_faults_minor: u64,
+    pub page_faults_minor: Option<u64>,
     /// Page faults (major - required disk IO)
-    pub page_faults_major: u64,
+    pub page_faults_major: Option<u64>,
     /// Pages swapped in
-    pub swap_in: u64,
+    pub swap_in: Option<u64>,
     /// Pages swapped out
-    pub swap_out: u64,
+    pub swap_out: Option<u64>,
     /// Pages allocated
-    pub pages_allocated: u64,
+    pub pages_allocated: Option<u64>,
     /// Pages freed
-    pub pages_freed: u64,
+    pub pages_freed: Option<u64>,
     /// OOM killer invocations
-    pub oom_kills: u64,
+    pub oom_kills: Option<u64>,
 }
 
 /// Process memory information
@@ -319,24 +314,26 @@ impl MemoryMonitor {
     /// Create a new memory monitor
     pub fn new() -> Result<Self> {
         let mut monitor = Self {
+            // Plain zeros here are placeholders: refresh either overwrites total and the swap
+            // totals or fails, so none of them is reported unread.
             memory: MemoryInfo {
                 total: 0,
-                available: 0,
-                free: 0,
-                used: 0,
-                cached: 0,
-                buffers: 0,
-                shared: 0,
-                slab_reclaimable: 0,
-                active: 0,
-                inactive: 0,
-                dirty: 0,
-                writeback: 0,
-                mapped: 0,
-                mlocked: 0,
-                hugepages_total: 0,
-                hugepages_free: 0,
-                hugepage_size: 0,
+                available: None,
+                free: None,
+                used: None,
+                cached: None,
+                buffers: None,
+                shared: None,
+                slab_reclaimable: None,
+                active: None,
+                inactive: None,
+                dirty: None,
+                writeback: None,
+                mapped: None,
+                mlocked: None,
+                hugepages_total: None,
+                hugepages_free: None,
+                hugepage_size: None,
             },
             swap: SwapInfo {
                 total: 0,
@@ -378,6 +375,14 @@ impl MemoryMonitor {
             self.macos_read_swap()?;
         }
 
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        {
+            // No reader exists here. Say so, rather than report the zeroed state `new` starts from.
+            return Err(crate::error::IronError::System(
+                "memory monitoring is not implemented on this platform".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -396,30 +401,31 @@ impl MemoryMonitor {
         Vec::new()
     }
 
-    /// Get memory pressure level
-    pub fn pressure(&self) -> MemoryPressure {
+    /// Get memory pressure level; `None` when memory usage was not read
+    pub fn pressure(&self) -> Option<MemoryPressure> {
         self.memory.pressure()
     }
 
-    /// Check if swap is being heavily used
-    pub fn swap_pressure(&self) -> MemoryPressure {
-        MemoryPressure::from_usage(self.swap.usage_percent())
+    /// Check if swap is being heavily used; `None` when swap usage was not read
+    pub fn swap_pressure(&self) -> Option<MemoryPressure> {
+        self.swap.usage_percent().map(MemoryPressure::from_usage)
     }
 
-    /// Get system health based on memory and swap
-    pub fn health_score(&self) -> u32 {
-        let mem_score = match self.pressure() {
+    /// Get system health based on memory and swap. `None` when memory usage was not read,
+    /// because a failed read must not score as healthy.
+    pub fn health_score(&self) -> Option<u32> {
+        let mem_score: u32 = match self.pressure()? {
             MemoryPressure::Low => 50,
             MemoryPressure::Medium => 35,
             MemoryPressure::High => 20,
             MemoryPressure::Critical => 5,
         };
 
-        let swap_score = if !self.swap.has_swap() {
-            // No swap configured - neutral
+        let swap_score: u32 = if !self.swap.has_swap() {
+            // No swap configured - neutral. The swap total was read, and it is zero.
             25
         } else {
-            match self.swap_pressure() {
+            match self.swap_pressure()? {
                 MemoryPressure::Low => 25,
                 MemoryPressure::Medium => 20,
                 MemoryPressure::High => 10,
@@ -427,20 +433,19 @@ impl MemoryMonitor {
             }
         };
 
-        // Bonus for ZRAM
-        let zram_bonus = if let Some(ref zram) = self.swap.zram {
-            if zram.compression_ratio > 2.0 {
-                10
-            } else if zram.compression_ratio > 1.5 {
-                5
-            } else {
-                0
-            }
-        } else {
-            0
+        // Bonus for ZRAM, only from a compression ratio that was measured
+        let zram_bonus: u32 = match self
+            .swap
+            .zram
+            .as_ref()
+            .and_then(|zram| zram.compression_ratio)
+        {
+            Some(ratio) if ratio > 2.0 => 10,
+            Some(ratio) if ratio > 1.5 => 5,
+            _ => 0,
         };
 
-        (mem_score + swap_score + zram_bonus).min(100)
+        Some((mem_score + swap_score + zram_bonus).min(100))
     }
 
     // ==================== Linux Implementation ====================
@@ -449,7 +454,8 @@ impl MemoryMonitor {
     fn linux_read_meminfo(&mut self) -> Result<()> {
         use std::fs;
 
-        let content = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let content = fs::read_to_string("/proc/meminfo")
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         let mut mem = HashMap::new();
         for line in content.lines() {
@@ -461,35 +467,58 @@ impl MemoryMonitor {
             }
         }
 
-        self.memory.total = *mem.get("MemTotal").unwrap_or(&0);
-        self.memory.free = *mem.get("MemFree").unwrap_or(&0);
-        self.memory.available = *mem.get("MemAvailable").unwrap_or(&self.memory.free);
-        self.memory.buffers = *mem.get("Buffers").unwrap_or(&0);
-        self.memory.cached = *mem.get("Cached").unwrap_or(&0);
-        self.memory.shared = *mem.get("Shmem").unwrap_or(&0);
-        self.memory.slab_reclaimable = *mem.get("SReclaimable").unwrap_or(&0);
-        self.memory.active = *mem.get("Active").unwrap_or(&0);
-        self.memory.inactive = *mem.get("Inactive").unwrap_or(&0);
-        self.memory.dirty = *mem.get("Dirty").unwrap_or(&0);
-        self.memory.writeback = *mem.get("Writeback").unwrap_or(&0);
-        self.memory.mapped = *mem.get("Mapped").unwrap_or(&0);
-        self.memory.mlocked = *mem.get("Mlocked").unwrap_or(&0);
-        self.memory.hugepages_total = *mem.get("HugePages_Total").unwrap_or(&0);
-        self.memory.hugepages_free = *mem.get("HugePages_Free").unwrap_or(&0);
-        self.memory.hugepage_size = *mem.get("Hugepagesize").unwrap_or(&0);
+        // Keys the kernel did not print are `None`, never zero. MemTotal and the swap figures
+        // are required: without them there is no reading to report.
+        let Some(total) = mem.get("MemTotal").copied() else {
+            return Err(crate::error::IronError::System(
+                "/proc/meminfo has no MemTotal".to_string(),
+            ));
+        };
+        let Some(swap_total) = mem.get("SwapTotal").copied() else {
+            return Err(crate::error::IronError::System(
+                "/proc/meminfo has no SwapTotal".to_string(),
+            ));
+        };
+        let Some(swap_free) = mem.get("SwapFree").copied() else {
+            return Err(crate::error::IronError::System(
+                "/proc/meminfo has no SwapFree".to_string(),
+            ));
+        };
 
-        // Calculate used memory
-        self.memory.used = self
-            .memory
-            .total
-            .saturating_sub(self.memory.free)
-            .saturating_sub(self.memory.buffers)
-            .saturating_sub(self.memory.cached);
+        self.memory.total = total;
+        self.memory.free = mem.get("MemFree").copied();
+        // No MemAvailable means no available figure. MemFree is a different quantity.
+        self.memory.available = mem.get("MemAvailable").copied();
+        self.memory.buffers = mem.get("Buffers").copied();
+        self.memory.cached = mem.get("Cached").copied();
+        self.memory.shared = mem.get("Shmem").copied();
+        self.memory.slab_reclaimable = mem.get("SReclaimable").copied();
+        self.memory.active = mem.get("Active").copied();
+        self.memory.inactive = mem.get("Inactive").copied();
+        self.memory.dirty = mem.get("Dirty").copied();
+        self.memory.writeback = mem.get("Writeback").copied();
+        self.memory.mapped = mem.get("Mapped").copied();
+        self.memory.mlocked = mem.get("Mlocked").copied();
+        self.memory.hugepages_total = mem.get("HugePages_Total").copied();
+        self.memory.hugepages_free = mem.get("HugePages_Free").copied();
+        self.memory.hugepage_size = mem.get("Hugepagesize").copied();
+
+        // Used memory is what is left after free, buffers and cache. It is `None` unless all
+        // three were read: a missing one is not zero.
+        self.memory.used = match (self.memory.free, self.memory.buffers, self.memory.cached) {
+            (Some(free), Some(buffers), Some(cached)) => Some(
+                total
+                    .saturating_sub(free)
+                    .saturating_sub(buffers)
+                    .saturating_sub(cached),
+            ),
+            _ => None,
+        };
 
         // Swap from meminfo
-        self.swap.total = *mem.get("SwapTotal").unwrap_or(&0);
-        self.swap.free = *mem.get("SwapFree").unwrap_or(&0);
-        self.swap.used = self.swap.total.saturating_sub(self.swap.free);
+        self.swap.total = swap_total;
+        self.swap.free = swap_free;
+        self.swap.used = swap_total.saturating_sub(swap_free);
 
         Ok(())
     }
@@ -500,7 +529,8 @@ impl MemoryMonitor {
 
         self.swap.devices.clear();
 
-        let content = fs::read_to_string("/proc/swaps").unwrap_or_default();
+        let content = fs::read_to_string("/proc/swaps")
+            .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
         for line in content.lines().skip(1) {
             // Skip header
@@ -513,9 +543,10 @@ impl MemoryMonitor {
                     _ if path.contains("zram") => SwapType::Zram,
                     _ => SwapType::Unknown,
                 };
-                let total = parts[2].parse::<u64>().unwrap_or(0) * 1024;
-                let used = parts[3].parse::<u64>().unwrap_or(0) * 1024;
-                let priority = parts[4].parse::<i32>().unwrap_or(0);
+                // A figure that does not parse is `None`, not zero.
+                let total = parts[2].parse::<u64>().ok().map(|kb| kb * 1024);
+                let used = parts[3].parse::<u64>().ok().map(|kb| kb * 1024);
+                let priority = parts[4].parse::<i32>().ok();
 
                 self.swap.devices.push(SwapDevice {
                     path,
@@ -543,36 +574,42 @@ impl MemoryMonitor {
             return Ok(());
         }
 
-        let read_file = |name: &str| -> u64 {
+        // A file that is missing or does not parse is `None`, never zero. The device is
+        // reported only when all four figures it is built from were read.
+        let read_file = |name: &str| -> Option<u64> {
             fs::read_to_string(zram_path.join(name))
-                .unwrap_or_default()
+                .ok()?
                 .trim()
                 .parse()
-                .unwrap_or(0)
+                .ok()
         };
 
-        let read_string = |name: &str| -> String {
+        let read_string = |name: &str| -> Option<String> {
             fs::read_to_string(zram_path.join(name))
-                .unwrap_or_default()
-                .trim()
-                .to_string()
+                .ok()
+                .map(|s| s.trim().to_string())
         };
 
-        let disksize = read_file("disksize");
-        let compressed = read_file("compr_data_size");
-        let original = read_file("orig_data_size");
-        let mem_used = read_file("mem_used_total");
-        let algorithm = read_string("comp_algorithm")
-            .split_whitespace()
-            .find(|s| s.starts_with('['))
-            .map(|s| s.trim_matches(|c| c == '[' || c == ']').to_string())
-            .unwrap_or_else(|| read_string("comp_algorithm"));
-
-        let compression_ratio = if compressed > 0 {
-            original as f64 / compressed as f64
-        } else {
-            1.0
+        let (Some(disksize), Some(compressed), Some(original), Some(mem_used)) = (
+            read_file("disksize"),
+            read_file("compr_data_size"),
+            read_file("orig_data_size"),
+            read_file("mem_used_total"),
+        ) else {
+            self.swap.zram = None;
+            return Ok(());
         };
+
+        let algorithm = read_string("comp_algorithm").map(|raw| {
+            let bracketed = raw
+                .split_whitespace()
+                .find(|s| s.starts_with('['))
+                .map(|s| s.trim_matches(|c| c == '[' || c == ']').to_string());
+            bracketed.unwrap_or(raw)
+        });
+
+        // Nothing compressed yet means there is no ratio to report.
+        let compression_ratio = (compressed > 0).then(|| original as f64 / compressed as f64);
 
         self.swap.zram = Some(ZramInfo {
             device: "zram0".to_string(),
@@ -581,7 +618,8 @@ impl MemoryMonitor {
             original_bytes: original,
             mem_used_bytes: mem_used,
             algorithm,
-            streams: 0, // Would need additional parsing
+            // Not parsed from the device yet
+            streams: None,
             compression_ratio,
         });
 
@@ -592,20 +630,26 @@ impl MemoryMonitor {
     fn linux_read_vmstat(&mut self) -> Result<()> {
         use std::fs;
 
+        // Every counter starts absent: one missing from this read must not keep the value
+        // from the last one.
+        self.stats = MemoryStats::default();
+
         let content = fs::read_to_string("/proc/vmstat").unwrap_or_default();
 
         for line in content.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
-                let value = parts[1].parse::<u64>().unwrap_or(0);
+                let Ok(value) = parts[1].parse::<u64>() else {
+                    continue;
+                };
                 match parts[0] {
-                    "pgfault" => self.stats.page_faults_minor = value,
-                    "pgmajfault" => self.stats.page_faults_major = value,
-                    "pswpin" => self.stats.swap_in = value,
-                    "pswpout" => self.stats.swap_out = value,
-                    "pgalloc_normal" => self.stats.pages_allocated = value,
-                    "pgfree" => self.stats.pages_freed = value,
-                    "oom_kill" => self.stats.oom_kills = value,
+                    "pgfault" => self.stats.page_faults_minor = Some(value),
+                    "pgmajfault" => self.stats.page_faults_major = Some(value),
+                    "pswpin" => self.stats.swap_in = Some(value),
+                    "pswpout" => self.stats.swap_out = Some(value),
+                    "pgalloc_normal" => self.stats.pages_allocated = Some(value),
+                    "pgfree" => self.stats.pages_freed = Some(value),
+                    "oom_kill" => self.stats.oom_kills = Some(value),
                     _ => {}
                 }
             }
@@ -723,17 +767,15 @@ impl MemoryMonitor {
                 ..Default::default()
             };
 
-            if GlobalMemoryStatusEx(&mut status).is_ok() {
-                self.memory.total = status.ullTotalPhys;
-                self.memory.available = status.ullAvailPhys;
-                self.memory.free = status.ullAvailPhys;
-                self.memory.used = status.ullTotalPhys.saturating_sub(status.ullAvailPhys);
+            GlobalMemoryStatusEx(&mut status)
+                .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
-                // Windows doesn't separate cached/buffers in the same way
-                // Estimate cached as available - free (usually 0 on Windows)
-                self.memory.cached = 0;
-                self.memory.buffers = 0;
-            }
+            self.memory.total = status.ullTotalPhys;
+            self.memory.available = Some(status.ullAvailPhys);
+            self.memory.used = Some(status.ullTotalPhys.saturating_sub(status.ullAvailPhys));
+
+            // Windows does not report free (as distinct from available), cached or buffers
+            // separately, so those stay `None` rather than being estimated.
         }
 
         Ok(())
@@ -750,18 +792,19 @@ impl MemoryMonitor {
                 ..Default::default()
             };
 
-            if GlobalMemoryStatusEx(&mut status).is_ok() {
-                // Page file info
-                self.swap.total = status.ullTotalPageFile.saturating_sub(status.ullTotalPhys);
-                self.swap.free = status.ullAvailPageFile;
-                self.swap.used = self
-                    .swap
-                    .total
-                    .saturating_sub(status.ullAvailPageFile.saturating_sub(status.ullAvailPhys));
+            GlobalMemoryStatusEx(&mut status)
+                .map_err(|e| crate::error::IronError::System(e.to_string()))?;
 
-                // Try to get pagefile path from WMI
-                self.windows_read_pagefile_devices();
-            }
+            // Page file info
+            self.swap.total = status.ullTotalPageFile.saturating_sub(status.ullTotalPhys);
+            self.swap.free = status.ullAvailPageFile;
+            self.swap.used = self
+                .swap
+                .total
+                .saturating_sub(status.ullAvailPageFile.saturating_sub(status.ullAvailPhys));
+
+            // Try to get pagefile path from WMI
+            self.windows_read_pagefile_devices();
         }
 
         Ok(())
@@ -811,9 +854,10 @@ impl MemoryMonitor {
                 self.swap.devices.push(SwapDevice {
                     path,
                     swap_type: SwapType::File,
-                    total_bytes: self.swap.total,
-                    used_bytes: self.swap.used,
-                    priority: 0,
+                    // The registry names the path only, so no size or priority is reported
+                    total_bytes: None,
+                    used_bytes: None,
+                    priority: None,
                     active: true,
                 });
             }
@@ -837,9 +881,9 @@ impl MemoryMonitor {
                         self.swap.devices.push(SwapDevice {
                             path: line.to_string(),
                             swap_type: SwapType::File,
-                            total_bytes: self.swap.total,
-                            used_bytes: self.swap.used,
-                            priority: 0,
+                            total_bytes: None,
+                            used_bytes: None,
+                            priority: None,
                             active: true,
                         });
                     }
@@ -847,17 +891,8 @@ impl MemoryMonitor {
             }
         }
 
-        // Final fallback
-        if self.swap.devices.is_empty() && self.swap.total > 0 {
-            self.swap.devices.push(SwapDevice {
-                path: "C:\\pagefile.sys".to_string(),
-                swap_type: SwapType::File,
-                total_bytes: self.swap.total,
-                used_bytes: self.swap.used,
-                priority: 0,
-                active: true,
-            });
-        }
+        // With no pagefile named by either source, the list stays empty rather than
+        // guessing a path.
     }
 
     #[cfg(windows)]
@@ -928,23 +963,27 @@ impl MemoryMonitor {
     /// that finds these is not "where else is this bug" but "where else is this
     /// reader hand-rolled".**
     fn macos_read_memory(&mut self) -> Result<()> {
-        let Some(vm) = crate::platform::macos::vm_stat() else {
-            // Nothing was read, so nothing is reported. Filling these with
-            // zeros would say the machine has no memory.
-            return Ok(());
-        };
+        // Nothing read is an error, not a zero: filling these in would say the machine has no
+        // memory.
+        let vm = crate::platform::macos::vm_stat().ok_or_else(|| {
+            crate::error::IronError::System("vm_stat could not be read".to_string())
+        })?;
+        let total = crate::platform::macos::sysctl_u64("hw.memsize").ok_or_else(|| {
+            crate::error::IronError::System("hw.memsize could not be read".to_string())
+        })?;
 
         // `VmStat`'s helpers are in bytes and multiply by the page size it read.
-        self.memory.free = vm.free * vm.page_size;
-        self.memory.active = vm.active * vm.page_size;
-        self.memory.inactive = vm.inactive * vm.page_size;
-        self.memory.cached = vm.cached_bytes();
+        let free = vm.free * vm.page_size;
+        let inactive = vm.inactive * vm.page_size;
+        let available = free + inactive;
 
-        if let Some(total) = crate::platform::macos::sysctl_u64("hw.memsize") {
-            self.memory.total = total;
-            self.memory.available = self.memory.free + self.memory.inactive;
-            self.memory.used = self.memory.total.saturating_sub(self.memory.available);
-        }
+        self.memory.total = total;
+        self.memory.free = Some(free);
+        self.memory.active = Some(vm.active * vm.page_size);
+        self.memory.inactive = Some(inactive);
+        self.memory.cached = Some(vm.cached_bytes());
+        self.memory.available = Some(available);
+        self.memory.used = Some(total.saturating_sub(available));
 
         Ok(())
     }
@@ -957,23 +996,26 @@ impl MemoryMonitor {
     /// agent tool surface in `742427e`. All four were correct; that is the
     /// problem, since only the ones anybody edits stay that way.
     fn macos_read_swap(&mut self) -> Result<()> {
-        if let Some(usage) = crate::platform::macos::swap_usage() {
-            self.swap.total = usage.total;
-            self.swap.used = usage.used;
-            // `SwapUsage` carries total and used; `parse_swapusage` deliberately
-            // ignores the printed free, since for swap it is the difference by
-            // definition rather than an independent measurement.
-            self.swap.free = usage.total.saturating_sub(usage.used);
-        }
+        let usage = crate::platform::macos::swap_usage().ok_or_else(|| {
+            crate::error::IronError::System("vm.swapusage could not be read".to_string())
+        })?;
+        self.swap.total = usage.total;
+        self.swap.used = usage.used;
+        // `SwapUsage` carries total and used; `parse_swapusage` deliberately
+        // ignores the printed free, since for swap it is the difference by
+        // definition rather than an independent measurement.
+        self.swap.free = usage.total.saturating_sub(usage.used);
 
-        // macOS uses dynamic swap files
+        // macOS uses dynamic swap files. The sizes are the whole swap's rather than one
+        // file's, so the device carries none.
+        self.swap.devices.clear();
         if self.swap.total > 0 {
             self.swap.devices.push(SwapDevice {
                 path: "/private/var/vm/swapfile*".to_string(),
                 swap_type: SwapType::File,
-                total_bytes: self.swap.total,
-                used_bytes: self.swap.used,
-                priority: 0,
+                total_bytes: None,
+                used_bytes: None,
+                priority: None,
                 active: true,
             });
         }
@@ -1131,55 +1173,19 @@ impl MemoryMonitor {
     }
 }
 
-impl Default for MemoryMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or_else(|_| Self {
-            memory: MemoryInfo {
-                total: 0,
-                available: 0,
-                free: 0,
-                used: 0,
-                cached: 0,
-                buffers: 0,
-                shared: 0,
-                slab_reclaimable: 0,
-                active: 0,
-                inactive: 0,
-                dirty: 0,
-                writeback: 0,
-                mapped: 0,
-                mlocked: 0,
-                hugepages_total: 0,
-                hugepages_free: 0,
-                hugepage_size: 0,
-            },
-            swap: SwapInfo {
-                total: 0,
-                used: 0,
-                free: 0,
-                devices: Vec::new(),
-                zram: None,
-            },
-            stats: MemoryStats::default(),
-            vm_settings: HashMap::new(),
-            last_update: std::time::Instant::now(),
-        })
-    }
-}
-
-/// Summary of memory state
+/// Summary of memory state. A field is `None` when the reading it comes from was not made.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySummary {
     /// Memory usage percentage
-    pub memory_percent: f64,
+    pub memory_percent: Option<f64>,
     /// Swap usage percentage
-    pub swap_percent: f64,
+    pub swap_percent: Option<f64>,
     /// Memory pressure level
-    pub pressure: MemoryPressure,
+    pub pressure: Option<MemoryPressure>,
     /// Total physical memory
     pub total_memory: u64,
     /// Available memory
-    pub available_memory: u64,
+    pub available_memory: Option<u64>,
     /// Total swap
     pub total_swap: u64,
     /// Used swap
@@ -1188,8 +1194,8 @@ pub struct MemorySummary {
     pub has_zram: bool,
     /// ZRAM compression ratio (if available)
     pub zram_ratio: Option<f64>,
-    /// Health score (0-100)
-    pub health_score: u32,
+    /// Health score (0-100), `None` when memory usage was not read
+    pub health_score: Option<u32>,
 }
 
 /// Get a quick memory summary
@@ -1205,7 +1211,7 @@ pub fn memory_summary() -> Result<MemorySummary> {
         total_swap: monitor.swap.total,
         used_swap: monitor.swap.used,
         has_zram: monitor.swap.has_zram(),
-        zram_ratio: monitor.swap.zram.as_ref().map(|z| z.compression_ratio),
+        zram_ratio: monitor.swap.zram.as_ref().and_then(|z| z.compression_ratio),
         health_score: monitor.health_score(),
     })
 }
@@ -1240,13 +1246,39 @@ mod tests {
         let device = SwapDevice {
             path: "/swapfile".to_string(),
             swap_type: SwapType::File,
-            total_bytes: 1024 * 1024 * 1024,
-            used_bytes: 512 * 1024 * 1024,
-            priority: 0,
+            total_bytes: Some(1024 * 1024 * 1024),
+            used_bytes: Some(512 * 1024 * 1024),
+            priority: Some(0),
             active: true,
         };
 
-        assert_eq!(device.usage_percent(), 50.0);
-        assert_eq!(device.available_bytes(), 512 * 1024 * 1024);
+        assert_eq!(device.usage_percent(), Some(50.0));
+        assert_eq!(device.available_bytes(), Some(512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn test_unread_usage_is_none() {
+        // A device whose sizes were not read has no usage; zero is not a stand-in.
+        let device = SwapDevice {
+            path: "/swapfile".to_string(),
+            swap_type: SwapType::File,
+            total_bytes: None,
+            used_bytes: None,
+            priority: None,
+            active: true,
+        };
+        assert_eq!(device.usage_percent(), None);
+        assert_eq!(device.available_bytes(), None);
+
+        // No swap at all has no usage either: there is nothing to be a percentage of.
+        let swap = SwapInfo {
+            total: 0,
+            used: 0,
+            free: 0,
+            devices: Vec::new(),
+            zram: None,
+        };
+        assert_eq!(swap.usage_percent(), None);
+        assert!(!swap.has_swap());
     }
 }

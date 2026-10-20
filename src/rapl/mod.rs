@@ -56,7 +56,7 @@ pub struct EnergyReading {
     pub domain: PowerDomain,
     /// Domain name as reported by the system.
     pub name: String,
-    /// Socket / package index.
+    /// Socket / package index, parsed from the `intel-rapl:<N>` directory name.
     pub socket: u32,
     /// Current energy counter in microjoules.
     pub energy_uj: u64,
@@ -314,10 +314,15 @@ impl RaplMonitor {
                 }
 
                 let path = entry.path();
-                let socket = name
+                // A domain whose suffix does not parse cannot be attributed to a
+                // socket. It is skipped with its sub-domains, which share its
+                // socket, rather than reported as socket 0.
+                let Some(socket) = name
                     .strip_prefix("intel-rapl:")
                     .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0);
+                else {
+                    continue;
+                };
 
                 // Read the top-level domain
                 if let Some(reading) = Self::read_domain(&path, socket) {

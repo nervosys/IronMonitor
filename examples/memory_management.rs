@@ -18,28 +18,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mem = &monitor.memory;
     let pressure = monitor.pressure();
 
-    println!("   {} Memory Pressure: {:?}", pressure.emoji(), pressure);
-    println!("   {}", pressure.description());
+    match pressure {
+        Some(p) => {
+            println!("   {} Memory Pressure: {:?}", p.emoji(), p);
+            println!("   {}", p.description());
+        }
+        None => println!("   Memory Pressure: not read"),
+    }
     println!();
     println!("   Total:      {:>12}", format_bytes(mem.total));
     println!(
-        "   Used:       {:>12} ({:.1}%)",
-        format_bytes(mem.used),
-        mem.usage_percent()
+        "   Used:       {:>12} ({})",
+        shown_bytes(mem.used),
+        shown_percent(mem.usage_percent())
     );
-    println!("   Available:  {:>12}", format_bytes(mem.available));
-    println!("   Free:       {:>12}", format_bytes(mem.free));
+    println!("   Available:  {:>12}", shown_bytes(mem.available));
+    println!("   Free:       {:>12}", shown_bytes(mem.free));
 
-    if mem.cached > 0 || mem.buffers > 0 {
+    if mem.cached.is_some() || mem.buffers.is_some() {
         println!();
-        println!("   Cached:     {:>12}", format_bytes(mem.cached));
-        println!("   Buffers:    {:>12}", format_bytes(mem.buffers));
+        println!("   Cached:     {:>12}", shown_bytes(mem.cached));
+        println!("   Buffers:    {:>12}", shown_bytes(mem.buffers));
     }
 
-    if mem.active > 0 {
+    if mem.active.is_some() || mem.inactive.is_some() {
         println!();
-        println!("   Active:     {:>12}", format_bytes(mem.active));
-        println!("   Inactive:   {:>12}", format_bytes(mem.inactive));
+        println!("   Active:     {:>12}", shown_bytes(mem.active));
+        println!("   Inactive:   {:>12}", shown_bytes(mem.inactive));
     }
 
     // === Swap Information ===
@@ -49,18 +54,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let swap = &monitor.swap;
 
     if swap.has_swap() {
-        let swap_pressure = monitor.swap_pressure();
-        println!(
-            "   {} Swap Pressure: {:?}",
-            swap_pressure.emoji(),
-            swap_pressure
-        );
+        match monitor.swap_pressure() {
+            Some(p) => println!("   {} Swap Pressure: {:?}", p.emoji(), p),
+            None => println!("   Swap Pressure: not read"),
+        }
         println!();
         println!("   Total:      {:>12}", format_bytes(swap.total));
         println!(
-            "   Used:       {:>12} ({:.1}%)",
+            "   Used:       {:>12} ({})",
             format_bytes(swap.used),
-            swap.usage_percent()
+            shown_percent(swap.usage_percent())
         );
         println!("   Free:       {:>12}", format_bytes(swap.free));
 
@@ -74,12 +77,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SwapType::Unknown => "❓",
                 };
                 println!(
-                    "      {} {} - {} ({:.1}% used, priority {})",
+                    "      {} {} - {} ({} used, priority {})",
                     type_str,
                     device.path,
-                    format_bytes(device.total_bytes),
-                    device.usage_percent(),
-                    device.priority
+                    shown_bytes(device.total_bytes),
+                    shown_percent(device.usage_percent()),
+                    device
+                        .priority
+                        .map_or_else(|| "not read".to_string(), |p| p.to_string())
                 );
             }
         }
@@ -91,12 +96,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("      Disk Size:   {}", format_bytes(zram.disksize));
             println!("      Original:    {}", format_bytes(zram.original_bytes));
             println!("      Compressed:  {}", format_bytes(zram.compressed_bytes));
-            println!("      Ratio:       {:.2}x", zram.compression_ratio);
-            println!("      Algorithm:   {}", zram.algorithm);
+            println!("      Ratio:       {}", shown_ratio(zram.compression_ratio));
             println!(
-                "      Savings:     {} ({:.1}%)",
+                "      Algorithm:   {}",
+                zram.algorithm.as_deref().unwrap_or("not read")
+            );
+            println!(
+                "      Savings:     {} ({})",
                 format_bytes(zram.memory_savings()),
-                zram.savings_percent()
+                shown_percent(zram.savings_percent())
             );
         }
     } else {
@@ -106,15 +114,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === VM Statistics ===
     let stats = &monitor.stats;
-    if stats.page_faults_minor > 0 || stats.swap_in > 0 {
+    if stats.page_faults_minor.is_some() || stats.swap_in.is_some() {
         println!("\n📈 VM Statistics");
         println!("────────────────────────────────────────────────────────────");
-        println!("   Page faults (minor): {}", stats.page_faults_minor);
-        println!("   Page faults (major): {}", stats.page_faults_major);
-        println!("   Swap in:             {}", stats.swap_in);
-        println!("   Swap out:            {}", stats.swap_out);
-        if stats.oom_kills > 0 {
-            println!("   ⚠️  OOM kills:        {}", stats.oom_kills);
+        println!(
+            "   Page faults (minor): {}",
+            shown_count(stats.page_faults_minor)
+        );
+        println!(
+            "   Page faults (major): {}",
+            shown_count(stats.page_faults_major)
+        );
+        println!("   Swap in:             {}", shown_count(stats.swap_in));
+        println!("   Swap out:            {}", shown_count(stats.swap_out));
+        if stats.oom_kills.is_some_and(|n| n > 0) {
+            println!("   ⚠️  OOM kills:        {}", shown_count(stats.oom_kills));
         }
     }
 
@@ -172,34 +186,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🏥 Memory Health");
     println!("────────────────────────────────────────────────────────────");
 
-    let score = monitor.health_score();
-    let health_bar = create_health_bar(score);
-    let health_emoji = match score {
-        90..=100 => "💚",
-        70..=89 => "💛",
-        50..=69 => "🧡",
-        _ => "❤️",
-    };
+    match monitor.health_score() {
+        None => println!("   Health Score: not read"),
+        Some(score) => {
+            let health_bar = create_health_bar(score);
+            let health_emoji = match score {
+                90..=100 => "💚",
+                70..=89 => "💛",
+                50..=69 => "🧡",
+                _ => "❤️",
+            };
 
-    println!("   {} Health Score: {}/100", health_emoji, score);
-    println!("   {}", health_bar);
+            println!("   {} Health Score: {}/100", health_emoji, score);
+            println!("   {}", health_bar);
+        }
+    }
 
     // === Quick Summary ===
     println!("\n📋 Quick Summary");
     println!("────────────────────────────────────────────────────────────");
 
     let summary = memory_summary()?;
+    let used = summary
+        .available_memory
+        .map(|available| summary.total_memory.saturating_sub(available));
     println!(
-        "   Memory: {:.1}% used ({} / {})",
-        summary.memory_percent,
-        format_bytes(summary.total_memory - summary.available_memory),
+        "   Memory: {} used ({} / {})",
+        shown_percent(summary.memory_percent),
+        shown_bytes(used),
         format_bytes(summary.total_memory)
     );
 
     if summary.total_swap > 0 {
         println!(
-            "   Swap:   {:.1}% used ({} / {})",
-            summary.swap_percent,
+            "   Swap:   {} used ({} / {})",
+            shown_percent(summary.swap_percent),
             format_bytes(summary.used_swap),
             format_bytes(summary.total_swap)
         );
@@ -216,23 +237,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("────────────────────────────────────────────────────────────");
 
     match pressure {
-        MemoryPressure::Low => {
+        Some(MemoryPressure::Low) => {
             println!("   ✅ Memory usage is healthy");
         }
-        MemoryPressure::Medium => {
+        Some(MemoryPressure::Medium) => {
             println!("   ⚠️  Consider closing unused applications");
         }
-        MemoryPressure::High => {
+        Some(MemoryPressure::High) => {
             println!("   🟠 High memory pressure detected");
             println!("   • Close memory-intensive applications");
             println!("   • Consider increasing swap or adding ZRAM");
         }
-        MemoryPressure::Critical => {
+        Some(MemoryPressure::Critical) => {
             println!("   🔴 CRITICAL: System may become unstable!");
             println!("   • Close applications immediately");
             println!("   • Save your work");
             println!("   • Consider rebooting if system becomes unresponsive");
         }
+        None => println!("   Memory pressure not read"),
     }
 
     #[cfg(target_os = "linux")]
@@ -262,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("   // Check swap");
     println!("   if monitor.swap.has_zram() {{");
-    println!("       let ratio = monitor.swap.zram.unwrap().compression_ratio;");
+    println!("       let ratio = monitor.swap.zram.as_ref().and_then(|z| z.compression_ratio);");
     println!("   }}");
     println!();
     println!("   // Get top processes");
@@ -288,4 +310,21 @@ fn create_health_bar(score: u32) -> String {
         "⬜".repeat(empty),
         score
     )
+}
+
+/// What an unread value prints as. Zero would be a reading, so it is never used instead.
+fn shown_bytes(value: Option<u64>) -> String {
+    value.map_or_else(|| "not read".to_string(), format_bytes)
+}
+
+fn shown_percent(value: Option<f64>) -> String {
+    value.map_or_else(|| "not read".to_string(), |p| format!("{:.1}%", p))
+}
+
+fn shown_ratio(value: Option<f64>) -> String {
+    value.map_or_else(|| "not read".to_string(), |r| format!("{:.2}x", r))
+}
+
+fn shown_count(value: Option<u64>) -> String {
+    value.map_or_else(|| "not read".to_string(), |n| n.to_string())
 }
