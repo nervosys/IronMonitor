@@ -90,6 +90,11 @@ impl std::fmt::Display for Urgency {
     }
 }
 
+/// Fixed confidence for a disk SMART-health alert. A rule constant, not a probability.
+const CONFIDENCE_DISK_HEALTH_THRESHOLD: f64 = 0.9;
+/// Fixed confidence for a memory-error alert. A rule constant, not a probability.
+const CONFIDENCE_MEMORY_ERROR_THRESHOLD: f64 = 0.8;
+
 /// A predictive maintenance alert
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaintenanceAlert {
@@ -105,13 +110,18 @@ pub struct MaintenanceAlert {
     pub eta_hours: Option<f64>,
     /// Current degradation rate
     pub degradation_rate: Option<f64>,
-    /// Current value
+    /// Most recent sampled value the rule evaluated, in the metric's own unit.
     pub current_value: f64,
-    /// Threshold value
+    /// Limit the rule compared against, in the same unit as `current_value`. The
+    /// one exception is GPU clock degradation, where the comparison is made
+    /// against the MHz decline over the window rather than the clock itself.
     pub threshold: f64,
     /// Recommended action
     pub action: String,
-    /// Confidence level (0.0–1.0)
+    /// Confidence, 0.0-1.0. Trend alerts (thermal, GPU clock, fan) carry the
+    /// R-squared of their linear fit over the window, a statistic computed from
+    /// the samples. Disk and memory alerts carry a fixed per-rule constant. Neither
+    /// is the probability that the predicted failure happens.
     pub confidence: f64,
 }
 
@@ -416,7 +426,7 @@ impl MaintenanceEngine {
                             eta_hours: None,
                             degradation_rate: Some(slope),
                             current_value: current,
-                            threshold: 0.0,
+                            threshold: self.config.clock_degradation_mhz,
                             action:
                                 "May indicate chip degradation. Monitor power limits and thermals."
                                     .into(),
@@ -462,7 +472,7 @@ impl MaintenanceEngine {
                     current_value: current,
                     threshold: self.config.disk_health_warning,
                     action: "Back up important data immediately. Plan disk replacement.".into(),
-                    confidence: 0.9,
+                    confidence: CONFIDENCE_DISK_HEALTH_THRESHOLD,
                 });
             }
         }
@@ -550,7 +560,7 @@ impl MaintenanceEngine {
                         threshold: self.config.memory_error_threshold,
                         action: "Run memory diagnostics (memtest86+). Consider RAM replacement."
                             .into(),
-                        confidence: 0.8,
+                        confidence: CONFIDENCE_MEMORY_ERROR_THRESHOLD,
                     });
                 }
             }

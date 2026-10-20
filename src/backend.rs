@@ -244,8 +244,9 @@ pub struct ProcessState {
     /// Process name
     pub name: String,
 
-    /// CPU usage percentage
-    pub cpu_percent: f32,
+    /// CPU usage percentage, `None` when not yet known (see
+    /// [`crate::process_monitor::ProcessMonitorInfo::cpu_percent`])
+    pub cpu_percent: Option<f32>,
 
     /// Memory usage (bytes)
     pub memory_bytes: u64,
@@ -441,10 +442,11 @@ impl FullSystemState {
             ctx.push_str("Top Processes (by CPU):\n");
             for proc in self.top_processes.iter().take(5) {
                 ctx.push_str(&format!(
-                    "  {} (PID {}): CPU {:.1}%, Memory {:.0}MB",
+                    "  {} (PID {}): CPU {}, Memory {:.0}MB",
                     proc.name,
                     proc.pid,
-                    proc.cpu_percent,
+                    proc.cpu_percent
+                        .map_or_else(|| "not yet known".to_string(), |c| format!("{c:.1}%")),
                     proc.memory_bytes as f64 / 1024.0 / 1024.0
                 ));
                 if let Some(bytes) = proc.gpu_memory_bytes.filter(|b| *b > 0) {

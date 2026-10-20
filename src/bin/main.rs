@@ -2180,7 +2180,8 @@ fn print_process_info_backend(
         if let Some(procs) = by_category.get(*category) {
             let count = procs.len();
             let gpu_count = procs.iter().filter(|p| p.is_gpu_process()).count();
-            let total_cpu: f32 = procs.iter().map(|p| p.cpu_percent).sum();
+            // `None` when any member's figure is not yet known.
+            let total_cpu: Option<f32> = procs.iter().map(|p| p.cpu_percent).sum();
             let total_mem: u64 = procs.iter().map(|p| p.memory_bytes).sum();
             let mem_mb = total_mem as f64 / 1024.0 / 1024.0;
 
@@ -2190,11 +2191,10 @@ fn print_process_info_backend(
                 "-".dimmed().to_string()
             };
 
-            let cpu_str = format!("{:.1}", total_cpu);
-            let cpu_colored = if total_cpu > 50.0 {
-                cpu_str.yellow()
-            } else {
-                cpu_str.green()
+            let cpu_colored = match total_cpu {
+                Some(c) if c > 50.0 => format!("{c:.1}").yellow(),
+                Some(c) => format!("{c:.1}").green(),
+                None => "--".dimmed(),
             };
 
             let mem_str = format!("{:.1}MB", mem_mb);
@@ -2261,13 +2261,11 @@ fn print_process_info_backend(
                         (false, _) => "-".dimmed().to_string(),
                     };
 
-                    let cpu_str = format!("{:.1}", proc.cpu_percent);
-                    let cpu_colored = if proc.cpu_percent > 50.0 {
-                        cpu_str.red()
-                    } else if proc.cpu_percent > 20.0 {
-                        cpu_str.yellow()
-                    } else {
-                        cpu_str.green()
+                    let cpu_colored = match proc.cpu_percent {
+                        Some(c) if c > 50.0 => format!("{c:.1}").red(),
+                        Some(c) if c > 20.0 => format!("{c:.1}").yellow(),
+                        Some(c) => format!("{c:.1}").green(),
+                        None => "--".dimmed(),
                     };
 
                     let name = if proc.name.len() > 30 {
@@ -2607,11 +2605,10 @@ fn print_process_info_v2(
                 "-".dimmed().to_string()
             };
 
-            let cpu_str = format!("{:.1}", stats.total_cpu_percent);
-            let cpu_colored = if stats.total_cpu_percent > 50.0 {
-                cpu_str.yellow()
-            } else {
-                cpu_str.green()
+            let cpu_colored = match stats.total_cpu_percent {
+                Some(c) if c > 50.0 => format!("{c:.1}").yellow(),
+                Some(c) => format!("{c:.1}").green(),
+                None => "--".dimmed(),
             };
 
             let mem_str = format!("{:.1}MB", stats.memory_mb());
@@ -2682,13 +2679,11 @@ fn print_process_info_v2(
                         (false, _) => "-".dimmed().to_string(),
                     };
 
-                    let cpu_str = format!("{:.1}", proc.cpu_percent);
-                    let cpu_colored = if proc.cpu_percent > 50.0 {
-                        cpu_str.red()
-                    } else if proc.cpu_percent > 20.0 {
-                        cpu_str.yellow()
-                    } else {
-                        cpu_str.green()
+                    let cpu_colored = match proc.cpu_percent {
+                        Some(c) if c > 50.0 => format!("{c:.1}").red(),
+                        Some(c) if c > 20.0 => format!("{c:.1}").yellow(),
+                        Some(c) => format!("{c:.1}").green(),
+                        None => "--".dimmed(),
                     };
 
                     let name = if proc.name.len() > 30 {

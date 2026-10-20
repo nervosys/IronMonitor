@@ -460,7 +460,7 @@ impl AiDataApi {
         // GPU info
         if let Some(ref gpus) = self.gpus {
             if let Ok(snapshots) = gpus.snapshot_all() {
-                summary.gpu_count = snapshots.len();
+                summary.gpu_count = Some(snapshots.len());
                 for snapshot in snapshots {
                     summary.gpus.push(GpuSummary {
                         name: snapshot.static_info.name.clone(),
@@ -482,10 +482,11 @@ impl AiDataApi {
         // Process info
         if let Some(ref mut proc_mon) = self.process_monitor {
             if let Ok(procs) = proc_mon.processes() {
-                summary.process_count = procs.len();
+                summary.process_count = Some(procs.len());
 
                 // Calculate total CPU usage
-                summary.total_cpu_percent = procs.iter().map(|p| p.cpu_percent).sum();
+                summary.total_cpu_percent =
+                    procs.iter().map(|p| p.cpu_percent).sum::<Option<f32>>();
 
                 // Get top CPU consumers
                 let mut by_cpu = procs.clone();
@@ -524,7 +525,7 @@ impl AiDataApi {
 
             // GPU processes
             if let Ok(gpu_procs) = proc_mon.gpu_processes() {
-                summary.gpu_process_count = gpu_procs.len();
+                summary.gpu_process_count = Some(gpu_procs.len());
                 summary.top_gpu_processes = gpu_procs
                     .iter()
                     .take(5)
@@ -542,7 +543,7 @@ impl AiDataApi {
         // Network info
         if let Some(ref mut net_mon) = self.network_monitor {
             if let Ok(interfaces) = net_mon.active_interfaces() {
-                summary.active_network_interfaces = interfaces.len();
+                summary.active_network_interfaces = Some(interfaces.len());
                 for iface in interfaces {
                     let rate = net_mon.bandwidth_rate(&iface.name, &iface);
                     summary.network_interfaces.push(NetworkSummary {
@@ -580,7 +581,7 @@ impl AiDataApi {
 
         // Disk info
         if let Ok(disks) = crate::disk::enumerate_disks() {
-            summary.disk_count = disks.len();
+            summary.disk_count = Some(disks.len());
             for disk in &disks {
                 if let Ok(info) = disk.info() {
                     summary.disks.push(DiskSummary {

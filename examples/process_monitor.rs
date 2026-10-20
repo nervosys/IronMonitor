@@ -43,10 +43,11 @@ fn main() -> Result<()> {
                 .join(",");
 
             println!(
-                "| {:>6} | {} | {:>5.1} | {:>7.1} | {:>5} | {:>6.1} MB |",
+                "| {:>6} | {} | {:>5} | {:>7.1} | {:>5} | {:>6.1} MB |",
                 proc.pid,
                 name,
-                proc.cpu_usage(),
+                proc.cpu_usage()
+                    .map_or_else(|| "--".to_string(), |c| format!("{c:.1}")),
                 proc.memory_mb(),
                 gpus,
                 proc.gpu_memory_mb()
@@ -83,10 +84,11 @@ fn main() -> Result<()> {
             };
 
             println!(
-                "| {:>6} | {} | {:>5.1} | {:>7.1} | {:>13} |",
+                "| {:>6} | {} | {:>5} | {:>7.1} | {:>13} |",
                 proc.pid,
                 name,
-                proc.cpu_usage(),
+                proc.cpu_usage()
+                    .map_or_else(|| "--".to_string(), |c| format!("{c:.1}")),
                 proc.memory_mb(),
                 state_prio
             );

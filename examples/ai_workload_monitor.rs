@@ -183,7 +183,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let processes = process_monitor.processes()?;
                 if let Some(proc) = processes.iter().find(|p| p.pid == workload.pid) {
                     println!("\n  Resource Usage:");
-                    println!("    CPU:         {:.1}%", proc.cpu_percent);
+                    match proc.cpu_percent {
+                        Some(c) => println!("    CPU:         {c:.1}%"),
+                        None => println!("    CPU:         not yet known"),
+                    }
                     println!("    Memory:      {:.2} GB", proc.memory_mb() / 1024.0);
 
                     if proc.is_gpu_process() {

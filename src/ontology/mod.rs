@@ -1935,7 +1935,8 @@ impl Ontology {
             false,
             "How sure the reader is of this row, as a percentage. Full confidence \
              means the driver was asked; anything less means the capability was \
-             concluded from the GPU model. Published alongside the reading's \
+             concluded from the GPU model. Each value is a fixed constant of the rule that \
+             produced the row, not a measured probability. Published alongside the reading's \
              own provenance rather than instead of it: the provenance says what \
              kind of claim this is and the confidence says how strong.",
         )

@@ -1832,13 +1832,18 @@ impl App {
         match self.process_display_mode {
             All | Cpu => {
                 // Check if we have CPU data
-                let has_cpu_data = self.processes.iter().any(|p| p.cpu_percent > 0.1);
+                let has_cpu_data = self
+                    .processes
+                    .iter()
+                    .any(|p| p.cpu_percent.is_some_and(|c| c > 0.1));
 
                 for (i, p) in self.processes.iter().enumerate() {
                     if self.process_display_mode == Cpu && !has_cpu_data {
                         // No CPU data, just use memory
                         indexed.push((i, (p.memory_bytes, 0)));
-                    } else if self.process_display_mode == Cpu && p.cpu_percent <= 0.1 {
+                    } else if self.process_display_mode == Cpu
+                        && !p.cpu_percent.is_some_and(|c| c > 0.1)
+                    {
                         // Skip processes with no CPU usage in CPU mode
                         continue;
                     } else {
@@ -1850,7 +1855,8 @@ impl App {
                             0
                         };
                         // CPU percent as secondary key (scaled to u64 for comparison)
-                        let cpu_key = (p.cpu_percent * 1000.0) as u64;
+                        // A sort key, not a reading: unknown sorts last.
+                        let cpu_key = p.cpu_percent.map_or(0, |c| (c * 1000.0) as u64);
                         indexed.push((i, (gpu_boost + cpu_key, p.memory_bytes)));
                     }
                 }
@@ -1971,11 +1977,11 @@ impl App {
                 let mut procs: Vec<&ProcessMonitorInfo> = self.processes.iter().collect();
 
                 // Check if we have valid CPU data (at least one process with cpu_percent > 0)
-                let has_cpu_data = procs.iter().any(|p| p.cpu_percent > 0.1);
+                let has_cpu_data = procs.iter().any(|p| p.cpu_percent.is_some_and(|c| c > 0.1));
 
                 if has_cpu_data {
                     // Filter to processes actually using CPU
-                    procs.retain(|p| p.cpu_percent > 0.1);
+                    procs.retain(|p| p.cpu_percent.is_some_and(|c| c > 0.1));
                     procs.sort_by(|a, b| {
                         b.cpu_percent
                             .partial_cmp(&a.cpu_percent)

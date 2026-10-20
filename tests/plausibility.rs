@@ -293,13 +293,17 @@ fn process_table_is_plausible() {
 
     for proc in &snap.processes {
         assert!(!proc.name.is_empty(), "process {} has no name", proc.pid);
-        assert!(
-            proc.cpu_percent >= 0.0 && proc.cpu_percent < 10_000.0,
-            "process {} ({}) reports {}% CPU",
-            proc.pid,
-            proc.name,
-            proc.cpu_percent
-        );
+        // Unknown is allowed (a process too new to average); a figure must
+        // be plausible.
+        if let Some(cpu) = proc.cpu_percent {
+            assert!(
+                (0.0..10_000.0).contains(&cpu),
+                "process {} ({}) reports {}% CPU",
+                proc.pid,
+                proc.name,
+                cpu
+            );
+        }
     }
 
     // PIDs must be unique; duplicates mean the enumeration emitted a process twice,

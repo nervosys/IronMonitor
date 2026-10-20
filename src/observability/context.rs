@@ -517,8 +517,9 @@ pub struct ProcessMetrics {
     pub pid: u32,
     /// Process name
     pub name: String,
-    /// CPU usage percentage
-    pub cpu_percent: f32,
+    /// CPU usage percentage, `None` when not yet known (see
+    /// [`crate::process_monitor::ProcessMonitorInfo::cpu_percent`])
+    pub cpu_percent: Option<f32>,
     /// Memory usage in MB
     pub memory_mb: u64,
     /// GPU memory in MB (if using GPU)

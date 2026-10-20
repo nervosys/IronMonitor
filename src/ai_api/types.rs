@@ -12,18 +12,21 @@ pub struct SystemSummary {
     pub timestamp: u64,
 
     // GPU Summary
-    /// Number of GPUs detected
-    pub gpu_count: usize,
+    /// Number of GPUs detected, or `None` when GPU enumeration was not
+    /// available or failed. Every count here defaulted to 0, which read as
+    /// "this machine has none".
+    pub gpu_count: Option<usize>,
     /// Summary for each GPU
     pub gpus: Vec<GpuSummary>,
 
     // Process Summary
-    /// Total number of processes
-    pub process_count: usize,
-    /// Total CPU usage across all processes
-    pub total_cpu_percent: f32,
-    /// Number of processes using GPU
-    pub gpu_process_count: usize,
+    /// Total number of processes, or `None` when enumeration failed
+    pub process_count: Option<usize>,
+    /// Total CPU usage across all processes, or `None` when any process's
+    /// figure was not known -- a sum that left it out would be short.
+    pub total_cpu_percent: Option<f32>,
+    /// Number of processes using GPU, or `None` when not enumerated
+    pub gpu_process_count: Option<usize>,
     /// Top 5 CPU-consuming processes
     pub top_cpu_processes: Vec<ProcessSummary>,
     /// Top 5 memory-consuming processes
@@ -36,14 +39,14 @@ pub struct SystemSummary {
     pub memory: Option<MemorySummary>,
 
     // Network Summary
-    /// Number of active network interfaces
-    pub active_network_interfaces: usize,
+    /// Number of active network interfaces, or `None` when not enumerated
+    pub active_network_interfaces: Option<usize>,
     /// Network interface summaries
     pub network_interfaces: Vec<NetworkSummary>,
 
     // Disk Summary
-    /// Number of disks
-    pub disk_count: usize,
+    /// Number of disks, or `None` when enumeration failed
+    pub disk_count: Option<usize>,
     /// Disk summaries
     pub disks: Vec<DiskSummary>,
 }
@@ -77,8 +80,9 @@ pub struct ProcessSummary {
     pub pid: u32,
     /// Process name
     pub name: String,
-    /// CPU usage percentage
-    pub cpu_percent: f32,
+    /// CPU usage percentage, `None` when not yet known (see
+    /// [`crate::process_monitor::ProcessMonitorInfo::cpu_percent`])
+    pub cpu_percent: Option<f32>,
     /// Memory usage in MB
     pub memory_mb: u64,
     /// GPU memory usage in MB, or `None` where no device reported one.

@@ -1675,7 +1675,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                 .map(|(display_idx, p)| {
                     let is_selected = selected_display_idx == Some(display_idx);
                     // Use device-class colors for process metrics
-                    let cpu_clr = cpu_color(p.cpu_percent);
+                    let cpu_clr = p.cpu_percent.map_or(Color::DarkGray, cpu_color);
                     let gpu_clr = accel_color(p.gpu_usage_percent.unwrap_or(0.0));
                     let enc_clr = accel_color(p.encoder_usage_percent.unwrap_or(0.0));
 
@@ -1761,7 +1761,10 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                                 Style::default().fg(Color::White),
                             ),
                             Span::styled(
-                                format!("{:>5.1}%", p.cpu_percent),
+                                p.cpu_percent.map_or_else(
+                                    || format!("{:>6}", "--"),
+                                    |c| format!("{c:>5.1}%"),
+                                ),
                                 Style::default().fg(cpu_clr),
                             ),
                             Span::styled(
@@ -1875,7 +1878,10 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                                 Style::default().fg(Color::White),
                             ),
                             Span::styled(
-                                format!("{:>5.1}%", p.cpu_percent),
+                                p.cpu_percent.map_or_else(
+                                    || format!("{:>6}", "--"),
+                                    |c| format!("{c:>5.1}%"),
+                                ),
                                 Style::default().fg(cpu_clr),
                             ),
                             Span::styled(
@@ -3025,7 +3031,11 @@ fn draw_process_detail_overlay(f: &mut Frame, app: &App) {
             ]),
             Line::from(vec![
                 Span::styled("CPU: ", Style::default().fg(Color::Rgb(166, 227, 161))),
-                Span::raw(format!("{:.1}%", process.cpu_percent)),
+                Span::raw(
+                    process
+                        .cpu_percent
+                        .map_or_else(|| "not yet known".to_string(), |c| format!("{c:.1}%")),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Memory: ", Style::default().fg(Color::Rgb(166, 227, 161))),

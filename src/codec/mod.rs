@@ -83,6 +83,30 @@ pub enum CapabilitySource {
     Manual,
 }
 
+/// Fixed confidence for a row read from `vainfo`, a direct driver query. Not a probability.
+#[cfg(target_os = "linux")]
+const CONFIDENCE_VAINFO_QUERY: f32 = 1.0;
+/// Fixed confidence for the NVIDIA base codec table, inferred from the GPU name.
+const CONFIDENCE_NVIDIA_BASE_CODECS: f32 = 0.85;
+/// Fixed confidence for AV1 encode and decode on RTX 40-series, inferred from the GPU name.
+const CONFIDENCE_NVIDIA_AV1_RTX40: f32 = 0.9;
+/// Fixed confidence for AV1 decode on RTX 30-series, inferred from the GPU name.
+const CONFIDENCE_NVIDIA_AV1_RTX30: f32 = 0.85;
+/// Fixed confidence for the AMD base codec table, inferred from the GPU name.
+const CONFIDENCE_AMD_BASE_CODECS: f32 = 0.8;
+/// Fixed confidence for AV1 on RDNA 3 (VCN 4.0), inferred from the GPU name.
+const CONFIDENCE_AMD_AV1_RDNA3: f32 = 0.85;
+/// Fixed confidence for AV1 decode on RDNA 2 (VCN 3.0), inferred from the GPU name.
+const CONFIDENCE_AMD_AV1_RDNA2: f32 = 0.8;
+/// Fixed confidence for the Intel base codec table, inferred from the GPU name.
+const CONFIDENCE_INTEL_BASE_CODECS: f32 = 0.8;
+/// Fixed confidence for AV1 on Intel Arc (Xe Media Engine), inferred from the GPU name.
+const CONFIDENCE_INTEL_ARC_AV1: f32 = 0.85;
+/// Fixed confidence for the Apple Media Engine codec table, inferred from the chip name.
+const CONFIDENCE_APPLE_BASE_CODECS: f32 = 0.9;
+/// Fixed confidence for AV1 decode on M3, M4 and M2 Pro/Max/Ultra, inferred from the chip name.
+const CONFIDENCE_APPLE_AV1: f32 = 0.85;
+
 /// A single codec capability
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodecCapability {
@@ -108,7 +132,10 @@ pub struct CodecCapability {
     pub engine: String,
     /// How this capability was determined
     pub source: CapabilitySource,
-    /// Confidence level (0.0-1.0), 1.0 = directly queried
+    /// Confidence (0.0-1.0) that this row is right. Not a measured probability:
+    /// it is the fixed constant of the detection rule that produced the row (one
+    /// of the `CONFIDENCE_*` constants in this module), chosen by the code. Only a
+    /// driver query carries 1.0. Rows are built only inside a rule that matched.
     pub confidence: f32,
 }
 
@@ -404,7 +431,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "NVENC/NVDEC".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.85,
+                confidence: CONFIDENCE_NVIDIA_BASE_CODECS,
             });
         }
 
@@ -419,7 +446,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "NVENC/NVDEC".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.9,
+                confidence: CONFIDENCE_NVIDIA_AV1_RTX40,
             });
         } else if is_rtx30 {
             self.codec_caps.push(CodecCapability {
@@ -431,7 +458,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "NVDEC".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.85,
+                confidence: CONFIDENCE_NVIDIA_AV1_RTX30,
             });
         }
 
@@ -473,7 +500,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "VCN".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.8,
+                confidence: CONFIDENCE_AMD_BASE_CODECS,
             });
         }
 
@@ -487,7 +514,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "VCN 4.0".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.85,
+                confidence: CONFIDENCE_AMD_AV1_RDNA3,
             });
         } else if is_rdna2 {
             self.codec_caps.push(CodecCapability {
@@ -499,7 +526,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "VCN 3.0".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.8,
+                confidence: CONFIDENCE_AMD_AV1_RDNA2,
             });
         }
     }
@@ -538,7 +565,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "Quick Sync".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.8,
+                confidence: CONFIDENCE_INTEL_BASE_CODECS,
             });
         }
 
@@ -552,7 +579,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "Xe Media Engine".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.85,
+                confidence: CONFIDENCE_INTEL_ARC_AV1,
             });
         }
     }
@@ -595,7 +622,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.9,
+                confidence: CONFIDENCE_APPLE_BASE_CODECS,
             });
         }
 
@@ -615,7 +642,7 @@ impl CodecMonitor {
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
                 source: CapabilitySource::Inferred,
-                confidence: 0.85,
+                confidence: CONFIDENCE_APPLE_AV1,
             });
         }
     }
@@ -760,7 +787,7 @@ impl CodecMonitor {
                     max_fps: None,
                     engine: "VA-API".into(),
                     source: CapabilitySource::DirectQuery,
-                    confidence: 1.0,
+                    confidence: CONFIDENCE_VAINFO_QUERY,
                 });
             }
         }

@@ -4146,7 +4146,9 @@ impl IronMonitorApp {
 
             // Process rows (htop-style with state and priority)
             for process in processes.iter().take(100) {
-                let cpu_color = theme::utilization_color(process.cpu_percent);
+                let cpu_color = process
+                    .cpu_percent
+                    .map_or(CyberColors::TEXT_SECONDARY, theme::utilization_color);
                 let mem_mb = process.memory_bytes as f64 / 1024.0 / 1024.0;
                 let gpu_mem_mb = process
                     .total_gpu_memory_bytes
@@ -4198,9 +4200,13 @@ impl IronMonitorApp {
                     );
                     // CPU
                     ui.label(
-                        RichText::new(format!("{:>5.1}%", process.cpu_percent))
-                            .color(theme::color(&palette_ctx, cpu_color))
-                            .monospace(),
+                        RichText::new(
+                            process
+                                .cpu_percent
+                                .map_or_else(|| format!("{:>6}", "--"), |c| format!("{c:>5.1}%")),
+                        )
+                        .color(theme::color(&palette_ctx, cpu_color))
+                        .monospace(),
                     );
                     ui.add_space(10.0);
                     // Memory

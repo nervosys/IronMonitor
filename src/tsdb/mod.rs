@@ -26,7 +26,10 @@ const MAGIC_BYTES: &[u8; 8] = b"SIMONDB\0";
 /// an idle machine or a tick whose read failed, and nothing in the file says
 /// which. A reader that took version 5 rows as version 6 would keep reading
 /// those zeros as measurements, which is the error this bump exists to stop.
-const DB_VERSION: u32 = 6;
+///
+/// 6 -> 7: process CPU became `Option`. A version-6 row for a process with no
+/// lifetime yet holds its CPU time over an assumed second, or 0%.
+const DB_VERSION: u32 = 7;
 
 /// Size of the database header
 const HEADER_SIZE: u64 = 128;
@@ -89,8 +92,9 @@ pub struct ProcessSnapshot {
     pub pid: u32,
     /// Process name
     pub name: String,
-    /// CPU usage percentage (0-100)
-    pub cpu_percent: f32,
+    /// CPU usage percentage (0-100), `None` when not yet known (see
+    /// [`crate::process_monitor::ProcessMonitorInfo::cpu_percent`])
+    pub cpu_percent: Option<f32>,
     /// Memory usage in bytes
     pub memory_bytes: u64,
     /// GPU memory in bytes, or `None` where no device reported one.
@@ -329,7 +333,9 @@ impl TimeSeriesDb {
                     "absent (before 3), Windows swap as the system commit ",
                     "charge rather than pagefile usage (before 4), and network ",
                     "rates as zero on every row because the reader could not ",
-                    "compute one (before 5). None can be converted, because a ",
+                    "compute one (before 5), and a just-started process's CPU ",
+                    "as a figure over an assumed second or 0% (before 7). None ",
+                    "can be converted, because a ",
                     "stored number does not say which definition produced it. ",
                     "Record to a new file, or delete this one with ",
                     "`ironmon record clear`.",
@@ -782,7 +788,7 @@ mod tests {
             processes: vec![ProcessSnapshot {
                 pid: 1,
                 name: "p".to_string(),
-                cpu_percent: 1.0,
+                cpu_percent: Some(1.0),
                 memory_bytes: 2,
                 gpu_memory_bytes: Some(3),
                 gpu_percent: None,

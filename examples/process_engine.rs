@@ -31,13 +31,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         for process in gpu_procs.iter().take(10) {
             println!(
-                "{:<8} {:<12} {:<12} {:<12.1} {:<20}",
+                "{:<8} {:<12} {:<12} {:<12} {:<20}",
                 process.pid,
                 process.user.as_deref().unwrap_or("unknown"),
                 process
                     .total_gpu_memory_bytes
                     .map_or_else(|| "n/a".to_string(), |b| (b / 1024 / 1024).to_string()),
-                process.cpu_percent,
+                process
+                    .cpu_percent
+                    .map_or_else(|| "--".to_string(), |c| format!("{c:.1}")),
                 process.name
             );
         }
@@ -59,10 +61,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for process in cpu_procs.iter().take(10) {
         println!(
-            "{:<8} {:<12} {:<12.1} {:<12} {:<20}",
+            "{:<8} {:<12} {:<12} {:<12} {:<20}",
             process.pid,
             process.user.as_deref().unwrap_or("unknown"),
-            process.cpu_percent,
+            process
+                .cpu_percent
+                .map_or_else(|| "--".to_string(), |c| format!("{c:.1}")),
             process.memory_bytes / 1024 / 1024,
             process.name
         );

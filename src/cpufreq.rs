@@ -163,8 +163,14 @@ pub struct CpuIdleState {
 pub struct CpuFreqInfo {
     /// CPU ID (0, 1, 2, ...)
     pub id: u32,
-    /// Is CPU online
-    pub online: bool,
+    /// Is CPU online, or `None` where its state was not read.
+    ///
+    /// Linux reads `cpuN/online`. A CPU with no `online` file (cpu0, and CPUs
+    /// the kernel cannot hot-unplug) is `Some(true)`: the file is absent
+    /// because there is no way to take it offline. A file that exists but
+    /// cannot be read is `None`, not online. Windows and macOS do not report a
+    /// per-CPU online state here, so it is `None` there.
+    pub online: Option<bool>,
     /// Current frequency (kHz), or `None` where it was not read.
     ///
     /// **The last bare frequency field, and the one every helper below
@@ -222,7 +228,7 @@ impl CpuFreqInfo {
     pub fn new(id: u32) -> Self {
         Self {
             id,
-            online: true,
+            online: None,
             current_freq_khz: None,
             current_freq_mhz: None,
             min_freq_khz: None,
@@ -372,14 +378,22 @@ impl CpuFreqMonitor {
         self.cpus.iter().find(|c| c.id == id)
     }
 
-    /// Get online CPUs
+    /// Get CPUs known to be online. A CPU whose state was not read is in
+    /// neither this list nor [`Self::offline_cpus`].
     pub fn online_cpus(&self) -> Vec<&CpuFreqInfo> {
-        self.cpus.iter().filter(|c| c.online).collect()
+        self.cpus
+            .iter()
+            .filter(|c| c.online == Some(true))
+            .collect()
     }
 
-    /// Get offline CPUs
+    /// Get CPUs known to be offline. A CPU whose state was not read is in
+    /// neither this list nor [`Self::online_cpus`].
     pub fn offline_cpus(&self) -> Vec<&CpuFreqInfo> {
-        self.cpus.iter().filter(|c| !c.online).collect()
+        self.cpus
+            .iter()
+            .filter(|c| c.online == Some(false))
+            .collect()
     }
 
     /// Get policies
@@ -392,19 +406,20 @@ impl CpuFreqMonitor {
         &self.turbo
     }
 
-    /// Get current governor (from first online CPU or policy)
+    /// Get current governor (from the first CPU not known to be offline, or
+    /// policy)
     pub fn current_governor(&self) -> Option<Governor> {
         self.cpus
             .iter()
-            .find(|c| c.online)
+            .find(|c| c.online != Some(false))
             .map(|c| c.governor.clone())
     }
 
-    /// Get available governors
+    /// Get available governors (from the first CPU not known to be offline)
     pub fn available_governors(&self) -> Vec<Governor> {
         self.cpus
             .iter()
-            .find(|c| c.online)
+            .find(|c| c.online != Some(false))
             .map(|c| c.available_governors.clone())
             .unwrap_or_default()
     }
@@ -633,15 +648,20 @@ impl CpuFreqMonitor {
             cpu.sysfs_path = Some(cpu_dir.clone());
             cpu.model = cpu_model.clone();
 
-            // Check online status
+            // Check online status. cpu0 and CPUs the kernel cannot hot-unplug
+            // have no `online` file, and are always online: the file's absence
+            // is a reading, not a gap. A file that exists but cannot be read is
+            // unknown (None), not online.
             let online_file = cpu_dir.join("online");
             if online_file.exists() {
                 cpu.online = fs::read_to_string(&online_file)
-                    .map(|s| s.trim() == "1")
-                    .unwrap_or(true);
+                    .ok()
+                    .map(|s| s.trim() == "1");
+            } else {
+                cpu.online = Some(true);
             }
 
-            if !cpu.online {
+            if cpu.online == Some(false) {
                 self.cpus.push(cpu);
                 continue;
             }
@@ -879,7 +899,7 @@ impl CpuFreqMonitor {
         let gov_str = governor.to_string();
 
         for cpu in &self.cpus {
-            if !cpu.online {
+            if cpu.online == Some(false) {
                 continue;
             }
 
@@ -910,7 +930,7 @@ impl CpuFreqMonitor {
             .find(|c| c.id == cpu_id)
             .ok_or_else(|| IronError::DeviceNotFound(format!("CPU{} not found", cpu_id)))?;
 
-        if !cpu.online {
+        if cpu.online == Some(false) {
             return Err(IronError::InvalidValue(format!("CPU{} is offline", cpu_id)));
         }
 
@@ -930,7 +950,7 @@ impl CpuFreqMonitor {
         use std::fs;
 
         for cpu in &self.cpus {
-            if !cpu.online {
+            if cpu.online == Some(false) {
                 continue;
             }
 
@@ -956,7 +976,7 @@ impl CpuFreqMonitor {
         use std::fs;
 
         for cpu in &self.cpus {
-            if !cpu.online {
+            if cpu.online == Some(false) {
                 continue;
             }
 
@@ -987,6 +1007,13 @@ impl CpuFreqMonitor {
         fs::write(&online_file, value).map_err(|e| {
             IronError::System(format!("Failed to set CPU{} online status: {}", cpu_id, e))
         })?;
+
+        // The write succeeded, so the CPU is in the state asked for. The
+        // refresh below re-reads sysfs and replaces this with what the kernel
+        // reports.
+        if let Some(cpu) = self.cpus.iter_mut().find(|c| c.id == cpu_id) {
+            cpu.online = Some(online);
+        }
 
         self.refresh()?;
         Ok(())
@@ -1028,7 +1055,7 @@ impl CpuFreqMonitor {
         let pref_str = pref.to_string();
 
         for cpu in &self.cpus {
-            if !cpu.online {
+            if cpu.online == Some(false) {
                 continue;
             }
 
@@ -1092,7 +1119,8 @@ impl CpuFreqMonitor {
         // Create CPU entries
         for id in 0..num_cpus {
             let mut cpu = CpuFreqInfo::new(id);
-            cpu.online = true;
+            // GetSystemInfo gives a processor count, not the online state of
+            // each processor, so `online` stays `None` (from `CpuFreqInfo::new`).
             cpu.governor = governor.clone();
 
             // Apply WMI info if available
@@ -1189,8 +1217,9 @@ impl CpuFreqMonitor {
             if let Ok(count_str) = String::from_utf8(output.stdout) {
                 if let Ok(count) = count_str.trim().parse::<u32>() {
                     for id in 0..count {
-                        let mut cpu = CpuFreqInfo::new(id);
-                        cpu.online = true;
+                        // hw.ncpu counts every CPU, not the online ones, and
+                        // hw.activecpu is not read here, so `online` stays `None`.
+                        let cpu = CpuFreqInfo::new(id);
                         self.cpus.push(cpu);
                     }
                 }
@@ -1313,8 +1342,9 @@ fn windows_get_power_scheme() -> (Option<String>, Governor) {
 pub struct CpuFreqSummary {
     /// Total CPUs
     pub total_cpus: usize,
-    /// Online CPUs
-    pub online_cpus: usize,
+    /// Online CPUs, or `None` while any CPU's online state was not read
+    /// (Windows and macOS do not report it per CPU).
+    pub online_cpus: Option<usize>,
     /// Current governor
     pub governor: Option<String>,
     /// Average frequency (MHz) over the cores that reported one, or `None`
@@ -1337,16 +1367,15 @@ pub fn cpufreq_summary() -> Result<CpuFreqSummary> {
     let monitor = CpuFreqMonitor::new()?;
     let cpus = monitor.cpus();
 
-    let online_cpus: Vec<_> = cpus.iter().filter(|c| c.online).collect();
+    // CPUs not known to be offline. A CPU whose state was not read still has
+    // frequency readings of its own, so it stays in the aggregates below.
+    let usable: Vec<_> = cpus.iter().filter(|c| c.online != Some(false)).collect();
 
     // Averaged over the cores that reported a frequency, and `None` if none
     // did. Summing `0` for an unread core and dividing by the full core count
     // produced an average that was neither the mean of what was read nor a
     // statement that nothing was -- it just dropped with each unreadable core.
-    let read: Vec<u64> = online_cpus
-        .iter()
-        .filter_map(|c| c.current_freq_khz)
-        .collect();
+    let read: Vec<u64> = usable.iter().filter_map(|c| c.current_freq_khz).collect();
     let avg_freq = if read.is_empty() {
         None
     } else {
@@ -1357,19 +1386,27 @@ pub fn cpufreq_summary() -> Result<CpuFreqSummary> {
     // rather than contributing a `0` that wins every `min` comparison. The
     // `unwrap_or(0)` here meant one unreadable core made the reported fleet
     // minimum zero.
-    let max_freq = online_cpus.iter().filter_map(|c| c.current_freq_mhz).max();
-    let min_freq = online_cpus.iter().filter_map(|c| c.current_freq_mhz).min();
+    let max_freq = usable.iter().filter_map(|c| c.current_freq_mhz).max();
+    let min_freq = usable.iter().filter_map(|c| c.current_freq_mhz).min();
+
+    // `None` while any CPU's state is unknown. Counting only the CPUs read as
+    // online would present "not read" as "offline" in the total.
+    let online_cpus = if cpus.iter().any(|c| c.online.is_none()) {
+        None
+    } else {
+        Some(cpus.iter().filter(|c| c.online == Some(true)).count())
+    };
 
     Ok(CpuFreqSummary {
         total_cpus: cpus.len(),
-        online_cpus: online_cpus.len(),
+        online_cpus,
         governor: monitor.current_governor().map(|g| g.to_string()),
         avg_freq_mhz: avg_freq,
         max_freq_mhz: max_freq,
         min_freq_mhz: min_freq,
         turbo_enabled: monitor.turbo_status().enabled,
-        cpu_model: online_cpus.first().and_then(|c| c.model.clone()),
-        scaling_driver: online_cpus.first().and_then(|c| c.scaling_driver.clone()),
+        cpu_model: usable.first().and_then(|c| c.model.clone()),
+        scaling_driver: usable.first().and_then(|c| c.scaling_driver.clone()),
     })
 }
 

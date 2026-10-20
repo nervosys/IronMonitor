@@ -754,8 +754,12 @@ pub struct BackendCapabilities {
     /// Supports vision (image input)
     pub supports_vision: bool,
 
-    /// Maximum context length
-    pub max_context_length: usize,
+    /// Maximum context length, in tokens.
+    ///
+    /// `None` unless read from the backend; per-provider constants went stale with
+    /// every model release and a guess of 4096 for local runtimes described no
+    /// particular model.
+    pub max_context_length: Option<usize>,
 
     /// Estimated cost per 1M tokens (in USD).
     ///
@@ -783,7 +787,7 @@ impl BackendCapabilities {
                 // capability a stock server may not have.
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 32_000,
+                max_context_length: None,
                 cost_per_million_tokens: None, // Runs on your hardware
             },
             BackendType::Cli(_) => Self {
@@ -792,22 +796,22 @@ impl BackendCapabilities {
                 supports_streaming: false,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 32_000,
+                max_context_length: None,
                 // Ollama runs locally and is free. The others bill through the vendor
                 // account the tool is signed in to, at rates IronMonitor cannot observe —
                 // reporting a number here would be a guess.
                 cost_per_million_tokens: None,
             },
             // Context length and price are properties of the *model*, not of the
-            // provider, and both providers serve a range of each. The figures below
-            // describe their current flagship families and will understate or
-            // overstate any particular model; both expose the exact numbers per
-            // model from their `/v1/models` endpoint, which is the authority.
+            // provider, and both providers serve a range of each. Nothing in this
+            // crate reads the context length from the backend yet, so it is None
+            // here; the authority is the model's own entry in the `/v1/models`
+            // listing.
             BackendType::RemoteOpenAI => Self {
                 supports_streaming: true,
                 supports_functions: true,
                 supports_vision: true,
-                max_context_length: 1_000_000,
+                max_context_length: None,
                 // Was `Some(5.0)`, labelled "GPT-4o pricing". Beyond being stale,
                 // one number cannot express a hosted provider's rate: input and
                 // output are billed differently, and the split varies per model.
@@ -820,7 +824,7 @@ impl BackendCapabilities {
                 supports_streaming: true,
                 supports_functions: true,
                 supports_vision: true,
-                max_context_length: 1_000_000,
+                max_context_length: None,
                 cost_per_million_tokens: None, // See the note on RemoteOpenAI.
             },
             BackendType::RemoteOllama | BackendType::RemoteLMStudio | BackendType::RemoteMlx => {
@@ -828,7 +832,7 @@ impl BackendCapabilities {
                     supports_streaming: true,
                     supports_functions: false,
                     supports_vision: false,
-                    max_context_length: 8192,
+                    max_context_length: None,
                     cost_per_million_tokens: None, // Local/free
                 }
             }
@@ -836,42 +840,42 @@ impl BackendCapabilities {
                 supports_streaming: true,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 32_000,
+                max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::RemoteTensorRT => Self {
                 supports_streaming: true,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 16_000,
+                max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::LocalGGML | BackendType::LocalONNX | BackendType::LocalCandle => Self {
                 supports_streaming: false,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 4096,
+                max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::RemoteGitHub => Self {
                 supports_streaming: true,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 16_000,
+                max_context_length: None,
                 cost_per_million_tokens: None, // Free for personal use
             },
             BackendType::RemoteAzure => Self {
                 supports_streaming: true,
                 supports_functions: true,
                 supports_vision: true,
-                max_context_length: 128_000,
+                max_context_length: None,
                 cost_per_million_tokens: Some(5.0),
             },
             BackendType::Custom(_) => Self {
                 supports_streaming: false,
                 supports_functions: false,
                 supports_vision: false,
-                max_context_length: 4096,
+                max_context_length: None,
                 cost_per_million_tokens: None,
             },
         }

@@ -151,6 +151,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their inputs were not read; zram and swap-device fields that did not parse
   are `None`; macOS no longer appends a duplicate swap device on every
   refresh. The zero-filled `Default` is removed.
+- Process CPU is `None` on a first sample when the process's age is unknown or
+  not yet positive. Linux and Windows divided by an assumed one second, macOS
+  did the same for a process started within the current second, and a Windows
+  process with no creation time read 0%. The next sample's delta fills it in.
+  Category and summary totals are `None` while any member is unknown; the CLI,
+  TUI and GUI show `--`. The time-series database moves to version 7, since a
+  version-6 row holds those figures.
+- The AI system summary's GPU, process, GPU-process, network-interface and
+  disk counts are `None` when the enumeration was not available or failed,
+  where they defaulted to 0 -- "this machine has none".
+- CPU online state is `None` where it was not read: Windows and macOS reported
+  every CPU online without asking, and Linux read an unreadable `online` file
+  as online. A CPU with no `online` file is still online, as the kernel
+  defines it.
+- Interconnect: total bandwidth is `None` when no link carries a figure (it
+  was 0.0), the socket count is `None` where it was not read (Windows assumed
+  1, macOS always 1), and Apple's link no longer carries an invented 20 ns
+  latency.
+- AI backend context lengths are `None`: nothing reads them from the backend,
+  and the per-provider constants -- 4096 for any local runtime -- described no
+  particular model.
+- Codec, OS-fingerprint and maintenance-alert confidences are named per-rule
+  constants, documented as such rather than as measured probabilities; the GPU
+  clock-degradation alert reports the threshold it compared against, where it
+  reported 0.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

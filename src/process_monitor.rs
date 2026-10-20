@@ -69,11 +69,11 @@
 //! let top_cpu = monitor.processes_by_cpu()?;
 //! println!("Top CPU consumers:");
 //! for proc in top_cpu.iter().take(10) {
-//!     println!("  {} (PID {}): {:.1}%",
-//!         proc.name,
-//!         proc.pid,
-//!         proc.cpu_percent
-//!     );
+//!     // `None` for a process too new to have a lifetime average yet.
+//!     match proc.cpu_percent {
+//!         Some(cpu) => println!("  {} (PID {}): {cpu:.1}%", proc.name, proc.pid),
+//!         None => println!("  {} (PID {}): not yet known", proc.name, proc.pid),
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -91,7 +91,9 @@
 //! // Get specific process by PID
 //! if let Some(proc) = monitor.process_by_pid(1234)? {
 //!     println!("Process: {}", proc.name);
-//!     println!("CPU: {:.1}%", proc.cpu_percent);
+//!     if let Some(cpu) = proc.cpu_percent {
+//!         println!("CPU: {cpu:.1}%");
+//!     }
 //!     println!("Memory: {} MB", proc.memory_bytes / 1024 / 1024);
 //!     match proc.gpu_memory_mb() {
 //!         Some(mb) => println!("GPU Memory: {mb:.0} MB"),
@@ -828,8 +830,12 @@ pub struct ProcessMonitorInfo {
     pub user: Option<String>,
     /// Process category (smart classification)
     pub category: ProcessCategory,
-    /// CPU usage percentage (delta-based between samples; first sample uses lifetime average)
-    pub cpu_percent: f32,
+    /// CPU usage percentage: the delta between samples, or on the first sample
+    /// the lifetime average. `None` on a first sample when the process's age
+    /// was not known or not yet positive -- there is no lifetime to average
+    /// over. Every reader used to divide by an assumed one second instead, or
+    /// report 0%.
+    pub cpu_percent: Option<f32>,
     /// Memory usage in bytes (Working Set / RSS)
     pub memory_bytes: u64,
     /// Virtual memory size in bytes
@@ -912,7 +918,7 @@ pub struct ProcessMonitorInfo {
 
 impl ProcessMonitorInfo {
     /// Get total CPU usage percentage
-    pub fn cpu_usage(&self) -> f32 {
+    pub fn cpu_usage(&self) -> Option<f32> {
         self.cpu_percent
     }
 
@@ -959,7 +965,8 @@ pub struct CategoryStats {
     /// Number of GPU-using processes in this category
     pub gpu_process_count: usize,
     /// Total CPU usage percentage across all processes
-    pub total_cpu_percent: f32,
+    /// Sum of the members' CPU, or `None` when any member's is not yet known.
+    pub total_cpu_percent: Option<f32>,
     /// Total memory usage in bytes
     pub total_memory_bytes: u64,
     /// Total GPU memory over the processes in this category that reported
@@ -1019,7 +1026,7 @@ impl ProcessMonitor {
     ///
     /// False when the logical CPU count could not be read, in which case the
     /// figure is per-core and will exceed 100 for a process using more than one
-    /// core. `cpu_percent` is an `f32` across 97 call sites and cannot itself say
+    /// core. `cpu_percent` is a bare number across many call sites and cannot say
     /// "not normalised", so the statement lives here.
     pub fn cpu_percent_is_normalized(&self) -> bool {
         self.num_logical_cpus.is_some()
@@ -1108,14 +1115,14 @@ impl ProcessMonitor {
                         // report, so the raw per-core figure is left as the platform
                         // gave it rather than divided by a made-up denominator.
                         let share = (delta_cpu_us / elapsed_us) * 100.0;
-                        proc.cpu_percent = match self.num_logical_cpus {
+                        proc.cpu_percent = Some(match self.num_logical_cpus {
                             Some(cpus) => (share / cpus as f64) as f32,
                             None => share as f32,
-                        };
+                        });
                     }
                 } else if let Some(cpus) = self.num_logical_cpus {
                     // First sample: normalize the lifetime-average from platform code
-                    proc.cpu_percent /= cpus;
+                    proc.cpu_percent = proc.cpu_percent.map(|p| p / cpus);
                 }
                 new_cpu_times.insert(proc.pid, (proc.cpu_time_us, now));
             }
@@ -1209,7 +1216,8 @@ impl ProcessMonitor {
             .into_iter()
             .map(|(category, procs)| {
                 let count = procs.len();
-                let total_cpu: f32 = procs.iter().map(|p| p.cpu_percent).sum();
+                // `None` when any member's figure is not yet known.
+                let total_cpu: Option<f32> = procs.iter().map(|p| p.cpu_percent).sum();
                 let total_memory: u64 = procs.iter().map(|p| p.memory_bytes).sum();
                 // Sum what was reported. `None` when nothing in the category
                 // reported anything, which is not the same as a category whose
@@ -1608,8 +1616,11 @@ mod linux {
         let total_ticks = utime + stime;
         let total_time = total_ticks as f64 / clk_tck as f64;
         let seconds_since_boot = uptime;
-        let proc_uptime = (seconds_since_boot - (starttime as f64 / clk_tck as f64)).max(1.0);
-        let cpu_percent = ((total_time / proc_uptime) * 100.0) as f32;
+        // A process younger than the clock's resolution has no lifetime to
+        // average over yet; the next sample's delta gives its figure. This
+        // floored the age at one second, understating a new process's usage.
+        let proc_uptime = seconds_since_boot - (starttime as f64 / clk_tck as f64);
+        let cpu_percent = (proc_uptime > 0.0).then(|| ((total_time / proc_uptime) * 100.0) as f32);
 
         // Cumulative CPU time in microseconds for delta-based calculation
         let cpu_time_us = total_ticks * 1_000_000 / clk_tck;
@@ -1920,22 +1931,20 @@ mod windows_impl {
 
     /// Lifetime-average CPU% and Unix start time from a creation time and
     /// cumulative CPU time, the same first-sample figure the handle path
-    /// computes from `GetProcessTimes`. `(0.0, None)` without a creation time.
-    fn lifetime_cpu(creation_100ns: u64, cpu_us: u64) -> (f32, Option<u64>) {
+    /// computes from `GetProcessTimes`. `(None, None)` without a creation
+    /// time, which used to read as 0%.
+    fn lifetime_cpu(creation_100ns: u64, cpu_us: u64) -> (Option<f32>, Option<u64>) {
         const UNIX_EPOCH_DIFF: u64 = 116_444_736_000_000_000;
         if creation_100ns <= UNIX_EPOCH_DIFF {
-            return (0.0, None);
+            return (None, None);
         }
         let start_unix = (creation_100ns - UNIX_EPOCH_DIFF) / 10_000_000;
         let now_ft =
             unsafe { windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime() };
         let now_100ns = (now_ft.dwHighDateTime as u64) << 32 | (now_ft.dwLowDateTime as u64);
         let uptime_secs = now_100ns.saturating_sub(creation_100ns) as f64 / 10_000_000.0;
-        let pct = if uptime_secs > 0.0 {
-            ((cpu_us as f64 / 1_000_000.0 / uptime_secs) * 100.0) as f32
-        } else {
-            0.0
-        };
+        let pct = (uptime_secs > 0.0)
+            .then(|| ((cpu_us as f64 / 1_000_000.0 / uptime_secs) * 100.0) as f32);
         (pct, Some(start_unix))
     }
 
@@ -2114,17 +2123,13 @@ mod windows_impl {
                                 );
                             let now_100ns = (now_ft.dwHighDateTime as u64) << 32
                                 | (now_ft.dwLowDateTime as u64);
-                            let uptime_secs = if now_100ns > creation_100ns {
-                                (now_100ns - creation_100ns) as f64 / 10_000_000.0
-                            } else {
-                                1.0
-                            };
-
-                            let pct = if uptime_secs > 0.0 {
+                            // No lifetime yet (or a clock behind the creation
+                            // time): no average, where this assumed one second.
+                            let pct = (now_100ns > creation_100ns).then(|| {
+                                let uptime_secs =
+                                    (now_100ns - creation_100ns) as f64 / 10_000_000.0;
                                 ((total_cpu_secs / uptime_secs) * 100.0) as f32
-                            } else {
-                                0.0
-                            };
+                            });
 
                             Some((pct, start_unix, cpu_us, creation_100ns))
                         } else {
@@ -2486,21 +2491,16 @@ mod macos {
 
                 // Calculate CPU% as lifetime average (fallback for first delta sample)
                 let process_start_secs = task_info.pbsd.pbi_start_tvsec;
+                // A process started within the current second has no lifetime
+                // to average over at this resolution; this assumed one second.
                 let now_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let uptime_secs = if now_secs > process_start_secs {
-                    (now_secs - process_start_secs) as f64
-                } else {
-                    1.0
-                };
+                    .ok()
+                    .map(|d| d.as_secs());
                 let total_cpu_secs = cpu_time_us as f64 / 1_000_000.0;
-                let cpu_percent = if uptime_secs > 0.0 {
-                    ((total_cpu_secs / uptime_secs) * 100.0) as f32
-                } else {
-                    0.0
-                };
+                let cpu_percent = now_secs.filter(|&now| now > process_start_secs).map(|now| {
+                    ((total_cpu_secs / (now - process_start_secs) as f64) * 100.0) as f32
+                });
 
                 // Status mapping
                 let status = match task_info.pbsd.pbi_status {
@@ -2707,7 +2707,7 @@ mod tests {
             name: "test_process".to_string(),
             user: Some("testuser".to_string()),
             category: ProcessCategory::Unknown,
-            cpu_percent: 25.5,
+            cpu_percent: Some(25.5),
             memory_bytes: 1024 * 1024 * 512,
             virtual_memory_bytes: 1024 * 1024 * 1024,
             private_bytes: Some(1024 * 1024 * 256),
@@ -2877,7 +2877,7 @@ mod tests {
     #[test]
     fn test_cpu_usage() {
         let p = make_test_process();
-        assert!((p.cpu_usage() - 25.5).abs() < 0.01);
+        assert!((p.cpu_usage().unwrap() - 25.5).abs() < 0.01);
     }
 
     #[test]
@@ -3002,7 +3002,7 @@ mod cpu_normalisation_tests {
 
     /// A normalised percentage is a share of the whole machine; an
     /// un-normalised one is a share of one core. The accessor is the only way a
-    /// consumer can tell, because `cpu_percent` is an `f32`.
+    /// consumer can tell, because `cpu_percent` carries only the number.
     #[test]
     fn a_monitor_that_read_the_core_count_reports_normalised_percentages() {
         let monitor = ProcessMonitor::new().expect("process monitor constructs here");

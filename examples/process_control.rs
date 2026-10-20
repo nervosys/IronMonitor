@@ -88,7 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let sys_mem = format_bytes(proc.memory_bytes);
 
                 // Format CPU usage
-                let cpu_usage = format!("{:.1}", proc.cpu_percent);
+                let cpu_usage = proc
+                    .cpu_percent
+                    .map_or_else(|| "--".to_string(), |c| format!("{c:.1}"));
 
                 // Get process type string
                 let type_str = match proc.gpu_process_type {

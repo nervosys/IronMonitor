@@ -20,7 +20,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(summary) => {
             println!("\n📊 CPU Summary");
             println!("├─ Total CPUs: {}", summary.total_cpus);
-            println!("├─ Online CPUs: {}", summary.online_cpus);
+            println!(
+                "├─ Online CPUs: {}",
+                summary
+                    .online_cpus
+                    .map_or("unknown".to_string(), |n| n.to_string())
+            );
 
             if let Some(ref model) = summary.cpu_model {
                 // Truncate long model names
@@ -144,8 +149,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match list_cpus() {
         Ok(cpus) => {
             // Group CPUs by online status
-            let online: Vec<_> = cpus.iter().filter(|c| c.online).collect();
-            let offline: Vec<_> = cpus.iter().filter(|c| !c.online).collect();
+            // A CPU whose online state was not read is listed with the online
+            // ones (its frequency is still a reading); it is named separately
+            // below so it is not mistaken for an online CPU.
+            let online: Vec<_> = cpus.iter().filter(|c| c.online != Some(false)).collect();
+            let offline: Vec<_> = cpus.iter().filter(|c| c.online == Some(false)).collect();
 
             // Header
             println!(
@@ -193,6 +201,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "\n   Offline CPUs: {:?}",
                     offline.iter().map(|c| c.id).collect::<Vec<_>>()
+                );
+            }
+
+            let unknown: Vec<_> = cpus.iter().filter(|c| c.online.is_none()).collect();
+            if !unknown.is_empty() {
+                println!(
+                    "\n   Online state not read (listed above): {:?}",
+                    unknown.iter().map(|c| c.id).collect::<Vec<_>>()
                 );
             }
 
@@ -248,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "-".repeat(70));
 
     let cpus = monitor.cpus();
-    if let Some(cpu) = cpus.iter().find(|c| c.online) {
+    if let Some(cpu) = cpus.iter().find(|c| c.online != Some(false)) {
         if let Some(ref epp) = cpu.energy_preference {
             println!("   Current: {:?}", epp);
         }
@@ -273,7 +289,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n😴 CPU Idle States (C-states)");
     println!("{}", "-".repeat(70));
 
-    if let Some(cpu) = cpus.iter().find(|c| c.online && !c.idle_states.is_empty()) {
+    if let Some(cpu) = cpus
+        .iter()
+        .find(|c| c.online != Some(false) && !c.idle_states.is_empty())
+    {
         println!("   States for CPU{}:", cpu.id);
         println!(
             "   {:>8} │ {:>12} │ {:>12} │ {:>10} │ {:>8}",

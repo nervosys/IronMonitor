@@ -213,19 +213,9 @@ fn partial_corrections() -> BTreeSet<(String, String, String)> {
 /// module doc. Remove an entry when its struct is fixed; never add one.
 const BASELINE: &[(&str, &str, &str)] = &[
     (
-        "src/agent/backend.rs",
-        "BackendCapabilities",
-        "max_context_length",
-    ),
-    (
         "src/ai_api/types.rs",
         "MemorySummary",
         "total_mb used_mb usage_percent",
-    ),
-    (
-        "src/ai_api/types.rs",
-        "ProcessSummary",
-        "cpu_percent memory_mb",
     ),
     ("src/backend.rs", "CpuState", "threads utilization"),
     (
@@ -233,11 +223,8 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "MemoryState",
         "total_bytes used_bytes available_bytes usage_percent",
     ),
-    ("src/backend.rs", "ProcessState", "cpu_percent memory_bytes"),
-    ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
     ("src/core/memory.rs", "RamInfo", "total used"),
-    ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
     ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
     (
         "src/hardware_ai/mod.rs",
@@ -248,32 +235,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "src/memory_bandwidth/mod.rs",
         "BandwidthAnalysis",
         "estimated_latency_ns",
-    ),
-    ("src/network_tools.rs", "OsFingerprint", "confidence"),
-    (
-        "src/observability/context.rs",
-        "ProcessMetrics",
-        "cpu_percent memory_mb threads",
-    ),
-    (
-        "src/predictive.rs",
-        "MaintenanceAlert",
-        "current_value threshold confidence",
-    ),
-    (
-        "src/process_monitor.rs",
-        "CategoryStats",
-        "total_cpu_percent total_memory_bytes",
-    ),
-    (
-        "src/process_monitor.rs",
-        "ProcessMonitorInfo",
-        "cpu_percent memory_bytes virtual_memory_bytes cpu_time_us",
-    ),
-    (
-        "src/tsdb/mod.rs",
-        "ProcessSnapshot",
-        "cpu_percent memory_bytes",
     ),
     ("src/tui/app.rs", "CpuInfo", "threads utilization"),
     ("src/tui/app.rs", "MemoryInfo", "total used available"),
@@ -597,6 +558,83 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
             "copied from MemoryInfo's total and SwapInfo's total and used, which are read ",
             "or the refresh fails; memory_summary is the only constructor"
         ),
+    ),
+    (
+        "src/codec/mod.rs",
+        "CodecCapability",
+        "confidence",
+        concat!(
+            "each value is one of the CONFIDENCE_ constants named in codec/mod.rs, ",
+            "chosen for the detection rule that produced the row and documented on the ",
+            "field as not a measured probability; no row is built outside a matched rule"
+        ),
+    ),
+    (
+        "src/network_tools.rs",
+        "OsFingerprint",
+        "confidence",
+        concat!(
+            "each value is one of the OS_CONFIDENCE_ constants named in network_tools.rs, ",
+            "set by the port or banner rule that chose os_family; no fingerprint is built ",
+            "without an observed open port or banner"
+        ),
+    ),
+    (
+        "src/predictive.rs",
+        "MaintenanceAlert",
+        "current_value threshold confidence",
+        concat!(
+            "current_value is the last sample the rule read, threshold is the limit it ",
+            "compared against, and confidence is either a named per-rule constant or the ",
+            "R-squared of the trend fit; the field docs say so and neither is a measured probability"
+        ),
+    ),
+    (
+        "src/ai_api/types.rs",
+        "ProcessSummary",
+        "memory_mb",
+        "copied from ProcessMonitorInfo.memory_bytes, which every reader fills from a read or skips the process",
+    ),
+    (
+        "src/backend.rs",
+        "ProcessState",
+        "memory_bytes",
+        "copied from ProcessMonitorInfo.memory_bytes, which every reader fills from a read or skips the process",
+    ),
+    (
+        "src/observability/context.rs",
+        "ProcessMetrics",
+        "memory_mb threads",
+        concat!(
+            "copied from ProcessMonitorInfo, whose memory and thread count every ",
+            "reader fills from a read (statm, working set, pti_resident_size; ",
+            "num_threads, cntThreads, pti_threadnum) or skips the process"
+        ),
+    ),
+    (
+        "src/process_monitor.rs",
+        "CategoryStats",
+        "total_memory_bytes",
+        concat!(
+            "a sum over processes that were enumerated, each with a read memory ",
+            "figure; categories exist only for groups with members"
+        ),
+    ),
+    (
+        "src/process_monitor.rs",
+        "ProcessMonitorInfo",
+        "memory_bytes virtual_memory_bytes cpu_time_us",
+        concat!(
+            "every reader fills these from /proc stat/statm, GetProcessMemoryInfo ",
+            "and GetProcessTimes (or the process table), or task_info, and skips ",
+            "a process none of them could read"
+        ),
+    ),
+    (
+        "src/tsdb/mod.rs",
+        "ProcessSnapshot",
+        "memory_bytes",
+        "copied from ProcessMonitorInfo.memory_bytes, which every reader fills from a read or skips the process",
     ),
     (
         "src/network_tools.rs",

@@ -23,7 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Show capabilities
         let caps = BackendCapabilities::for_backend(backend);
-        println!("    - Context length: {} tokens", caps.max_context_length);
+        match caps.max_context_length {
+            Some(tokens) => println!("    - Context length: {} tokens", tokens),
+            None => println!("    - Context length: not reported"),
+        }
         println!(
             "    - Streaming: {}",
             if caps.supports_streaming { "Yes" } else { "No" }

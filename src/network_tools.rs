@@ -955,6 +955,17 @@ pub struct ServiceInfo {
     pub extra_info: Option<String>,
 }
 
+/// Fixed confidence for a Windows guess from SMB, RPC, NetBIOS or RDP ports.
+const OS_CONFIDENCE_WINDOWS_PORTS: u8 = 75;
+/// Fixed confidence for a Linux guess from an open SSH port alone.
+const OS_CONFIDENCE_LINUX_SSH_PORT: u8 = 60;
+/// Fixed confidence for a Debian or Ubuntu banner match.
+const OS_CONFIDENCE_BANNER_DEBIAN_UBUNTU: u8 = 85;
+/// Fixed confidence for a CentOS, Red Hat or Fedora banner match.
+const OS_CONFIDENCE_BANNER_RHEL: u8 = 85;
+/// Fixed confidence for a Windows or Microsoft banner match.
+const OS_CONFIDENCE_BANNER_WINDOWS: u8 = 85;
+
 /// OS fingerprint result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsFingerprint {
@@ -962,7 +973,9 @@ pub struct OsFingerprint {
     pub os_family: Option<String>,
     /// OS version/generation
     pub os_gen: Option<String>,
-    /// Confidence percentage (0-100)
+    /// The heuristic's fixed confidence, 0-100. Not a measured probability: it is
+    /// the constant of the rule that set `os_family` (one of the `OS_CONFIDENCE_*`
+    /// constants in this module), chosen by the code.
     pub confidence: u8,
     /// TTL value observed
     pub ttl: Option<u8>,
@@ -1227,10 +1240,9 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
         }
     }
 
-    // Basic OS fingerprinting from ping TTL
+    // Heuristic OS guess from open ports and service banners. No TTL or TCP
+    // window is read, so `ttl` and `window_size` stay None.
     let os_fingerprint = ping_result.as_ref().and_then(|_p| {
-        // Try to get TTL from ping (platform-specific, may not be available)
-        // For now, use heuristics based on latency and open ports
         let mut os = OsFingerprint {
             os_family: None,
             os_gen: None,
@@ -1247,10 +1259,10 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
 
         if has_windows_ports {
             os.os_family = Some("Windows".to_string());
-            os.confidence = 75;
+            os.confidence = OS_CONFIDENCE_WINDOWS_PORTS;
         } else if has_linux_ports {
             os.os_family = Some("Linux".to_string());
-            os.confidence = 60;
+            os.confidence = OS_CONFIDENCE_LINUX_SSH_PORT;
         }
 
         // Check service banners for OS hints
@@ -1260,7 +1272,7 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
                 if banner_lower.contains("ubuntu") || banner_lower.contains("debian") {
                     os.os_family = Some("Linux".to_string());
                     os.os_gen = Some("Debian/Ubuntu".to_string());
-                    os.confidence = 85;
+                    os.confidence = OS_CONFIDENCE_BANNER_DEBIAN_UBUNTU;
                     break;
                 } else if banner_lower.contains("centos")
                     || banner_lower.contains("red hat")
@@ -1268,11 +1280,11 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
                 {
                     os.os_family = Some("Linux".to_string());
                     os.os_gen = Some("RHEL/CentOS".to_string());
-                    os.confidence = 85;
+                    os.confidence = OS_CONFIDENCE_BANNER_RHEL;
                     break;
                 } else if banner_lower.contains("windows") || banner_lower.contains("microsoft") {
                     os.os_family = Some("Windows".to_string());
-                    os.confidence = 85;
+                    os.confidence = OS_CONFIDENCE_BANNER_WINDOWS;
                     break;
                 }
             }
