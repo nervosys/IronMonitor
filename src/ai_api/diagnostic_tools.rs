@@ -213,6 +213,22 @@ fn command_json(program: &str, args: &[String], input: Option<Value>) -> Result<
 // lifetime are capped; timeout and overflow kill and reap the direct child.
 #[cfg(any(windows, target_os = "linux"))]
 fn bounded_command(program: &str, args: &[String], input: Option<Value>) -> Result<String> {
+    bounded_command_within(program, args, input, PROVIDER_DEADLINE)
+}
+
+/// How long a diagnostic provider may run before it is killed.
+#[cfg(any(windows, target_os = "linux"))]
+const PROVIDER_DEADLINE: Duration = Duration::from_secs(4);
+
+/// `bounded_command` with the deadline as a parameter, so a test of encoding or
+/// the output cap is not also a test of how fast a CI runner starts PowerShell.
+#[cfg(any(windows, target_os = "linux"))]
+fn bounded_command_within(
+    program: &str,
+    args: &[String],
+    input: Option<Value>,
+    limit: Duration,
+) -> Result<String> {
     const CAP: usize = 256 * 1024;
     let mut command = Command::new(program);
     let mut args = args.to_vec();
@@ -261,7 +277,7 @@ fn bounded_command(program: &str, args: &[String], input: Option<Value>) -> Resu
             .map(|_| bytes);
         let _ = tx.send(result);
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + limit;
     loop {
         if let Ok(result) = rx.try_recv() {
             let bytes = match result {
@@ -298,7 +314,10 @@ fn bounded_command(program: &str, args: &[String], input: Option<Value>) -> Resu
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(bad("Diagnostic provider exceeded its four-second deadline"));
+            return Err(bad(format!(
+                "Diagnostic provider exceeded its {}-second deadline",
+                limit.as_secs()
+            )));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -319,8 +338,16 @@ mod tests {
     #[test]
     fn provider_input_is_utf8_data_and_output_is_bounded() {
         let args=vec!["-NoProfile".into(),"-NonInteractive".into(),"-Command".into(),"$p=[Console]::In.ReadToEnd()|ConvertFrom-Json; @{text=$p.text}|ConvertTo-Json -Compress".into()];
+        // Generous deadlines: this tests encoding and the output cap. A cold
+        // PowerShell 5.1 on a CI runner has taken longer than the production
+        // four seconds just to load ConvertFrom-Json.
+        let slow_runner = Duration::from_secs(60);
         let text = "日次 $(this remains data)";
-        let result = command_json("powershell.exe", &args, Some(json!({"text":text}))).unwrap();
+        let input = Some(json!({"text":text}));
+        let result: Value = serde_json::from_str(
+            &bounded_command_within("powershell.exe", &args, input, slow_runner).unwrap(),
+        )
+        .unwrap();
         assert_eq!(result["text"], text, "provider response: {result}");
         let args = vec![
             "-NoProfile".into(),
@@ -328,10 +355,12 @@ mod tests {
             "-Command".into(),
             "[Console]::Write(('x'*270000))".into(),
         ];
-        assert!(bounded_command("powershell.exe", &args, None)
-            .unwrap_err()
-            .to_string()
-            .contains("output limit"));
+        assert!(
+            bounded_command_within("powershell.exe", &args, None, slow_runner)
+                .unwrap_err()
+                .to_string()
+                .contains("output limit")
+        );
     }
     #[cfg(windows)]
     #[test]
