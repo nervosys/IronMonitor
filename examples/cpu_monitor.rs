@@ -170,16 +170,22 @@ fn report<M: SiliconMonitor>(monitor: &M) -> Result<(), Box<dyn std::error::Erro
     match monitor.network_info() {
         Ok(networks) if !networks.is_empty() => {
             for net in &networks {
+                let mbps = |v: Option<f64>| {
+                    v.map_or_else(|| "not measured".to_string(), |m| format!("{m:.2} MB/s"))
+                };
                 println!(
-                    "  {} ({}): RX {:.2} MB/s, TX {:.2} MB/s, {} pkt/s",
+                    "  {} ({}): RX {}, TX {}, {}",
                     net.interface,
                     net.link_speed_mbps.map_or_else(
                         || "link speed not read".to_string(),
                         |m| format!("{m} Mbps")
                     ),
-                    net.rx_bandwidth_mbps,
-                    net.tx_bandwidth_mbps,
-                    net.packet_rate
+                    mbps(net.rx_bandwidth_mbps),
+                    mbps(net.tx_bandwidth_mbps),
+                    net.packet_rate.map_or_else(
+                        || "packet rate not measured".to_string(),
+                        |p| format!("{p} pkt/s")
+                    )
                 );
             }
         }

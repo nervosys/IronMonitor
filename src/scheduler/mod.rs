@@ -283,78 +283,11 @@ impl SchedulerMonitor {
         for resource in &["cpu", "memory", "io"] {
             let path = format!("/proc/pressure/{}", resource);
             if let Ok(content) = std::fs::read_to_string(&path) {
-                let mut some_avg10 = 0.0;
-                let mut some_avg60 = 0.0;
-                let mut some_avg300 = 0.0;
-                let mut some_total = 0u64;
-                let mut full_avg10 = None;
-                let mut full_avg60 = None;
-                let mut full_avg300 = None;
-                let mut full_total = None;
-
-                for line in content.lines() {
-                    let is_full = line.starts_with("full");
-                    let is_some = line.starts_with("some");
-                    if !is_full && !is_some {
-                        continue;
-                    }
-
-                    for part in line.split_whitespace().skip(1) {
-                        if let Some((key, val)) = part.split_once('=') {
-                            match key {
-                                "avg10" => {
-                                    if let Ok(v) = val.parse::<f64>() {
-                                        if is_full {
-                                            full_avg10 = Some(v);
-                                        } else {
-                                            some_avg10 = v;
-                                        }
-                                    }
-                                }
-                                "avg60" => {
-                                    if let Ok(v) = val.parse::<f64>() {
-                                        if is_full {
-                                            full_avg60 = Some(v);
-                                        } else {
-                                            some_avg60 = v;
-                                        }
-                                    }
-                                }
-                                "avg300" => {
-                                    if let Ok(v) = val.parse::<f64>() {
-                                        if is_full {
-                                            full_avg300 = Some(v);
-                                        } else {
-                                            some_avg300 = v;
-                                        }
-                                    }
-                                }
-                                "total" => {
-                                    if let Ok(v) = val.parse::<u64>() {
-                                        if is_full {
-                                            full_total = Some(v);
-                                        } else {
-                                            some_total = v;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
+                // A file whose "some" line does not parse is skipped, not
+                // reported as zero pressure.
+                if let Some(psi) = parse_psi(resource, &content) {
+                    pressures.push(psi);
                 }
-
-                pressures.push(PressureInfo {
-                    resource: resource.to_string(),
-                    some_avg10,
-                    some_avg60,
-                    some_avg300,
-                    some_total_us: some_total,
-                    full_avg10,
-                    full_avg60,
-                    full_avg300,
-                    full_total_us: full_total,
-                });
             }
         }
         pressures
@@ -433,6 +366,91 @@ impl Default for SchedulerMonitor {
     }
 }
 
+/// Parses one `/proc/pressure/<resource>` file. The "some" line is required:
+/// a file without it, or with any of its four fields unreadable, yields `None`
+/// rather than a record of zero pressure. The "full" line is optional, since
+/// cpu has none on older kernels.
+#[cfg(any(target_os = "linux", test))]
+fn parse_psi(resource: &str, content: &str) -> Option<PressureInfo> {
+    let mut some_avg10 = None;
+    let mut some_avg60 = None;
+    let mut some_avg300 = None;
+    let mut some_total = None;
+    let mut full_avg10 = None;
+    let mut full_avg60 = None;
+    let mut full_avg300 = None;
+    let mut full_total = None;
+
+    for line in content.lines() {
+        let is_full = line.starts_with("full");
+        let is_some = line.starts_with("some");
+        if !is_full && !is_some {
+            continue;
+        }
+
+        for part in line.split_whitespace().skip(1) {
+            if let Some((key, val)) = part.split_once('=') {
+                match key {
+                    "avg10" => {
+                        if let Ok(v) = val.parse::<f64>() {
+                            if is_full {
+                                full_avg10 = Some(v);
+                            } else {
+                                some_avg10 = Some(v);
+                            }
+                        }
+                    }
+                    "avg60" => {
+                        if let Ok(v) = val.parse::<f64>() {
+                            if is_full {
+                                full_avg60 = Some(v);
+                            } else {
+                                some_avg60 = Some(v);
+                            }
+                        }
+                    }
+                    "avg300" => {
+                        if let Ok(v) = val.parse::<f64>() {
+                            if is_full {
+                                full_avg300 = Some(v);
+                            } else {
+                                some_avg300 = Some(v);
+                            }
+                        }
+                    }
+                    "total" => {
+                        if let Ok(v) = val.parse::<u64>() {
+                            if is_full {
+                                full_total = Some(v);
+                            } else {
+                                some_total = Some(v);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let (Some(some_avg10), Some(some_avg60), Some(some_avg300), Some(some_total_us)) =
+        (some_avg10, some_avg60, some_avg300, some_total)
+    else {
+        return None;
+    };
+    Some(PressureInfo {
+        resource: resource.to_string(),
+        some_avg10,
+        some_avg60,
+        some_avg300,
+        some_total_us,
+        full_avg10,
+        full_avg60,
+        full_avg300,
+        full_total_us: full_total,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +480,23 @@ mod tests {
             .iter()
             .any(|p| p.resource == "cpu" && p.some_avg10 > 25.0);
         assert!(concern);
+    }
+
+    #[test]
+    fn a_psi_file_without_a_readable_some_line_reports_no_pressure() {
+        // No "some" line at all: nothing to report, not zero pressure.
+        let full_only = "full avg10=1.00 avg60=1.00 avg300=1.00 total=5\n";
+        assert!(parse_psi("memory", full_only).is_none());
+
+        // A "some" line with one unreadable field is rejected as a whole.
+        let malformed = "some avg10=n/a avg60=0.00 avg300=0.00 total=0\n";
+        assert!(parse_psi("cpu", malformed).is_none());
+
+        // A complete file parses, and the absent "full" line stays None.
+        let good = "some avg10=1.50 avg60=2.00 avg300=3.00 total=4000\n";
+        let psi = parse_psi("cpu", good).unwrap();
+        assert_eq!(psi.some_total_us, 4000);
+        assert_eq!(psi.full_avg10, None);
     }
 
     #[test]

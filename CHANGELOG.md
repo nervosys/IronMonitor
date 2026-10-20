@@ -107,6 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The capability catalogue lists macOS GPUs as partial (enumerated through
   `system_profiler`; live figures need `powermetrics` and root), agreeing with
   the README, which CI checks.
+- Network silicon bandwidth and packet rate are `None` where no rate was
+  measured. Linux reported 0 MB/s on every interface and a packet counter
+  since boot as packets per second; macOS wrote cumulative bytes into the
+  bandwidth fields. Windows keeps its WMI per-second counters.
+- CPU idle states whose latency, entry count or residency sysfs did not give
+  report `None` for it, where they read 0.
+- A `/proc/pressure` file whose "some" line does not parse is skipped rather
+  than reported as zero pressure.
+- RAID arrays from `/proc/mdstat`: the active count no longer includes failed
+  and spare members, spares are counted (they were always 0), the `[n/m]`
+  wanted and working counts are read, and size is `None` when no blocks line
+  was read.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`.

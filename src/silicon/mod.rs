@@ -171,12 +171,17 @@ pub struct NetworkSilicon {
     /// zero for a down interface and for the wireless path, under a comment
     /// reading "Would need iwconfig/nl80211".
     pub link_speed_mbps: Option<u32>,
-    /// RX bandwidth in MB/s
-    pub rx_bandwidth_mbps: f64,
-    /// TX bandwidth in MB/s
-    pub tx_bandwidth_mbps: f64,
-    /// Packet rate (packets/sec)
-    pub packet_rate: u64,
+    /// RX bandwidth in MB/s. `None` where no rate was measured: one sample of a
+    /// counter cannot give a rate, and Linux and macOS expose only totals since
+    /// boot.
+    pub rx_bandwidth_mbps: Option<f64>,
+    /// TX bandwidth in MB/s. `None` where no rate was measured: one sample of a
+    /// counter cannot give a rate, and Linux and macOS expose only totals since
+    /// boot.
+    pub tx_bandwidth_mbps: Option<f64>,
+    /// Packet rate (packets/sec). `None` where no rate was measured: a packet
+    /// counter is cumulative since boot, and one sample cannot give a rate.
+    pub packet_rate: Option<u64>,
     /// Power state (if available)
     pub power_state: Option<String>,
 }

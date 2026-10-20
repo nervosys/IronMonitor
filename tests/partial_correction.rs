@@ -215,18 +215,13 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/agent/backend.rs", "BackendCapabilities", "max_context_length"),
     ("src/ai_api/types.rs", "MemorySummary", "total_mb used_mb usage_percent"),
     ("src/ai_api/types.rs", "ProcessSummary", "cpu_percent memory_mb"),
-    ("src/ai_api/types.rs", "SensorReading", "value"),
-    ("src/ai_workload.rs", "TrainingMetrics", "current_epoch total_epochs current_step steps_per_epoch current_loss"),
     ("src/backend.rs", "CpuState", "threads utilization"),
     ("src/backend.rs", "MemoryState", "total_bytes used_bytes available_bytes usage_percent"),
     ("src/backend.rs", "ProcessState", "cpu_percent memory_bytes"),
     ("src/codec/mod.rs", "CodecCapability", "confidence"),
     ("src/connections.rs", "ConnectionInfo", "local_port"),
-    ("src/core/memory.rs", "IramInfo", "total used"),
     ("src/core/memory.rs", "RamInfo", "total used"),
     ("src/cpufreq.rs", "CpuFreqSummary", "online_cpus"),
-    ("src/cpufreq.rs", "CpuIdleState", "latency_us usage time_us"),
-    ("src/fleet.rs", "HostMetrics", "cpu_usage_percent memory_usage_percent disk_usage_percent network_rx_bytes_sec network_tx_bytes_sec uptime_seconds"),
     ("src/fleet_store/rows.rs", "MetricRow", "collected_at_us"),
     ("src/gpu_topology/mod.rs", "GpuLink", "from_gpu to_gpu bandwidth_per_link_gbs"),
     ("src/gpu_topology/mod.rs", "GpuTopologyNode", "numa_node pcie_gen pcie_width pcie_speed_gts pcie_bandwidth_gbs"),
@@ -236,20 +231,11 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ("src/memory_management.rs", "MemorySummary", "memory_percent swap_percent total_memory available_memory total_swap used_swap health_score"),
     ("src/memory_topology/mod.rs", "MemoryAnalysis", "total_capacity_bytes max_capacity_bytes populated_slots total_slots efficiency_score"),
     ("src/network_tools.rs", "OsFingerprint", "confidence"),
-    ("src/network_tools.rs", "PingResult", "packets_sent packets_received packets_lost packet_loss_percent"),
-    ("src/observability/context.rs", "CpuMetrics", "utilization_percent"),
     ("src/observability/context.rs", "ProcessMetrics", "cpu_percent memory_mb threads"),
-    ("src/observability/metrics.rs", "CpuMetricSnapshot", "usage_percent"),
-    ("src/observability/metrics.rs", "DiskMetricSnapshot", "used_bytes free_bytes total_bytes usage_percent"),
-    ("src/observability/metrics.rs", "GpuMetricSnapshot", "usage_percent memory_used_mb memory_total_mb"),
-    ("src/pcie.rs", "PcieBandwidthSummary", "gpu_devices downgraded_devices unreadable_devices"),
     ("src/predictive.rs", "MaintenanceAlert", "current_value threshold confidence"),
     ("src/process_monitor.rs", "CategoryStats", "total_cpu_percent total_memory_bytes"),
     ("src/process_monitor.rs", "ProcessMonitorInfo", "cpu_percent memory_bytes virtual_memory_bytes cpu_time_us"),
     ("src/rapl/mod.rs", "EnergyReading", "socket energy_uj"),
-    ("src/scheduler/mod.rs", "PressureInfo", "some_avg10 some_avg60 some_avg300 some_total_us"),
-    ("src/silicon/mod.rs", "NetworkSilicon", "rx_bandwidth_mbps tx_bandwidth_mbps packet_rate"),
-    ("src/storage_controller/mod.rs", "RaidArrayInfo", "active_devices failed_devices spare_devices size_bytes"),
     ("src/tsdb/mod.rs", "ProcessSnapshot", "cpu_percent memory_bytes"),
     ("src/tui/app.rs", "CpuInfo", "threads utilization"),
     ("src/tui/app.rs", "MemoryInfo", "total used available"),
@@ -432,6 +418,94 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/ai_api/types.rs",
+        "SensorReading",
+        "value",
+        "never constructed in the crate; it reaches a value only by deserialisation",
+    ),
+    (
+        "src/ai_workload.rs",
+        "TrainingMetrics",
+        "current_epoch total_epochs current_step steps_per_epoch current_loss",
+        concat!(
+            "never constructed: its only producer, try_parse_training_metrics, ",
+            "returns Ok(None)"
+        ),
+    ),
+    (
+        "src/core/memory.rs",
+        "IramInfo",
+        "total used",
+        concat!(
+            "never constructed: read_iram_info always returns Err, and every ",
+            "MemoryStats sets iram to None"
+        ),
+    ),
+    (
+        "src/fleet.rs",
+        "HostMetrics",
+        "cpu_usage_percent memory_usage_percent disk_usage_percent network_rx_bytes_sec network_tx_bytes_sec uptime_seconds",
+        concat!(
+            "supplied by the caller through record_metrics, and deserialised with ",
+            "no serde defaults; the only literal is a test fixture"
+        ),
+    ),
+    (
+        "src/network_tools.rs",
+        "PingResult",
+        "packets_sent packets_received packets_lost packet_loss_percent",
+        concat!(
+            "ping() returns Err unless a statistics line parsed, and every count ",
+            "is overwritten from it; lost and loss percent are computed from them"
+        ),
+    ),
+    (
+        "src/observability/context.rs",
+        "CpuMetrics",
+        "utilization_percent",
+        concat!(
+            "100 minus the total idle of a CPU read that succeeded; both readers ",
+            "error rather than return a total they did not read"
+        ),
+    ),
+    (
+        "src/observability/metrics.rs",
+        "CpuMetricSnapshot",
+        "usage_percent",
+        "never constructed in the crate; it reaches a value only by deserialisation",
+    ),
+    (
+        "src/observability/metrics.rs",
+        "DiskMetricSnapshot",
+        "used_bytes free_bytes total_bytes usage_percent",
+        "never constructed in the crate; it reaches a value only by deserialisation",
+    ),
+    (
+        "src/observability/metrics.rs",
+        "GpuMetricSnapshot",
+        "usage_percent memory_used_mb memory_total_mb",
+        "never constructed in the crate; it reaches a value only by deserialisation",
+    ),
+    (
+        "src/pcie.rs",
+        "PcieBandwidthSummary",
+        "gpu_devices downgraded_devices unreadable_devices",
+        concat!(
+            "counts of enumerated devices: GPUs by class code, downgraded only ",
+            "where is_downgraded() is Some(true), unreadable where no bandwidth ",
+            "could be computed"
+        ),
+    ),
+    (
+        "src/scheduler/mod.rs",
+        "PressureInfo",
+        "some_avg10 some_avg60 some_avg300 some_total_us",
+        concat!(
+            "parse_psi returns None unless all four fields of the some line ",
+            "parsed; the optional full line is the Option beside them"
+        ),
+    ),
+    (
         "src/network_tools.rs",
         "CaptureResult",
         "total_packets duration_secs packets_per_sec",
@@ -461,6 +535,16 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         "NetworkInterfaceInfo",
         "rx_bytes tx_bytes",
         "update_network copies them from the collector's NetSnapshot",
+    ),
+    (
+        "src/storage_controller/mod.rs",
+        "RaidArrayInfo",
+        "active_devices failed_devices spare_devices",
+        concat!(
+            "counts of the member tokens parse_mdstat reads from one array line, ",
+            "by their (F), (S) and (J) flags; wanted_devices, working_devices and ",
+            "size_bytes are Option because they come from the blocks line"
+        ),
     ),
 ];
 

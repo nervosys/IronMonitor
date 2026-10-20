@@ -740,17 +740,8 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                     .and_then(|s| s.trim().parse::<u64>().ok())
                     .unwrap_or(0);
 
-                let rx_packets = std::fs::read_to_string(path.join("statistics/rx_packets"))
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-
-                let tx_packets = std::fs::read_to_string(path.join("statistics/tx_packets"))
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-
-                let packet_rate = rx_packets + tx_packets;
+                // rx_packets and tx_packets are cumulative since boot. A packet
+                // rate needs two samples, so none is reported from one read.
 
                 // Read power state if available
                 let power_state = std::fs::read_to_string(path.join("device/power_state"))
@@ -785,9 +776,10 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                     network_devices.push(NetworkSilicon {
                         interface,
                         link_speed_mbps,
-                        rx_bandwidth_mbps: 0.0, // Would need delta calculation
-                        tx_bandwidth_mbps: 0.0,
-                        packet_rate,
+                        // One read cannot give a rate; see the field docs.
+                        rx_bandwidth_mbps: None,
+                        tx_bandwidth_mbps: None,
+                        packet_rate: None,
                         power_state,
                     });
                 }
@@ -818,9 +810,9 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                             // Needs iwconfig or nl80211, neither of which is
                             // called here.
                             link_speed_mbps: None,
-                            rx_bandwidth_mbps: 0.0,
-                            tx_bandwidth_mbps: 0.0,
-                            packet_rate: 0,
+                            rx_bandwidth_mbps: None,
+                            tx_bandwidth_mbps: None,
+                            packet_rate: None,
                             power_state: None,
                         });
                     }

@@ -286,11 +286,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for state in &cpu.idle_states {
             let status = if state.enabled { "✅ On" } else { "❌ Off" };
-            let time_ms = state.time_us / 1000;
+            let latency = state
+                .latency_us
+                .map_or_else(|| "not read".to_string(), |v| v.to_string());
+            let usage = state
+                .usage
+                .map_or_else(|| "not read".to_string(), |v| v.to_string());
+            let time_ms = state
+                .time_us
+                .map_or_else(|| "not read".to_string(), |t| (t / 1000).to_string());
 
             println!(
                 "   {:>8} │ {:>12} │ {:>12} │ {:>10} │ {:>8}",
-                state.name, state.latency_us, state.usage, time_ms, status
+                state.name, latency, usage, time_ms, status
             );
         }
 

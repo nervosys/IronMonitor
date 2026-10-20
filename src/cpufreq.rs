@@ -144,16 +144,16 @@ pub struct CpuIdleState {
     pub name: String,
     /// State description
     pub desc: Option<String>,
-    /// Latency to exit state (microseconds)
-    pub latency_us: u32,
+    /// Latency to exit state (microseconds), `None` when sysfs did not give it
+    pub latency_us: Option<u32>,
     /// Residency requirement (microseconds)
     pub residency_us: Option<u32>,
     /// Is state enabled
     pub enabled: bool,
-    /// Times this state was entered
-    pub usage: u64,
-    /// Time spent in this state (microseconds)
-    pub time_us: u64,
+    /// Times this state was entered, `None` when sysfs did not give it
+    pub usage: Option<u64>,
+    /// Time spent in this state (microseconds), `None` when sysfs did not give it
+    pub time_us: Option<u64>,
     /// Is state disabled by admin
     pub disable: bool,
 }
@@ -767,11 +767,11 @@ impl CpuFreqMonitor {
             let mut state = CpuIdleState {
                 name: String::new(),
                 desc: None,
-                latency_us: 0,
+                latency_us: None,
                 residency_us: None,
                 enabled: true,
-                usage: 0,
-                time_us: 0,
+                usage: None,
+                time_us: None,
                 disable: false,
             };
 
@@ -788,8 +788,7 @@ impl CpuFreqMonitor {
             // Read latency
             state.latency_us = fs::read_to_string(state_dir.join("latency"))
                 .ok()
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+                .and_then(|s| s.trim().parse().ok());
 
             // Read residency
             state.residency_us = fs::read_to_string(state_dir.join("residency"))
@@ -805,14 +804,12 @@ impl CpuFreqMonitor {
             // Read usage count
             state.usage = fs::read_to_string(state_dir.join("usage"))
                 .ok()
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+                .and_then(|s| s.trim().parse().ok());
 
             // Read time in state
             state.time_us = fs::read_to_string(state_dir.join("time"))
                 .ok()
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+                .and_then(|s| s.trim().parse().ok());
 
             cpu.idle_states.push(state);
         }

@@ -130,16 +130,22 @@ pub struct RaidArrayInfo {
     pub level: RaidLevel,
     /// Current status
     pub status: RaidStatus,
-    /// Number of active devices
+    /// Members neither failed, spare nor journal, counted from the member list.
+    /// The kernel's own figure is `working_devices`.
     pub active_devices: u32,
-    /// Total expected devices
+    /// Member devices enumerated on the array line, including failed and spare ones
     pub total_devices: u32,
-    /// Failed devices count
+    /// Devices the array wants (`n` in `[n/m]`). None if no blocks line was read.
+    pub wanted_devices: Option<u32>,
+    /// Devices working (`m` in `[n/m]`). None if no blocks line was read.
+    pub working_devices: Option<u32>,
+    /// Members flagged `(F)` on the array line
     pub failed_devices: u32,
-    /// Spare devices count
+    /// Members flagged `(S)` on the array line
     pub spare_devices: u32,
-    /// Array size in bytes
-    pub size_bytes: u64,
+    /// Array size in bytes. The blocks line counts 1 KiB units.
+    /// None if no blocks line was read.
+    pub size_bytes: Option<u64>,
     /// Member device names
     pub members: Vec<String>,
     /// Resync progress percentage (0-100, None if not resyncing)
@@ -349,7 +355,15 @@ impl StorageControllerMonitor {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(IronError::System(format!("cannot read /proc/mdstat: {e}"))),
         };
+        self.raid_arrays.extend(Self::parse_mdstat(&content));
+        Ok(())
+    }
 
+    /// Parse the text of `/proc/mdstat` into one entry per array. Takes the text
+    /// rather than reading the file, so it can be tested on any platform.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn parse_mdstat(content: &str) -> Vec<RaidArrayInfo> {
+        let mut arrays = Vec::new();
         let mut current: Option<RaidArrayInfo> = None;
 
         for line in content.lines() {
@@ -359,7 +373,7 @@ impl StorageControllerMonitor {
             if line.starts_with("md") && line.contains(" : ") {
                 // Save previous array
                 if let Some(array) = current.take() {
-                    self.raid_arrays.push(array);
+                    arrays.push(array);
                 }
 
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -393,15 +407,27 @@ impl StorageControllerMonitor {
                     .filter_map(|p| p.split('[').next().map(|s| s.to_string()))
                     .collect();
 
+                // Member flags follow the index: "sdc1[2](F)", "sdd1[3](S)".
+                // Counted from what the line lists, so a flag that is absent
+                // reads as zero of that flag.
+                let failed_devices = parts[4..].iter().filter(|p| p.contains("(F)")).count() as u32;
+                let spare_devices = parts[4..].iter().filter(|p| p.contains("(S)")).count() as u32;
+                let active_devices = parts[4..]
+                    .iter()
+                    .filter(|p| !p.contains("(F)") && !p.contains("(S)") && !p.contains("(J)"))
+                    .count() as u32;
+
                 current = Some(RaidArrayInfo {
                     name,
                     level,
                     status,
-                    active_devices: members.len() as u32,
+                    active_devices,
                     total_devices: members.len() as u32,
-                    failed_devices: 0,
-                    spare_devices: 0,
-                    size_bytes: 0,
+                    wanted_devices: None,
+                    working_devices: None,
+                    failed_devices,
+                    spare_devices,
+                    size_bytes: None,
                     members,
                     resync_progress: None,
                 });
@@ -410,18 +436,25 @@ impl StorageControllerMonitor {
                 if line.contains("blocks") {
                     if let Some(blocks_str) = line.split_whitespace().next() {
                         if let Ok(blocks) = blocks_str.parse::<u64>() {
-                            array.size_bytes = blocks * 1024;
+                            array.size_bytes = Some(blocks * 1024);
                         }
+                    }
+                    // "[2/2]": devices the array wants (n) and devices working (m)
+                    let counts = line.split_whitespace().find_map(|t| {
+                        let (n, m) = t.strip_prefix('[')?.strip_suffix(']')?.split_once('/')?;
+                        Some((n.parse::<u32>().ok()?, m.parse::<u32>().ok()?))
+                    });
+                    if let Some((wanted, working)) = counts {
+                        array.wanted_devices = Some(wanted);
+                        array.working_devices = Some(working);
                     }
                     // Parse [U_] or [UU] status
                     if let Some(bracket_pos) = line.rfind('[') {
                         let remainder = &line[bracket_pos + 1..];
                         if let Some(end) = remainder.find(']') {
                             let status_chars = &remainder[..end];
-                            let failed = status_chars.chars().filter(|c| *c == '_').count() as u32;
-                            if failed > 0 {
+                            if status_chars.contains('_') {
                                 array.status = RaidStatus::Degraded;
-                                array.failed_devices = failed;
                             }
                         }
                     }
@@ -443,9 +476,9 @@ impl StorageControllerMonitor {
         }
 
         if let Some(array) = current {
-            self.raid_arrays.push(array);
+            arrays.push(array);
         }
-        Ok(())
+        arrays
     }
 
     #[cfg(target_os = "linux")]
@@ -829,15 +862,42 @@ mod tests {
             status: RaidStatus::Active,
             active_devices: 2,
             total_devices: 2,
+            wanted_devices: Some(2),
+            working_devices: Some(2),
             failed_devices: 0,
             spare_devices: 0,
-            size_bytes: 1024 * 1024 * 1024,
+            size_bytes: Some(1024 * 1024 * 1024),
             members: vec!["sda1".into(), "sdb1".into()],
             resync_progress: None,
         };
         let json = serde_json::to_string(&array).unwrap();
         assert!(json.contains("md0"));
         let _: RaidArrayInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_parse_mdstat_counts_flags_and_blocks() {
+        let text = concat!(
+            "Personalities : [raid1] [raid5]\n",
+            "md1 : active raid5 sdd1[3](S) sdc1[2](F) sdb1[1] sda1[0]\n",
+            "      2093056 blocks super 1.2 level 5, 512k chunk, algorithm 2 [3/2] [UU_]\n",
+            "\n",
+            "unused devices: <none>\n",
+        );
+        let arrays = StorageControllerMonitor::parse_mdstat(text);
+        assert_eq!(arrays.len(), 1);
+        let md1 = &arrays[0];
+        assert_eq!(md1.name, "md1");
+        assert_eq!(md1.level, RaidLevel::Raid5);
+        assert_eq!(md1.status, RaidStatus::Degraded);
+        assert_eq!(md1.members, vec!["sdd1", "sdc1", "sdb1", "sda1"]);
+        assert_eq!(md1.total_devices, 4);
+        assert_eq!(md1.active_devices, 2);
+        assert_eq!(md1.failed_devices, 1);
+        assert_eq!(md1.spare_devices, 1);
+        assert_eq!(md1.wanted_devices, Some(3));
+        assert_eq!(md1.working_devices, Some(2));
+        assert_eq!(md1.size_bytes, Some(2093056 * 1024));
     }
 
     #[test]

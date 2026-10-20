@@ -291,9 +291,9 @@ impl SiliconMonitor for AppleSiliconMonitor {
                         networks.push(NetworkSilicon {
                             interface: interface_type,
                             link_speed_mbps: None,
-                            rx_bandwidth_mbps: 0.0,
-                            tx_bandwidth_mbps: 0.0,
-                            packet_rate: 0,
+                            rx_bandwidth_mbps: None,
+                            tx_bandwidth_mbps: None,
+                            packet_rate: None,
                             power_state: Some("active".to_string()),
                         });
                     }
@@ -307,38 +307,16 @@ impl SiliconMonitor for AppleSiliconMonitor {
                 networks.push(NetworkSilicon {
                     interface: interface_type,
                     link_speed_mbps: None,
-                    rx_bandwidth_mbps: 0.0,
-                    tx_bandwidth_mbps: 0.0,
-                    packet_rate: 0,
+                    rx_bandwidth_mbps: None,
+                    tx_bandwidth_mbps: None,
+                    packet_rate: None,
                     power_state: Some("active".to_string()),
                 });
             }
         }
 
-        // Get bandwidth from netstat
-        if let Ok(output) = Command::new("netstat").args(["-ib"]).output() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 7 {
-                    let iface = parts[0];
-                    // Find matching network entry and update bytes
-                    if let Some(net) = networks.iter_mut().find(|n| {
-                        (n.interface == "WiFi" && iface == "en0")
-                            || (n.interface == "Ethernet" && iface.starts_with("en"))
-                    }) {
-                        if let Ok(ibytes) = parts[6].parse::<u64>() {
-                            net.rx_bandwidth_mbps = ibytes as f64 / (1024.0 * 1024.0);
-                        }
-                        if parts.len() > 9 {
-                            if let Ok(obytes) = parts[9].parse::<u64>() {
-                                net.tx_bandwidth_mbps = obytes as f64 / (1024.0 * 1024.0);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // netstat -ib byte totals are cumulative since boot, not a bandwidth,
+        // so they are not written into the rate fields.
 
         Ok(networks)
     }
