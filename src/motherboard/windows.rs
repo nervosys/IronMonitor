@@ -1093,13 +1093,20 @@ pub fn get_system_temperatures() -> Result<SystemTemperatures, Error> {
                 "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature",
             ) {
                 for zone in thermal_zones {
+                    // An ACPI zone measures whatever the firmware put it on. Only a
+                    // zone whose name says CPU is reported as the CPU; taking the
+                    // first zone passed a chassis or PCH reading off as one.
+                    let names_cpu = zone
+                        .instance_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_ascii_uppercase().contains("CPU"));
+                    if !names_cpu {
+                        continue;
+                    }
                     if let Some(temp_decikelvin) = zone.current_temperature {
                         let temp_celsius = (temp_decikelvin as f64 / 10.0) - 273.15;
-                        if temp_celsius > 0.0 && temp_celsius < 150.0 {
-                            // First valid thermal zone is often CPU
-                            if cpu_temp.is_none() {
-                                cpu_temp = Some(temp_celsius as f32);
-                            }
+                        if temp_celsius > 0.0 && temp_celsius < 150.0 && cpu_temp.is_none() {
+                            cpu_temp = Some(temp_celsius as f32);
                         }
                     }
                 }
