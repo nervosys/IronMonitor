@@ -262,6 +262,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardware-analysis bottleneck and workload confidences, and the power
   profile's confidence, are named per-rule constants documented as such
   rather than as measured probabilities. Values are unchanged.
+- Power profile: an unread CPU governor is `None`, where an empty
+  `scaling_governor` read as Powersave; boost and energy-performance
+  preference are `None` where unread, and the boost file is read the way
+  the kernel defines it (`boost` 1 = on, `no_turbo` 1 = off; both 0 and 1
+  used to read as on). With nothing read, the inferred profile is Unknown
+  and its confidence, wattages and efficiency score are `None`, where the
+  per-class table answered anyway.
+- Hardware classification confidence is built from named rule constants
+  documented as such, not as a measured probability. Values are unchanged.
+- A Linux cooling device whose type cannot be read is skipped, where it was
+  labelled a fan. cgroup v2 CPU and memory readings are `None` when cpu.max,
+  cpu.weight, memory.current, memory.max or memory.stat cannot be read,
+  where quota -1, period 100000, weight 100 and zeros stood in; swap and
+  OOM figures are `None` without swap accounting, and memory usage percent
+  is `None` with no limit, where it read 0%.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

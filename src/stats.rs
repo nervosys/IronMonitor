@@ -373,10 +373,12 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
                 _ => None,
             };
 
-            // Get device type
-            let device_type = fs::read_to_string(path.join("type"))
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "fan".to_string());
+            // Get device type. An unreadable type cannot be classified, so the
+            // device is skipped rather than assumed to be a fan.
+            let device_type = match fs::read_to_string(path.join("type")) {
+                Ok(s) => s.trim().to_string(),
+                Err(_) => continue,
+            };
 
             if device_type.contains("fan") || device_type.contains("pwm") {
                 fans.insert(

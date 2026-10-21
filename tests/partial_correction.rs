@@ -718,6 +718,18 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
             "zero; analyze_thermal_envelope is the only constructor and copies it unfloored"
         ),
     ),
+    (
+        "src/cgroup_monitor/mod.rs",
+        "CgroupMemory",
+        "usage_bytes limit_bytes cache_bytes rss_bytes",
+        concat!(
+            "Built by read_memory_v2, which returns None unless memory.current, ",
+            "memory.max and memory.stat were read and parsed; those three files are ",
+            "the only source of the bare fields. The Option fields are the ones whose ",
+            "source may be missing: swap accounting, the oom_kill key, and a percentage ",
+            "with no limit. The one other constructor is a unit test with literal values."
+        ),
+    ),
 ];
 
 fn known() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {

@@ -344,12 +344,84 @@ pub enum AnomalySeverity {
 // Full analysis report
 // ────────────────────────────────────────────────────────────────────
 
+/// Score of the virtual-machine rule. A constant of that rule, chosen for it; it is
+/// not a measured probability.
+const CLASSIFICATION_CONFIDENCE_VIRTUAL_MACHINE: f32 = 0.95;
+
+/// Weight of the server-CPU indicator in the server score. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_CPU: f32 = 0.35;
+/// Weight of the ECC-memory indicator in the server score. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_ECC: f32 = 0.2;
+/// Weight of the 16-or-more-physical-cores indicator in the server score. A constant of
+/// that rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_PHYSICAL_CORES: f32 = 0.15;
+/// Weight of the 64-GB-or-more-RAM indicator in the server score. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_RAM: f32 = 0.1;
+/// Weight of the multi-NUMA-node indicator in the server score. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_NUMA: f32 = 0.15;
+/// Weight of the server-chassis indicator in the server score. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_CHASSIS: f32 = 0.3;
+/// Weight of the no-battery indicator in the server score. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_NO_BATTERY: f32 = 0.05;
+/// Weight of the two-or-more-NICs indicator in the server score. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_SERVER_NICS: f32 = 0.1;
+/// Cap on the server score. A constant of that rule, chosen for it; it is not a
+/// measured probability.
+const CLASSIFICATION_CONFIDENCE_SERVER_CAP: f32 = 0.95;
+
+/// Weight of the mobile-chassis indicator in the laptop score. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_LAPTOP_MOBILE_CHASSIS: f32 = 0.6;
+/// Weight of the battery indicator in the laptop score, where the chassis did not
+/// answer. A constant of that rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_LAPTOP_BATTERY: f32 = 0.25;
+/// Weight of the eight-or-fewer-physical-cores indicator in the laptop score. A
+/// constant of that rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_LAPTOP_LOW_CORES: f32 = 0.05;
+/// Weight of the 32-GB-or-less-RAM indicator in the laptop score. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_WEIGHT_LAPTOP_LOW_RAM: f32 = 0.05;
+/// Cap on the laptop score. A constant of that rule, chosen for it; it is not a
+/// measured probability.
+const CLASSIFICATION_CONFIDENCE_LAPTOP_CAP: f32 = 0.95;
+/// Factor applied to the laptop score when the laptop is a gaming laptop. A constant of
+/// that rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_SCALE_GAMING_LAPTOP: f32 = 0.9;
+/// Factor applied to the laptop score when the laptop is an ultrabook. A constant of
+/// that rule, chosen for it; it is not a measured probability.
+const CLASSIFICATION_SCALE_ULTRABOOK: f32 = 0.8;
+
+/// Score of the workstation rule. A constant of that rule, chosen for it; it is not a
+/// measured probability.
+const CLASSIFICATION_CONFIDENCE_WORKSTATION: f32 = 0.6;
+/// Score of the gaming-desktop rule. A constant of that rule, chosen for it; it is not
+/// a measured probability.
+const CLASSIFICATION_CONFIDENCE_GAMING_DESKTOP: f32 = 0.6;
+/// Score of the desktop fallback rule. A constant of that rule, chosen for it; it is
+/// not a measured probability.
+const CLASSIFICATION_CONFIDENCE_DESKTOP: f32 = 0.5;
+/// Score of the embedded rule. A constant of that rule, chosen for it; it is not a
+/// measured probability.
+const CLASSIFICATION_CONFIDENCE_EMBEDDED: f32 = 0.8;
+/// Score of the mini-PC rule. A constant of that rule, chosen for it; it is not a
+/// measured probability.
+const CLASSIFICATION_CONFIDENCE_MINI_PC: f32 = 0.7;
+
 /// Complete hardware analysis report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareAnalysisReport {
     /// System classification
     pub classification: SystemClass,
-    /// Classification confidence
+    /// Rule score for the classification, 0.0-1.0. Not a measured probability: it is
+    /// built from the `CLASSIFICATION_*` constants in this module (the weights, scales
+    /// and caps of the rules that scored the winning class), chosen by the code.
     pub classification_confidence: f32,
     /// Performance tier
     pub performance_tier: PerformanceTier,
@@ -1193,37 +1265,40 @@ impl HardwareInferenceEngine {
 
         // Virtual machine
         if f.is_virtual {
-            scores.push((SystemClass::VirtualMachine, 0.95));
+            scores.push((
+                SystemClass::VirtualMachine,
+                CLASSIFICATION_CONFIDENCE_VIRTUAL_MACHINE,
+            ));
         }
 
         // Server indicators
         let server_score = {
             let mut s = 0.0f32;
             if f.is_server_cpu {
-                s += 0.35;
+                s += CLASSIFICATION_WEIGHT_SERVER_CPU;
             }
             if f.has_ecc {
-                s += 0.2;
+                s += CLASSIFICATION_WEIGHT_SERVER_ECC;
             }
             if f.cpu_cores_physical >= 16 {
-                s += 0.15;
+                s += CLASSIFICATION_WEIGHT_SERVER_PHYSICAL_CORES;
             }
             if f.ram_total_gb >= 64.0 {
-                s += 0.1;
+                s += CLASSIFICATION_WEIGHT_SERVER_RAM;
             }
             if f.numa_nodes >= 2 {
-                s += 0.15;
+                s += CLASSIFICATION_WEIGHT_SERVER_NUMA;
             }
             if f.chassis_type.contains("Server") {
-                s += 0.3;
+                s += CLASSIFICATION_WEIGHT_SERVER_CHASSIS;
             }
             if !f.has_battery {
-                s += 0.05;
+                s += CLASSIFICATION_WEIGHT_SERVER_NO_BATTERY;
             }
             if f.nic_count >= 2 {
-                s += 0.1;
+                s += CLASSIFICATION_WEIGHT_SERVER_NICS;
             }
-            s.min(0.95)
+            s.min(CLASSIFICATION_CONFIDENCE_SERVER_CAP)
         };
         if server_score > 0.3 {
             scores.push((SystemClass::Server, server_score));
@@ -1250,27 +1325,33 @@ impl HardwareInferenceEngine {
         let laptop_score = {
             let mut s = 0.0f32;
             if chassis_is_mobile {
-                s += 0.6;
+                s += CLASSIFICATION_WEIGHT_LAPTOP_MOBILE_CHASSIS;
             }
             // Only where the enclosure did not answer. A UPS on a desktop is a
             // battery, and it is not evidence of a laptop.
             if f.has_battery && !chassis_is_stationary {
-                s += 0.25;
+                s += CLASSIFICATION_WEIGHT_LAPTOP_BATTERY;
             }
             if f.cpu_cores_physical <= 8 {
-                s += 0.05;
+                s += CLASSIFICATION_WEIGHT_LAPTOP_LOW_CORES;
             }
             if f.ram_total_gb <= 32.0 {
-                s += 0.05;
+                s += CLASSIFICATION_WEIGHT_LAPTOP_LOW_RAM;
             }
-            s.min(0.95)
+            s.min(CLASSIFICATION_CONFIDENCE_LAPTOP_CAP)
         };
         if laptop_score > 0.3 {
             let gpu_lower = f.gpu_model.to_lowercase();
             if f.has_discrete_gpu && (gpu_lower.contains("rtx") || gpu_lower.contains("rx ")) {
-                scores.push((SystemClass::GamingLaptop, laptop_score * 0.9));
+                scores.push((
+                    SystemClass::GamingLaptop,
+                    laptop_score * CLASSIFICATION_SCALE_GAMING_LAPTOP,
+                ));
             } else if f.ram_total_gb <= 16.0 && f.cpu_cores_physical <= 4 {
-                scores.push((SystemClass::Ultrabook, laptop_score * 0.8));
+                scores.push((
+                    SystemClass::Ultrabook,
+                    laptop_score * CLASSIFICATION_SCALE_ULTRABOOK,
+                ));
             } else {
                 scores.push((SystemClass::Laptop, laptop_score));
             }
@@ -1289,11 +1370,17 @@ impl HardwareInferenceEngine {
                 || gpu_lower.contains("rx 7");
 
             if f.is_server_cpu || f.ram_total_gb >= 64.0 {
-                scores.push((SystemClass::Workstation, 0.6));
+                scores.push((
+                    SystemClass::Workstation,
+                    CLASSIFICATION_CONFIDENCE_WORKSTATION,
+                ));
             } else if is_gaming_gpu {
-                scores.push((SystemClass::GamingDesktop, 0.6));
+                scores.push((
+                    SystemClass::GamingDesktop,
+                    CLASSIFICATION_CONFIDENCE_GAMING_DESKTOP,
+                ));
             } else {
-                scores.push((SystemClass::Desktop, 0.5));
+                scores.push((SystemClass::Desktop, CLASSIFICATION_CONFIDENCE_DESKTOP));
             }
         }
 
@@ -1301,13 +1388,13 @@ impl HardwareInferenceEngine {
         if f.cpu_cores_physical <= 4 && f.ram_total_gb <= 4.0 {
             let model = f.cpu_model.to_lowercase();
             if model.contains("arm") || model.contains("cortex") || model.contains("tegra") {
-                scores.push((SystemClass::Embedded, 0.8));
+                scores.push((SystemClass::Embedded, CLASSIFICATION_CONFIDENCE_EMBEDDED));
             }
         }
 
         // Mini PC
         if f.chassis_type.contains("Mini") {
-            scores.push((SystemClass::MiniPc, 0.7));
+            scores.push((SystemClass::MiniPc, CLASSIFICATION_CONFIDENCE_MINI_PC));
         }
 
         // Pick highest-scoring classification

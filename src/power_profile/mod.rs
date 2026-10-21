@@ -87,17 +87,23 @@ const POWER_CONFIDENCE_STEP_CHARGE_THRESHOLD: f32 = 0.05;
 /// Inferred system power behavior based on hardware + software config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferredPowerBehavior {
-    /// Classification
+    /// Classification; `Unknown` when no input was read.
     pub classification: PowerProfile,
     /// Rule score in 0.0-1.0, not a probability: `POWER_CONFIDENCE_BASE` plus a fixed
-    /// step per matching input (governor, charge threshold), capped at 1.0.
-    pub confidence: f32,
-    /// Estimated idle power draw (watts)
-    pub estimated_idle_watts: f32,
-    /// Estimated max power draw (watts)
-    pub estimated_max_watts: f32,
-    /// Efficiency score (0-100, higher = more efficient configuration)
-    pub efficiency_score: u8,
+    /// step per matching input (governor, charge threshold), capped at 1.0. `None`
+    /// when no input was read.
+    pub confidence: Option<f32>,
+    /// Idle power draw in watts from a per-class table (Performance 25, Balanced 15,
+    /// PowerSaver 8, UltraPowerSaver 5), not measured on this machine. `None` when no
+    /// input was read.
+    pub estimated_idle_watts: Option<f32>,
+    /// Max power draw in watts from a per-class table (Performance 250, Balanced 200,
+    /// PowerSaver 150, UltraPowerSaver 100), not measured on this machine. `None` when
+    /// no input was read.
+    pub estimated_max_watts: Option<f32>,
+    /// Efficiency score (0-100, higher = more efficient configuration), a rule score
+    /// starting from a constant 50. `None` when no input was read.
+    pub efficiency_score: Option<u8>,
     /// Recommendations
     pub recommendations: Vec<String>,
 }
@@ -116,8 +122,8 @@ pub struct PowerPlanInfo {
 /// CPU frequency configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuFreqConfig {
-    /// Current governor
-    pub governor: CpuGovernor,
+    /// Current governor, or `None` where `scaling_governor` was absent or empty.
+    pub governor: Option<CpuGovernor>,
     /// Current frequency (MHz), or `None` where `scaling_cur_freq` could not
     /// be read.
     ///
@@ -133,10 +139,10 @@ pub struct CpuFreqConfig {
     pub max_freq_mhz: Option<u32>,
     /// Base (P1) frequency if known
     pub base_freq_mhz: Option<u32>,
-    /// Boost/turbo enabled
-    pub boost_enabled: bool,
-    /// Energy Performance Preference (Linux: /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference)
-    pub energy_perf_preference: String,
+    /// Boost/turbo enabled, or `None` where neither boost file could be read.
+    pub boost_enabled: Option<bool>,
+    /// Energy Performance Preference (Linux: /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference), or `None` where unread.
+    pub energy_perf_preference: Option<String>,
 }
 
 /// Full power profile state.
@@ -221,26 +227,45 @@ impl PowerProfileMonitor {
 
     /// Infer power behavior from collected data.
     fn infer_behavior(&self) -> InferredPowerBehavior {
+        // Nothing read means nothing to infer from. Without this the score starts
+        // from a constant 50 and the watt figures are table values, and both would
+        // be reported as if they described this machine.
+        let any_input_read = self.cpu_freq.is_some()
+            || self.active_profile != PowerProfile::Unknown
+            || self.on_ac_power.is_some()
+            || self.charge_policy != ChargePolicy::Unknown
+            || self.display_brightness.is_some();
+        if !any_input_read {
+            return InferredPowerBehavior {
+                classification: PowerProfile::Unknown,
+                confidence: None,
+                estimated_idle_watts: None,
+                estimated_max_watts: None,
+                efficiency_score: None,
+                recommendations: Vec::new(),
+            };
+        }
+
         let mut score = 50u8; // Start balanced
         let mut confidence = POWER_CONFIDENCE_BASE;
         let mut recommendations = Vec::new();
 
         // Governor analysis
         if let Some(ref freq) = self.cpu_freq {
-            match &freq.governor {
-                CpuGovernor::Performance => {
+            match freq.governor.as_ref() {
+                Some(CpuGovernor::Performance) => {
                     score = score.saturating_sub(20); // Less efficient
                     confidence += POWER_CONFIDENCE_STEP_PERFORMANCE_GOVERNOR;
                 }
-                CpuGovernor::Powersave => {
+                Some(CpuGovernor::Powersave) => {
                     score = score.saturating_add(20);
                     confidence += POWER_CONFIDENCE_STEP_POWERSAVE_GOVERNOR;
                 }
-                CpuGovernor::Schedutil => {
+                Some(CpuGovernor::Schedutil) => {
                     score = score.saturating_add(10); // Good default
                     confidence += POWER_CONFIDENCE_STEP_SCHEDUTIL_GOVERNOR;
                 }
-                CpuGovernor::Ondemand => {
+                Some(CpuGovernor::Ondemand) => {
                     score = score.saturating_add(5);
                     confidence += POWER_CONFIDENCE_STEP_ONDEMAND_GOVERNOR;
                 }
@@ -248,7 +273,7 @@ impl PowerProfileMonitor {
             }
 
             // Boost analysis
-            if freq.boost_enabled {
+            if freq.boost_enabled == Some(true) {
                 score = score.saturating_sub(5);
                 if self.on_ac_power == Some(false) {
                     recommendations.push(
@@ -277,11 +302,11 @@ impl PowerProfileMonitor {
             }
 
             // EPP analysis
-            match freq.energy_perf_preference.as_str() {
-                "performance" => score = score.saturating_sub(10),
-                "power" | "power_save" => score = score.saturating_add(10),
-                "balance_performance" => {}
-                "balance_power" => score = score.saturating_add(5),
+            match freq.energy_perf_preference.as_deref() {
+                Some("performance") => score = score.saturating_sub(10),
+                Some("power") | Some("power_save") => score = score.saturating_add(10),
+                Some("balance_performance") => {}
+                Some("balance_power") => score = score.saturating_add(5),
                 _ => {}
             }
         }
@@ -337,7 +362,7 @@ impl PowerProfileMonitor {
             PowerProfile::Performance
         };
 
-        // Estimate power draw based on profile
+        // Per-class table figures, not measurements of this machine.
         let (idle_watts, max_watts) = match &classification {
             PowerProfile::Performance => (25.0, 250.0),
             PowerProfile::Balanced => (15.0, 200.0),
@@ -348,10 +373,10 @@ impl PowerProfileMonitor {
 
         InferredPowerBehavior {
             classification,
-            confidence: confidence.min(1.0),
-            estimated_idle_watts: idle_watts,
-            estimated_max_watts: max_watts,
-            efficiency_score: score.min(100),
+            confidence: Some(confidence.min(1.0)),
+            estimated_idle_watts: Some(idle_watts),
+            estimated_max_watts: Some(max_watts),
+            efficiency_score: Some(score.min(100)),
             recommendations,
         }
     }
@@ -362,22 +387,22 @@ impl PowerProfileMonitor {
         // governor, a desktop has no battery -- so nothing in this reader is
         // an enumeration whose failure means "no power profiles". The
         // signature is `Result` for consistency with the other two.
-        // CPU frequency governor
-        let gov = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-
-        let governor = match gov.as_str() {
-            "performance" => CpuGovernor::Performance,
-            "powersave" => CpuGovernor::Powersave,
-            "ondemand" => CpuGovernor::Ondemand,
-            "conservative" => CpuGovernor::Conservative,
-            "schedutil" => CpuGovernor::Schedutil,
-            "userspace" => CpuGovernor::Userspace,
-            "" => CpuGovernor::Powersave,
-            other => CpuGovernor::Other(other.to_string()),
-        };
+        // CPU frequency governor. Missing or empty is `None`: an unread governor
+        // is not a `powersave` governor.
+        let governor =
+            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(|gov| match gov.as_str() {
+                    "performance" => CpuGovernor::Performance,
+                    "powersave" => CpuGovernor::Powersave,
+                    "ondemand" => CpuGovernor::Ondemand,
+                    "conservative" => CpuGovernor::Conservative,
+                    "schedutil" => CpuGovernor::Schedutil,
+                    "userspace" => CpuGovernor::Userspace,
+                    other => CpuGovernor::Other(other.to_string()),
+                });
 
         // `.map` rather than `.unwrap_or(0)`: a kernel without cpufreq has no
         // frequency to report, and 0 MHz is not what that looks like.
@@ -405,31 +430,54 @@ impl PowerProfileMonitor {
                 .and_then(|s| s.trim().parse::<u32>().ok())
                 .map(|f| f / 1000);
 
+        // boost file: 1 = enabled; no_turbo: 0 = enabled (inverted). A file that is
+        // missing or holds anything else leaves the flag unread, not false.
         let boost_enabled = std::fs::read_to_string("/sys/devices/system/cpu/cpufreq/boost")
-            .or_else(|_| std::fs::read_to_string("/sys/devices/system/cpu/intel_pstate/no_turbo"))
-            .map(|s| {
-                let val = s.trim();
-                // boost file: 1 = enabled; no_turbo: 0 = enabled (inverted)
-                val == "1" || val == "0"
+            .ok()
+            .and_then(|s| match s.trim() {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
             })
-            .unwrap_or(false);
+            .or_else(|| {
+                std::fs::read_to_string("/sys/devices/system/cpu/intel_pstate/no_turbo")
+                    .ok()
+                    .and_then(|s| match s.trim() {
+                        "0" => Some(true),
+                        "1" => Some(false),
+                        _ => None,
+                    })
+            });
 
         let epp = std::fs::read_to_string(
             "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference",
         )
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
-        self.cpu_freq = Some(CpuFreqConfig {
-            governor,
-            current_freq_mhz: cur_freq,
-            min_freq_mhz: min_freq,
-            max_freq_mhz: max_freq,
-            base_freq_mhz: base_freq,
-            boost_enabled,
-            energy_perf_preference: epp,
-        });
+        // `cpu_freq` is absent when nothing under cpufreq was read, rather than a
+        // struct of unread fields that still says the reader succeeded.
+        let any_cpufreq_read = governor.is_some()
+            || cur_freq.is_some()
+            || min_freq.is_some()
+            || max_freq.is_some()
+            || base_freq.is_some()
+            || boost_enabled.is_some()
+            || epp.is_some();
+        self.cpu_freq = if any_cpufreq_read {
+            Some(CpuFreqConfig {
+                governor,
+                current_freq_mhz: cur_freq,
+                min_freq_mhz: min_freq,
+                max_freq_mhz: max_freq,
+                base_freq_mhz: base_freq,
+                boost_enabled,
+                energy_perf_preference: epp,
+            })
+        } else {
+            None
+        };
 
         // power-profiles-daemon
         if let Ok(output) = std::process::Command::new("powerprofilesctl")
@@ -448,10 +496,12 @@ impl PowerProfileMonitor {
             };
         } else {
             // Infer from governor
-            self.active_profile = match &self.cpu_freq.as_ref().map(|f| &f.governor) {
+            self.active_profile = match self.cpu_freq.as_ref().and_then(|f| f.governor.as_ref()) {
                 Some(CpuGovernor::Performance) => PowerProfile::Performance,
                 Some(CpuGovernor::Powersave) => PowerProfile::PowerSaver,
-                _ => PowerProfile::Balanced,
+                Some(_) => PowerProfile::Balanced,
+                // No governor read: the profile is not known, not Balanced.
+                None => PowerProfile::Unknown,
             };
         }
 
@@ -712,13 +762,13 @@ mod tests {
             active_profile: PowerProfile::Performance,
             power_plans: Vec::new(),
             cpu_freq: Some(CpuFreqConfig {
-                governor: CpuGovernor::Performance,
+                governor: Some(CpuGovernor::Performance),
                 current_freq_mhz: Some(4500),
                 min_freq_mhz: Some(4000),
                 max_freq_mhz: Some(5000),
                 base_freq_mhz: Some(3700),
-                boost_enabled: true,
-                energy_perf_preference: "performance".into(),
+                boost_enabled: Some(true),
+                energy_perf_preference: Some("performance".into()),
             }),
             charge_policy: ChargePolicy::Full,
             inferred: None,
@@ -728,7 +778,7 @@ mod tests {
             disk_standby_secs: None,
         };
         let behavior = monitor.infer_behavior();
-        assert!(behavior.efficiency_score < 30); // Should be low efficiency
+        assert!(behavior.efficiency_score.is_some_and(|s| s < 30)); // Should be low efficiency
         assert!(!behavior.recommendations.is_empty());
     }
 
@@ -738,13 +788,13 @@ mod tests {
             active_profile: PowerProfile::PowerSaver,
             power_plans: Vec::new(),
             cpu_freq: Some(CpuFreqConfig {
-                governor: CpuGovernor::Powersave,
+                governor: Some(CpuGovernor::Powersave),
                 current_freq_mhz: Some(800),
                 min_freq_mhz: Some(400),
                 max_freq_mhz: Some(3600),
                 base_freq_mhz: Some(2400),
-                boost_enabled: false,
-                energy_perf_preference: "power".into(),
+                boost_enabled: Some(false),
+                energy_perf_preference: Some("power".into()),
             }),
             charge_policy: ChargePolicy::Threshold(80),
             inferred: None,
@@ -754,7 +804,31 @@ mod tests {
             disk_standby_secs: Some(600),
         };
         let behavior = monitor.infer_behavior();
-        assert!(behavior.efficiency_score > 60); // Should be high efficiency
+        assert!(behavior.efficiency_score.is_some_and(|s| s > 60)); // Should be high efficiency
+    }
+
+    /// With no input read the monitor infers nothing: the score would start from a
+    /// constant and the watt figures are table values, so neither is reported.
+    #[test]
+    fn test_inference_without_inputs_reports_no_figures() {
+        let monitor = PowerProfileMonitor {
+            active_profile: PowerProfile::Unknown,
+            power_plans: Vec::new(),
+            cpu_freq: None,
+            charge_policy: ChargePolicy::Unknown,
+            inferred: None,
+            on_ac_power: None,
+            display_brightness: None,
+            sleep_timeout_secs: None,
+            disk_standby_secs: None,
+        };
+        let behavior = monitor.infer_behavior();
+        assert_eq!(behavior.classification, PowerProfile::Unknown);
+        assert_eq!(behavior.confidence, None);
+        assert_eq!(behavior.estimated_idle_watts, None);
+        assert_eq!(behavior.estimated_max_watts, None);
+        assert_eq!(behavior.efficiency_score, None);
+        assert!(behavior.recommendations.is_empty());
     }
 
     #[test]
