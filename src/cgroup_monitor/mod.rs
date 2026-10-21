@@ -139,10 +139,14 @@ pub struct CgroupOverview {
     pub cgroups: Vec<CgroupInfo>,
     /// Total number of containers detected.
     pub container_count: usize,
-    /// Total memory allocated to cgroups.
-    pub total_memory_limit_bytes: u64,
-    /// Total effective CPUs allocated.
-    pub total_effective_cpus: f64,
+    /// Total memory limit, in bytes, over the cgroups that have one. Unlimited
+    /// cgroups are left out, so this covers only capped cgroups; `None` when no
+    /// cgroup is capped, or when the sum overflows.
+    pub total_memory_limit_bytes: Option<u64>,
+    /// Total effective CPUs over the cgroups with a CPU quota. Uncapped cgroups
+    /// are left out, so this covers only capped cgroups; `None` when no cgroup
+    /// is capped.
+    pub total_effective_cpus: Option<f64>,
 }
 
 /// The three counters `CgroupCpu` carries, from a cgroup v2 `cpu.stat`. Each
@@ -225,6 +229,51 @@ fn parse_oom_kill(events: &str) -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// Sums figures that were read. No figure contributing gives `None`, not zero:
+/// a sum over nothing is not a total. Overflow also gives `None`, since a sum
+/// that does not fit in a `u64` is not a figure this program can state.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sum_read_u64(values: impl IntoIterator<Item = u64>) -> Option<u64> {
+    let mut total: Option<u64> = None;
+    for value in values {
+        total = Some(total.unwrap_or(0).checked_add(value)?);
+    }
+    total
+}
+
+/// The `f64` counterpart of [`sum_read_u64`]: `None` when nothing was summed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sum_read_f64(values: impl IntoIterator<Item = f64>) -> Option<f64> {
+    values.into_iter().reduce(|a, b| a + b)
+}
+
+/// Total memory limit over the cgroups that have a limit. An unlimited
+/// `memory.max` reads as `u64::MAX` and is left out, so this covers only capped
+/// cgroups: `None` when none of them is capped, or when the total overflows.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sum_memory_limits(cgroups: &[CgroupInfo]) -> Option<u64> {
+    sum_read_u64(
+        cgroups
+            .iter()
+            .filter_map(|c| c.memory.as_ref())
+            .map(|m| m.limit_bytes)
+            .filter(|&limit| limit < u64::MAX),
+    )
+}
+
+/// Effective CPUs over the cgroups with a CPU quota. A cgroup with no quota has
+/// `effective_cpus: None` and is left out, so this covers only capped cgroups:
+/// `None` when none of them is capped.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sum_effective_cpus(cgroups: &[CgroupInfo]) -> Option<f64> {
+    sum_read_f64(
+        cgroups
+            .iter()
+            .filter_map(|c| c.cpu.as_ref())
+            .filter_map(|c| c.effective_cpus),
+    )
+}
+
 /// Cgroup resource monitor.
 pub struct CgroupMonitor {
     overview: CgroupOverview,
@@ -296,17 +345,8 @@ impl CgroupMonitor {
         };
 
         let container_count = cgroups.iter().filter(|c| c.is_container).count();
-        let total_memory: u64 = cgroups
-            .iter()
-            .filter_map(|c| c.memory.as_ref())
-            .filter(|m| m.limit_bytes < u64::MAX)
-            .map(|m| m.limit_bytes)
-            .sum();
-        let total_cpus: f64 = cgroups
-            .iter()
-            .filter_map(|c| c.cpu.as_ref())
-            .filter_map(|c| c.effective_cpus)
-            .sum();
+        let total_memory = sum_memory_limits(&cgroups);
+        let total_cpus = sum_effective_cpus(&cgroups);
 
         Ok(CgroupOverview {
             version,
@@ -563,8 +603,8 @@ impl CgroupMonitor {
             available_controllers: Vec::new(),
             cgroups: Vec::new(),
             container_count: 0,
-            total_memory_limit_bytes: 0,
-            total_effective_cpus: 0.0,
+            total_memory_limit_bytes: None,
+            total_effective_cpus: None,
         })
     }
 }
@@ -577,8 +617,8 @@ impl Default for CgroupMonitor {
                 available_controllers: Vec::new(),
                 cgroups: Vec::new(),
                 container_count: 0,
-                total_memory_limit_bytes: 0,
-                total_effective_cpus: 0.0,
+                total_memory_limit_bytes: None,
+                total_effective_cpus: None,
             },
         })
     }
@@ -851,11 +891,83 @@ mod tests {
             available_controllers: vec!["cpu".into(), "memory".into()],
             cgroups: Vec::new(),
             container_count: 0,
-            total_memory_limit_bytes: 0,
-            total_effective_cpus: 0.0,
+            total_memory_limit_bytes: None,
+            total_effective_cpus: None,
         };
         let json = serde_json::to_string(&overview).unwrap();
         assert!(json.contains("V2"));
         let _: CgroupOverview = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_sum_read_is_none_over_nothing() {
+        assert_eq!(sum_read_u64(std::iter::empty()), None);
+        assert_eq!(sum_read_f64(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn test_sum_read_adds_contributors() {
+        assert_eq!(sum_read_u64([1u64, 2, 3]), Some(6));
+        assert_eq!(sum_read_f64([1.5, 2.0]), Some(3.5));
+    }
+
+    #[test]
+    fn test_sum_read_overflow_is_none() {
+        assert_eq!(sum_read_u64([u64::MAX - 1, 2]), None);
+    }
+
+    /// `memory_limit` of `None` means no memory reading was made, and
+    /// `effective_cpus` of `None` means the cgroup has no CPU quota.
+    fn cgroup_with(memory_limit: Option<u64>, effective_cpus: Option<f64>) -> CgroupInfo {
+        CgroupInfo {
+            path: String::new(),
+            name: String::new(),
+            is_container: false,
+            container_runtime: None,
+            cpu: Some(CgroupCpu {
+                quota_us: -1,
+                period_us: 100_000,
+                shares: None,
+                weight: 100,
+                usage_us: 0,
+                per_cpu_usage_us: None,
+                throttled_periods: 0,
+                throttled_time_us: 0,
+                effective_cpus,
+            }),
+            memory: memory_limit.map(|limit_bytes| CgroupMemory {
+                usage_bytes: 0,
+                limit_bytes,
+                swap_usage_bytes: None,
+                swap_limit_bytes: None,
+                cache_bytes: 0,
+                rss_bytes: 0,
+                oom_events: None,
+                usage_pct: None,
+            }),
+            io: None,
+            pids: None,
+            controllers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_totals_over_nothing_capped_are_none() {
+        assert_eq!(sum_memory_limits(&[]), None);
+        assert_eq!(sum_effective_cpus(&[]), None);
+        let uncapped = [cgroup_with(Some(u64::MAX), None)];
+        assert_eq!(sum_memory_limits(&uncapped), None);
+        assert_eq!(sum_effective_cpus(&uncapped), None);
+    }
+
+    #[test]
+    fn test_totals_cover_only_capped_cgroups() {
+        let cgroups = [
+            cgroup_with(Some(1024), Some(2.0)),
+            cgroup_with(Some(u64::MAX), None),
+            cgroup_with(Some(2048), Some(0.5)),
+        ];
+        assert_eq!(sum_memory_limits(&cgroups), Some(3072));
+        assert_eq!(sum_effective_cpus(&cgroups), Some(2.5));
     }
 }
