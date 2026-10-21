@@ -592,8 +592,11 @@ impl CgroupMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan_v1() -> Result<Vec<CgroupInfo>, IronError> {
-        // Simplified v1 scanning - just check memory cgroup
-        Ok(Vec::new())
+        // No v1 reader exists. An empty list would read as "no cgroups and no
+        // containers" on a host that has both.
+        Err(IronError::FeatureNotAvailable(
+            "cgroup v1 hierarchies are not read".to_string(),
+        ))
     }
 
     #[cfg(not(target_os = "linux"))]

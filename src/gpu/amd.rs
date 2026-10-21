@@ -547,51 +547,62 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
         let mut gpu_index = 0;
 
         // Scan card* entries
-        if let Ok(entries) = fs::read_dir(dri_path) {
-            let mut cards: Vec<_> = entries
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    // Match card0, card1, etc. but not card0-DP-1, etc.
-                    if name.starts_with("card") && !name.contains('-') {
-                        Some((name, e.path()))
+        let entries = fs::read_dir(dri_path)
+            .map_err(|e| Error::GpuError(format!("failed to read /sys/class/drm: {}", e)))?;
+        let mut cards: Vec<_> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                // Match card0, card1, etc. but not card0-DP-1, etc.
+                if name.starts_with("card") && !name.contains('-') {
+                    Some((name, e.path()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        cards.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (_card_name, card_path) in cards {
+            let device_path = card_path.join("device");
+
+            // Check if it's an AMD GPU by reading driver symlink
+            let driver_path = device_path.join("driver");
+            if let Ok(driver_target) = fs::read_link(&driver_path) {
+                let driver_name = driver_target
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+
+                if driver_name == "amdgpu" {
+                    // Get PCI bus ID from device path symlink
+                    let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
+                        dev_link
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
                     } else {
-                        None
-                    }
-                })
-                .collect();
+                        "unknown".to_string()
+                    };
 
-            cards.sort_by(|a, b| a.0.cmp(&b.0));
-
-            for (_card_name, card_path) in cards {
-                let device_path = card_path.join("device");
-
-                // Check if it's an AMD GPU by reading driver symlink
-                let driver_path = device_path.join("driver");
-                if let Ok(driver_target) = fs::read_link(&driver_path) {
-                    let driver_name = driver_target
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
-
-                    if driver_name == "amdgpu" {
-                        // Get PCI bus ID from device path symlink
-                        let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
-                            dev_link
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string()
-                        } else {
-                            "unknown".to_string()
-                        };
-
-                        if let Ok(gpu) = AmdGpu::new(
-                            gpu_index,
-                            pci_bus_id,
-                            card_path.to_string_lossy().to_string(),
-                        ) {
+                    let bus_id = pci_bus_id.clone();
+                    match AmdGpu::new(
+                        gpu_index,
+                        pci_bus_id,
+                        card_path.to_string_lossy().to_string(),
+                    ) {
+                        Ok(gpu) => {
                             collection.add_gpu(Box::new(gpu));
+                            gpu_index += 1;
+                        }
+                        Err(e) => {
+                            // Record the failure instead of dropping the device. The index
+                            // still advances so that later devices keep their indices.
+                            collection
+                                .detection_failures
+                                .push(("amd", format!("{}: {}", bus_id, e)));
                             gpu_index += 1;
                         }
                     }
@@ -659,7 +670,18 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
             .unwrap_or("unknown")
             .to_string();
 
-        let mut gpu = AmdGpu::new(gpu_index, pci_bus_id.clone())?;
+        // A controller that fails is recorded and the rest are still read; the
+        // index still advances so later adapters keep theirs.
+        let mut gpu = match AmdGpu::new(gpu_index, pci_bus_id.clone()) {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                collection
+                    .detection_failures
+                    .push(("amd", format!("{pci_bus_id}: {e}")));
+                gpu_index += 1;
+                continue;
+            }
+        };
         gpu.name = name.to_string();
 
         // Use DXGI for accurate VRAM and LUID (fixes 4GB WMI cap)

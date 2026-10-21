@@ -294,6 +294,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `None` when no container's value was read (or the sum overflows), where
   they summed unread and unlimited containers as 0. Unlimited memory limits
   are left out of the total.
+- GPU detection records a device that fails to open and keeps reading the
+  rest. NVIDIA aborted the vendor at the first bad device; AMD and Intel on
+  Linux dropped it silently, and on Windows aborted at the first bad
+  controller. An unreadable /sys/class/drm is an error, where it read as no
+  GPUs.
+- cgroup v1 hosts report that v1 is not read, where the scan returned an
+  empty list that read as no cgroups and no containers.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

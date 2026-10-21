@@ -662,16 +662,28 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
         .device_count()
         .map_err(|e| Error::GpuError(format!("Failed to get NVIDIA device count: {}", e)))?;
 
+    // A device that fails is recorded and the rest are still read, so one bad
+    // adapter does not hide the others. Each GPU keeps its NVML index.
     for i in 0..device_count {
-        let device = nvml
-            .device_by_index(i)
-            .map_err(|e| Error::GpuError(format!("Failed to get NVIDIA device {}: {}", i, e)))?;
+        let device = match nvml.device_by_index(i) {
+            Ok(device) => device,
+            Err(e) => {
+                collection
+                    .detection_failures
+                    .push(("nvidia", format!("device {i}: {e}")));
+                continue;
+            }
+        };
 
         // Transmute the device to get a 'static lifetime (safe because we keep nvml alive via Arc)
         let static_device = unsafe { std::mem::transmute::<Device<'_>, Device<'static>>(device) };
 
-        let gpu = NvidiaGpu::new(i as usize, static_device, Arc::clone(&nvml))?;
-        collection.add_gpu(Box::new(gpu));
+        match NvidiaGpu::new(i as usize, static_device, Arc::clone(&nvml)) {
+            Ok(gpu) => collection.add_gpu(Box::new(gpu)),
+            Err(e) => collection
+                .detection_failures
+                .push(("nvidia", format!("device {i}: {e}"))),
+        }
     }
 
     Ok(())

@@ -500,56 +500,67 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
 
         let mut gpu_index = 0;
 
-        if let Ok(entries) = fs::read_dir(dri_path) {
-            let mut cards: Vec<_> = entries
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with("card") && !name.contains('-') {
-                        Some((name, e.path()))
+        let entries = fs::read_dir(dri_path)
+            .map_err(|e| Error::GpuError(format!("failed to read /sys/class/drm: {}", e)))?;
+        let mut cards: Vec<_> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("card") && !name.contains('-') {
+                    Some((name, e.path()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        cards.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (_card_name, card_path) in cards {
+            let device_path = card_path.join("device");
+            let driver_path = device_path.join("driver");
+
+            if let Ok(driver_target) = fs::read_link(&driver_path) {
+                let driver_name = driver_target
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+
+                let driver = match driver_name {
+                    "i915" => Some(IntelDriver::I915),
+                    "xe" => Some(IntelDriver::Xe),
+                    _ => None,
+                };
+
+                if let Some(driver) = driver {
+                    // Get PCI bus ID
+                    let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
+                        dev_link
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
                     } else {
-                        None
-                    }
-                })
-                .collect();
-
-            cards.sort_by(|a, b| a.0.cmp(&b.0));
-
-            for (_card_name, card_path) in cards {
-                let device_path = card_path.join("device");
-                let driver_path = device_path.join("driver");
-
-                if let Ok(driver_target) = fs::read_link(&driver_path) {
-                    let driver_name = driver_target
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
-
-                    let driver = match driver_name {
-                        "i915" => Some(IntelDriver::I915),
-                        "xe" => Some(IntelDriver::Xe),
-                        _ => None,
+                        "unknown".to_string()
                     };
 
-                    if let Some(driver) = driver {
-                        // Get PCI bus ID
-                        let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
-                            dev_link
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string()
-                        } else {
-                            "unknown".to_string()
-                        };
-
-                        if let Ok(gpu) = IntelGpu::new(
-                            gpu_index,
-                            pci_bus_id,
-                            card_path.to_string_lossy().to_string(),
-                            driver,
-                        ) {
+                    let bus_id = pci_bus_id.clone();
+                    match IntelGpu::new(
+                        gpu_index,
+                        pci_bus_id,
+                        card_path.to_string_lossy().to_string(),
+                        driver,
+                    ) {
+                        Ok(gpu) => {
                             collection.add_gpu(Box::new(gpu));
+                            gpu_index += 1;
+                        }
+                        Err(e) => {
+                            // Record the failure instead of dropping the device. The index
+                            // still advances so that later devices keep their indices.
+                            collection
+                                .detection_failures
+                                .push(("intel", format!("{}: {}", bus_id, e)));
                             gpu_index += 1;
                         }
                     }
@@ -625,7 +636,18 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
             IntelDriver::I915
         };
 
-        let mut gpu = IntelGpu::new(gpu_index, pci_bus_id.clone(), driver)?;
+        // A controller that fails is recorded and the rest are still read; the
+        // index still advances so later adapters keep theirs.
+        let mut gpu = match IntelGpu::new(gpu_index, pci_bus_id.clone(), driver) {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                collection
+                    .detection_failures
+                    .push(("intel", format!("{pci_bus_id}: {e}")));
+                gpu_index += 1;
+                continue;
+            }
+        };
         gpu.name = name.to_string();
 
         let is_discrete = name_lower.contains("arc") || name_lower.contains("data center");
