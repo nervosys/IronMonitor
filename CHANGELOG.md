@@ -290,6 +290,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they were 0 and empty), and effective CPUs is `None` for an unlimited
   quota, where it was 0. The process-tree and container cgroup readers
   report a literal "max" as unlimited rather than as unread.
+- The cgroup overview's total memory limit and total effective CPUs are
+  `None` when no container's value was read (or the sum overflows), where
+  they summed unread and unlimited containers as 0. Unlimited memory limits
+  are left out of the total.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
