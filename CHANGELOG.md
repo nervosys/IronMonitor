@@ -301,6 +301,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GPUs.
 - cgroup v1 hosts report that v1 is not read, where the scan returned an
   empty list that read as no cgroups and no containers.
+- Motherboard sensors: Windows ACPI thermal zones and macOS battery and SoC
+  sensors report no max or critical threshold, where each carried an assumed
+  one (90/105, 45/55, 100/110 C); macOS fans report no max RPM, where it was
+  6200. Linux PCIe generation is matched from the exact transfer rate: 2.5
+  GT/s read as PCIe 2.0 and 16 GT/s as PCIe 5.0, and an unrecognised rate is
+  `None`. An unparseable PCI class is `None`, not "Unclassified"; an empty
+  macOS USB vendor or product id is `None`.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

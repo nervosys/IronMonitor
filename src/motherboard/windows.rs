@@ -445,8 +445,9 @@ impl MotherboardDevice for WindowsSensor {
                             sensors.push(TemperatureSensor {
                                 label: format!("ACPI {}", name),
                                 temperature: Some(temp_celsius as f32),
-                                max: Some(90.0),       // Typical high threshold
-                                critical: Some(105.0), // Typical critical threshold
+                                // MSAcpi reports no thresholds; none is assumed here.
+                                max: None,
+                                critical: None,
                                 sensor_type: SensorType::Other, // ACPI thermal zone
                             });
                         }

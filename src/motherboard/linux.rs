@@ -483,7 +483,7 @@ pub fn get_pcie_devices() -> Result<Vec<PcieDeviceInfo>, Error> {
             .map(|s| s.trim().to_string());
 
         // Classify device from PCI class code
-        let device_class = class.as_deref().map(classify_pci_class);
+        let device_class = class.as_deref().and_then(classify_pci_class);
 
         // Read link speed/width from /sys/bus/pci/devices/XXXX:XX:XX.X/
         let current_link_speed = fs::read_to_string(path.join("current_link_speed"))
@@ -493,20 +493,18 @@ pub fn get_pcie_devices() -> Result<Vec<PcieDeviceInfo>, Error> {
             .ok()
             .and_then(|s| s.trim().parse::<u8>().ok());
 
-        // Derive PCIe version from link speed string
-        let pcie_version = current_link_speed.as_deref().map(|s| {
-            if s.contains("16") || s.contains("32") {
-                "PCIe 5.0".to_string()
-            } else if s.contains("16") {
-                "PCIe 4.0".to_string()
-            } else if s.contains("8") {
-                "PCIe 3.0".to_string()
-            } else if s.contains("5") {
-                "PCIe 2.0".to_string()
-            } else if s.contains("2.5") {
-                "PCIe 1.0".to_string()
-            } else {
-                s.to_string()
+        // Derive PCIe generation from the transfer rate, matched exactly. Rates
+        // not in the table have no generation here rather than a guessed one.
+        let pcie_version = current_link_speed.as_deref().and_then(|s| {
+            let rate = s.split_whitespace().next().unwrap_or("");
+            match rate {
+                "2.5" => Some("PCIe 1.0".to_string()),
+                "5" | "5.0" => Some("PCIe 2.0".to_string()),
+                "8" | "8.0" => Some("PCIe 3.0".to_string()),
+                "16" | "16.0" => Some("PCIe 4.0".to_string()),
+                "32" | "32.0" => Some("PCIe 5.0".to_string()),
+                "64" | "64.0" => Some("PCIe 6.0".to_string()),
+                _ => None,
             }
         });
 
@@ -539,11 +537,12 @@ pub fn get_pcie_devices() -> Result<Vec<PcieDeviceInfo>, Error> {
 }
 
 /// Classify a PCI class code into a human-readable category
-fn classify_pci_class(class_hex: &str) -> String {
+fn classify_pci_class(class_hex: &str) -> Option<String> {
     // PCI class codes: 0xCCSSPP (class, subclass, prog-if)
-    let class_code = u32::from_str_radix(class_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+    // A class code that does not parse is unknown, not "Unclassified".
+    let class_code = u32::from_str_radix(class_hex.trim_start_matches("0x"), 16).ok()?;
     let class_id = (class_code >> 16) & 0xFF;
-    match class_id {
+    Some(match class_id {
         0x00 => "Unclassified".to_string(),
         0x01 => "Storage".to_string(),
         0x02 => "Network".to_string(),
@@ -566,7 +565,7 @@ fn classify_pci_class(class_hex: &str) -> String {
         0x13 => "Non-Essential Instrumentation".to_string(),
         0x40 => "Co-Processor".to_string(),
         _ => format!("Class 0x{:02X}", class_id),
-    }
+    })
 }
 
 /// Get SATA/storage devices from /sys/class/block

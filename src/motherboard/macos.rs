@@ -45,8 +45,8 @@ impl MacSensor {
                     sensors.push(TemperatureSensor {
                         label: "Battery".to_string(),
                         temperature: Some(val as f32 / 100.0),
-                        max: Some(45.0),
-                        critical: Some(55.0),
+                        max: None,
+                        critical: None,
                         sensor_type: SensorType::Other,
                     });
                 }
@@ -72,8 +72,8 @@ impl MacSensor {
                 sensors.push(TemperatureSensor {
                     label: "SOC Die".to_string(),
                     temperature: None,
-                    max: Some(100.0),
-                    critical: Some(110.0),
+                    max: None,
+                    critical: None,
                     sensor_type: SensorType::Cpu,
                 });
             }
@@ -101,7 +101,7 @@ impl MacSensor {
                             rpm: if rpm > 0 { Some(rpm as u32) } else { None },
                             pwm: None,
                             min_rpm: None,
-                            max_rpm: Some(6200),
+                            max_rpm: None,
                             controllable: false,
                         });
                         fan_idx += 1;
@@ -598,7 +598,7 @@ fn get_usb_devices() -> Vec<UsbDeviceInfo> {
                 vendor_id = trimmed
                     .split(':')
                     .nth(1)
-                    .map(|s| s.split_whitespace().next().unwrap_or("").to_string());
+                    .and_then(|s| s.split_whitespace().next().map(str::to_string));
                 vendor = trimmed.split(':').nth(1).and_then(|s| {
                     let parts: Vec<&str> = s.trim().splitn(2, ' ').collect();
                     if parts.len() > 1 {
@@ -616,7 +616,7 @@ fn get_usb_devices() -> Vec<UsbDeviceInfo> {
                 product_id = trimmed
                     .split(':')
                     .nth(1)
-                    .map(|s| s.split_whitespace().next().unwrap_or("").to_string());
+                    .and_then(|s| s.split_whitespace().next().map(str::to_string));
             } else if trimmed.starts_with("Speed:") {
                 speed = trimmed.split(':').nth(1).map(|s| s.trim().to_string());
             }
