@@ -259,6 +259,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Silicon: an unreadable Linux CPU count is an error (it was 1), Apple
   efficiency and performance core counts are `None` when sysctl fails (they
   were 0), and so is the macOS logical CPU count.
+- Hardware-analysis bottleneck and workload confidences, and the power
+  profile's confidence, are named per-rule constants documented as such
+  rather than as measured probabilities. Values are unchanged.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

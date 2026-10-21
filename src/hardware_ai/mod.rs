@@ -101,6 +101,25 @@ pub enum BottleneckType {
     PowerLimited,
 }
 
+/// Confidence for the CPU-versus-GPU imbalance bottleneck. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_CPU_GPU_IMBALANCE: f32 = 0.75;
+/// Confidence for the RAM-too-low-for-GPU-workloads bottleneck. A constant of that
+/// rule, chosen for it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_RAM_GPU_WORKLOADS: f32 = 0.7;
+/// Confidence for the RAM-per-core bottleneck. A constant of that rule, chosen for
+/// it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_RAM_PER_CORE: f32 = 0.65;
+/// Confidence for the no-SSD storage bottleneck. A constant of that rule, chosen for
+/// it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_NO_SSD: f32 = 0.85;
+/// Confidence for the SATA-with-high-core-count storage bus bottleneck. A constant of
+/// that rule, chosen for it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_SATA_HIGH_CORE: f32 = 0.6;
+/// Confidence for the slow server NIC bottleneck. A constant of that rule, chosen for
+/// it; it is not a measured probability.
+const BOTTLENECK_CONFIDENCE_SLOW_SERVER_NIC: f32 = 0.5;
+
 /// A detected bottleneck.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bottleneck {
@@ -112,7 +131,9 @@ pub struct Bottleneck {
     pub severity: u8,
     /// Explanation
     pub reason: String,
-    /// Confidence 0.0-1.0
+    /// Confidence 0.0-1.0. Not a measured probability: it is the fixed constant of
+    /// the rule that fired (one of the `BOTTLENECK_CONFIDENCE_*` constants in this
+    /// module), chosen by the code.
     pub confidence: f32,
 }
 
@@ -147,13 +168,43 @@ pub enum Workload {
     NetworkAppliance,
 }
 
+/// Confidence in the ML training suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_ML_TRAINING: f32 = 0.7;
+/// Confidence in the ML inference suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_ML_INFERENCE: f32 = 0.75;
+/// Confidence in the gaming suitability score. A constant of that rule, chosen for it;
+/// it is not a measured probability.
+const WORKLOAD_CONFIDENCE_GAMING: f32 = 0.8;
+/// Confidence in the video editing suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_VIDEO_EDITING: f32 = 0.7;
+/// Confidence in the compilation suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_COMPILATION: f32 = 0.8;
+/// Confidence in the web server suitability score. A constant of that rule, chosen for
+/// it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_WEB_SERVER: f32 = 0.65;
+/// Confidence in the database server suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_DATABASE_SERVER: f32 = 0.65;
+/// Confidence in the virtualization suitability score. A constant of that rule, chosen
+/// for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_VIRTUALIZATION: f32 = 0.7;
+/// Confidence in the office productivity suitability score. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const WORKLOAD_CONFIDENCE_OFFICE_PRODUCTIVITY: f32 = 0.9;
+
 /// Workload suitability score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkloadSuitability {
     pub workload: Workload,
     /// Score 0-100 (100 = perfectly suited)
     pub score: u8,
-    /// Confidence 0.0-1.0
+    /// Confidence 0.0-1.0. Not a measured probability: it is the fixed constant of the
+    /// rule for this workload (one of the `WORKLOAD_CONFIDENCE_*` constants in this
+    /// module), chosen by the code.
     pub confidence: f32,
     /// Key limiting factors
     pub limiting_factors: Vec<String>,
@@ -1387,7 +1438,7 @@ impl HardwareInferenceEngine {
                     "Only {} CPU cores paired with {}GB GPU — CPU will bottleneck GPU-intensive tasks",
                     f.cpu_cores_physical, f.gpu_vram_gb as u32
                 ),
-                confidence: 0.75,
+                confidence: BOTTLENECK_CONFIDENCE_CPU_GPU_IMBALANCE,
             });
         }
 
@@ -1401,7 +1452,7 @@ impl HardwareInferenceEngine {
                     "{:.0}GB RAM is insufficient for GPU workloads with {}GB VRAM",
                     f.ram_total_gb, f.gpu_vram_gb as u32
                 ),
-                confidence: 0.7,
+                confidence: BOTTLENECK_CONFIDENCE_RAM_GPU_WORKLOADS,
             });
         }
 
@@ -1415,7 +1466,7 @@ impl HardwareInferenceEngine {
                     "{:.0}GB RAM for {} cores — should have at least 2GB/core",
                     f.ram_total_gb, f.cpu_cores_physical
                 ),
-                confidence: 0.65,
+                confidence: BOTTLENECK_CONFIDENCE_RAM_PER_CORE,
             });
         }
 
@@ -1426,7 +1477,7 @@ impl HardwareInferenceEngine {
                 component: "Storage".into(),
                 severity: 80,
                 reason: "No SSD detected — HDD will severely bottleneck modern workloads".into(),
-                confidence: 0.85,
+                confidence: BOTTLENECK_CONFIDENCE_NO_SSD,
             });
         }
 
@@ -1438,7 +1489,7 @@ impl HardwareInferenceEngine {
                 severity: 40,
                 reason: "High-core-count CPU with SATA SSD — NVMe would reduce I/O bottleneck"
                     .into(),
-                confidence: 0.6,
+                confidence: BOTTLENECK_CONFIDENCE_SATA_HIGH_CORE,
             });
         }
 
@@ -1452,7 +1503,7 @@ impl HardwareInferenceEngine {
                     "Server CPU with only {:.0} Gbps NIC — consider 10/25 GbE",
                     f.max_nic_speed_gbps
                 ),
-                confidence: 0.5,
+                confidence: BOTTLENECK_CONFIDENCE_SLOW_SERVER_NIC,
             });
         }
 
@@ -1509,7 +1560,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::MlTraining,
                 score: score.min(100),
-                confidence: 0.7,
+                confidence: WORKLOAD_CONFIDENCE_ML_TRAINING,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1547,7 +1598,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::MlInference,
                 score: score.min(100),
-                confidence: 0.75,
+                confidence: WORKLOAD_CONFIDENCE_ML_INFERENCE,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1595,7 +1646,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::Gaming,
                 score: score.min(100),
-                confidence: 0.8,
+                confidence: WORKLOAD_CONFIDENCE_GAMING,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1640,7 +1691,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::VideoEditing,
                 score: score.min(100),
-                confidence: 0.7,
+                confidence: WORKLOAD_CONFIDENCE_VIDEO_EDITING,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1683,7 +1734,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::Compilation,
                 score: score.min(100),
-                confidence: 0.8,
+                confidence: WORKLOAD_CONFIDENCE_COMPILATION,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1725,7 +1776,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::WebServer,
                 score: score.min(100),
-                confidence: 0.65,
+                confidence: WORKLOAD_CONFIDENCE_WEB_SERVER,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1767,7 +1818,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::DatabaseServer,
                 score: score.min(100),
-                confidence: 0.65,
+                confidence: WORKLOAD_CONFIDENCE_DATABASE_SERVER,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1814,7 +1865,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::Virtualization,
                 score: score.min(100),
-                confidence: 0.7,
+                confidence: WORKLOAD_CONFIDENCE_VIRTUALIZATION,
                 limiting_factors: limiting,
                 strengths,
             });
@@ -1846,7 +1897,7 @@ impl HardwareInferenceEngine {
             results.push(WorkloadSuitability {
                 workload: Workload::OfficeProductivity,
                 score: score.min(100),
-                confidence: 0.9,
+                confidence: WORKLOAD_CONFIDENCE_OFFICE_PRODUCTIVITY,
                 limiting_factors: limiting,
                 strengths,
             });

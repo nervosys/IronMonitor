@@ -64,12 +64,33 @@ pub enum ChargePolicy {
     Unknown,
 }
 
+/// Starting rule score for `InferredPowerBehavior::confidence`, before any input
+/// matched a rule. A constant of the rule, chosen for it; it is not a measured
+/// probability.
+const POWER_CONFIDENCE_BASE: f32 = 0.5;
+/// Rule-score step for a `performance` governor. A constant of that rule, chosen for
+/// it; it is not a measured probability.
+const POWER_CONFIDENCE_STEP_PERFORMANCE_GOVERNOR: f32 = 0.15;
+/// Rule-score step for a `powersave` governor. A constant of that rule, chosen for it;
+/// it is not a measured probability.
+const POWER_CONFIDENCE_STEP_POWERSAVE_GOVERNOR: f32 = 0.15;
+/// Rule-score step for a `schedutil` governor. A constant of that rule, chosen for it;
+/// it is not a measured probability.
+const POWER_CONFIDENCE_STEP_SCHEDUTIL_GOVERNOR: f32 = 0.1;
+/// Rule-score step for an `ondemand` governor. A constant of that rule, chosen for it;
+/// it is not a measured probability.
+const POWER_CONFIDENCE_STEP_ONDEMAND_GOVERNOR: f32 = 0.1;
+/// Rule-score step for a charge threshold at or below 80%. A constant of that rule,
+/// chosen for it; it is not a measured probability.
+const POWER_CONFIDENCE_STEP_CHARGE_THRESHOLD: f32 = 0.05;
+
 /// Inferred system power behavior based on hardware + software config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferredPowerBehavior {
     /// Classification
     pub classification: PowerProfile,
-    /// Confidence (0.0-1.0)
+    /// Rule score in 0.0-1.0, not a probability: `POWER_CONFIDENCE_BASE` plus a fixed
+    /// step per matching input (governor, charge threshold), capped at 1.0.
     pub confidence: f32,
     /// Estimated idle power draw (watts)
     pub estimated_idle_watts: f32,
@@ -201,7 +222,7 @@ impl PowerProfileMonitor {
     /// Infer power behavior from collected data.
     fn infer_behavior(&self) -> InferredPowerBehavior {
         let mut score = 50u8; // Start balanced
-        let mut confidence = 0.5f32;
+        let mut confidence = POWER_CONFIDENCE_BASE;
         let mut recommendations = Vec::new();
 
         // Governor analysis
@@ -209,19 +230,19 @@ impl PowerProfileMonitor {
             match &freq.governor {
                 CpuGovernor::Performance => {
                     score = score.saturating_sub(20); // Less efficient
-                    confidence += 0.15;
+                    confidence += POWER_CONFIDENCE_STEP_PERFORMANCE_GOVERNOR;
                 }
                 CpuGovernor::Powersave => {
                     score = score.saturating_add(20);
-                    confidence += 0.15;
+                    confidence += POWER_CONFIDENCE_STEP_POWERSAVE_GOVERNOR;
                 }
                 CpuGovernor::Schedutil => {
                     score = score.saturating_add(10); // Good default
-                    confidence += 0.1;
+                    confidence += POWER_CONFIDENCE_STEP_SCHEDUTIL_GOVERNOR;
                 }
                 CpuGovernor::Ondemand => {
                     score = score.saturating_add(5);
-                    confidence += 0.1;
+                    confidence += POWER_CONFIDENCE_STEP_ONDEMAND_GOVERNOR;
                 }
                 _ => {}
             }
@@ -286,7 +307,7 @@ impl PowerProfileMonitor {
         match &self.charge_policy {
             ChargePolicy::Threshold(t) if *t <= 80 => {
                 score = score.saturating_add(5);
-                confidence += 0.05;
+                confidence += POWER_CONFIDENCE_STEP_CHARGE_THRESHOLD;
             }
             ChargePolicy::Full => {
                 recommendations.push(
