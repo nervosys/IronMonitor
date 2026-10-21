@@ -62,9 +62,11 @@ pub struct CgroupInfo {
     pub container_id: Option<String>,
     /// Container name (if resolvable)
     pub container_name: Option<String>,
-    /// Cgroup v2 memory limit (bytes, if set)
+    /// Cgroup v2 memory limit in bytes. u64::MAX when memory.max is "max"
+    /// (unlimited); None when it was not read.
     pub memory_limit: Option<u64>,
-    /// Cgroup v2 CPU quota (microseconds per period, if set)
+    /// Cgroup v2 CPU quota in microseconds per period. -1 when cpu.max is
+    /// "max" (unlimited); None when it was not read.
     pub cpu_quota: Option<i64>,
     /// Cgroup v2 CPU period (microseconds)
     pub cpu_period: Option<u64>,
@@ -296,34 +298,17 @@ impl ProcessTree {
 
         // Try to read cgroup limits
         let cgroup_base = format!("/sys/fs/cgroup{}", path);
+        // "max" is a value read (unlimited), so it maps to u64::MAX or -1; only
+        // an unreadable or unparseable file is None, which means unread.
         let memory_limit = fs::read_to_string(format!("{}/memory.max", cgroup_base))
             .ok()
-            .and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed == "max" {
-                    None
-                } else {
-                    trimmed.parse().ok()
-                }
-            });
+            .and_then(|s| crate::cgroup_monitor::parse_limit(&s));
 
-        let cpu_quota = fs::read_to_string(format!("{}/cpu.max", cgroup_base))
+        // One file gives both fields; a zero or unparseable period is unread.
+        let (cpu_quota, cpu_period) = fs::read_to_string(format!("{}/cpu.max", cgroup_base))
             .ok()
-            .and_then(|s| {
-                let parts: Vec<&str> = s.split_whitespace().collect();
-                if parts.first() == Some(&"max") {
-                    None
-                } else {
-                    parts.first().and_then(|v| v.parse().ok())
-                }
-            });
-
-        let cpu_period = fs::read_to_string(format!("{}/cpu.max", cgroup_base))
-            .ok()
-            .and_then(|s| {
-                let parts: Vec<&str> = s.split_whitespace().collect();
-                parts.get(1).and_then(|v| v.parse().ok())
-            });
+            .and_then(|s| crate::cgroup_monitor::parse_cpu_max(&s))
+            .map_or((None, None), |(q, p)| (Some(q), Some(p)));
 
         Some(CgroupInfo {
             path,

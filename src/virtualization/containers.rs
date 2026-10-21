@@ -207,28 +207,27 @@ fn detect_cgroupv2() -> Option<ContainerResources> {
             .and_then(|v| v.trim().parse().ok())
     };
 
+    // "max" is unlimited, a value read: -1 for the quota, u64::MAX for a limit.
+    // Only an unreadable or unparseable file is None.
+    let read_limit = |name: &str| -> Option<u64> {
+        fs::read_to_string(format!("{}/{}", base, name))
+            .ok()
+            .and_then(|v| crate::cgroup_monitor::parse_limit(&v))
+    };
+
     let (cpu_quota, cpu_period) = fs::read_to_string(format!("{}/cpu.max", base))
         .ok()
-        .and_then(|v| {
-            let parts: Vec<&str> = v.split_whitespace().collect();
-            if parts.len() == 2 {
-                let q = parts[0].parse::<i64>().ok();
-                let p = parts[1].parse::<u64>().ok();
-                Some((q, p))
-            } else {
-                None
-            }
-        })
-        .unwrap_or((None, None));
+        .and_then(|v| crate::cgroup_monitor::parse_cpu_max(&v))
+        .map_or((None, None), |(q, p)| (Some(q), Some(p)));
 
     Some(ContainerResources {
         cgroup_version: CgroupVersion::V2,
         cpu_quota,
         cpu_period,
         cpu_shares: read_u64("cpu.weight"),
-        memory_limit_bytes: read_u64("memory.max"),
+        memory_limit_bytes: read_limit("memory.max"),
         memory_usage_bytes: read_u64("memory.current"),
-        pids_limit: read_u64("pids.max"),
+        pids_limit: read_limit("pids.max"),
         pids_current: read_u64("pids.current"),
     })
 }

@@ -26,13 +26,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = engine.full_analysis();
 
     println!("--- Classification ---");
-    println!(
-        "  class:            {:?} (confidence {:.2})",
-        report.classification, report.classification_confidence
+    let confidence = report.classification_confidence.map_or_else(
+        || "none: nothing was read".to_string(),
+        |c| format!("{c:.2}"),
     );
     println!(
+        "  class:            {:?} (confidence {})",
+        report.classification, confidence
+    );
+    let score = report
+        .performance_score
+        .map_or_else(|| "unknown".to_string(), |s| s.to_string());
+    println!(
         "  performance tier: {:?} (score {})",
-        report.performance_tier, report.performance_score
+        report.performance_tier, score
     );
     println!("  fingerprint:      {}", report.hardware_fingerprint);
 

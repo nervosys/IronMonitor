@@ -479,31 +479,31 @@ impl PowerProfileMonitor {
             None
         };
 
-        // power-profiles-daemon
-        if let Ok(output) = std::process::Command::new("powerprofilesctl")
+        // The OS power profile. power-profiles-daemon is the source when it is
+        // running; otherwise the kernel's platform_profile. Neither is the cpufreq
+        // governor: deriving the profile from the governor (as this reader did
+        // before) labelled every governor not listed as Balanced. With neither
+        // source readable the profile is Unknown.
+        let from_ppd = std::process::Command::new("powerprofilesctl")
             .arg("get")
             .output()
-        {
-            let profile = String::from_utf8(output.stdout)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            self.active_profile = match profile.as_str() {
-                "performance" => PowerProfile::Performance,
-                "balanced" => PowerProfile::Balanced,
-                "power-saver" => PowerProfile::PowerSaver,
-                _ => PowerProfile::Unknown,
-            };
-        } else {
-            // Infer from governor
-            self.active_profile = match self.cpu_freq.as_ref().and_then(|f| f.governor.as_ref()) {
-                Some(CpuGovernor::Performance) => PowerProfile::Performance,
-                Some(CpuGovernor::Powersave) => PowerProfile::PowerSaver,
-                Some(_) => PowerProfile::Balanced,
-                // No governor read: the profile is not known, not Balanced.
-                None => PowerProfile::Unknown,
-            };
-        }
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| match s.trim() {
+                "performance" => Some(PowerProfile::Performance),
+                "balanced" => Some(PowerProfile::Balanced),
+                "power-saver" => Some(PowerProfile::PowerSaver),
+                _ => None,
+            });
+        let from_platform = std::fs::read_to_string("/sys/firmware/acpi/platform_profile")
+            .ok()
+            .and_then(|s| match s.trim() {
+                "performance" => Some(PowerProfile::Performance),
+                "balanced" => Some(PowerProfile::Balanced),
+                "low-power" => Some(PowerProfile::PowerSaver),
+                _ => None,
+            });
+        self.active_profile = from_ppd.or(from_platform).unwrap_or(PowerProfile::Unknown);
 
         // AC power status
         // `read_dir` yields a Result; the doubled loop was iterating that Result as
@@ -580,6 +580,10 @@ impl PowerProfileMonitor {
                     if let Some(guid_start) = line.find("GUID:") {
                         let after = &line[guid_start + 6..];
                         let guid = after.split_whitespace().next().unwrap_or("").to_string();
+                        if guid.is_empty() {
+                            // A plan with no GUID cannot be addressed; it is not listed.
+                            continue;
+                        }
                         // Extract name in parentheses
                         let name = after
                             .split('(')
@@ -598,6 +602,8 @@ impl PowerProfileMonitor {
                                     PowerProfile::PowerSaver
                                 } else if name.to_lowercase().contains("balanced") {
                                     PowerProfile::Balanced
+                                } else if name.is_empty() {
+                                    PowerProfile::Unknown
                                 } else {
                                     PowerProfile::Custom(name.clone())
                                 };
@@ -682,28 +688,56 @@ impl PowerProfileMonitor {
             let _ = in_battery_section;
         }
 
-        // Infer profile from pmset settings
+        // Infer profile from pmset settings. `lowpowermode` is the only profile
+        // signal pmset reports; with no such line the profile stays Unknown.
         if let Ok(output) = std::process::Command::new("pmset").args(["-g"]).output() {
             let text = String::from_utf8(output.stdout).unwrap_or_default();
-            let low_power = text
+            let modes: Vec<&str> = text
                 .lines()
-                .any(|l| l.contains("lowpowermode") && l.contains("1"));
-            self.active_profile = if low_power {
+                .filter_map(|l| {
+                    let mut parts = l.split_whitespace();
+                    if parts.next() == Some("lowpowermode") {
+                        parts.next()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.active_profile = if modes.contains(&"1") {
                 PowerProfile::PowerSaver
-            } else {
+            } else if modes.contains(&"0") {
                 PowerProfile::Balanced
+            } else {
+                PowerProfile::Unknown
             };
         }
 
-        // Check AC power
-        if let Ok(output) = std::process::Command::new("pmset")
+        // Check AC power. `pmset -g ps` names the source it is drawing from. A
+        // failed command, or output that names no known source, leaves it unread.
+        self.on_ac_power = std::process::Command::new("pmset")
             .args(["-g", "ps"])
             .output()
-        {
-            let text = String::from_utf8(output.stdout).unwrap_or_default();
-            self.on_ac_power = Some(text.contains("AC Power"));
-        }
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|text| parse_pmset_power_source(&text));
         Ok(())
+    }
+}
+
+/// Parses `pmset -g ps` output: the line naming the power source in use.
+///
+/// `Some(true)` for `'AC Power'`, `Some(false)` for `'Battery Power'`, and `None`
+/// for anything else, including empty output and `'UPS Power'`, none of which says
+/// whether the machine is on mains.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn parse_pmset_power_source(text: &str) -> Option<bool> {
+    let line = text.lines().find(|l| l.contains("drawing from"))?;
+    if line.contains("'AC Power'") {
+        Some(true)
+    } else if line.contains("'Battery Power'") {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -829,6 +863,24 @@ mod tests {
         assert_eq!(behavior.estimated_max_watts, None);
         assert_eq!(behavior.efficiency_score, None);
         assert!(behavior.recommendations.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pmset_power_source() {
+        let ac = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1234)\t100%; charged\n";
+        let battery =
+            "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1234)\t72%; discharging\n";
+        assert_eq!(parse_pmset_power_source(ac), Some(true));
+        assert_eq!(parse_pmset_power_source(battery), Some(false));
+        assert_eq!(parse_pmset_power_source(""), None);
+        assert_eq!(
+            parse_pmset_power_source("Some unrelated text 'AC Power'"),
+            None
+        );
+        assert_eq!(
+            parse_pmset_power_source("Now drawing from 'UPS Power'\n"),
+            None
+        );
     }
 
     #[test]

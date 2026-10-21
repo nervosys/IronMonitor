@@ -277,6 +277,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where quota -1, period 100000, weight 100 and zeros stood in; swap and
   OOM figures are `None` without swap accounting, and memory usage percent
   is `None` with no limit, where it read 0%.
+- A machine nothing was read from is classified Unknown with no
+  classification confidence, performance score or performance tier, where
+  it was a Desktop at 0.5.
+- Power source on macOS is known only from pmset's "drawing from" line: a
+  failed run or other output is unknown, where it read as "on battery" (in
+  both the power profile and the power-supply listing). The Linux power
+  profile comes from power-profiles-daemon or the firmware platform
+  profile, not from the CPU governor (any unrecognised governor read as
+  Balanced); with neither it is Unknown.
+- cgroup v2 CPU shares and per-CPU usage are `None` (no v1 reader exists;
+  they were 0 and empty), and effective CPUs is `None` for an unlimited
+  quota, where it was 0. The process-tree and container cgroup readers
+  report a literal "max" as unlimited rather than as unread.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

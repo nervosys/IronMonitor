@@ -730,6 +730,20 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
             "with no limit. The one other constructor is a unit test with literal values."
         ),
     ),
+    (
+        "src/cgroup_monitor/mod.rs",
+        "CgroupCpu",
+        "quota_us period_us weight usage_us throttled_periods throttled_time_us",
+        concat!(
+            "Built only by read_cpu_v2, which returns None unless cpu.max, cpu.weight ",
+            "and cpu.stat were read and parsed. quota and period come from parse_cpu_max, ",
+            "which yields nothing for an unparseable or zero period, and the counters from ",
+            "parse_cpu_stat, which requires all three. The Option fields are the ones with ",
+            "no source here: shares and per-CPU usage are v1 files this reader never opens, ",
+            "and effective_cpus is None for an unlimited quota. The one other constructor ",
+            "is a unit test with literal values."
+        ),
+    ),
 ];
 
 fn known() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {

@@ -655,7 +655,9 @@ impl PowerSupplyMonitor {
             // Parse AC adapter
             let mut ac_info = PowerSupplyInfo::new("AC");
             ac_info.supply_type = PowerSupplyType::Mains;
-            ac_info.online = Some(stdout.contains("AC Power"));
+            // Only a "drawing from" line says where power comes from; output
+            // without one (or a failed run) is unknown, not "on battery".
+            ac_info.online = crate::power_profile::parse_pmset_power_source(&stdout);
             supplies.push(ac_info);
 
             // Parse battery

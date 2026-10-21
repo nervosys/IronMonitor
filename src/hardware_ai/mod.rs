@@ -419,14 +419,18 @@ const CLASSIFICATION_CONFIDENCE_MINI_PC: f32 = 0.7;
 pub struct HardwareAnalysisReport {
     /// System classification
     pub classification: SystemClass,
-    /// Rule score for the classification, 0.0-1.0. Not a measured probability: it is
+    /// Rule score for the classification, 0.0-1.0, or `None` when the class is
+    /// `Unknown`: an unknown carries no confidence, and a machine none of whose
+    /// inputs was read is not classified at all. Not a measured probability: it is
     /// built from the `CLASSIFICATION_*` constants in this module (the weights, scales
     /// and caps of the rules that scored the winning class), chosen by the code.
-    pub classification_confidence: f32,
-    /// Performance tier
-    pub performance_tier: PerformanceTier,
-    /// Overall performance score (0-100)
-    pub performance_score: u8,
+    pub classification_confidence: Option<f32>,
+    /// Performance tier, or `None` when no hardware input was read.
+    pub performance_tier: Option<PerformanceTier>,
+    /// Overall performance score (0-100), or `None` when no hardware input was read:
+    /// the score is computed from the features, and a default feature set would score
+    /// zero-valued cores and memory as if they had been measured.
+    pub performance_score: Option<u8>,
     /// Detected bottlenecks
     pub bottlenecks: Vec<Bottleneck>,
     /// Workload suitability scores
@@ -533,6 +537,36 @@ fn wmi_enum(value: Option<&serde_json::Value>, names: &[(&str, u64)]) -> Option<
         .map(|(_, code)| *code)
 }
 
+/// Whether any input `classify_system` reads was read from the machine.
+///
+/// A default feature set is every field at zero, empty or false, which is also what
+/// a reader that failed leaves behind, so those values are not evidence and do not
+/// count. A field counts when its value can only have come from a reading: a
+/// non-empty string, a count above zero, a measured figure above zero, or a `true`
+/// flag that the reader sets only once it has detected the thing.
+///
+/// Not counted: `numa_nodes`, because the Windows reader stores a constant 1 without
+/// reading anything; `is_server_cpu`, derived from `cpu_model`; the TDP figures, which
+/// are the name table where no reading exists; and `has_ecc`, `ram_channels`,
+/// `ram_speed_mhz` and `pcie_gen`, which no reader sets. A `chassis_type` of
+/// `"Unknown"` is the Linux reader's label for a DMI value it does not map.
+fn anything_read(f: &HardwareFeatures) -> bool {
+    f.cpu_cores_physical > 0
+        || f.cpu_cores_logical > 0
+        || f.cpu_max_freq_mhz > 0
+        || !f.cpu_model.is_empty()
+        || !f.cpu_vendor.is_empty()
+        || f.ram_total_gb > 0.0
+        || f.has_discrete_gpu
+        || f.gpu_count > 0
+        || !f.gpu_model.is_empty()
+        || f.has_battery
+        || f.is_virtual
+        || (!f.chassis_type.is_empty() && f.chassis_type != "Unknown")
+        || f.nic_count > 0
+        || f.max_nic_speed_gbps > 0.0
+}
+
 /// The hardware inference engine.
 pub struct HardwareInferenceEngine {
     features: HardwareFeatures,
@@ -558,6 +592,7 @@ impl HardwareInferenceEngine {
     /// Run the full analysis pipeline.
     pub fn full_analysis(&self) -> HardwareAnalysisReport {
         let (classification, class_confidence) = self.classify_system();
+        let any_read = anything_read(&self.features);
         let (tier, score) = self.compute_performance_tier();
         let bottlenecks = self.detect_bottlenecks();
         let workloads = self.score_workloads();
@@ -570,8 +605,9 @@ impl HardwareInferenceEngine {
         HardwareAnalysisReport {
             classification,
             classification_confidence: class_confidence,
-            performance_tier: tier,
-            performance_score: score,
+            // A machine nothing was read from has no tier, as it has no score.
+            performance_tier: any_read.then_some(tier),
+            performance_score: any_read.then_some(score),
             bottlenecks,
             workload_scores: workloads,
             hardware_age: age,
@@ -1259,7 +1295,13 @@ impl HardwareInferenceEngine {
     // Inference: System Classification
     // ────────────────────────────────────────────────────────────────
 
-    fn classify_system(&self) -> (SystemClass, f32) {
+    fn classify_system(&self) -> (SystemClass, Option<f32>) {
+        // Nothing read: every rule below would score the default values, and a default
+        // feature set comes out as a Desktop at the desktop rule's 0.5 -- a
+        // classification of a machine nobody looked at.
+        if !anything_read(&self.features) {
+            return (SystemClass::Unknown, None);
+        }
         let f = &self.features;
         let mut scores: Vec<(SystemClass, f32)> = Vec::new();
 
@@ -1397,12 +1439,13 @@ impl HardwareInferenceEngine {
             scores.push((SystemClass::MiniPc, CLASSIFICATION_CONFIDENCE_MINI_PC));
         }
 
-        // Pick highest-scoring classification
+        // Pick highest-scoring classification. No rule matched what was read, which is
+        // Unknown with no confidence.
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scores
-            .first()
-            .cloned()
-            .unwrap_or((SystemClass::Unknown, 0.0))
+        match scores.first().cloned() {
+            Some((class, score)) => (class, Some(score)),
+            None => (SystemClass::Unknown, None),
+        }
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -2749,6 +2792,37 @@ mod tests {
         let _ = &report.performance_tier;
     }
 
+    /// A machine none of whose inputs was read is not classified: Unknown, with no
+    /// confidence and no performance score. Before, the default feature set came out
+    /// as a Desktop at the desktop rule's 0.5.
+    #[test]
+    fn a_machine_nothing_was_read_from_is_unknown_with_no_confidence() {
+        let engine = HardwareInferenceEngine {
+            features: HardwareFeatures::default(),
+        };
+        let (class, confidence) = engine.classify_system();
+        assert_eq!(class, SystemClass::Unknown);
+        assert_eq!(confidence, None);
+
+        let report = engine.full_analysis();
+        assert_eq!(report.classification, SystemClass::Unknown);
+        assert_eq!(report.classification_confidence, None);
+        assert_eq!(report.performance_score, None);
+        assert_eq!(report.performance_tier, None);
+
+        // One reading is enough for the rules to run, and the desktop fallback then
+        // scores as it always did.
+        let one_reading = HardwareInferenceEngine {
+            features: HardwareFeatures {
+                ram_total_gb: 32.0,
+                ..HardwareFeatures::default()
+            },
+        };
+        let (class, confidence) = one_reading.classify_system();
+        assert_eq!(class, SystemClass::Desktop);
+        assert_eq!(confidence, Some(CLASSIFICATION_CONFIDENCE_DESKTOP));
+    }
+
     #[test]
     fn test_full_analysis_report() {
         let engine = HardwareInferenceEngine::new().unwrap();
@@ -2804,8 +2878,8 @@ mod tests {
                 || report.classification == SystemClass::Desktop
                 || report.classification == SystemClass::Workstation
         );
-        assert!(report.performance_tier >= PerformanceTier::MidHigh);
-        assert!(report.performance_score >= 50);
+        assert!(report.performance_tier >= Some(PerformanceTier::MidHigh));
+        assert!(report.performance_score.is_some_and(|s| s >= 50));
     }
 
     #[test]
@@ -2851,7 +2925,7 @@ mod tests {
 
         let report = engine.full_analysis();
         assert_eq!(report.classification, SystemClass::Server);
-        assert!(report.performance_tier >= PerformanceTier::High);
+        assert!(report.performance_tier >= Some(PerformanceTier::High));
         // Virtualization should score highly
         let virt = report
             .workload_scores

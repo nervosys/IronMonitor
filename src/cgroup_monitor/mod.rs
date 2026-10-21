@@ -39,20 +39,23 @@ pub struct CgroupCpu {
     pub quota_us: i64,
     /// CPU period in microseconds (typically 100000).
     pub period_us: u64,
-    /// Number of CPU shares (relative weight, v1).
-    pub shares: u64,
+    /// Number of CPU shares (v1 cpu.shares). None on v2, which reports
+    /// `weight` instead; no v1 reader exists here, so it is never read.
+    pub shares: Option<u64>,
     /// CPU weight (1-10000, v2 replacement for shares).
     pub weight: u64,
     /// Total CPU usage in microseconds.
     pub usage_us: u64,
-    /// Per-CPU usage in microseconds.
-    pub per_cpu_usage_us: Vec<u64>,
+    /// Per-CPU usage in microseconds. None on v2: cpu.stat has no per-CPU
+    /// breakdown, and no v1 reader exists here, so it is never read.
+    pub per_cpu_usage_us: Option<Vec<u64>>,
     /// Number of throttled periods.
     pub throttled_periods: u64,
     /// Total throttled time in microseconds.
     pub throttled_time_us: u64,
-    /// Effective number of CPUs (quota / period).
-    pub effective_cpus: f64,
+    /// Effective number of CPUs (quota / period). None when unlimited: an
+    /// unlimited quota caps nothing, so there is no count to report.
+    pub effective_cpus: Option<f64>,
 }
 
 /// Memory resource limits and usage.
@@ -170,7 +173,7 @@ fn parse_cpu_stat(stat: &str) -> Option<(u64, u64, u64)> {
 /// `max` quota is unlimited, which `CgroupCpu` stores as -1. Anything else that
 /// does not parse, or a missing or zero period, leaves the reading absent.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn parse_cpu_max(max: &str) -> Option<(i64, u64)> {
+pub(crate) fn parse_cpu_max(max: &str) -> Option<(i64, u64)> {
     let mut parts = max.split_whitespace();
     let quota = match parts.next()? {
         "max" => -1,
@@ -185,7 +188,7 @@ fn parse_cpu_max(max: &str) -> Option<(i64, u64)> {
 /// literal `max` is unlimited, which is `u64::MAX`. Other unparseable text is
 /// absent, not unlimited.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn parse_limit(s: &str) -> Option<u64> {
+pub(crate) fn parse_limit(s: &str) -> Option<u64> {
     match s.trim() {
         "max" => Some(u64::MAX),
         v => v.parse().ok(),
@@ -302,7 +305,7 @@ impl CgroupMonitor {
         let total_cpus: f64 = cgroups
             .iter()
             .filter_map(|c| c.cpu.as_ref())
-            .map(|c| c.effective_cpus)
+            .filter_map(|c| c.effective_cpus)
             .sum();
 
         Ok(CgroupOverview {
@@ -466,19 +469,21 @@ impl CgroupMonitor {
         let stat_str = std::fs::read_to_string(path.join("cpu.stat")).ok()?;
         let (usage_us, throttled_periods, throttled_time) = parse_cpu_stat(&stat_str)?;
 
+        // Unlimited (-1) caps nothing, so there is no effective count: None, not 0.
         let effective_cpus = if quota < 0 {
-            0.0 // Unlimited
+            None
         } else {
-            quota as f64 / period as f64
+            Some(quota as f64 / period as f64)
         };
 
+        // shares and per-CPU usage are v1 files this reader never opens.
         Some(CgroupCpu {
             quota_us: quota,
             period_us: period,
-            shares: 0,
+            shares: None,
             weight,
             usage_us,
-            per_cpu_usage_us: Vec::new(),
+            per_cpu_usage_us: None,
             throttled_periods,
             throttled_time_us: throttled_time,
             effective_cpus,
@@ -594,15 +599,15 @@ mod tests {
         let cpu = CgroupCpu {
             quota_us: 200_000,
             period_us: 100_000,
-            shares: 0,
+            shares: None,
             weight: 100,
             usage_us: 0,
-            per_cpu_usage_us: Vec::new(),
+            per_cpu_usage_us: None,
             throttled_periods: 0,
             throttled_time_us: 0,
-            effective_cpus: 2.0,
+            effective_cpus: Some(2.0),
         };
-        assert!((cpu.effective_cpus - 2.0).abs() < 0.01);
+        assert!(cpu.effective_cpus.is_some_and(|e| (e - 2.0).abs() < 0.01));
     }
 
     #[test]
@@ -720,6 +725,31 @@ mod tests {
         assert_eq!(cpu.usage_us, 5000);
         assert_eq!(cpu.throttled_periods, 2);
         assert_eq!(cpu.throttled_time_us, 700);
+        // Unlimited caps nothing, and shares and per-CPU usage are not read on v2.
+        assert_eq!(cpu.effective_cpus, None);
+        assert_eq!(cpu.shares, None);
+        assert_eq!(cpu.per_cpu_usage_us, None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_read_cpu_v2_quota_is_effective_cpus() {
+        let dir = cgroup_dir(
+            "cpu-quota",
+            &[
+                ("cpu.max", "200000 100000\n"),
+                ("cpu.weight", "100\n"),
+                (
+                    "cpu.stat",
+                    "usage_usec 5000\nnr_throttled 0\nthrottled_usec 0\n",
+                ),
+            ],
+        );
+        let cpu = CgroupMonitor::read_cpu_v2(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        let cpu = cpu.expect("all files present");
+        assert_eq!(cpu.quota_us, 200_000);
+        assert_eq!(cpu.effective_cpus, Some(2.0));
     }
 
     #[test]
