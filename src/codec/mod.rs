@@ -144,8 +144,9 @@ pub struct CodecCapability {
 pub struct ComputeCapability {
     /// Device name
     pub device: String,
-    /// CUDA compute capability (e.g., "8.9") — NVIDIA only
-    pub cuda_version: String,
+    /// CUDA compute capability (e.g., "8.9") — NVIDIA only; `None` when the
+    /// generation is not known
+    pub cuda_version: Option<String>,
     /// OpenCL version supported
     pub opencl_version: String,
     /// Vulkan compute supported
@@ -158,10 +159,10 @@ pub struct ComputeCapability {
     pub estimated_tflops_fp32: Option<f32>,
     /// Estimated TFLOPS (FP16 / half precision); `None` when FP32 is unknown
     pub estimated_tflops_fp16: Option<f32>,
-    /// Tensor core / AI accelerator present
-    pub has_tensor_cores: bool,
-    /// Ray tracing hardware acceleration
-    pub has_ray_tracing: bool,
+    /// Tensor core / AI accelerator present; `None` when not known
+    pub has_tensor_cores: Option<bool>,
+    /// Ray tracing hardware acceleration; `None` when not known
+    pub has_ray_tracing: Option<bool>,
     /// Source of capability info
     pub source: CapabilitySource,
 }
@@ -666,28 +667,35 @@ impl CodecMonitor {
             // TFLOPS reads the same as a spec-sheet value once it is printed.
             let (cuda, tflops_32, tflops_16, tensor, rt) =
                 if lower.contains("rtx 40") || lower.contains("rtx 4090") {
-                    ("8.9", Some(82.6_f32), Some(165.2_f32), true, true)
+                    (
+                        Some("8.9"),
+                        Some(82.6_f32),
+                        Some(165.2_f32),
+                        Some(true),
+                        Some(true),
+                    )
                 } else if lower.contains("rtx 4080") {
-                    ("8.9", Some(48.7), Some(97.5), true, true)
+                    (Some("8.9"), Some(48.7), Some(97.5), Some(true), Some(true))
                 } else if lower.contains("rtx 4070") {
-                    ("8.9", Some(29.1), Some(58.3), true, true)
+                    (Some("8.9"), Some(29.1), Some(58.3), Some(true), Some(true))
                 } else if lower.contains("rtx 30") || lower.contains("rtx 3090") {
-                    ("8.6", Some(35.6), Some(71.2), true, true)
+                    (Some("8.6"), Some(35.6), Some(71.2), Some(true), Some(true))
                 } else if lower.contains("rtx 3080") {
-                    ("8.6", Some(29.8), Some(59.6), true, true)
+                    (Some("8.6"), Some(29.8), Some(59.6), Some(true), Some(true))
                 } else if lower.contains("rtx 20") || lower.contains("rtx 2080") {
-                    ("7.5", Some(14.2), Some(28.4), true, true)
+                    (Some("7.5"), Some(14.2), Some(28.4), Some(true), Some(true))
                 } else if lower.contains("gtx 1080") {
-                    ("6.1", Some(8.9), Some(0.0), false, false)
+                    (Some("6.1"), Some(8.9), None, Some(false), Some(false))
                 } else if lower.contains("gtx 10") {
-                    ("6.1", Some(6.5), Some(0.0), false, false)
+                    (Some("6.1"), Some(6.5), None, Some(false), Some(false))
                 } else {
-                    ("6.0", None, None, false, false)
+                    // Unknown generation: no figures and no feature claims.
+                    (None, None, None, None, None)
                 };
 
             self.compute_caps.push(ComputeCapability {
                 device: gpu_name.to_string(),
-                cuda_version: cuda.to_string(),
+                cuda_version: cuda.map(String::from),
                 opencl_version: "3.0".into(),
                 vulkan_compute: true,
                 metal_compute: false,
@@ -720,15 +728,28 @@ impl CodecMonitor {
 
             self.compute_caps.push(ComputeCapability {
                 device: gpu_name.to_string(),
-                cuda_version: String::new(),
+                cuda_version: None,
                 opencl_version: String::new(),
                 vulkan_compute: false,
                 metal_compute: true,
                 direct_compute: String::new(),
                 estimated_tflops_fp32: tflops,
                 estimated_tflops_fp16: tflops.map(|t| t * 2.0),
-                has_tensor_cores: true, // Apple Neural Engine
-                has_ray_tracing: lower.contains("m3") || lower.contains("m4"),
+                // The Neural Engine is a separate block, not tensor cores in the
+                // GPU, which this used to claim. M1-M4 GPUs have no such units;
+                // later or unrecognised parts are not guessed.
+                has_tensor_cores: ["m1", "m2", "m3", "m4"]
+                    .iter()
+                    .any(|m| lower.contains(m))
+                    .then_some(false),
+                // Ray tracing arrived with M3; M1/M2 are known not to have it.
+                has_ray_tracing: if lower.contains("m3") || lower.contains("m4") {
+                    Some(true)
+                } else if lower.contains("m1") || lower.contains("m2") {
+                    Some(false)
+                } else {
+                    None
+                },
                 source: CapabilitySource::Inferred,
             });
         }
@@ -895,8 +916,8 @@ mod tests {
         };
         monitor.infer_compute_from_gpu("NVIDIA GeForce RTX 4090");
         assert!(!monitor.compute_caps.is_empty());
-        assert!(monitor.compute_caps[0].has_tensor_cores);
-        assert!(monitor.compute_caps[0].has_ray_tracing);
+        assert_eq!(monitor.compute_caps[0].has_tensor_cores, Some(true));
+        assert_eq!(monitor.compute_caps[0].has_ray_tracing, Some(true));
         assert!(matches!(
             monitor.compute_caps[0].estimated_tflops_fp32,
             Some(t) if t > 50.0
@@ -913,6 +934,9 @@ mod tests {
         assert!(!monitor.compute_caps.is_empty());
         assert_eq!(monitor.compute_caps[0].estimated_tflops_fp32, None);
         assert_eq!(monitor.compute_caps[0].estimated_tflops_fp16, None);
+        assert_eq!(monitor.compute_caps[0].cuda_version, None);
+        assert_eq!(monitor.compute_caps[0].has_tensor_cores, None);
+        assert_eq!(monitor.compute_caps[0].has_ray_tracing, None);
         assert_eq!(monitor.total_tflops_fp32(), None);
     }
 

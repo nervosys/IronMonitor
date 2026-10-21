@@ -214,6 +214,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codec compute estimates are `None` for an unknown NVIDIA generation or an
   Apple GPU without a tier, where 5.0 and 2.6 TFLOPS stood in; the total is
   `None` unless every device has a figure.
+- Codec compute capability for an unknown NVIDIA generation has no CUDA
+  version, tensor-core or ray-tracing figure (`None`), where it claimed CUDA
+  6.0 and neither feature. Apple GPUs no longer report the Neural Engine as
+  tensor cores: M1-M4 report none, later parts are not guessed, and ray
+  tracing is known for M1-M4 only. Pascal FP16 throughput is `None`, where it
+  read 0.
+- A failed AMD or Intel sysfs enumeration on Linux is an error when the
+  legacy reader then finds nothing, where it read as "no GPU". "No devices"
+  from sysfs is still absence.
 - A failed Apple GPU enumeration is an error from `auto_detect`, as an NVIDIA
   one is, where it was discarded and read as "no GPU".
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every

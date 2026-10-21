@@ -820,38 +820,66 @@ impl GpuCollection {
     /// Detect AMD GPUs
     #[cfg(feature = "amd")]
     pub fn detect_amd(&mut self) -> Result<(), crate::Error> {
-        // Try new trait-based implementation first (sysfs)
+        // Trait-based sysfs reader first. NoDevicesFound means no AMD adapter is
+        // present; any other error is kept and reported if the legacy reader also
+        // finds nothing, so a failed read is never reported as absence.
         #[cfg(target_os = "linux")]
-        {
-            if let Ok(gpus) = amd_rocm::enumerate() {
+        let sysfs_error = match amd_rocm::enumerate() {
+            Ok(gpus) => {
                 for gpu in gpus {
                     self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
                 }
                 return Ok(());
             }
-        }
+            Err(GpuError::NoDevicesFound) => None,
+            Err(e) => Some(e),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let sysfs_error: Option<GpuError> = None;
 
-        // Fall back to legacy implementation
+        // Legacy implementation: an independent reader, not a retry of sysfs
+        let before = self.len();
         amd::detect_gpus(self)?;
+        if let Some(e) = sysfs_error {
+            if self.len() == before {
+                let msg = format!("AMD sysfs enumeration failed: {e}");
+                return Err(crate::Error::GpuError(msg));
+            }
+            log::debug!("AMD sysfs enumeration failed, legacy reader used: {e}");
+        }
         Ok(())
     }
 
     /// Detect Intel GPUs
     #[cfg(feature = "intel")]
     pub fn detect_intel(&mut self) -> Result<(), crate::Error> {
-        // Try new trait-based implementation first (sysfs)
+        // Trait-based sysfs reader first. NoDevicesFound means no Intel adapter is
+        // present; any other error is kept and reported if the legacy reader also
+        // finds nothing, so a failed read is never reported as absence.
         #[cfg(target_os = "linux")]
-        {
-            if let Ok(gpus) = intel_levelzero::enumerate() {
+        let sysfs_error = match intel_levelzero::enumerate() {
+            Ok(gpus) => {
                 for gpu in gpus {
                     self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
                 }
                 return Ok(());
             }
-        }
+            Err(GpuError::NoDevicesFound) => None,
+            Err(e) => Some(e),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let sysfs_error: Option<GpuError> = None;
 
-        // Fall back to legacy implementation
+        // Legacy implementation: an independent reader, not a retry of sysfs
+        let before = self.len();
         intel::detect_gpus(self)?;
+        if let Some(e) = sysfs_error {
+            if self.len() == before {
+                let msg = format!("Intel sysfs enumeration failed: {e}");
+                return Err(crate::Error::GpuError(msg));
+            }
+            log::debug!("Intel sysfs enumeration failed, legacy reader used: {e}");
+        }
         Ok(())
     }
 
