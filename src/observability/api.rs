@@ -1269,7 +1269,7 @@ impl ObservabilityApi {
             for d in &drivers {
                 result.push(DriverContext {
                     name: d.name.clone(),
-                    version: Some(d.version.clone()),
+                    version: d.version.clone(),
                     provider: d.vendor.clone(),
                     date: d.date.clone(),
                 });

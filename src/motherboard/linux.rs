@@ -169,12 +169,16 @@ impl MotherboardDevice for LinuxSensor {
                     .ok()
                     .and_then(|s| s.trim().parse::<u8>().ok());
 
-                // Check if PWM is writable (controllable)
+                // Check if PWM is writable (controllable). A NotFound on
+                // pwm<N>_enable is a reading: the driver exposes no control
+                // interface, so Some(false). Any other metadata failure
+                // leaves the value undetermined (None).
                 let pwm_enable_path = self.hwmon_path.join(format!("pwm{}_enable", i));
-                let controllable = pwm_enable_path.exists()
-                    && fs::metadata(&pwm_enable_path)
-                        .map(|m| !m.permissions().readonly())
-                        .unwrap_or(false);
+                let controllable = match fs::metadata(&pwm_enable_path) {
+                    Ok(m) => Some(!m.permissions().readonly()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+                    Err(_) => None,
+                };
 
                 let rpm_value = if rpm > 0 { Some(rpm as u32) } else { None };
 
@@ -388,7 +392,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
     if let Ok(version) = fs::read_to_string("/sys/module/nvidia/version") {
         drivers.push(DriverInfo {
             name: "nvidia".to_string(),
-            version: version.trim().to_string(),
+            version: (!version.trim().is_empty()).then(|| version.trim().to_string()),
             driver_type: DriverType::Gpu,
             description: Some("NVIDIA GPU Driver".to_string()),
             vendor: Some("NVIDIA".to_string()),
@@ -399,7 +403,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
     if let Ok(version) = fs::read_to_string("/sys/module/amdgpu/version") {
         drivers.push(DriverInfo {
             name: "amdgpu".to_string(),
-            version: version.trim().to_string(),
+            version: (!version.trim().is_empty()).then(|| version.trim().to_string()),
             driver_type: DriverType::Gpu,
             description: Some("AMD GPU Driver".to_string()),
             vendor: Some("AMD".to_string()),
@@ -410,7 +414,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
     if let Ok(version) = fs::read_to_string("/sys/module/i915/version") {
         drivers.push(DriverInfo {
             name: "i915".to_string(),
-            version: version.trim().to_string(),
+            version: (!version.trim().is_empty()).then(|| version.trim().to_string()),
             driver_type: DriverType::Gpu,
             description: Some("Intel GPU Driver".to_string()),
             vendor: Some("Intel".to_string()),
@@ -424,7 +428,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
         if let Ok(version) = fs::read_to_string(&version_path) {
             drivers.push(DriverInfo {
                 name: module.to_string(),
-                version: version.trim().to_string(),
+                version: (!version.trim().is_empty()).then(|| version.trim().to_string()),
                 driver_type: DriverType::Storage,
                 description: Some(format!("{} Storage Driver", module.to_uppercase())),
                 vendor: None,
@@ -439,7 +443,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
         if let Ok(version) = fs::read_to_string(&version_path) {
             drivers.push(DriverInfo {
                 name: module.to_string(),
-                version: version.trim().to_string(),
+                version: (!version.trim().is_empty()).then(|| version.trim().to_string()),
                 driver_type: DriverType::Network,
                 description: Some(format!("{} Network Driver", module.to_uppercase())),
                 vendor: None,

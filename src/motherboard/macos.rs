@@ -102,7 +102,7 @@ impl MacSensor {
                             pwm: None,
                             min_rpm: None,
                             max_rpm: None,
-                            controllable: false,
+                            controllable: None, // not read: SMC query does not check fan control
                         });
                         fan_idx += 1;
                     }
@@ -268,7 +268,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
                 let version = if parts.len() > 6 {
                     parts[6].trim_start_matches('(').trim_end_matches(')')
                 } else {
-                    "unknown"
+                    ""
                 };
 
                 // Classify the kext
@@ -284,7 +284,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
 
                     drivers.push(DriverInfo {
                         name: name.to_string(),
-                        version: version.to_string(),
+                        version: (!version.is_empty()).then(|| version.to_string()),
                         driver_type,
                         description: Some(kext_description(name)),
                         vendor,
@@ -330,7 +330,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
                     if !drivers.iter().any(|d: &DriverInfo| d.name == current_name) {
                         drivers.push(DriverInfo {
                             name: current_name.clone(),
-                            version: current_version.clone(),
+                            version: Some(current_version.clone()),
                             driver_type: dt,
                             description: None,
                             vendor: Some("Apple".to_string()),

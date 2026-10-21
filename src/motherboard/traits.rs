@@ -76,8 +76,8 @@ pub struct FanInfo {
     pub min_rpm: Option<u32>,
     /// Maximum RPM capability (optional)
     pub max_rpm: Option<u32>,
-    /// Whether fan control is supported
-    pub controllable: bool,
+    /// Whether fan control is supported. `None` when it was not determined.
+    pub controllable: Option<bool>,
 }
 
 /// Fan control mode
@@ -386,7 +386,8 @@ pub struct PeripheralsInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverInfo {
     pub name: String,
-    pub version: String,
+    /// `None` when the version was not read
+    pub version: Option<String>,
     pub driver_type: DriverType,
     pub description: Option<String>,
     pub vendor: Option<String>,

@@ -193,7 +193,7 @@ fn query_lhm_fans() -> Option<Vec<FanInfo>> {
                                 pwm: None,
                                 min_rpm: sensor.min.map(|v| v as u32),
                                 max_rpm: sensor.max.map(|v| v as u32),
-                                controllable: false,
+                                controllable: None,
                             });
                         }
                     }
@@ -500,7 +500,7 @@ impl MotherboardDevice for WindowsSensor {
                         pwm: None,
                         min_rpm: None,
                         max_rpm: None,
-                        controllable: false, // WMI doesn't support fan control
+                        controllable: None, // not read: this query does not fetch fan control state
                     });
                 }
             }
@@ -776,9 +776,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
 
                         drivers.push(DriverInfo {
                             name,
-                            version: driver
-                                .driver_version
-                                .unwrap_or_else(|| "Unknown".to_string()),
+                            version: driver.driver_version.filter(|v| !v.trim().is_empty()),
                             driver_type,
                             description: None,
                             vendor: driver.manufacturer,
@@ -806,9 +804,7 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
 
                 drivers.push(DriverInfo {
                     name,
-                    version: driver
-                        .driver_version
-                        .unwrap_or_else(|| "Unknown".to_string()),
+                    version: driver.driver_version.filter(|v| !v.trim().is_empty()),
                     driver_type: DriverType::Gpu,
                     description: None,
                     vendor: driver.manufacturer,

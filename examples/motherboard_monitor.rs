@@ -111,7 +111,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 for driver in drivers {
                     println!("[PKG] {} ({}):", driver.name, driver.driver_type);
-                    println!("  Version:     {}", driver.version);
+                    println!(
+                        "  Version:     {}",
+                        driver.version.as_deref().unwrap_or("-")
+                    );
                     if let Some(desc) = &driver.description {
                         println!("  Description: {}", desc);
                     }
@@ -229,7 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let percent = (pwm as f32 / 255.0 * 100.0) as u8;
                                         print!("  (PWM: {}%)", percent);
                                     }
-                                    if fan.controllable {
+                                    if fan.controllable == Some(true) {
                                         print!("  [Controllable]");
                                     }
                                     println!();

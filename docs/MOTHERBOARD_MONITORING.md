@@ -92,7 +92,7 @@ Fan speed and control information:
 - `pwm`: PWM duty cycle (0-255, if available)
 - `min_rpm`: Minimum RPM threshold (optional)
 - `max_rpm`: Maximum RPM capability (optional)
-- `controllable`: Whether fan speed can be controlled
+- `controllable`: Whether fan speed can be controlled (`None` when not determined)
 
 ### FanControl
 Fan control mode:
@@ -140,7 +140,7 @@ BIOS/UEFI firmware information:
 ### DriverInfo
 Driver/module information:
 - `name`: Driver name
-- `version`: Version string
+- `version`: Version string (`None` when the version was not read)
 - `driver_type`: Classification (GPU, Chipset, Storage, Network, Audio, USB, Other)
 - `description`: Human-readable description (optional)
 - `vendor`: Vendor name (optional)
@@ -218,7 +218,7 @@ for driver in drivers {
     println!("{} ({}): {}", 
         driver.name,
         driver.driver_type,
-        driver.version
+        driver.version.as_deref().unwrap_or("-")
     );
 }
 ```

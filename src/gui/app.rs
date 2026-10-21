@@ -6001,7 +6001,7 @@ impl IronMonitorApp {
                                     .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                             );
                             ui.label(
-                                RichText::new(&driver.version)
+                                RichText::new(driver.version.as_deref().unwrap_or("-"))
                                     .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
                             ui.label(
