@@ -380,7 +380,7 @@ mod tests {
         if let Ok(soc_info) = soc {
             println!("Detected SOC: {}", soc_info.name);
             println!(
-                "E-cores: {}, P-cores: {}",
+                "E-cores: {:?}, P-cores: {:?}",
                 soc_info.e_core_count, soc_info.p_core_count
             );
         }
