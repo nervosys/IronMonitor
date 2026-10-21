@@ -182,18 +182,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "`swap_usage_percent_or_zero` is named for its choice, so every caller opts in",
     ),
     (
-        "src/disk/windows.rs",
-        "pending_sectors",
-        1,
-        "feeds a downgrade-only check beside a Healthy verdict that rests on the drive's own read prediction",
-    ),
-    (
-        "src/disk/windows.rs",
-        "uncorrectable_sectors",
-        1,
-        "same downgrade-only check as pending_sectors",
-    ),
-    (
         "src/dma_engine/mod.rs",
         "read_sysfs_i32",
         1,
@@ -204,18 +192,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "read_hex_file",
         3,
         "PCI IDs; nothing outside pcie.rs consumes the module (fix if it gains a consumer: class 0 decodes as 'unclassified')",
-    ),
-    (
-        "src/silicon/apple.rs",
-        "get_sysctl_value",
-        2,
-        "zero feeds (0..0), giving an empty core list rather than a reported count; documented at the site",
-    ),
-    (
-        "src/stats.rs",
-        "sysctl_u64",
-        1,
-        "hw.logicalcpu exists on every Mac; zero would give an empty core list, not a count",
     ),
 ];
 

@@ -193,10 +193,13 @@ pub struct HardwareAge {
 /// Thermal envelope analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThermalEnvelope {
-    /// Estimated total system TDP (watts)
-    pub estimated_total_tdp_watts: f32,
-    /// CPU TDP
-    pub cpu_tdp_watts: f32,
+    /// Estimated total system TDP (watts): the CPU and GPU figures plus a flat
+    /// 30 W for RAM, storage and board. `None` unless both terms are known, since
+    /// a total with one term missing would pass for a real total.
+    pub estimated_total_tdp_watts: Option<f32>,
+    /// CPU TDP (watts), or `None` when neither the platform nor the name table
+    /// gave one.
+    pub cpu_tdp_watts: Option<f32>,
     /// Whether [`Self::cpu_tdp_watts`] is the package power limit the platform
     /// enforces or this crate's name table standing in for it.
     ///
@@ -206,12 +209,13 @@ pub struct ThermalEnvelope {
     /// and a 5950X (105 W). The total beside it can mix a measured GPU budget
     /// with a guessed CPU one, and this is how a consumer tells.
     pub cpu_tdp_measured: bool,
-    /// GPU TDP
-    pub gpu_tdp_watts: f32,
+    /// GPU TDP (watts), or `None` when neither a driver cap nor the name table
+    /// gave one.
+    pub gpu_tdp_watts: Option<f32>,
     /// How many adapters [`Self::gpu_tdp_watts`] is the sum of.
     ///
-    /// `1` for a single-GPU machine and for any machine where no adapter
-    /// reported a cap. Before this existed the figure was the *first* adapter's
+    /// `1` when the figure is the name table's, which prices one card, and `0`
+    /// when there is no figure. Before this existed the figure was the *first* adapter's
     /// cap whatever the machine held, so a desktop with two RTX 3090 Ti was
     /// graded on half its GPU budget.
     pub gpu_adapters_counted: u32,
@@ -226,8 +230,9 @@ pub struct ThermalEnvelope {
     pub gpu_tdp_measured: bool,
     /// Thermal headroom assessment
     pub headroom: ThermalHeadroom,
-    /// Cooling adequacy score (0-100)
-    pub cooling_score: u8,
+    /// Cooling adequacy score (0-100), or `None` when the headroom is
+    /// `Unknown`. A score for an unknown is a number nobody measured.
+    pub cooling_score: Option<u8>,
     /// Recommendations
     pub recommendations: Vec<String>,
 }
@@ -330,7 +335,7 @@ struct HardwareFeatures {
     cpu_vendor: String,
     is_server_cpu: bool,
     has_ecc: bool,
-    cpu_tdp_watts: f32,
+    cpu_tdp_watts: Option<f32>,
     /// Whether `cpu_tdp_watts` is the package power limit the platform enforces
     /// or the model-name table's stand-in for it. False on Windows and macOS,
     /// which expose no such limit to an unprivileged reader.
@@ -348,15 +353,15 @@ struct HardwareFeatures {
     gpu_vram_gb: f32,
     has_tensor_cores: bool,
     has_rt_cores: bool,
-    gpu_tdp_watts: f32,
+    gpu_tdp_watts: Option<f32>,
     /// Whether `gpu_tdp_watts` is the cap the driver enforces or the name
     /// table's stand-in for it. The thermal envelope reports which, because a
     /// measured 450 W and a guessed 350 W are different claims about the same
     /// card and only one of them was checked against the hardware.
     gpu_tdp_measured: bool,
-    /// How many adapters `gpu_tdp_watts` is the sum of. `1` for a single card
-    /// and for every unmeasured machine, whose figure comes from a table keyed
-    /// on one model name.
+    /// How many adapters `gpu_tdp_watts` is the sum of. `1` when the figure is
+    /// the name table's, which is keyed on one model name and prices one card,
+    /// and `0` when there is no figure.
     gpu_adapters_counted: u32,
 
     // Storage features
@@ -594,7 +599,7 @@ impl HardwareInferenceEngine {
         // and the model-name table only where it is not.
         match Self::measured_cpu_power_cap_watts() {
             Some(watts) => {
-                self.features.cpu_tdp_watts = watts;
+                self.features.cpu_tdp_watts = Some(watts);
                 self.features.cpu_tdp_measured = true;
             }
             None => {
@@ -798,7 +803,7 @@ impl HardwareInferenceEngine {
             .flatten();
         match measured {
             Some((watts, adapters)) => {
-                self.features.gpu_tdp_watts = watts;
+                self.features.gpu_tdp_watts = Some(watts);
                 self.features.gpu_tdp_measured = true;
                 self.features.gpu_adapters_counted = adapters;
             }
@@ -807,10 +812,12 @@ impl HardwareInferenceEngine {
                 // and this machine has one of those however many cards it has,
                 // so an unmeasured multi-GPU machine is priced as one card
                 // rather than multiplied by a count the table knows nothing
-                // about. `gpu_adapters_counted` says so: 1.
-                self.features.gpu_tdp_watts = Self::infer_gpu_tdp(&gpu_lower);
+                // about. `gpu_adapters_counted` says so: 1, or 0 when the table
+                // has no match and there is no figure.
+                let table = Self::infer_gpu_tdp(&gpu_lower);
+                self.features.gpu_adapters_counted = u32::from(table.is_some());
+                self.features.gpu_tdp_watts = table;
                 self.features.gpu_tdp_measured = false;
-                self.features.gpu_adapters_counted = 1;
             }
         }
     }
@@ -2133,7 +2140,12 @@ impl HardwareInferenceEngine {
         let f = &self.features;
         let cpu_tdp = f.cpu_tdp_watts;
         let gpu_tdp = f.gpu_tdp_watts;
-        let total_tdp = cpu_tdp + gpu_tdp + 30.0; // +30W for RAM, storage, board
+        // +30W for RAM, storage, board. A total with either term unknown is
+        // unknown too: the partial sum would pass for a total.
+        let total_tdp = match (cpu_tdp, gpu_tdp) {
+            (Some(c), Some(g)) => Some(c + g + 30.0),
+            _ => None,
+        };
 
         // `has_battery` used to stand in for "laptop" here. A UPS made this
         // desktop workstation take the laptop cooling curve, which reported
@@ -2144,37 +2156,32 @@ impl HardwareInferenceEngine {
 
         let headroom = if is_mobile_chassis {
             // Laptop — limited cooling
-            if total_tdp > 150.0 {
-                ThermalHeadroom::Insufficient
-            } else if total_tdp > 100.0 {
-                ThermalHeadroom::Marginal
-            } else if total_tdp > 60.0 {
-                ThermalHeadroom::Adequate
-            } else {
-                ThermalHeadroom::Ample
+            match total_tdp {
+                None => ThermalHeadroom::Unknown,
+                Some(t) if t > 150.0 => ThermalHeadroom::Insufficient,
+                Some(t) if t > 100.0 => ThermalHeadroom::Marginal,
+                Some(t) if t > 60.0 => ThermalHeadroom::Adequate,
+                Some(_) => ThermalHeadroom::Ample,
             }
         } else if f.chassis_type.contains("Mini") {
             // Mini PC — moderate cooling
-            if total_tdp > 120.0 {
-                ThermalHeadroom::Marginal
-            } else {
-                ThermalHeadroom::Adequate
+            match total_tdp {
+                Some(t) if t > 120.0 => ThermalHeadroom::Marginal,
+                Some(_) => ThermalHeadroom::Adequate,
+                None => ThermalHeadroom::Unknown,
             }
         } else {
-            // Desktop/server — good cooling assumed
-            if total_tdp > 500.0 {
-                ThermalHeadroom::Marginal
-            } else {
-                ThermalHeadroom::Ample
-            }
+            // Desktop/server — no cooling reading exists, and the chassis does
+            // not say how much there is. Unknown, not a guess that it is ample.
+            ThermalHeadroom::Unknown
         };
 
         let cooling_score = match &headroom {
-            ThermalHeadroom::Ample => 90,
-            ThermalHeadroom::Adequate => 70,
-            ThermalHeadroom::Marginal => 40,
-            ThermalHeadroom::Insufficient => 15,
-            ThermalHeadroom::Unknown => 50,
+            ThermalHeadroom::Ample => Some(90),
+            ThermalHeadroom::Adequate => Some(70),
+            ThermalHeadroom::Marginal => Some(40),
+            ThermalHeadroom::Insufficient => Some(15),
+            ThermalHeadroom::Unknown => None,
         };
 
         let mut recommendations = Vec::new();
@@ -2183,7 +2190,7 @@ impl HardwareInferenceEngine {
                 "Consider improving cooling (better fans, repasting, or external cooling)".into(),
             );
         }
-        if is_mobile_chassis && gpu_tdp > 80.0 {
+        if is_mobile_chassis && gpu_tdp.is_some_and(|g| g > 80.0) {
             recommendations.push(
                 "High GPU TDP in a laptop — may experience thermal throttling under sustained load"
                     .into(),
@@ -2195,7 +2202,7 @@ impl HardwareInferenceEngine {
             cpu_tdp_watts: cpu_tdp,
             cpu_tdp_measured: f.cpu_tdp_measured,
             gpu_tdp_watts: gpu_tdp,
-            gpu_adapters_counted: f.gpu_adapters_counted.max(1),
+            gpu_adapters_counted: f.gpu_adapters_counted,
             gpu_tdp_measured: f.gpu_tdp_measured,
             headroom,
             cooling_score,
@@ -2235,54 +2242,54 @@ impl HardwareInferenceEngine {
         (watts > 0.0).then_some(watts as f32)
     }
 
-    fn infer_cpu_tdp(model_lower: &str) -> f32 {
-        // Known TDP ranges by CPU class
+    fn infer_cpu_tdp(model_lower: &str) -> Option<f32> {
+        // Known TDP ranges by CPU class. No match is no figure, not a default.
         if model_lower.contains("i9-14") || model_lower.contains("i9-13") {
-            return 125.0;
+            return Some(125.0);
         }
         if model_lower.contains("i7-14") || model_lower.contains("i7-13") {
-            return 65.0;
+            return Some(65.0);
         }
         if model_lower.contains("i5-14") || model_lower.contains("i5-13") {
-            return 65.0;
+            return Some(65.0);
         }
         if model_lower.contains("i3") {
-            return 35.0;
+            return Some(35.0);
         }
         if model_lower.contains("ryzen 9") {
-            return 120.0;
+            return Some(120.0);
         }
         if model_lower.contains("ryzen 7") {
-            return 65.0;
+            return Some(65.0);
         }
         if model_lower.contains("ryzen 5") {
-            return 65.0;
+            return Some(65.0);
         }
         if model_lower.contains("ryzen 3") {
-            return 35.0;
+            return Some(35.0);
         }
         if model_lower.contains("epyc") {
-            return 225.0;
+            return Some(225.0);
         }
         if model_lower.contains("xeon") {
-            return 150.0;
+            return Some(150.0);
         }
         if model_lower.contains("threadripper") {
-            return 280.0;
+            return Some(280.0);
         }
         if model_lower.contains("celeron") || model_lower.contains("atom") {
-            return 15.0;
+            return Some(15.0);
         }
         if model_lower.contains("m1") || model_lower.contains("m2") {
-            return 20.0;
+            return Some(20.0);
         }
         if model_lower.contains("m3") || model_lower.contains("m4") {
-            return 22.0;
+            return Some(22.0);
         }
         if model_lower.contains("arm") || model_lower.contains("cortex") {
-            return 5.0;
+            return Some(5.0);
         }
-        65.0 // default guess
+        None
     }
 
     /// The enforced power caps of every adapter that reports one: their sum in
@@ -2314,62 +2321,61 @@ impl HardwareInferenceEngine {
         (!caps.is_empty()).then(|| (caps.iter().sum(), caps.len() as u32))
     }
 
-    fn infer_gpu_tdp(model_lower: &str) -> f32 {
+    fn infer_gpu_tdp(model_lower: &str) -> Option<f32> {
+        // Known board power by model. No match is no figure: the old default
+        // of 100 W for any discrete card was a guess priced as a reading.
         if model_lower.contains("4090") {
-            return 450.0;
+            return Some(450.0);
         }
         if model_lower.contains("4080") {
-            return 320.0;
+            return Some(320.0);
         }
         if model_lower.contains("4070 ti") {
-            return 285.0;
+            return Some(285.0);
         }
         if model_lower.contains("4070") {
-            return 200.0;
+            return Some(200.0);
         }
         if model_lower.contains("4060") {
-            return 115.0;
+            return Some(115.0);
         }
         if model_lower.contains("3090") {
-            return 350.0;
+            return Some(350.0);
         }
         if model_lower.contains("3080") {
-            return 320.0;
+            return Some(320.0);
         }
         if model_lower.contains("3070") {
-            return 220.0;
+            return Some(220.0);
         }
         if model_lower.contains("3060") {
-            return 170.0;
+            return Some(170.0);
         }
         if model_lower.contains("h100") {
-            return 700.0;
+            return Some(700.0);
         }
         if model_lower.contains("a100") {
-            return 300.0;
+            return Some(300.0);
         }
         if model_lower.contains("rx 7900") {
-            return 355.0;
+            return Some(355.0);
         }
         if model_lower.contains("rx 7800") {
-            return 263.0;
+            return Some(263.0);
         }
         if model_lower.contains("rx 7700") {
-            return 245.0;
+            return Some(245.0);
         }
         if model_lower.contains("rx 7600") {
-            return 165.0;
+            return Some(165.0);
         }
         if model_lower.contains("arc a7") {
-            return 225.0;
+            return Some(225.0);
         }
         if model_lower.contains("arc a5") {
-            return 175.0;
+            return Some(175.0);
         }
-        if model_lower.is_empty() {
-            return 0.0;
-        }
-        100.0 // default for unknown discrete GPU
+        None
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -2624,7 +2630,7 @@ mod tests {
                 cpu_vendor: "Intel".into(),
                 is_server_cpu: false,
                 has_ecc: false,
-                cpu_tdp_watts: 125.0,
+                cpu_tdp_watts: Some(125.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 32.0,
                 ram_channels: 2,
@@ -2635,7 +2641,7 @@ mod tests {
                 gpu_vram_gb: 12.0,
                 has_tensor_cores: true,
                 has_rt_cores: true,
-                gpu_tdp_watts: 285.0,
+                gpu_tdp_watts: Some(285.0),
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
@@ -2675,7 +2681,7 @@ mod tests {
                 cpu_vendor: "AMD".into(),
                 is_server_cpu: true,
                 has_ecc: true,
-                cpu_tdp_watts: 225.0,
+                cpu_tdp_watts: Some(225.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 512.0,
                 ram_channels: 8,
@@ -2686,7 +2692,7 @@ mod tests {
                 gpu_vram_gb: 0.0,
                 has_tensor_cores: false,
                 has_rt_cores: false,
-                gpu_tdp_watts: 0.0,
+                gpu_tdp_watts: None,
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
@@ -2728,7 +2734,7 @@ mod tests {
                 cpu_vendor: "Intel".into(),
                 is_server_cpu: false,
                 has_ecc: false,
-                cpu_tdp_watts: 15.0,
+                cpu_tdp_watts: Some(15.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 8.0,
                 ram_channels: 2,
@@ -2739,7 +2745,7 @@ mod tests {
                 gpu_vram_gb: 8.0,
                 has_tensor_cores: true,
                 has_rt_cores: true,
-                gpu_tdp_watts: 100.0,
+                gpu_tdp_watts: Some(100.0),
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,

@@ -362,7 +362,7 @@ impl SiliconMonitor for WindowsSiliconMonitor {
 
         let clusters = vec![CpuCluster {
             cluster_type: CpuClusterType::Standard,
-            core_ids: (0..self.cpu_count as u32).collect(),
+            core_ids: Some((0..self.cpu_count as u32).collect()),
             frequency_mhz: avg_freq,
             utilization: avg_util,
             power_watts: None,

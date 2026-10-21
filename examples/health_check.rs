@@ -122,6 +122,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║                                                                    ║");
 
     let strict_health = SystemHealth::check_with_thresholds(&strict_thresholds)?;
+    let strict_score = strict_health
+        .score
+        .map_or_else(|| "n/a".to_string(), |s| format!("{}/100", s));
     let (strict_status_icon, strict_status_text) = match strict_health.status {
         HealthStatus::Healthy => ("✅", "HEALTHY"),
         HealthStatus::Good => ("🟢", "GOOD"),
@@ -131,8 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "║  {} Strict Score: {:>3}/100 - {}                                   ║",
-        strict_status_icon, strict_health.score, strict_status_text
+        "║  {} Strict Score: {:>7} - {}                                   ║",
+        strict_status_icon, strict_score, strict_status_text
     );
 
     println!("╚════════════════════════════════════════════════════════════════════╝");

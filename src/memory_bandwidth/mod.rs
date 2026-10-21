@@ -35,39 +35,41 @@ pub enum MemoryGeneration {
 }
 
 impl MemoryGeneration {
-    /// Bus width in bits for this technology.
-    pub fn bus_width_bits(&self) -> u32 {
+    /// Bus width in bits for this technology, or `None` for `Unknown`, which
+    /// has no technology to take a width from.
+    pub fn bus_width_bits(&self) -> Option<u32> {
         match self {
-            Self::DDR3 | Self::DDR4 | Self::DDR5 => 64,
-            Self::LPDDR4 | Self::LPDDR4X => 32, // per channel
-            Self::LPDDR5 | Self::LPDDR5X => 32,
-            Self::HBM2 => 128, // per channel, 8 channels per stack
-            Self::HBM2E => 128,
-            Self::HBM3 => 128,
-            Self::HBM3E => 128,
-            Self::GDDR6 => 32,
-            Self::GDDR6X => 32,
-            Self::Unknown => 64,
+            Self::DDR3 | Self::DDR4 | Self::DDR5 => Some(64),
+            Self::LPDDR4 | Self::LPDDR4X => Some(32), // per channel
+            Self::LPDDR5 | Self::LPDDR5X => Some(32),
+            Self::HBM2 => Some(128), // per channel, 8 channels per stack
+            Self::HBM2E => Some(128),
+            Self::HBM3 => Some(128),
+            Self::HBM3E => Some(128),
+            Self::GDDR6 => Some(32),
+            Self::GDDR6X => Some(32),
+            Self::Unknown => None,
         }
     }
 
-    /// Typical peak speed in MT/s for each generation.
-    pub fn typical_speed_mts(&self) -> u32 {
+    /// Typical peak speed in MT/s for each generation, or `None` for `Unknown`.
+    /// A typical figure is a table entry, not a reading of this machine.
+    pub fn typical_speed_mts(&self) -> Option<u32> {
         match self {
-            Self::DDR3 => 1600,
-            Self::DDR4 => 3200,
-            Self::DDR5 => 5600,
-            Self::LPDDR4 => 4267,
-            Self::LPDDR4X => 4267,
-            Self::LPDDR5 => 6400,
-            Self::LPDDR5X => 8533,
-            Self::HBM2 => 2000,
-            Self::HBM2E => 3200,
-            Self::HBM3 => 6400,
-            Self::HBM3E => 9600,
-            Self::GDDR6 => 16000,
-            Self::GDDR6X => 21000,
-            Self::Unknown => 3200,
+            Self::DDR3 => Some(1600),
+            Self::DDR4 => Some(3200),
+            Self::DDR5 => Some(5600),
+            Self::LPDDR4 => Some(4267),
+            Self::LPDDR4X => Some(4267),
+            Self::LPDDR5 => Some(6400),
+            Self::LPDDR5X => Some(8533),
+            Self::HBM2 => Some(2000),
+            Self::HBM2E => Some(3200),
+            Self::HBM3 => Some(6400),
+            Self::HBM3E => Some(9600),
+            Self::GDDR6 => Some(16000),
+            Self::GDDR6X => Some(21000),
+            Self::Unknown => None,
         }
     }
 }
@@ -216,7 +218,7 @@ impl MemoryBandwidthMonitor {
         // Every figure below is computed from the speed. Without one there is
         // nothing to compute from, and a typical speed for the generation would
         // make each of them an estimate of a different machine.
-        let peak = speed_mts.map(|speed| {
+        let peak = speed_mts.and_then(|speed| {
             Self::compute_peak_bandwidth(speed, channels.active_channels, &generation)
         });
 
@@ -312,11 +314,17 @@ impl MemoryBandwidthMonitor {
         })
     }
 
-    fn compute_peak_bandwidth(speed_mts: u32, channels: u32, gen: &MemoryGeneration) -> f64 {
-        let bus_width = gen.bus_width_bits();
+    // `None` for an Unknown generation: the bus width is not known, so a peak
+    // computed from a 64-bit assumption would describe no measured machine.
+    fn compute_peak_bandwidth(
+        speed_mts: u32,
+        channels: u32,
+        gen: &MemoryGeneration,
+    ) -> Option<f64> {
+        let bus_width = gen.bus_width_bits()?;
         // Peak BW = speed_mts × bus_width_bytes × channels / 1000 (to GB/s)
         let bus_width_bytes = bus_width as f64 / 8.0;
-        speed_mts as f64 * bus_width_bytes * channels as f64 / 1000.0
+        Some(speed_mts as f64 * bus_width_bytes * channels as f64 / 1000.0)
     }
 
     #[cfg(target_os = "linux")]
@@ -640,14 +648,21 @@ mod tests {
     fn test_peak_bandwidth_ddr4() {
         // DDR4-3200 dual channel: 3200 × 8 × 2 / 1000 = 51.2 GB/s
         let bw = MemoryBandwidthMonitor::compute_peak_bandwidth(3200, 2, &MemoryGeneration::DDR4);
-        assert!((bw - 51.2).abs() < 0.1);
+        assert!(bw.is_some_and(|bw| (bw - 51.2).abs() < 0.1));
     }
 
     #[test]
     fn test_peak_bandwidth_ddr5() {
         // DDR5-5600 dual channel: 5600 × 8 × 2 / 1000 = 89.6 GB/s
         let bw = MemoryBandwidthMonitor::compute_peak_bandwidth(5600, 2, &MemoryGeneration::DDR5);
-        assert!((bw - 89.6).abs() < 0.1);
+        assert!(bw.is_some_and(|bw| (bw - 89.6).abs() < 0.1));
+    }
+
+    #[test]
+    fn unknown_generation_has_no_peak_bandwidth() {
+        let bw =
+            MemoryBandwidthMonitor::compute_peak_bandwidth(3200, 2, &MemoryGeneration::Unknown);
+        assert_eq!(bw, None);
     }
 
     #[test]

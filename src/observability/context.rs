@@ -61,19 +61,9 @@ impl SystemContext {
             timestamp: self.timestamp,
             hostname: self.system.hostname.clone(),
             os: self.system.os_name.clone(),
-            cpu_count: self
-                .hardware
-                .cpu
-                .as_ref()
-                .map(|c| c.core_count)
-                .unwrap_or(0),
+            cpu_count: self.hardware.cpu.as_ref().map(|c| c.core_count),
             gpu_count: self.hardware.gpus.len(),
-            memory_total_gb: self
-                .hardware
-                .memory
-                .as_ref()
-                .map(|m| m.total_gb)
-                .unwrap_or(0.0),
+            memory_total_gb: self.hardware.memory.as_ref().map(|m| m.total_gb),
             alert_count: self.alerts.len(),
         }
     }
@@ -85,9 +75,11 @@ pub struct MinimalContext {
     pub timestamp: u64,
     pub hostname: String,
     pub os: String,
-    pub cpu_count: usize,
+    /// `None` where the CPU was not read: a zero would say the machine has none.
+    pub cpu_count: Option<usize>,
     pub gpu_count: usize,
-    pub memory_total_gb: f64,
+    /// `None` where memory was not read.
+    pub memory_total_gb: Option<f64>,
     pub alert_count: usize,
 }
 
@@ -218,8 +210,8 @@ pub struct DiskContext {
     pub model: Option<String>,
     /// Disk type (SSD, HDD, NVMe)
     pub disk_type: String,
-    /// Total size in GB
-    pub size_gb: f64,
+    /// Total size in GB, or `None` where the capacity was not read.
+    pub size_gb: Option<f64>,
     /// Mount point (if mounted)
     pub mount_point: Option<String>,
     /// Filesystem type

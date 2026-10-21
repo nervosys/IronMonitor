@@ -470,13 +470,13 @@ impl DiskDevice for WindowsDisk {
             // the threshold's call, and SMART READ THRESHOLDS is not reachable
             // through this ioctl.
             if let Some(smart) = &ata.smart {
-                let at_risk = smart.pending_sectors().unwrap_or(0)
-                    + smart.uncorrectable_sectors().unwrap_or(0);
-                if at_risk > 0 {
-                    return Ok(DiskHealth::Warning);
+                // Unread counters fall through to the Windows status below, not to Healthy.
+                let graded =
+                    grade_at_risk_sectors(smart.pending_sectors(), smart.uncorrectable_sectors());
+                if graded != DiskHealth::Unknown {
+                    return Ok(graded);
                 }
             }
-            return Ok(DiskHealth::Healthy);
         }
 
         // Windows publishes a HealthStatus per physical disk; the SMART collector
@@ -1015,6 +1015,20 @@ impl Default for WindowsDiskMonitor {
     }
 }
 
+/// Grades the sectors at risk on an ATA drive. `None` is a counter that was not
+/// read. A non-zero counter is a reading that says something is wrong; two zero
+/// readings are a clean drive; a zero beside an unread counter is half a
+/// question, and is not graded Healthy.
+fn grade_at_risk_sectors(pending: Option<u64>, uncorrectable: Option<u64>) -> DiskHealth {
+    if matches!(pending, Some(n) if n > 0) || matches!(uncorrectable, Some(n) if n > 0) {
+        return DiskHealth::Warning;
+    }
+    match (pending, uncorrectable) {
+        (Some(_), Some(_)) => DiskHealth::Healthy,
+        _ => DiskHealth::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod kind_tests {
     use super::*;
@@ -1042,5 +1056,22 @@ mod kind_tests {
         assert_eq!(kind_from_bus_and_media(Some(8), Some(3)), DiskType::Scsi);
         assert_eq!(kind_from_bus_and_media(Some(7), Some(0)), DiskType::Usb);
         assert_eq!(kind_from_bus_and_media(None, None), DiskType::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod sector_grade_tests {
+    use super::*;
+
+    /// A counter nobody read is not a clean one, and a clean reading beside it
+    /// is not a whole picture. Only both counters read zero grade Healthy.
+    #[test]
+    fn unread_sector_counters_are_not_graded_healthy() {
+        assert_eq!(grade_at_risk_sectors(Some(0), Some(0)), DiskHealth::Healthy);
+        assert_eq!(grade_at_risk_sectors(None, None), DiskHealth::Unknown);
+        assert_eq!(grade_at_risk_sectors(Some(0), None), DiskHealth::Unknown);
+        assert_eq!(grade_at_risk_sectors(None, Some(0)), DiskHealth::Unknown);
+        assert_eq!(grade_at_risk_sectors(None, Some(3)), DiskHealth::Warning);
+        assert_eq!(grade_at_risk_sectors(Some(1), None), DiskHealth::Warning);
     }
 }

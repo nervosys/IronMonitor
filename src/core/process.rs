@@ -198,6 +198,18 @@ pub(crate) mod linux {
         Ok(uptime)
     }
 
+    /// Parse one numeric field of `/proc/<pid>` as read. Errors rather than
+    /// returning a default: a caller would otherwise report 0 for a value it
+    /// never obtained.
+    fn parse_proc_field<T: std::str::FromStr>(text: &str, field: &str, pid: u32) -> Result<T> {
+        text.parse().map_err(|_| {
+            IronError::Parse(format!(
+                "/proc/{}: {} is not a number: {:?}",
+                pid, field, text
+            ))
+        })
+    }
+
     fn get_process_info(
         pid: u32,
         user: &str,
@@ -223,12 +235,13 @@ pub(crate) mod linux {
             return Err(IronError::Parse("Invalid stat format".to_string()));
         }
 
-        // Extract fields (indices from man proc)
+        // Extract fields (indices from man proc). A field that does not parse is
+        // an error: a zero CPU time would read as an idle process.
         let state = stat_parts[2].chars().next().unwrap_or('?');
-        let utime: f64 = stat_parts[13].parse().unwrap_or(0.0);
-        let stime: f64 = stat_parts[14].parse().unwrap_or(0.0);
-        let priority: i32 = stat_parts[17].parse().unwrap_or(0);
-        let starttime: f64 = stat_parts[21].parse().unwrap_or(0.0);
+        let utime: f64 = parse_proc_field(stat_parts[13], "utime", pid)?;
+        let stime: f64 = parse_proc_field(stat_parts[14], "stime", pid)?;
+        let priority: i32 = parse_proc_field(stat_parts[17], "priority", pid)?;
+        let starttime: f64 = parse_proc_field(stat_parts[21], "starttime", pid)?;
 
         // Calculate CPU percentage
         let clk_tck = crate::platform::linux::clock_ticks_per_second()
@@ -242,15 +255,21 @@ pub(crate) mod linux {
         let statm_content = fs::read_to_string(format!("{}/statm", proc_path))?;
         let statm_parts: Vec<&str> = statm_content.split_whitespace().collect();
 
-        let vm_rss = if statm_parts.len() > 1 {
-            statm_parts[1].parse::<u64>().unwrap_or(0)
-                * crate::platform::linux::page_size().ok_or_else(|| {
-                    IronError::Other("sysconf(_SC_PAGESIZE) returned no page size".into())
-                })?
-                / 1024
-        } else {
-            0
+        // A missing or unparseable RSS is an error, not an empty process.
+        let rss_pages: u64 = match statm_parts.get(1) {
+            Some(&text) => parse_proc_field(text, "statm resident", pid)?,
+            None => {
+                return Err(IronError::Parse(format!(
+                    "/proc/{}/statm has no resident field",
+                    pid
+                )))
+            }
         };
+        let vm_rss = rss_pages
+            * crate::platform::linux::page_size().ok_or_else(|| {
+                IronError::Other("sysconf(_SC_PAGESIZE) returned no page size".into())
+            })?
+            / 1024;
 
         Ok(ProcessInfo {
             pid,

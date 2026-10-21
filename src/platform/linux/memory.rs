@@ -88,11 +88,10 @@ fn parse_ram_info(meminfo: &str) -> Result<RamInfo> {
         used: total.saturating_sub(available),
         buffers,
         // `Cached` alone understates it; the kernel's reclaimable slab counts
-        // too. Absent unless at least one of the pair was read, and summing
-        // only what was.
+        // too. Both are needed: one half alone would be reported as the whole.
         cached: match (cached, s_reclaimable) {
-            (None, None) => None,
-            (c, s) => Some(c.unwrap_or(0) + s.unwrap_or(0)),
+            (Some(c), Some(s)) => Some(c + s),
+            _ => None,
         },
         // Linux does report this, via Shmem in /proc/meminfo.
         shared: shmem,
@@ -112,10 +111,8 @@ fn parse_ram_info(meminfo: &str) -> Result<RamInfo> {
 /// at zero and filling in whatever is present quietly conflated the two, so an
 /// absent field became a confident "no swap".
 ///
-/// A missing `SwapTotal` is therefore an error rather than a zero. The
-/// type-level fix is `Option` fields on `SwapInfo`, which would make the whole
-/// class impossible; it is 62 read sites away and is recorded in HANDOFF.md
-/// rather than half-done here.
+/// A missing or unparseable `SwapTotal` or `SwapFree` leaves its field `None`:
+/// the line is skipped, never read as zero.
 fn parse_swap_info(meminfo: &str) -> Result<SwapInfo> {
     // Starts as "nothing reported". Each field becomes `Some` only when
     // /proc/meminfo actually carried it, which is what makes a container with no
@@ -129,7 +126,10 @@ fn parse_swap_info(meminfo: &str) -> Result<SwapInfo> {
         }
 
         let key = parts[0].trim_end_matches(':');
-        let value: u64 = parts[1].parse().unwrap_or(0);
+        // A line whose value does not parse is a line we did not read.
+        let Ok(value) = parts[1].parse::<u64>() else {
+            continue;
+        };
 
         match key {
             "SwapTotal" => swap.total = Some(value),
@@ -149,9 +149,11 @@ fn parse_swap_info(meminfo: &str) -> Result<SwapInfo> {
 }
 
 fn read_lfb() -> Result<u32> {
-    // LFB can be read from various tegrastats outputs
-    // This is a simplified version
-    Ok(0)
+    // LFB can be read from various tegrastats outputs; that parser is not
+    // written, so there is no reading to report. Absent, not 0.
+    Err(crate::error::IronError::FeatureNotAvailable(
+        "LFB reading not yet implemented".to_string(),
+    ))
 }
 
 fn read_emc_info() -> Result<EmcInfo> {
@@ -194,4 +196,57 @@ fn read_iram_info() -> Result<IramInfo> {
     Err(crate::error::IronError::FeatureNotAvailable(
         "IRAM reading not yet implemented".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_total_that_does_not_parse_is_absent_not_no_swap() {
+        let swap = parse_swap_info("SwapTotal: x kB\nSwapFree: 500 kB\n")
+            .ok()
+            .unwrap();
+        assert_eq!(swap.total, None);
+        assert_eq!(swap.used, None);
+    }
+
+    #[test]
+    fn swap_free_that_does_not_parse_leaves_used_absent() {
+        let swap = parse_swap_info("SwapTotal: 1000 kB\nSwapFree: ? kB\n")
+            .ok()
+            .unwrap();
+        assert_eq!(swap.total, Some(1000));
+        assert_eq!(swap.used, None);
+    }
+
+    #[test]
+    fn swap_reads_total_and_used() {
+        let swap = parse_swap_info("SwapTotal: 1000 kB\nSwapFree: 400 kB\n")
+            .ok()
+            .unwrap();
+        assert_eq!(swap.total, Some(1000));
+        assert_eq!(swap.used, Some(600));
+    }
+
+    #[test]
+    fn cached_needs_both_cached_and_sreclaimable() {
+        let base = "MemTotal: 16000 kB\nMemFree: 1000 kB\nMemAvailable: 8000 kB\n";
+        let only_cached = parse_ram_info(&format!("{base}Cached: 300 kB\n"))
+            .ok()
+            .unwrap();
+        assert_eq!(only_cached.cached, None);
+        let both = parse_ram_info(&format!("{base}Cached: 300 kB\nSReclaimable: 200 kB\n"))
+            .ok()
+            .unwrap();
+        assert_eq!(both.cached, Some(500));
+    }
+
+    #[test]
+    fn lfb_is_absent_not_zero() {
+        let ram = parse_ram_info("MemTotal: 16000 kB\nMemFree: 1000 kB\nMemAvailable: 8000 kB\n")
+            .ok()
+            .unwrap();
+        assert_eq!(ram.lfb, None);
+    }
 }

@@ -638,7 +638,7 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
 
     let controllers: Vec<Win32VideoController> = wmi_con
         .raw_query("SELECT Name, AdapterRAM, DriverVersion, VideoProcessor, PNPDeviceID, AdapterDACType, Status FROM Win32_VideoController")
-        .unwrap_or_default();
+        .map_err(|e| Error::Other(format!("WMI Win32_VideoController query failed: {}", e)))?;
 
     let mut gpu_index = 0;
     for ctrl in &controllers {

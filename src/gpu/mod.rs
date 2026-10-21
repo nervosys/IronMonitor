@@ -782,12 +782,28 @@ impl Gpu for TraitGpuAdapter {
 /// GPU collection representing all detected GPUs
 pub struct GpuCollection {
     gpus: Vec<Box<dyn Gpu>>,
+    /// Vendors whose detection failed, as (vendor, error). A failed read must not
+    /// look like an absent GPU, so `auto_detect` records each failure here rather
+    /// than stopping at the first one.
+    detection_failures: Vec<(&'static str, String)>,
 }
 
 impl GpuCollection {
     /// Create a new GPU collection
     pub fn new() -> Self {
-        Self { gpus: Vec::new() }
+        Self {
+            gpus: Vec::new(),
+            detection_failures: Vec::new(),
+        }
+    }
+
+    /// Per-vendor detection failures recorded by [`GpuCollection::auto_detect`].
+    ///
+    /// Empty means each enabled vendor either found its GPUs or reported that none
+    /// are present. Non-empty means that vendor could not be read, so its missing
+    /// GPUs are not a fact about the machine.
+    pub fn detection_failures(&self) -> &[(&'static str, String)] {
+        &self.detection_failures
     }
 
     /// Auto-detect and add all available GPUs
@@ -795,17 +811,52 @@ impl GpuCollection {
         #[allow(unused_mut)]
         let mut collection = Self::new();
 
+        // Every vendor runs even when an earlier one fails, so one broken driver
+        // does not discard the GPUs another vendor found.
         #[cfg(feature = "nvidia")]
-        collection.detect_nvidia()?;
+        {
+            if let Err(e) = collection.detect_nvidia() {
+                collection
+                    .detection_failures
+                    .push(("nvidia", e.to_string()));
+            }
+        }
 
         #[cfg(feature = "amd")]
-        collection.detect_amd()?;
+        {
+            if let Err(e) = collection.detect_amd() {
+                collection.detection_failures.push(("amd", e.to_string()));
+            }
+        }
 
         #[cfg(feature = "intel")]
-        collection.detect_intel()?;
+        {
+            if let Err(e) = collection.detect_intel() {
+                collection.detection_failures.push(("intel", e.to_string()));
+            }
+        }
 
         #[cfg(feature = "apple")]
-        collection.detect_apple()?;
+        {
+            if let Err(e) = collection.detect_apple() {
+                collection.detection_failures.push(("apple", e.to_string()));
+            }
+        }
+
+        // An empty collection with failures would read as "this machine has no
+        // GPUs", so that case is an error. With any GPU found, the failures stay on
+        // the collection for callers to report.
+        if collection.is_empty() && !collection.detection_failures.is_empty() {
+            let reasons: Vec<String> = collection
+                .detection_failures
+                .iter()
+                .map(|(vendor, e)| format!("{vendor}: {e}"))
+                .collect();
+            return Err(crate::Error::GpuError(format!(
+                "GPU detection failed and no GPU was found ({})",
+                reasons.join("; ")
+            )));
+        }
 
         Ok(collection)
     }

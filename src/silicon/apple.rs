@@ -20,8 +20,8 @@ pub struct AppleSiliconMonitor {
 #[allow(dead_code)]
 struct SocInfo {
     name: String,
-    e_core_count: u32,
-    p_core_count: u32,
+    e_core_count: Option<u32>,
+    p_core_count: Option<u32>,
 }
 
 /// Powermetrics data
@@ -69,7 +69,7 @@ impl AppleSiliconMonitor {
 
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        // Core counts, or zero where the sysctl did not answer.
+        // Core counts, or `None` where the sysctl did not answer.
         //
         // These fell back to `4`, `4` and `8` -- **a specific and entirely
         // plausible machine**, which is what makes the fabrication worse than
@@ -82,12 +82,11 @@ impl AppleSiliconMonitor {
         // the argument against "sensible defaults" in a reader: the more
         // reasonable the invented value, the longer it survives.
         //
-        // Zero here means the count was not read. `(0..0)` yields an empty
-        // `core_ids`, and the cluster still carries the frequency and
-        // utilisation `powermetrics` actually measured -- an unknown
-        // composition, not an unknown cluster.
-        let e_cores = Self::get_sysctl_value("hw.perflevel1.logicalcpu").unwrap_or(0);
-        let p_cores = Self::get_sysctl_value("hw.perflevel0.logicalcpu").unwrap_or(0);
+        // `None` means the count was not read. The cluster's `core_ids` is then
+        // `None` too, while the frequency and utilisation `powermetrics`
+        // actually measured stay -- an unknown composition, not an unknown cluster.
+        let e_cores = Self::get_sysctl_value("hw.perflevel1.logicalcpu");
+        let p_cores = Self::get_sysctl_value("hw.perflevel0.logicalcpu");
 
         // There was a per-chip power table here -- CPU, GPU and ANE ceilings
         // by brand-string match, with `(20.0, 20.0, 8.0)` for any chip it did
@@ -165,7 +164,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
             });
         }
 
-        // E-cluster. An empty `core_ids` means the per-level core count was
+        // E-cluster. A `None` `core_ids` means the per-level core count was
         // not read, not that the cluster has no cores; the figures beside it
         // are measured either way.
         //
@@ -175,7 +174,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
         // unchanged whether it was idle or saturated.
         clusters.push(CpuCluster {
             cluster_type: CpuClusterType::Efficiency,
-            core_ids: (0..self.soc_info.e_core_count).collect(),
+            core_ids: self.soc_info.e_core_count.map(|n| (0..n).collect()),
             frequency_mhz: Some(data.e_cluster_freq_mhz),
             utilization: Some(data.e_cluster_active),
             power_watts: None,
@@ -184,7 +183,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
         // P-cluster
         clusters.push(CpuCluster {
             cluster_type: CpuClusterType::Performance,
-            core_ids: (0..self.soc_info.p_core_count).collect(),
+            core_ids: self.soc_info.p_core_count.map(|n| (0..n).collect()),
             frequency_mhz: Some(data.p_cluster_freq_mhz),
             utilization: Some(data.p_cluster_active),
             power_watts: None,
@@ -361,8 +360,8 @@ mod tests {
         let monitor = AppleSiliconMonitor {
             soc_info: SocInfo {
                 name: "Apple M2".into(),
-                e_core_count: 4,
-                p_core_count: 4,
+                e_core_count: Some(4),
+                p_core_count: Some(4),
             },
         };
         let err = monitor.parse_powermetrics().expect_err("no sample exists");

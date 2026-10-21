@@ -11,7 +11,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let health = SystemHealth::check()?;
 //!
-//! println!("Overall Health: {} ({}/100)", health.status, health.score);
+//! println!("Overall Health: {}", health.summary());
 //!
 //! for check in &health.checks {
 //!     println!("  {}: {:?} - {}", check.name, check.status, check.message);
@@ -60,8 +60,9 @@ pub struct HealthCheck {
     pub category: String,
     /// Status of this check
     pub status: HealthStatus,
-    /// Score contribution (0-100)
-    pub score: u8,
+    /// Score contribution (0-100), or `None` for an `Unknown` check. An unknown
+    /// check is not a zero: scored 0, it dragged every average it joined down.
+    pub score: Option<u8>,
     /// Human-readable message
     pub message: String,
     /// Current value (for metrics)
@@ -77,7 +78,7 @@ impl HealthCheck {
             name: name.to_string(),
             category: category.to_string(),
             status: HealthStatus::Unknown,
-            score: 0,
+            score: None,
             message: String::new(),
             value: None,
             threshold: None,
@@ -89,11 +90,11 @@ impl HealthCheck {
         self.status = status;
         self.message = message.to_string();
         self.score = match status {
-            HealthStatus::Healthy => 100,
-            HealthStatus::Good => 85,
-            HealthStatus::Warning => 50,
-            HealthStatus::Critical => 10,
-            HealthStatus::Unknown => 0,
+            HealthStatus::Healthy => Some(100),
+            HealthStatus::Good => Some(85),
+            HealthStatus::Warning => Some(50),
+            HealthStatus::Critical => Some(10),
+            HealthStatus::Unknown => None,
         };
         self
     }
@@ -159,8 +160,8 @@ impl Default for HealthThresholds {
 pub struct SystemHealth {
     /// Overall health status
     pub status: HealthStatus,
-    /// Overall health score (0-100)
-    pub score: u8,
+    /// Overall health score (0-100), or `None` when no check produced a score.
+    pub score: Option<u8>,
     /// Individual health checks
     pub checks: Vec<HealthCheck>,
     /// Number of healthy checks
@@ -506,25 +507,22 @@ impl SystemHealth {
             .filter(|c| c.status == HealthStatus::Critical)
             .count();
 
-        // Calculate weighted score
-        let total_score: u32 = checks.iter().map(|c| c.score as u32).sum();
-        let avg_score = if !checks.is_empty() {
-            (total_score / checks.len() as u32) as u8
-        } else {
-            0
-        };
+        // An `Unknown` check has no score to average. Counting it as zero would
+        // grade the whole report down for a reading that was never taken.
+        let avg_score = aggregate_score(&checks);
 
         // Determine overall status
         let overall_status = if critical_count > 0 {
             HealthStatus::Critical
         } else if warning_count > 0 {
             HealthStatus::Warning
+        } else if checks.iter().all(|c| c.status == HealthStatus::Unknown) {
+            // Nothing was read, so there is nothing to call Healthy.
+            HealthStatus::Unknown
         } else if good_count > healthy_count {
             HealthStatus::Good
-        } else if !checks.is_empty() {
-            HealthStatus::Healthy
         } else {
-            HealthStatus::Unknown
+            HealthStatus::Healthy
         };
 
         Ok(SystemHealth {
@@ -566,11 +564,27 @@ impl SystemHealth {
 
     /// Get a quick summary string
     pub fn summary(&self) -> String {
+        let score = self
+            .score
+            .map_or_else(|| "n/a".to_string(), |s| format!("{}/100", s));
         format!(
-            "{} - Score: {}/100 ({} healthy, {} warning, {} critical)",
-            self.status, self.score, self.healthy_count, self.warning_count, self.critical_count
+            "{} - Score: {} ({} healthy, {} warning, {} critical)",
+            self.status, score, self.healthy_count, self.warning_count, self.critical_count
         )
     }
+}
+
+/// Mean of the scores that were produced, or `None` if no check produced one.
+fn aggregate_score(checks: &[HealthCheck]) -> Option<u8> {
+    let scores: Vec<u32> = checks
+        .iter()
+        .filter_map(|c| c.score)
+        .map(u32::from)
+        .collect();
+    if scores.is_empty() {
+        return None;
+    }
+    Some((scores.iter().sum::<u32>() / scores.len() as u32) as u8)
 }
 
 /// Quick health check - returns overall status
@@ -587,7 +601,7 @@ pub fn quick_health_check() -> HealthStatus {
 /// alarming rather than reassuring, which is the safer direction, but zero is
 /// a real score and a caller cannot tell the two apart.
 pub fn health_score() -> Option<u8> {
-    SystemHealth::check().map(|h| h.score).ok()
+    SystemHealth::check().ok().and_then(|h| h.score)
 }
 
 /// Whether the system has critical issues, or `None` when the check failed.
@@ -609,7 +623,19 @@ mod tests {
         let health = SystemHealth::check();
         assert!(health.is_ok());
         let health = health.unwrap();
-        assert!(health.score <= 100);
+        assert!(health.score.is_none_or(|s| s <= 100));
+    }
+
+    #[test]
+    fn an_unknown_check_is_not_averaged_in_as_zero() {
+        let check = |status| HealthCheck::new("cpu", "CPU").with_status(status, "");
+        assert_eq!(aggregate_score(&[]), None);
+        assert_eq!(aggregate_score(&[HealthCheck::new("cpu", "CPU")]), None);
+        let mixed = [
+            check(HealthStatus::Healthy),
+            HealthCheck::new("disk", "Storage"),
+        ];
+        assert_eq!(aggregate_score(&mixed), Some(100));
     }
 
     #[test]

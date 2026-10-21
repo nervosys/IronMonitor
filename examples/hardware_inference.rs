@@ -13,6 +13,11 @@
 
 use ironmonitor::HardwareInferenceEngine;
 
+/// Watts, or `unknown` when the figure was neither read nor in the name table.
+fn watts(w: Option<f32>) -> String {
+    w.map_or_else(|| "unknown".to_string(), |w| format!("{w:.0} W"))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hardware inference report ===\n");
     println!("Building the engine (it reads the machine, which takes a few seconds)...\n");
@@ -47,8 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Thermal envelope ---");
     let t = &report.thermal_envelope;
     println!(
-        "  CPU TDP:        {:.0} W ({})",
-        t.cpu_tdp_watts,
+        "  CPU TDP:        {} ({})",
+        watts(t.cpu_tdp_watts),
         if t.cpu_tdp_measured {
             "the package power limit the platform enforces"
         } else {
@@ -56,8 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "  GPU TDP:        {:.0} W over {} adapter(s) ({})",
-        t.gpu_tdp_watts,
+        "  GPU TDP:        {} over {} adapter(s) ({})",
+        watts(t.gpu_tdp_watts),
         t.gpu_adapters_counted,
         if t.gpu_tdp_measured {
             "the caps the drivers enforce"
@@ -65,9 +70,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "the model-name table; no driver reported a cap"
         }
     );
-    println!("  total:          {:.0} W", t.estimated_total_tdp_watts);
+    println!("  total:          {}", watts(t.estimated_total_tdp_watts));
     println!("  headroom:       {:?}", t.headroom);
-    println!("  cooling score:  {}", t.cooling_score);
+    println!(
+        "  cooling score:  {}",
+        t.cooling_score
+            .map_or_else(|| "unknown".to_string(), |s| s.to_string())
+    );
     for r in &t.recommendations {
         println!("    - {r}");
     }

@@ -142,6 +142,30 @@ pub struct CgroupOverview {
     pub total_effective_cpus: f64,
 }
 
+/// The three counters `CgroupCpu` carries, from a cgroup v2 `cpu.stat`. Each
+/// must be present and parse. The struct has no `None` for them, so a missing
+/// `nr_throttled` makes the whole CPU reading absent rather than a zero.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_cpu_stat(stat: &str) -> Option<(u64, u64, u64)> {
+    let mut usage_us: Option<u64> = None;
+    let mut throttled_periods: Option<u64> = None;
+    let mut throttled_time: Option<u64> = None;
+
+    for line in stat.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            match parts[0] {
+                "usage_usec" => usage_us = parts[1].parse().ok(),
+                "nr_throttled" => throttled_periods = parts[1].parse().ok(),
+                "throttled_usec" => throttled_time = parts[1].parse().ok(),
+                _ => {}
+            }
+        }
+    }
+
+    Some((usage_us?, throttled_periods?, throttled_time?))
+}
+
 /// Cgroup resource monitor.
 pub struct CgroupMonitor {
     overview: CgroupOverview,
@@ -393,23 +417,10 @@ impl CgroupMonitor {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(100);
 
-        // CPU usage from cpu.stat
-        let stat_str = std::fs::read_to_string(path.join("cpu.stat")).unwrap_or_default();
-        let mut usage_us = 0u64;
-        let mut throttled_periods = 0u64;
-        let mut throttled_time = 0u64;
-
-        for line in stat_str.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                match parts[0] {
-                    "usage_usec" => usage_us = parts[1].parse().unwrap_or(0),
-                    "nr_throttled" => throttled_periods = parts[1].parse().unwrap_or(0),
-                    "throttled_usec" => throttled_time = parts[1].parse().unwrap_or(0),
-                    _ => {}
-                }
-            }
-        }
+        // CPU usage from cpu.stat. An unreadable file, or one missing a counter,
+        // leaves no CgroupCpu at all: zeros here would read as an idle cgroup.
+        let stat_str = std::fs::read_to_string(path.join("cpu.stat")).ok()?;
+        let (usage_us, throttled_periods, throttled_time) = parse_cpu_stat(&stat_str)?;
 
         let effective_cpus = if quota < 0 {
             0.0 // Unlimited
@@ -614,6 +625,24 @@ mod tests {
         };
         assert!(cg.is_container);
         assert_eq!(cg.container_runtime, Some("docker".into()));
+    }
+
+    #[test]
+    fn test_parse_cpu_stat_full() {
+        let stat = "usage_usec 5000\nuser_usec 3000\nsystem_usec 2000\nnr_periods 10\nnr_throttled 2\nthrottled_usec 700\n";
+        assert_eq!(parse_cpu_stat(stat), Some((5000, 2, 700)));
+    }
+
+    #[test]
+    fn test_parse_cpu_stat_missing_counter_is_absent() {
+        let stat = "usage_usec 5000\nuser_usec 3000\n";
+        assert_eq!(parse_cpu_stat(stat), None);
+    }
+
+    #[test]
+    fn test_parse_cpu_stat_unparseable_usage_is_absent() {
+        let stat = "usage_usec lots\nnr_throttled 0\nthrottled_usec 0\n";
+        assert_eq!(parse_cpu_stat(stat), None);
     }
 
     #[test]

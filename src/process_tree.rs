@@ -32,18 +32,19 @@ use std::collections::HashMap;
 pub struct ProcessNode {
     /// Process ID
     pub pid: u32,
-    /// Parent Process ID
-    pub ppid: u32,
+    /// Parent Process ID; `None` when the parent field was not readable
+    pub ppid: Option<u32>,
     /// Process name
     pub name: String,
     /// Command line (if available)
     pub cmdline: Option<String>,
     /// User running this process
     pub user: Option<String>,
-    /// CPU usage percentage
-    pub cpu_percent: f32,
-    /// Memory usage in bytes
-    pub memory_bytes: u64,
+    /// CPU usage percentage. `None`: no reader here computes it, because a
+    /// rate needs two samples and a tree is built from one.
+    pub cpu_percent: Option<f32>,
+    /// Memory usage in bytes; `None` where the platform reader did not obtain it.
+    pub memory_bytes: Option<u64>,
     /// Direct child PIDs
     pub children: Vec<u32>,
     /// Cgroup information (Linux only)
@@ -138,11 +139,16 @@ impl ProcessTree {
             }
         }
 
-        // Find root processes (ppid == 0 or ppid not in tree)
+        // Find root processes (ppid == 0, ppid not in tree, or ppid unknown).
+        // An unknown parent is listed as a root rather than dropped; it is not
+        // presented as a child of pid 0.
         let all_pids: std::collections::HashSet<u32> = nodes.keys().copied().collect();
         let mut root_pids: Vec<u32> = nodes
             .values()
-            .filter(|n| n.ppid == 0 || !all_pids.contains(&n.ppid))
+            .filter(|n| match n.ppid {
+                Some(ppid) => ppid == 0 || !all_pids.contains(&ppid),
+                None => true,
+            })
             .map(|n| n.pid)
             .collect();
         root_pids.sort();
@@ -191,7 +197,8 @@ impl ProcessTree {
             let name = stat[name_start + 1..name_end].to_string();
             let after_name = &stat[name_end + 2..];
             let fields: Vec<&str> = after_name.split_whitespace().collect();
-            let ppid: u32 = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            // An unparseable ppid stays None: a 0 would file the process under pid 0.
+            let ppid: Option<u32> = fields.get(1).and_then(|s| s.parse().ok());
 
             // Read cmdline
             let cmdline = fs::read_to_string(pid_path.join("cmdline"))
@@ -205,11 +212,11 @@ impl ProcessTree {
                 .and_then(|status| {
                     for line in status.lines() {
                         if line.starts_with("Uid:") {
+                            // An unreadable uid is no user, not root.
                             let uid: u32 = line
                                 .split_whitespace()
                                 .nth(1)
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0);
+                                .and_then(|s| s.parse().ok())?;
                             // Map common UIDs
                             return Some(match uid {
                                 0 => "root".to_string(),
@@ -232,8 +239,7 @@ impl ProcessTree {
                         .and_then(|rss| rss.parse::<u64>().ok())
                         .zip(crate::platform::linux::page_size())
                         .map(|(pages, page_size)| pages * page_size)
-                })
-                .unwrap_or(0);
+                });
 
             let node = ProcessNode {
                 pid,
@@ -241,13 +247,17 @@ impl ProcessTree {
                 name,
                 cmdline,
                 user,
-                cpu_percent: 0.0, // Would need delta calculation
+                // Needs two samples to difference; nothing in this reader does that.
+                cpu_percent: None,
+                // None when statm is unreadable: not an empty process.
                 memory_bytes,
                 children: Vec::new(),
                 cgroup,
             };
 
-            children_map.entry(ppid).or_default().push(pid);
+            if let Some(ppid) = ppid {
+                children_map.entry(ppid).or_default().push(pid);
+            }
             nodes.insert(pid, node);
         }
 
@@ -431,12 +441,13 @@ impl ProcessTree {
 
                     let node = ProcessNode {
                         pid,
-                        ppid,
+                        ppid: Some(ppid),
                         name,
                         cmdline: None,
                         user: None,
-                        cpu_percent: 0.0,
-                        memory_bytes: 0,
+                        // The toolhelp snapshot carries neither, and this reader does not query them.
+                        cpu_percent: None,
+                        memory_bytes: None,
                         children: Vec::new(),
                         cgroup: None, // No cgroups on Windows
                     };
@@ -475,8 +486,10 @@ impl ProcessTree {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                let ppid: u32 = fields[1].parse().unwrap_or(0);
-                let rss_kb: u64 = fields[2].parse().unwrap_or(0);
+                // An unparseable ppid stays None rather than becoming pid 0.
+                let ppid: Option<u32> = fields[1].parse().ok();
+                // None when RSS is unreadable: not an empty process.
+                let memory_bytes: Option<u64> = fields[2].parse::<u64>().ok().map(|kb| kb * 1024);
                 let name = fields[3..].join(" ");
 
                 let node = ProcessNode {
@@ -485,13 +498,16 @@ impl ProcessTree {
                     name,
                     cmdline: None,
                     user: None,
-                    cpu_percent: 0.0,
-                    memory_bytes: rss_kb * 1024,
+                    // ps is asked for no CPU column; nothing here computes one.
+                    cpu_percent: None,
+                    memory_bytes,
                     children: Vec::new(),
                     cgroup: None,
                 };
 
-                children_map.entry(ppid).or_default().push(pid);
+                if let Some(ppid) = ppid {
+                    children_map.entry(ppid).or_default().push(pid);
+                }
                 nodes.insert(pid, node);
             }
         }
@@ -573,11 +589,15 @@ impl ProcessTree {
         let mut result = Vec::new();
         let mut current = pid;
         while let Some(node) = self.nodes.get(&current) {
-            if node.ppid == 0 || node.ppid == current {
+            // An unknown parent ends the chain: there is no ancestor to name.
+            let Some(ppid) = node.ppid else {
+                break;
+            };
+            if ppid == 0 || ppid == current {
                 break;
             }
-            result.push(node.ppid);
-            current = node.ppid;
+            result.push(ppid);
+            current = ppid;
         }
         result
     }

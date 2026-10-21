@@ -10,7 +10,7 @@ use std::path::Path;
 
 /// Linux silicon monitor
 pub struct LinuxSiliconMonitor {
-    cpu_count: usize,
+    cpu_count: Option<usize>,
     has_hybrid_cpu: bool,
 }
 
@@ -26,15 +26,16 @@ impl LinuxSiliconMonitor {
         })
     }
 
-    fn detect_cpu_count() -> usize {
+    fn detect_cpu_count() -> Option<usize> {
         if let Ok(online) = fs::read_to_string("/sys/devices/system/cpu/online") {
             if let Some(count) = Self::parse_cpu_range(&online) {
-                return count;
+                return Some(count);
             }
         }
 
-        // Fallback: count CPU directories
+        // Fallback: count CPU directories. A failed read is no count, not one CPU.
         fs::read_dir("/sys/devices/system/cpu")
+            .ok()
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
@@ -44,7 +45,7 @@ impl LinuxSiliconMonitor {
                     })
                     .count()
             })
-            .unwrap_or(1)
+            .filter(|&n| n > 0)
     }
 
     fn parse_cpu_range(range: &str) -> Option<usize> {
@@ -384,7 +385,15 @@ impl SiliconMonitor for LinuxSiliconMonitor {
         let mut e_cores = Vec::new();
         let mut std_cores = Vec::new();
 
-        for cpu_id in 0..self.cpu_count as u32 {
+        // Without a count there is no core list to build, and an empty one would
+        // read as a machine with no CPUs.
+        let cpu_count = self.cpu_count.ok_or_else(|| {
+            crate::error::IronError::System(
+                "CPU count could not be read from /sys/devices/system/cpu".into(),
+            )
+        })?;
+
+        for cpu_id in 0..cpu_count as u32 {
             let cluster = self.determine_cluster_type(cpu_id);
             // A core whose scaling_cur_freq could not be read has no
             // frequency, not a frequency of zero.
@@ -426,7 +435,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
 
             clusters.push(CpuCluster {
                 cluster_type: CpuClusterType::Performance,
-                core_ids: p_cores.iter().map(|c| c.id).collect(),
+                core_ids: Some(p_cores.iter().map(|c| c.id).collect()),
                 frequency_mhz: avg_freq,
                 utilization: avg_util,
                 power_watts: power,
@@ -442,7 +451,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
 
             clusters.push(CpuCluster {
                 cluster_type: CpuClusterType::Efficiency,
-                core_ids: e_cores.iter().map(|c| c.id).collect(),
+                core_ids: Some(e_cores.iter().map(|c| c.id).collect()),
                 frequency_mhz: avg_freq,
                 utilization: avg_util,
                 power_watts: power,
@@ -455,7 +464,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
 
             clusters.push(CpuCluster {
                 cluster_type: CpuClusterType::Standard,
-                core_ids: std_cores.iter().map(|c| c.id).collect(),
+                core_ids: Some(std_cores.iter().map(|c| c.id).collect()),
                 frequency_mhz: avg_freq,
                 utilization: avg_util,
                 power_watts: package_power, // Full package power for standard cores

@@ -225,6 +225,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from sysfs is still absence.
 - A failed Apple GPU enumeration is an error from `auto_detect`, as an NVIDIA
   one is, where it was discarded and read as "no GPU".
+- `GpuCollection::auto_detect` runs every vendor even when one fails, records
+  each failure (`detection_failures()`), and is an error only when no GPU was
+  found and a vendor failed. One vendor's error used to discard every GPU
+  already found.
+- Fans: an unreadable RPM, PWM or cooling state is `None`, where it read 0
+  (a stopped fan). Speeds are no longer invented from an assumed 5000 RPM
+  maximum or from Windows' ActiveCooling flag (100%/0%), and fan profiles
+  are reported only when read. `Snapshot.fans` is `None` when the fan query
+  failed, rather than an empty map or a failed snapshot.
+- Process tree CPU is `None` (nothing computed it; it read 0% everywhere);
+  memory and parent pid are `None` where not read, so an unparseable parent
+  no longer files a process under pid 0. A per-process `/proc` field that
+  does not parse fails that process rather than reading 0.
+- Linux `/proc` parsing: a malformed SwapTotal/SwapFree, load average or CPU
+  tick line is skipped rather than read as 0; cached memory is reported only
+  when both Cached and SReclaimable were read; LFB is unavailable rather than
+  0. An unreadable cgroup `cpu.stat` is `None`, where it read as zero usage
+  and no throttling.
+- A Windows ATA drive with unreadable SMART sector counters is no longer
+  graded Healthy; it falls back to Windows' own health status, or Unknown.
+- Health scores are `None` for an Unknown check, where they scored 0 (the
+  worst grade), and the system score averages only checks that scored.
+  Observability context CPU count, memory and disk size are `None` where not
+  read.
+- A failed Win32_VideoController query is an AMD/Intel detection failure, not
+  "no GPU"; an unread GPU perf-counter memory figure is `None`, not 0 bytes.
+- Peak memory bandwidth is `None` for an unknown memory generation (it
+  assumed a 64-bit bus); desktop and server cooling headroom is Unknown
+  rather than an assumed "Ample", and its score `None` rather than 50. CPU
+  and GPU TDP from the name tables are `None` for an unlisted model, where
+  65 W and 100 W were guessed, and the total is `None` unless both are known.
+- Silicon: an unreadable Linux CPU count is an error (it was 1), Apple
+  efficiency and performance core counts are `None` when sysctl fails (they
+  were 0), and so is the macOS logical CPU count.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

@@ -200,6 +200,44 @@ impl SystemStats {
     }
 }
 
+/// Parse the three averages at the start of `/proc/loadavg`. All three or none:
+/// a `LoadAverage` with one figure unread would pass off a guess as a reading.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_loadavg(content: &str) -> Option<LoadAverage> {
+    let mut parts = content.split_whitespace();
+    let one = parts.next()?.parse::<f64>().ok()?;
+    let five = parts.next()?.parse::<f64>().ok()?;
+    let fifteen = parts.next()?.parse::<f64>().ok()?;
+    Some(LoadAverage { one, five, fifteen })
+}
+
+/// Parse the aggregate `cpu ` line of `/proc/stat`. Ten tick counts or none:
+/// a missing or unparseable field would be a measured zero of ticks never taken.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_cpu_line(line: &str) -> Option<CpuTime> {
+    let ticks: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .take(10)
+        .map(|s| s.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    if ticks.len() != 10 {
+        return None;
+    }
+    Some(CpuTime {
+        user: ticks[0],
+        nice: ticks[1],
+        system: ticks[2],
+        idle: ticks[3],
+        iowait: ticks[4],
+        irq: ticks[5],
+        softirq: ticks[6],
+        steal: ticks[7],
+        guest: ticks[8],
+        guest_nice: ticks[9],
+    })
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -224,11 +262,7 @@ mod linux {
         if let Ok(content) = fs::read_to_string("/proc/loadavg") {
             let parts: Vec<&str> = content.split_whitespace().collect();
             if parts.len() >= 5 {
-                stats.load_average = Some(LoadAverage {
-                    one: parts[0].parse().unwrap_or(0.0),
-                    five: parts[1].parse().unwrap_or(0.0),
-                    fifteen: parts[2].parse().unwrap_or(0.0),
-                });
+                stats.load_average = parse_loadavg(&content);
 
                 // Parse running/total processes from "1/234" format
                 if let Some((running, total)) = parts[3].split_once('/') {
@@ -251,21 +285,7 @@ mod linux {
         if let Ok(content) = fs::read_to_string("/proc/stat") {
             for line in content.lines() {
                 if line.starts_with("cpu ") {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 8 {
-                        stats.cpu_time = Some(CpuTime {
-                            user: parts[1].parse().unwrap_or(0),
-                            nice: parts[2].parse().unwrap_or(0),
-                            system: parts[3].parse().unwrap_or(0),
-                            idle: parts[4].parse().unwrap_or(0),
-                            iowait: parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0),
-                            irq: parts.get(6).and_then(|s| s.parse().ok()).unwrap_or(0),
-                            softirq: parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(0),
-                            steal: parts.get(8).and_then(|s| s.parse().ok()).unwrap_or(0),
-                            guest: parts.get(9).and_then(|s| s.parse().ok()).unwrap_or(0),
-                            guest_nice: parts.get(10).and_then(|s| s.parse().ok()).unwrap_or(0),
-                        });
-                    }
+                    stats.cpu_time = parse_cpu_line(line);
                 } else if line.starts_with("cpu") && !line.starts_with("cpu ") {
                     stats.num_cpus += 1;
                 } else if line.starts_with("btime ") {
@@ -595,6 +615,25 @@ mod tests {
             kernel_version: None,
         };
         assert_eq!(stats.uptime_string(), "01:01:01");
+    }
+
+    #[test]
+    fn test_parse_loadavg_all_three_or_none() {
+        let la = parse_loadavg("0.50 1.25 2.00 1/234 999\n").unwrap();
+        assert!((la.one - 0.5).abs() < f64::EPSILON);
+        assert!((la.five - 1.25).abs() < f64::EPSILON);
+        assert!((la.fifteen - 2.0).abs() < f64::EPSILON);
+        assert!(parse_loadavg("0.50 oops 2.00 1/234 999\n").is_none());
+    }
+
+    #[test]
+    fn test_parse_cpu_line_needs_all_ten_fields() {
+        let ct = parse_cpu_line("cpu  10 2 3 400 5 6 7 8 9 10").unwrap();
+        assert_eq!(ct.user, 10);
+        assert_eq!(ct.idle, 400);
+        assert_eq!(ct.guest_nice, 10);
+        assert!(parse_cpu_line("cpu  10 2 3 400 5 6 7 8").is_none());
+        assert!(parse_cpu_line("cpu  10 2 x 400 5 6 7 8 9 10").is_none());
     }
 
     #[test]

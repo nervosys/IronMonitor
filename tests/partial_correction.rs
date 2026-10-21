@@ -707,6 +707,17 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
             "size_bytes are Option because they come from the blocks line"
         ),
     ),
+    (
+        "src/hardware_ai/mod.rs",
+        "ThermalEnvelope",
+        "gpu_adapters_counted",
+        concat!(
+            "the number of adapters whose enforced caps were summed into gpu_tdp_watts: ",
+            "measured_gpu_power_caps_watts sums caps.len() over a list it returns only when ",
+            "non-empty, the name table's figure counts as one card, and no figure counts as ",
+            "zero; analyze_thermal_envelope is the only constructor and copies it unfloored"
+        ),
+    ),
 ];
 
 fn known() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {

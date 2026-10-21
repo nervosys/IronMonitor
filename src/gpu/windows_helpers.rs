@@ -156,13 +156,23 @@ pub fn format_luid(luid_high: i32, luid_low: u32) -> String {
     format!("0x{:08x}_0x{:08x}", luid_high, luid_low)
 }
 
+/// A byte counter from a WMI row: `None` where it is absent or not an integer.
+fn counter_bytes(v: Option<&Variant>) -> Option<u64> {
+    match v {
+        Some(Variant::UI8(x)) => Some(*x),
+        Some(Variant::UI4(x)) => Some(*x as u64),
+        _ => None,
+    }
+}
+
 /// One WMI sampling of the GPU performance-counter classes, shared by all adapters.
 struct PerfCounterRows {
     taken: std::time::Instant,
     /// `(instance name, utilization percent)` from the GPUEngine class.
     engines: Vec<(String, f64)>,
     /// `(instance name, dedicated bytes, shared bytes)` from GPUAdapterMemory.
-    memory: Vec<(String, u64, u64)>,
+    /// A counter that was absent or not an integer is `None`.
+    memory: Vec<(String, Option<u64>, Option<u64>)>,
 }
 
 static PERF_ROWS: std::sync::Mutex<Option<std::sync::Arc<PerfCounterRows>>> =
@@ -235,15 +245,10 @@ fn perf_counter_rows() -> Option<std::sync::Arc<PerfCounterRows>> {
                 Some(Variant::String(s)) => s.to_lowercase(),
                 _ => return None,
             };
-            let as_u64 = |v: Option<&Variant>| match v {
-                Some(Variant::UI8(x)) => *x,
-                Some(Variant::UI4(x)) => *x as u64,
-                _ => 0,
-            };
             Some((
                 name,
-                as_u64(item.get("DedicatedUsage")),
-                as_u64(item.get("SharedUsage")),
+                counter_bytes(item.get("DedicatedUsage")),
+                counter_bytes(item.get("SharedUsage")),
             ))
         })
         .collect();
@@ -352,13 +357,14 @@ pub fn query_gpu_perf_counters(luid_filter: Option<&str>) -> WinGpuPerfData {
             }
         }
 
-        data.dedicated_used = Some(*dedicated);
-        data.shared_used = Some(*shared);
+        data.dedicated_used = *dedicated;
+        data.shared_used = *shared;
 
         // Keep looking while this row reported nothing in use: a later row may
         // be the adapter actually in use. A row that reported zero is still a
         // reading, so it is kept rather than discarded if nothing better comes.
-        if *dedicated > 0 || *shared > 0 {
+        // An unread counter is not a reading of use, so it does not stop the search.
+        if dedicated.is_some_and(|v| v > 0) || shared.is_some_and(|v| v > 0) {
             break;
         }
     }
@@ -499,6 +505,14 @@ mod tests {
         assert_eq!(data.dedicated_used, None);
         assert_eq!(data.shared_used, None);
         assert!(data.temperature.is_none());
+    }
+
+    #[test]
+    fn test_counter_bytes_absent_is_not_zero() {
+        assert_eq!(counter_bytes(None), None);
+        assert_eq!(counter_bytes(Some(&Variant::String("x".into()))), None);
+        assert_eq!(counter_bytes(Some(&Variant::UI8(5))), Some(5));
+        assert_eq!(counter_bytes(Some(&Variant::UI4(7))), Some(7));
     }
 
     #[test]

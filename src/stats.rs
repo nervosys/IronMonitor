@@ -22,8 +22,10 @@ pub struct Snapshot {
     pub power: PowerStats,
     /// Temperature statistics
     pub temperature: TemperatureStats,
-    /// Fan statistics
-    pub fans: std::collections::HashMap<String, crate::core::fan::FanInfo>,
+    /// Fan statistics, or `None` when the fan query failed. An empty map means
+    /// no fans were reported; a failed query is not that, and is not fatal to
+    /// the rest of the snapshot either.
+    pub fans: Option<std::collections::HashMap<String, crate::core::fan::FanInfo>>,
     /// Board information
     pub board: BoardInfo,
     /// Process statistics
@@ -108,7 +110,7 @@ impl IronMonitor {
         let temperature = read_temperature_stats()?;
 
         // Read fan stats
-        let fans = read_fan_stats();
+        let fans = read_fan_stats().ok();
 
         // Read process stats
         let processes = read_process_stats()?;
@@ -285,9 +287,9 @@ fn read_engine_stats() -> Result<EngineStats> {
     Ok(EngineStats::default())
 }
 
-/// Read fan stats - returns empty map on failure (non-critical)
+/// Read fan stats. A value that cannot be read is `None`, never zero.
 #[cfg(target_os = "linux")]
-fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanInfo> {
+fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan::FanInfo>> {
     use crate::core::fan::FanInfo;
     use std::collections::HashMap;
     use std::fs;
@@ -313,31 +315,32 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                     continue;
                 }
 
-                // Read RPM
+                // Read RPM. Unreadable means no RPM, not 0 RPM.
                 let rpm = fs::read_to_string(&fan_input)
                     .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .unwrap_or(0);
+                    .and_then(|s| s.trim().parse::<u32>().ok());
 
-                // Try to read PWM (speed control)
+                // Speed comes only from the PWM duty cycle. The old fallback derived
+                // it from RPM against an assumed 5000 RPM ceiling, which the fan never
+                // reported.
                 let pwm_path = hwmon_dir.join(format!("pwm{}", i));
-                let speed_percent = if pwm_path.exists() {
+                let speed = if pwm_path.exists() {
                     fs::read_to_string(&pwm_path)
                         .ok()
                         .and_then(|s| s.trim().parse::<u32>().ok())
                         .map(|pwm| pwm * 100 / 255) // PWM is 0-255
-                        .unwrap_or(0)
                 } else {
-                    // If no PWM, estimate from RPM (assume max 5000 RPM)
-                    std::cmp::min(rpm / 50, 100)
+                    None
                 };
 
                 fans.insert(
                     format!("{}-fan{}", name, i),
                     FanInfo {
-                        speed: vec![speed_percent],
-                        rpm: Some(vec![rpm]),
-                        profile: "auto".to_string(),
+                        speed,
+                        rpm: rpm.map(|r| vec![r]),
+                        // No profile: hwmon does not report an auto/manual mode, and
+                        // "auto" was a constant standing in for one.
+                        profile: None,
                         governor: None,
                         control: None,
                     },
@@ -356,17 +359,19 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                 continue;
             }
 
-            // Read current state and max state
+            // Read current state and max state. Either one unread leaves the speed
+            // unknown; a max of zero has no percentage.
             let cur_state = fs::read_to_string(path.join("cur_state"))
                 .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0);
+                .and_then(|s| s.trim().parse::<u32>().ok());
             let max_state = fs::read_to_string(path.join("max_state"))
                 .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(1);
+                .and_then(|s| s.trim().parse::<u32>().ok());
 
-            let speed_percent = (cur_state * 100).checked_div(max_state).unwrap_or(0);
+            let speed = match (cur_state, max_state) {
+                (Some(cur), Some(max)) => cur.checked_mul(100).and_then(|v| v.checked_div(max)),
+                _ => None,
+            };
 
             // Get device type
             let device_type = fs::read_to_string(path.join("type"))
@@ -377,9 +382,10 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                 fans.insert(
                     format!("{}", name),
                     FanInfo {
-                        speed: vec![speed_percent],
+                        speed,
                         rpm: None,
-                        profile: "thermal".to_string(),
+                        // "thermal" named the source, not a mode the device reported.
+                        profile: None,
                         governor: None,
                         control: Some(device_type),
                     },
@@ -388,12 +394,12 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
         }
     }
 
-    fans
+    Ok(fans)
 }
 
 /// Read fan stats on Windows using WMI
 #[cfg(windows)]
-fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanInfo> {
+fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan::FanInfo>> {
     use crate::core::fan::FanInfo;
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -411,21 +417,26 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
     // Try WMI fan class
     if let Ok(com_con) = COMLibrary::new() {
         if let Ok(wmi_con) = WMIConnection::with_namespace_path("root\\CIMV2", com_con) {
-            // Try Win32_Fan class (may not be populated on all systems)
+            // Try Win32_Fan class (may not be populated on all systems). No rows
+            // means no fans; a failed query is an error, not an empty list.
             let wmi_fans: Vec<Win32Fan> = wmi_con
                 .raw_query("SELECT Name, ActiveCooling FROM Win32_Fan")
-                .unwrap_or_default();
+                .map_err(|e| {
+                    crate::error::IronError::System(format!("WMI query `Win32_Fan`: {e}"))
+                })?;
 
             for (idx, fan) in wmi_fans.iter().enumerate() {
                 let name = fan.name.clone().unwrap_or_else(|| format!("Fan{}", idx));
-                let active = fan.active_cooling.unwrap_or(false);
-
+                // ActiveCooling is a boolean, not a speed, so `speed` stays None. The
+                // profile is set only when the boolean was actually reported.
                 fans.insert(
                     name.clone(),
                     FanInfo {
-                        speed: vec![if active { 100 } else { 0 }],
+                        speed: None,
                         rpm: None,
-                        profile: if active { "active" } else { "idle" }.to_string(),
+                        profile: fan
+                            .active_cooling
+                            .map(|active| (if active { "active" } else { "idle" }).to_string()),
                         governor: None,
                         control: None,
                     },
@@ -451,7 +462,11 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                 .raw_query(
                     "SELECT Name, SensorType, Value, Parent FROM Sensor WHERE SensorType = 'Fan'",
                 )
-                .unwrap_or_default();
+                .map_err(|e| {
+                    crate::error::IronError::System(format!(
+                        "WMI query `LibreHardwareMonitor Fan`: {e}"
+                    ))
+                })?;
 
             for fan in lhm_fans {
                 let name = format!(
@@ -462,9 +477,11 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                 fans.insert(
                     name,
                     FanInfo {
-                        speed: vec![(fan.value / 50.0).min(100.0) as u32], // Rough estimate from RPM
+                        // The sensor reports RPM only; a percentage would need a ceiling
+                        // this code made up.
+                        speed: None,
                         rpm: Some(vec![fan.value as u32]),
-                        profile: "auto".to_string(),
+                        profile: None,
                         governor: None,
                         control: None,
                     },
@@ -473,12 +490,12 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
         }
     }
 
-    fans
+    Ok(fans)
 }
 
 /// Read fan stats on macOS
 #[cfg(target_os = "macos")]
-fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanInfo> {
+fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan::FanInfo>> {
     use crate::core::fan::FanInfo;
     use std::collections::HashMap;
     use std::process::Command;
@@ -495,9 +512,9 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
                     fans.insert(
                         "CPU Fan".to_string(),
                         FanInfo {
-                            speed: vec![(rpm / 50).min(100)], // Rough estimate
+                            speed: None,
                             rpm: Some(vec![rpm]),
-                            profile: "auto".to_string(),
+                            profile: None,
                             governor: None,
                             control: None,
                         },
@@ -508,7 +525,7 @@ fn read_fan_stats() -> std::collections::HashMap<String, crate::core::fan::FanIn
         }
     }
 
-    fans
+    Ok(fans)
 }
 
 // Platform implementations for macOS.
@@ -590,7 +607,9 @@ mod macos_stats {
             unsupported("CPU statistics: host_processor_info failed and `top` was not understood")
         })?;
 
-        let count = macos::sysctl_u64("hw.logicalcpu").unwrap_or(0) as usize;
+        let count = macos::sysctl_u64("hw.logicalcpu")
+            .ok_or_else(|| unsupported("CPU statistics: hw.logicalcpu was not read"))?
+            as usize;
         let cores = (0..count)
             .map(|id| CpuCore {
                 id,

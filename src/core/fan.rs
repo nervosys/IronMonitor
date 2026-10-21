@@ -7,12 +7,13 @@ use std::collections::HashMap;
 /// Fan information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanInfo {
-    /// Fan speeds (percentage 0-100)
-    pub speed: Vec<u32>,
+    /// Fan speed as a percentage (0-100). `None` when no speed was read: a fan
+    /// with only an RPM, or a boolean, has no percentage to report.
+    pub speed: Option<u32>,
     /// Fan RPM (optional)
     pub rpm: Option<Vec<u32>>,
-    /// Fan profile
-    pub profile: String,
+    /// Fan profile, present only when the platform reported one
+    pub profile: Option<String>,
     /// Fan governor (Jetson JP5+)
     pub governor: Option<String>,
     /// Controller type (Jetson JP5+)

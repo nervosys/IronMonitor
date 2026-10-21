@@ -923,8 +923,7 @@ impl ObservabilityApi {
                     size_gb: info
                         .as_ref()
                         .and_then(|i| i.capacity)
-                        .map(|c| c as f64 / (1024.0 * 1024.0 * 1024.0))
-                        .unwrap_or(0.0),
+                        .map(|c| c as f64 / (1024.0 * 1024.0 * 1024.0)),
                     mount_point: first_fs.map(|f| f.mount_point.to_string_lossy().to_string()),
                     filesystem: first_fs.and_then(|f| {
                         if f.fs_type.is_empty() {

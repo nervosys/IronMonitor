@@ -87,8 +87,9 @@ pub struct CpuCore {
 pub struct CpuCluster {
     /// Cluster type
     pub cluster_type: CpuClusterType,
-    /// Core IDs in this cluster
-    pub core_ids: Vec<u32>,
+    /// Core IDs in this cluster, or `None` when the core count was not read.
+    /// The frequency and utilisation beside it are still reported.
+    pub core_ids: Option<Vec<u32>>,
     /// Average frequency in MHz over the cores that reported one, or `None`
     /// when none did. See [`CpuCore::frequency_mhz`].
     pub frequency_mhz: Option<u32>,
