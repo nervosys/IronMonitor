@@ -47,10 +47,10 @@ pub enum BootMode {
 pub struct KernelModule {
     /// Module name
     pub name: String,
-    /// Module size in bytes
-    pub size_bytes: u64,
-    /// Number of instances (use count)
-    pub instances: u32,
+    /// Module size in bytes; `None` when the source does not report it
+    pub size_bytes: Option<u64>,
+    /// Number of instances (use count); `None` when the source does not report it
+    pub instances: Option<u32>,
     /// Modules that depend on this one
     pub used_by: Vec<String>,
     /// Module state (e.g., "Live")
@@ -294,8 +294,8 @@ impl OsInfoMonitor {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 4 {
                     let name = parts[0].to_string();
-                    let size_bytes = parts[1].parse().unwrap_or(0);
-                    let instances = parts[2].parse().unwrap_or(0);
+                    let size_bytes = parts[1].parse().ok();
+                    let instances = parts[2].parse().ok();
                     let used_by: Vec<String> = if parts[3] == "-" {
                         Vec::new()
                     } else {
@@ -548,9 +548,9 @@ impl OsInfoMonitor {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 6 {
                     let name = parts[5].to_string();
-                    let refs: u32 = parts[1].parse().unwrap_or(0);
-                    let size: u64 =
-                        u64::from_str_radix(parts[3].trim_start_matches("0x"), 16).unwrap_or(0);
+                    let refs: Option<u32> = parts[1].parse().ok();
+                    let size: Option<u64> =
+                        u64::from_str_radix(parts[3].trim_start_matches("0x"), 16).ok();
 
                     self.info.loaded_modules.push(KernelModule {
                         name,
@@ -742,10 +742,9 @@ fn windows_running_drivers() -> Vec<KernelModule> {
         .into_iter()
         .map(|(name, state)| KernelModule {
             name,
-            // Neither figure is exposed by `Win32_SystemDriver`. They stay at the
-            // values that mean "not reported" rather than being invented.
-            size_bytes: 0,
-            instances: 1,
+            // Neither figure is exposed by `Win32_SystemDriver`.
+            size_bytes: None,
+            instances: None,
             used_by: Vec::new(),
             state,
         })
@@ -833,8 +832,8 @@ mod tests {
     fn test_kernel_module_serialization() {
         let module = KernelModule {
             name: "nvidia".into(),
-            size_bytes: 1048576,
-            instances: 1,
+            size_bytes: Some(1048576),
+            instances: Some(1),
             used_by: vec!["nvidia_uvm".into()],
             state: "Live".into(),
         };

@@ -308,6 +308,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GT/s read as PCIe 2.0 and 16 GT/s as PCIe 5.0, and an unrecognised rate is
   `None`. An unparseable PCI class is `None`, not "Unclassified"; an empty
   macOS USB vendor or product id is `None`.
+- `KernelModule.size_bytes` and `instances` are `Option`. Windows drivers
+  report neither (they were 0 and 1), and an unparseable Linux or macOS
+  figure is `None`, where it was 0.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
