@@ -327,6 +327,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never read it and reported `false`; Linux reported an unreadable
   `pwm<N>_enable` as not controllable. A missing control file still reads
   as not controllable. The `get_fan_speeds` tool reports `null` when unknown.
+- Linux SATA disks report their own ATA link speed and port, read from the
+  disk's sysfs path. Every disk was given the speed of ATA link 1, and a disk
+  not behind libata (USB, virtio) now has no SATA speed.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

@@ -654,13 +654,16 @@ pub fn get_sata_devices() -> Result<Vec<SataDeviceInfo>, Error> {
                     .map(|t| t / 1000.0)
             });
 
-        // Interface speed
+        // Interface speed. A SATA disk's link is the one for its own ATA port,
+        // taken from its sysfs path; reading link1 gave every disk port 1's speed.
+        let ata_port = fs::canonicalize(&path).ok().and_then(|p| ata_port_of(&p));
         let interface_speed = if name.starts_with("nvme") {
             Some("NVMe".to_string())
         } else {
-            // Try to detect SATA generation from link speed
-            fs::read_to_string(format!("/sys/class/ata_link/link{}/sata_spd", 1))
-                .ok()
+            ata_port
+                .and_then(|n| {
+                    fs::read_to_string(format!("/sys/class/ata_link/link{n}/sata_spd")).ok()
+                })
                 .map(|s| {
                     let s = s.trim();
                     match s {
@@ -679,13 +682,26 @@ pub fn get_sata_devices() -> Result<Vec<SataDeviceInfo>, Error> {
             firmware,
             capacity_gb,
             interface_speed,
-            port: None,
+            port: ata_port.and_then(|n| u8::try_from(n).ok()),
             temperature,
             media_type,
         });
     }
 
     Ok(devices)
+}
+
+/// The ATA port a block device hangs off, from the `ataN` component of its
+/// canonical sysfs path (`/sys/devices/.../ata3/host2/.../block/sda`). `None` for
+/// a disk not behind libata, such as USB or virtio.
+fn ata_port_of(path: &Path) -> Option<u32> {
+    path.components().find_map(|c| {
+        c.as_os_str()
+            .to_str()?
+            .strip_prefix("ata")?
+            .parse::<u32>()
+            .ok()
+    })
 }
 
 /// Get system temperatures from hwmon
@@ -974,4 +990,19 @@ pub fn get_peripherals() -> Result<PeripheralsInfo, Error> {
     }
 
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ata_port_comes_from_the_disks_own_sysfs_path() {
+        let sda = Path::new(
+            "/sys/devices/pci0000:00/0000:00:17.0/ata3/host2/target2:0:0/2:0:0:0/block/sda",
+        );
+        assert_eq!(ata_port_of(sda), Some(3));
+        let usb = Path::new("/sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/host6/block/sdb");
+        assert_eq!(ata_port_of(usb), None);
+    }
 }
