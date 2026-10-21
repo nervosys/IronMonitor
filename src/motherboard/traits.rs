@@ -346,7 +346,8 @@ pub struct NetworkPortInfo {
     pub port_type: NetworkPortType,
     pub speed: Option<String>,
     pub mac_address: Option<String>,
-    pub connected: bool,
+    /// Whether the link is up. `None` when the link state was not read.
+    pub connected: Option<bool>,
 }
 
 /// Network port type

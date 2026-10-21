@@ -835,8 +835,48 @@ fn get_bluetooth_devices() -> Vec<BluetoothDeviceInfo> {
     devices
 }
 
+/// Find the BSD device (`en0`) for a network service from the output of
+/// `networksetup -listallhardwareports`, which lists `Hardware Port: <name>`
+/// followed by `Device: <bsd name>`.
+fn parse_hardware_port_device(output: &str, port: &str) -> Option<String> {
+    let mut in_port = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("Hardware Port:") {
+            in_port = name.trim() == port;
+        } else if let (true, Some(device)) = (in_port, trimmed.strip_prefix("Device:")) {
+            let device = device.trim();
+            return (!device.is_empty()).then(|| device.to_string());
+        }
+    }
+    None
+}
+
+/// Read one interface's link state from `ifconfig <iface>` output. Each interface
+/// block starts at an unindented `en0: flags=...` line, and only the status line
+/// inside the named block is read. `None` if the block has no status line.
+fn parse_ifconfig_status(output: &str, iface: &str) -> Option<bool> {
+    let mut in_block = false;
+    for line in output.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            in_block = line.split(':').next() == Some(iface);
+            continue;
+        }
+        if in_block {
+            match line.trim() {
+                "status: active" => return Some(true),
+                "status: inactive" => return Some(false),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 fn get_network_ports() -> Vec<NetworkPortInfo> {
     let mut ports = Vec::new();
+    // Service names ("Wi-Fi") are not interface names, so map them to BSD devices first
+    let hardware_ports = run_cmd("networksetup", &["-listallhardwareports"]).unwrap_or_default();
     if let Some(text) = run_cmd("networksetup", &["-listnetworkserviceorder"]) {
         for line in text.lines() {
             let trimmed = line.trim();
@@ -863,10 +903,13 @@ fn get_network_ports() -> Vec<NetworkPortInfo> {
                         NetworkPortType::Other
                     };
 
-                    // Check if active via ifconfig
-                    let connected = run_cmd("ifconfig", &[])
-                        .map(|t| t.contains("status: active"))
-                        .unwrap_or(false);
+                    // Link state of this service's own interface. Only that interface's
+                    // block is read, so another active interface cannot make it connected.
+                    let connected =
+                        parse_hardware_port_device(&hardware_ports, &name).and_then(|device| {
+                            run_cmd("ifconfig", &[device.as_str()])
+                                .and_then(|t| parse_ifconfig_status(&t, &device))
+                        });
 
                     ports.push(NetworkPortInfo {
                         name,
@@ -956,5 +999,39 @@ fn kext_description(name: &str) -> String {
         "Ethernet Controller".to_string()
     } else {
         format!("Kernel Extension: {}", name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ifconfig_status_reads_only_the_named_interface() {
+        let out = "en0: flags=8863<UP,BROADCAST,RUNNING> mtu 1500\n\tether aa:bb:cc:dd:ee:ff\n\tstatus: active\nen1: flags=8862<BROADCAST> mtu 1500\n\tstatus: inactive\nlo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1\n";
+        assert_eq!(parse_ifconfig_status(out, "en0"), Some(true));
+        assert_eq!(parse_ifconfig_status(out, "en1"), Some(false));
+    }
+
+    #[test]
+    fn ifconfig_status_is_none_when_not_read() {
+        // en2 has no status line; the status belongs to en3, not en2
+        let out = "en2: flags=8843<UP> mtu 1500\n\tether 11:22:33:44:55:66\nen3: flags=8863<UP>\n\tstatus: active\n";
+        assert_eq!(parse_ifconfig_status(out, "en2"), None);
+        assert_eq!(parse_ifconfig_status(out, "en9"), None);
+    }
+
+    #[test]
+    fn hardware_port_maps_service_name_to_device() {
+        let out = "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n\nHardware Port: Thunderbolt Bridge\nDevice: bridge0\n";
+        assert_eq!(
+            parse_hardware_port_device(out, "Wi-Fi"),
+            Some("en0".to_string())
+        );
+        assert_eq!(
+            parse_hardware_port_device(out, "Thunderbolt Bridge"),
+            Some("bridge0".to_string())
+        );
+        assert_eq!(parse_hardware_port_device(out, "Ethernet"), None);
     }
 }

@@ -314,6 +314,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Windows CPU temperature falls back only to an ACPI thermal zone whose
   name says CPU. It took the first valid zone, which may sit on the chassis
   or chipset, and reported it as `thermal.cpu.temperature`.
+- `NetworkPortInfo.connected` is `Option<bool>`, `None` when the link state
+  was not read. Windows read it from `IPEnabled`, an IP-configuration flag
+  the query already filtered on, so every port was connected; it now comes
+  from `Win32_NetworkAdapter.NetConnectionStatus`. macOS marked every port
+  connected if any interface was active; it now reads that port's own
+  interface. Linux reported an unreadable or `unknown` operstate as down.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

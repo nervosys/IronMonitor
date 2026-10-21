@@ -953,7 +953,14 @@ pub fn get_peripherals() -> Result<PeripheralsInfo, Error> {
                     // The field is `speed: Option<String>`, and sysfs reports Mbit/s;
                     // keep the unit in the text rather than dropping it silently.
                     speed: speed.map(|mbps| format!("{mbps} Mb/s")),
-                    connected: operstate.as_deref() == Some("up"),
+                    // Only `up`, `down` and `lowerlayerdown` are a reading of the link.
+                    // Other states such as `unknown` or `dormant`, or an unreadable
+                    // file, leave it unread.
+                    connected: match operstate.as_deref() {
+                        Some("up") => Some(true),
+                        Some("down" | "lowerlayerdown") => Some(false),
+                        _ => None,
+                    },
                     mac_address: fs::read_to_string(entry.path().join("address"))
                         .ok()
                         .map(|s| s.trim().to_string()),

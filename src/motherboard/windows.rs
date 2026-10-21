@@ -13,6 +13,7 @@
 
 use super::traits::*;
 use serde::Deserialize;
+use std::collections::HashMap;
 use wmi::{COMLibrary, WMIConnection};
 
 /// Initialize COM and create WMI connection - more robust version
@@ -1212,6 +1213,17 @@ struct Win32NetworkAdapterConfig {
     ip_address: Option<Vec<String>>,
     #[serde(rename = "IPEnabled")]
     ip_enabled: Option<bool>,
+    #[serde(rename = "Index")]
+    index: Option<u32>,
+}
+
+/// WMI structure for the adapter's link state. `Index` matches a configuration
+/// row to its adapter.
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Win32NetworkAdapter {
+    index: Option<u32>,
+    net_connection_status: Option<u16>,
 }
 
 /// Get all peripherals information
@@ -1489,12 +1501,36 @@ fn detect_audio_device_type(name: &str) -> AudioDeviceType {
     }
 }
 
+/// Map `Win32_NetworkAdapter.NetConnectionStatus` to a link state. Only 2 (Connected),
+/// 0 (Disconnected) and 7 (Media disconnected) are a reading of the link. Other
+/// values, such as connecting, authenticating or hardware disabled, do not say
+/// whether it is up.
+fn link_state_from_status(status: Option<u16>) -> Option<bool> {
+    match status {
+        Some(2) => Some(true),
+        Some(0 | 7) => Some(false),
+        _ => None,
+    }
+}
+
 /// Get network ports from WMI
 fn get_network_ports(wmi_conn: &WMIConnection) -> Vec<NetworkPortInfo> {
     let mut ports = Vec::new();
 
+    // Link state comes from Win32_NetworkAdapter, matched by Index. IPEnabled is an
+    // IP-configuration flag, not a link state, so it is not used for `connected`.
+    let mut net_status = HashMap::new();
+    let link_query = "SELECT Index, NetConnectionStatus FROM Win32_NetworkAdapter";
+    if let Ok(adapters) = wmi_conn.raw_query::<Win32NetworkAdapter>(link_query) {
+        for adapter in adapters {
+            if let (Some(index), Some(status)) = (adapter.index, adapter.net_connection_status) {
+                net_status.insert(index, status);
+            }
+        }
+    }
+
     // Query network adapters
-    let net_query = "SELECT Description, MACAddress, IPAddress, IPEnabled FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True";
+    let net_query = "SELECT Description, MACAddress, IPAddress, IPEnabled, Index FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True";
     if let Ok(adapters) = wmi_conn.raw_query::<Win32NetworkAdapterConfig>(net_query) {
         for adapter in adapters {
             let name = adapter
@@ -1509,7 +1545,10 @@ fn get_network_ports(wmi_conn: &WMIConnection) -> Vec<NetworkPortInfo> {
                 port_type,
                 speed,
                 mac_address: adapter.mac_address,
-                connected: adapter.ip_enabled.unwrap_or(false),
+                // No matching adapter, or no status it maps from, leaves the link unread
+                connected: adapter
+                    .index
+                    .and_then(|index| link_state_from_status(net_status.get(&index).copied())),
             });
         }
     }
