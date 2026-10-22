@@ -94,11 +94,12 @@ fn print_supply_info(supply: &PowerSupplyInfo) {
     if supply.supply_type == PowerSupplyType::Battery {
         // Status
         let status_str = match supply.status {
-            ChargingStatus::Charging => "⚡ Charging",
-            ChargingStatus::Discharging => "🔋 Discharging",
-            ChargingStatus::Full => "✅ Full",
-            ChargingStatus::NotCharging => "⏸️ Not Charging",
-            _ => "❓ Unknown",
+            Some(ChargingStatus::Charging) => "⚡ Charging",
+            Some(ChargingStatus::Discharging) => "🔋 Discharging",
+            Some(ChargingStatus::Full) => "✅ Full",
+            Some(ChargingStatus::NotCharging) => "⏸️ Not Charging",
+            Some(ChargingStatus::Unknown) => "❓ Unknown",
+            None => "·  not read",
         };
         println!("║    Status: {:<57} ║", status_str);
 
@@ -188,15 +189,16 @@ fn print_supply_info(supply: &PowerSupplyInfo) {
 
         // Health
         let health_str = match supply.health {
-            BatteryHealth::Good => "✅ Good",
-            BatteryHealth::Overheat => "🔥 Overheating!",
-            BatteryHealth::Dead => "💀 Dead",
-            BatteryHealth::OverVoltage => "⚠️ Over Voltage",
-            BatteryHealth::UnspecifiedFailure => "❌ Failure",
-            BatteryHealth::Cold => "🥶 Cold",
-            BatteryHealth::WatchdogTimerExpire => "⏰ Watchdog Expired",
-            BatteryHealth::SafetyTimerExpire => "⏰ Safety Timer Expired",
-            BatteryHealth::Unknown => "❓ Unknown",
+            Some(BatteryHealth::Good) => "✅ Good",
+            Some(BatteryHealth::Overheat) => "🔥 Overheating!",
+            Some(BatteryHealth::Dead) => "💀 Dead",
+            Some(BatteryHealth::OverVoltage) => "⚠️ Over Voltage",
+            Some(BatteryHealth::UnspecifiedFailure) => "❌ Failure",
+            Some(BatteryHealth::Cold) => "🥶 Cold",
+            Some(BatteryHealth::WatchdogTimerExpire) => "⏰ Watchdog Expired",
+            Some(BatteryHealth::SafetyTimerExpire) => "⏰ Safety Timer Expired",
+            Some(BatteryHealth::Unknown) => "❓ Unknown",
+            None => "·  not read",
         };
         println!("║    Health: {:<57} ║", health_str);
 

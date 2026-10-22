@@ -998,7 +998,7 @@ impl ObservabilityApi {
                 },
                 on_ac_power: monitor.on_ac_power(),
                 battery_percent: battery.and_then(|b| b.capacity_percent.map(|c| c as f32)),
-                battery_status: battery.map(|b| format!("{:?}", b.status)),
+                battery_status: battery.and_then(|b| b.status).map(|s| format!("{:?}", s)),
                 time_remaining_minutes: battery.and_then(|b| b.time_to_empty_min),
             });
         }

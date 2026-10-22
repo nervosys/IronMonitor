@@ -536,7 +536,10 @@ impl PeripheralCache {
                     }
                 ));
                 for bat in monitor.batteries() {
-                    let state = format!("{:?}", bat.state);
+                    let state = match bat.state {
+                        Some(s) => format!("{s:?}"),
+                        None => "state unread".to_string(),
+                    };
                     // "0%" for an unread gauge would read as a flat battery.
                     let charge = match bat.charge_percent {
                         Some(p) => format!("{p:.0}%"),

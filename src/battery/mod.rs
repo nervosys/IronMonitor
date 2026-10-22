@@ -41,8 +41,10 @@ pub struct BatteryInfo {
     /// laptop with an unreadable gauge would have been told the battery was
     /// flat.
     pub charge_percent: Option<f32>,
-    pub state: ChargingState,
-    pub health: BatteryHealth,
+    /// Charging state, or `None` where it was not read.
+    pub state: Option<ChargingState>,
+    /// Health, or `None` where it was not read.
+    pub health: Option<BatteryHealth>,
     pub voltage_mv: Option<u32>,
     pub power_w: Option<f32>,
     pub energy_wh: Option<f32>,
@@ -80,60 +82,61 @@ impl BatteryMonitor {
         self.batteries.clear();
         self.ac_connected = None;
 
-        // Delegate to the comprehensive PowerSupplyMonitor
-        if let Ok(ps_monitor) = crate::power_supply::PowerSupplyMonitor::new() {
-            self.ac_connected = ps_monitor.on_ac_power();
+        // Delegate to the comprehensive PowerSupplyMonitor. A failed enumeration
+        // is an error, not a machine with no batteries.
+        let ps_monitor = crate::power_supply::PowerSupplyMonitor::new()?;
+        self.ac_connected = ps_monitor.on_ac_power();
 
-            for supply in ps_monitor.supplies() {
-                if !supply.is_battery() {
-                    continue;
-                }
-
-                let state = match supply.status {
-                    crate::power_supply::ChargingStatus::Charging => ChargingState::Charging,
-                    crate::power_supply::ChargingStatus::Discharging => ChargingState::Discharging,
-                    crate::power_supply::ChargingStatus::Full => ChargingState::Full,
-                    crate::power_supply::ChargingStatus::NotCharging => ChargingState::NotCharging,
-                    crate::power_supply::ChargingStatus::Unknown => ChargingState::Unknown,
-                };
-
-                let health = match supply.health {
-                    crate::power_supply::BatteryHealth::Good => BatteryHealth::Good,
-                    crate::power_supply::BatteryHealth::Dead
-                    | crate::power_supply::BatteryHealth::UnspecifiedFailure => BatteryHealth::Poor,
-                    crate::power_supply::BatteryHealth::Overheat
-                    | crate::power_supply::BatteryHealth::OverVoltage
-                    | crate::power_supply::BatteryHealth::Cold => BatteryHealth::Fair,
-                    _ => BatteryHealth::Unknown,
-                };
-
-                self.batteries.push(BatteryInfo {
-                    name: supply.name.clone(),
-                    manufacturer: supply.manufacturer.clone(),
-                    model: supply.model_name.clone(),
-                    technology: supply.technology.clone(),
-                    serial_number: supply.serial_number.clone(),
-                    // The `Option` that `power_supply` went to the trouble of
-                    // producing, kept rather than flattened to a sentinel.
-                    charge_percent: supply.capacity_percent.map(f32::from),
-                    state,
-                    health,
-                    voltage_mv: supply.voltage_now_mv,
-                    power_w: supply.power_w(),
-                    energy_wh: supply.energy_wh(),
-                    energy_full_wh: supply.energy_full_wh(),
-                    energy_full_design_wh: supply.energy_full_design_wh(),
-                    time_to_empty: supply
-                        .time_to_empty_min
-                        .map(|m| Duration::from_secs(m as u64 * 60)),
-                    time_to_full: supply
-                        .time_to_full_min
-                        .map(|m| Duration::from_secs(m as u64 * 60)),
-                    cycle_count: supply.cycle_count,
-                    temperature_c: supply.temperature_celsius(),
-                    wear_level_percent: supply.wear_level_percent(),
-                });
+        for supply in ps_monitor.supplies() {
+            if !supply.is_battery() {
+                continue;
             }
+
+            // `None` where the platform did not report it.
+            let state = supply.status.map(|s| match s {
+                crate::power_supply::ChargingStatus::Charging => ChargingState::Charging,
+                crate::power_supply::ChargingStatus::Discharging => ChargingState::Discharging,
+                crate::power_supply::ChargingStatus::Full => ChargingState::Full,
+                crate::power_supply::ChargingStatus::NotCharging => ChargingState::NotCharging,
+                crate::power_supply::ChargingStatus::Unknown => ChargingState::Unknown,
+            });
+
+            let health = supply.health.map(|h| match h {
+                crate::power_supply::BatteryHealth::Good => BatteryHealth::Good,
+                crate::power_supply::BatteryHealth::Dead
+                | crate::power_supply::BatteryHealth::UnspecifiedFailure => BatteryHealth::Poor,
+                crate::power_supply::BatteryHealth::Overheat
+                | crate::power_supply::BatteryHealth::OverVoltage
+                | crate::power_supply::BatteryHealth::Cold => BatteryHealth::Fair,
+                _ => BatteryHealth::Unknown,
+            });
+
+            self.batteries.push(BatteryInfo {
+                name: supply.name.clone(),
+                manufacturer: supply.manufacturer.clone(),
+                model: supply.model_name.clone(),
+                technology: supply.technology.clone(),
+                serial_number: supply.serial_number.clone(),
+                // The `Option` that `power_supply` went to the trouble of
+                // producing, kept rather than flattened to a sentinel.
+                charge_percent: supply.capacity_percent.map(f32::from),
+                state,
+                health,
+                voltage_mv: supply.voltage_now_mv,
+                power_w: supply.power_w(),
+                energy_wh: supply.energy_wh(),
+                energy_full_wh: supply.energy_full_wh(),
+                energy_full_design_wh: supply.energy_full_design_wh(),
+                time_to_empty: supply
+                    .time_to_empty_min
+                    .map(|m| Duration::from_secs(m as u64 * 60)),
+                time_to_full: supply
+                    .time_to_full_min
+                    .map(|m| Duration::from_secs(m as u64 * 60)),
+                cycle_count: supply.cycle_count,
+                temperature_c: supply.temperature_celsius(),
+                wear_level_percent: supply.wear_level_percent(),
+            });
         }
 
         Ok(())

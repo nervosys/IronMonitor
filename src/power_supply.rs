@@ -25,10 +25,7 @@
 //! # }
 //! ```
 
-use crate::error::Result;
-// Only the Linux enumeration path constructs an error value directly.
-#[cfg(target_os = "linux")]
-use crate::error::IronError;
+use crate::error::{IronError, Result};
 use serde::{Deserialize, Serialize};
 
 /// Type of power supply
@@ -146,10 +143,10 @@ pub struct PowerSupplyInfo {
     /// battery"), which is what made this one worth fixing rather than the
     /// function worth rewriting.
     pub online: Option<bool>,
-    /// Charging status (for batteries)
-    pub status: ChargingStatus,
-    /// Battery health (for batteries)
-    pub health: BatteryHealth,
+    /// Charging status (for batteries). `None` if the platform did not report it.
+    pub status: Option<ChargingStatus>,
+    /// Battery health (for batteries). `None` if the platform did not report it.
+    pub health: Option<BatteryHealth>,
     /// Current capacity percentage (0-100)
     pub capacity_percent: Option<u8>,
     /// Voltage now in millivolts
@@ -197,8 +194,8 @@ impl PowerSupplyInfo {
             name: name.to_string(),
             supply_type: PowerSupplyType::Unknown,
             online: None,
-            status: ChargingStatus::Unknown,
-            health: BatteryHealth::Unknown,
+            status: None,
+            health: None,
             capacity_percent: None,
             voltage_now_mv: None,
             voltage_min_mv: None,
@@ -391,8 +388,12 @@ impl PowerSupplyMonitor {
         let mut supplies = Vec::new();
         let power_supply_path = Path::new("/sys/class/power_supply");
 
+        // A missing class directory means this kernel has no power-supply
+        // subsystem to read. That is a failed read, not a machine with no supplies.
         if !power_supply_path.exists() {
-            return Ok(supplies);
+            return Err(IronError::System(
+                "/sys/class/power_supply does not exist".to_string(),
+            ));
         }
 
         let entries = fs::read_dir(power_supply_path)
@@ -416,38 +417,49 @@ impl PowerSupplyMonitor {
                 };
             }
 
-            // Read online status
+            // Read online status. Only the kernel's "0" and "1" are readings;
+            // anything else is withheld rather than read as offline.
             if let Ok(online_str) = fs::read_to_string(path.join("online")) {
-                info.online = Some(online_str.trim() == "1");
+                info.online = match online_str.trim() {
+                    "1" => Some(true),
+                    "0" => Some(false),
+                    _ => None,
+                };
             }
 
             // Read status
             if let Ok(status_str) = fs::read_to_string(path.join("status")) {
-                info.status = match status_str.trim().to_lowercase().as_str() {
+                info.status = Some(match status_str.trim().to_lowercase().as_str() {
                     "charging" => ChargingStatus::Charging,
                     "discharging" => ChargingStatus::Discharging,
                     "full" => ChargingStatus::Full,
                     "not charging" => ChargingStatus::NotCharging,
+                    // Read, but not one of the kernel's values for a charging state.
                     _ => ChargingStatus::Unknown,
-                };
+                });
             }
 
             // Read health
             if let Ok(health_str) = fs::read_to_string(path.join("health")) {
-                info.health = match health_str.trim().to_lowercase().as_str() {
+                info.health = Some(match health_str.trim().to_lowercase().as_str() {
                     "good" => BatteryHealth::Good,
                     "overheat" => BatteryHealth::Overheat,
                     "dead" => BatteryHealth::Dead,
                     "overvoltage" | "over voltage" => BatteryHealth::OverVoltage,
+                    "unspecified failure" => BatteryHealth::UnspecifiedFailure,
                     "cold" => BatteryHealth::Cold,
+                    "watchdog timer expire" => BatteryHealth::WatchdogTimerExpire,
+                    "safety timer expire" => BatteryHealth::SafetyTimerExpire,
                     _ => BatteryHealth::Unknown,
-                };
+                });
             }
 
-            // Read capacity
+            // Read capacity. Above 100 is not a percentage: withheld, not clamped.
             if let Ok(cap_str) = fs::read_to_string(path.join("capacity")) {
                 if let Ok(cap) = cap_str.trim().parse::<u8>() {
-                    info.capacity_percent = Some(cap.min(100));
+                    if cap <= 100 {
+                        info.capacity_percent = Some(cap);
+                    }
                 }
             }
 
@@ -563,17 +575,17 @@ impl PowerSupplyMonitor {
                 }
             }
 
-            // Read time to empty
+            // Read time to empty. The sysfs value is in seconds.
             if let Ok(time_str) = fs::read_to_string(path.join("time_to_empty_avg")) {
                 if let Ok(time) = time_str.trim().parse::<u32>() {
-                    info.time_to_empty_min = Some(time);
+                    info.time_to_empty_min = Some(time / 60);
                 }
             }
 
-            // Read time to full
+            // Read time to full. The sysfs value is in seconds.
             if let Ok(time_str) = fs::read_to_string(path.join("time_to_full_avg")) {
                 if let Ok(time) = time_str.trim().parse::<u32>() {
-                    info.time_to_full_min = Some(time);
+                    info.time_to_full_min = Some(time / 60);
                 }
             }
 
@@ -592,50 +604,64 @@ impl PowerSupplyMonitor {
             use ::windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 
             let mut status = SYSTEM_POWER_STATUS::default();
-            if GetSystemPowerStatus(&mut status).is_ok() {
-                // AC Line Status
-                let mut ac_info = PowerSupplyInfo::new("AC");
-                ac_info.supply_type = PowerSupplyType::Mains;
-                // 0 offline, 1 online, 255 unknown.
-                ac_info.online = match status.ACLineStatus {
-                    0 => Some(false),
-                    1 => Some(true),
-                    _ => None,
-                };
-                supplies.push(ac_info);
+            // A failed call is a failed read, not a machine with no supplies.
+            if let Err(e) = GetSystemPowerStatus(&mut status) {
+                return Err(IronError::System(format!(
+                    "GetSystemPowerStatus failed: {}",
+                    e
+                )));
+            }
 
-                // Battery
-                if status.BatteryFlag != 128 {
-                    // 128 = No battery
-                    let mut battery_info = PowerSupplyInfo::new("Battery");
-                    battery_info.supply_type = PowerSupplyType::Battery;
-                    battery_info.online = Some(true);
+            // AC Line Status
+            let mut ac_info = PowerSupplyInfo::new("AC");
+            ac_info.supply_type = PowerSupplyType::Mains;
+            // 0 offline, 1 online, 255 unknown.
+            ac_info.online = match status.ACLineStatus {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            };
+            supplies.push(ac_info);
 
-                    // Capacity
-                    if status.BatteryLifePercent != 255 {
-                        battery_info.capacity_percent = Some(status.BatteryLifePercent);
-                    }
+            // Battery
+            if status.BatteryFlag != 128 {
+                // 128 = No battery
+                let mut battery_info = PowerSupplyInfo::new("Battery");
+                battery_info.supply_type = PowerSupplyType::Battery;
+                // `online` stays unset: this API reports the AC line, not whether
+                // the battery is delivering power.
 
-                    // Status
-                    if status.BatteryFlag & 8 != 0 {
-                        battery_info.status = ChargingStatus::Charging;
-                    } else if status.ACLineStatus == 1 && status.BatteryLifePercent == 100 {
-                        battery_info.status = ChargingStatus::Full;
-                    } else {
-                        battery_info.status = ChargingStatus::Discharging;
-                    }
-
-                    // Time remaining
-                    if status.BatteryLifeTime != 0xFFFFFFFF {
-                        battery_info.time_to_empty_min = Some(status.BatteryLifeTime / 60);
-                    }
-
-                    if status.BatteryFullLifeTime != 0xFFFFFFFF {
-                        battery_info.time_to_full_min = Some(status.BatteryFullLifeTime / 60);
-                    }
-
-                    supplies.push(battery_info);
+                // Capacity
+                if status.BatteryLifePercent != 255 {
+                    battery_info.capacity_percent = Some(status.BatteryLifePercent);
                 }
+
+                // Status. BatteryFlag 255 is "unknown". It also has the charging
+                // bit set, so it is excluded before that bit is tested.
+                if status.BatteryFlag != 255 {
+                    battery_info.status = if status.BatteryFlag & 8 != 0 {
+                        Some(ChargingStatus::Charging)
+                    } else if status.ACLineStatus == 1 && status.BatteryLifePercent == 100 {
+                        Some(ChargingStatus::Full)
+                    } else if status.ACLineStatus == 0 {
+                        Some(ChargingStatus::Discharging)
+                    } else if status.ACLineStatus == 1 {
+                        Some(ChargingStatus::NotCharging)
+                    } else {
+                        None
+                    };
+                }
+
+                // Time remaining
+                if status.BatteryLifeTime != 0xFFFFFFFF {
+                    battery_info.time_to_empty_min = Some(status.BatteryLifeTime / 60);
+                }
+
+                // `BatteryFullLifeTime` is how long a full battery lasts, not the
+                // time until full, so it is not a `time_to_full_min`. Windows
+                // reports no time to full here, and the field stays unset.
+
+                supplies.push(battery_info);
             }
         }
 
@@ -648,64 +674,35 @@ impl PowerSupplyMonitor {
 
         let mut supplies = Vec::new();
 
-        // Use pmset to get battery info
-        if let Ok(output) = Command::new("pmset").args(["-g", "batt"]).output() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+        // Use pmset to get battery info. A run that fails is a failed read, not
+        // a machine with no power supplies.
+        let output = Command::new("pmset")
+            .args(["-g", "batt"])
+            .output()
+            .map_err(|e| IronError::CommandFailed(format!("pmset -g batt failed: {}", e)))?;
+        if !output.status.success() {
+            return Err(IronError::CommandFailed(format!(
+                "pmset -g batt exited with {}",
+                output.status
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
-            // Parse AC adapter
-            let mut ac_info = PowerSupplyInfo::new("AC");
-            ac_info.supply_type = PowerSupplyType::Mains;
-            // Only a "drawing from" line says where power comes from; output
-            // without one (or a failed run) is unknown, not "on battery".
-            ac_info.online = crate::power_profile::parse_pmset_power_source(&stdout);
-            supplies.push(ac_info);
+        // Parse AC adapter
+        let mut ac_info = PowerSupplyInfo::new("AC");
+        ac_info.supply_type = PowerSupplyType::Mains;
+        // Only a "drawing from" line says where power comes from; output
+        // without one is unknown, not "on battery".
+        ac_info.online = crate::power_profile::parse_pmset_power_source(&stdout);
+        supplies.push(ac_info);
 
-            // Parse battery
-            for line in stdout.lines() {
-                if line.contains("InternalBattery") || line.contains("Battery") {
-                    let mut battery_info = PowerSupplyInfo::new("Battery");
-                    battery_info.supply_type = PowerSupplyType::Battery;
-                    battery_info.online = Some(true);
-
-                    // Parse percentage
-                    if let Some(pct_start) = line.find(char::is_numeric) {
-                        let pct_str: String = line[pct_start..]
-                            .chars()
-                            .take_while(|c| c.is_ascii_digit())
-                            .collect();
-                        if let Ok(pct) = pct_str.parse::<u8>() {
-                            battery_info.capacity_percent = Some(pct.min(100));
-                        }
-                    }
-
-                    // Parse status
-                    if line.contains("charging") && !line.contains("not charging") {
-                        battery_info.status = ChargingStatus::Charging;
-                    } else if line.contains("discharging") {
-                        battery_info.status = ChargingStatus::Discharging;
-                    } else if line.contains("charged") {
-                        battery_info.status = ChargingStatus::Full;
-                    }
-
-                    // Parse time remaining
-                    if let Some(time_idx) = line.find(':') {
-                        let time_part = &line[time_idx..];
-                        if let Some(remaining) = time_part.find("remaining") {
-                            let time_str = &time_part[1..remaining].trim();
-                            let parts: Vec<&str> = time_str.split(':').collect();
-                            if parts.len() == 2 {
-                                if let (Ok(hours), Ok(mins)) =
-                                    (parts[0].parse::<u32>(), parts[1].parse::<u32>())
-                                {
-                                    battery_info.time_to_empty_min = Some(hours * 60 + mins);
-                                }
-                            }
-                        }
-                    }
-
-                    supplies.push(battery_info);
-                    break;
-                }
+        // Parse battery. Battery lines start with the battery's name, e.g.
+        // " -InternalBattery-0 (id=...)\t87%; discharging; 5:23 remaining". The
+        // header line can say "Battery Power", so the name is what is matched.
+        for line in stdout.lines() {
+            if line.contains("InternalBattery") || line.trim_start().starts_with('-') {
+                supplies.push(parse_pmset_battery_line(line));
+                break;
             }
         }
 
@@ -714,7 +711,11 @@ impl PowerSupplyMonitor {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn enumerate_supplies() -> Result<Vec<PowerSupplyInfo>> {
-        Ok(Vec::new())
+        // No reader exists for this platform. That is not the same as "no
+        // power supplies here", so it is reported as an error.
+        Err(IronError::UnsupportedPlatform(
+            "power supply enumeration is not implemented for this platform".to_string(),
+        ))
     }
 }
 
@@ -735,10 +736,10 @@ pub struct PowerSummary {
     pub on_battery: Option<bool>,
     /// Primary battery capacity (if any)
     pub battery_percent: Option<u8>,
-    /// Primary battery status
-    pub battery_status: ChargingStatus,
-    /// Battery health
-    pub battery_health: BatteryHealth,
+    /// Primary battery status. `None` if not read.
+    pub battery_status: Option<ChargingStatus>,
+    /// Battery health. `None` if not read.
+    pub battery_health: Option<BatteryHealth>,
     /// Estimated time remaining on battery (minutes)
     pub time_remaining_min: Option<u32>,
     /// Total system power draw (watts)
@@ -756,8 +757,8 @@ impl PowerSummary {
             on_ac_power: monitor.on_ac_power(),
             on_battery: monitor.on_battery(),
             battery_percent: battery.and_then(|b| b.capacity_percent),
-            battery_status: battery.map(|b| b.status).unwrap_or(ChargingStatus::Unknown),
-            battery_health: battery.map(|b| b.health).unwrap_or(BatteryHealth::Unknown),
+            battery_status: battery.and_then(|b| b.status),
+            battery_health: battery.and_then(|b| b.health),
             time_remaining_min: battery.and_then(|b| b.time_to_empty_min),
             power_draw_w: monitor.total_power_w(),
             battery_wear_percent: battery.and_then(|b| b.wear_level_percent()),
@@ -788,9 +789,102 @@ pub fn battery_percent() -> Option<u8> {
         .and_then(|m| m.primary_battery().and_then(|b| b.capacity_percent))
 }
 
+/// Read one pmset battery line, e.g.
+/// `" -InternalBattery-0 (id=...)\t87%; discharging; 5:23 remaining present: true"`.
+#[cfg(any(target_os = "macos", test))]
+fn parse_pmset_battery_line(line: &str) -> PowerSupplyInfo {
+    let mut battery_info = PowerSupplyInfo::new("Battery");
+    battery_info.supply_type = PowerSupplyType::Battery;
+    // `online` stays unset, as on Windows: pmset does not say whether the battery
+    // is delivering power.
+
+    // Parse percentage: the number directly before '%'. Digits earlier on the line
+    // belong to the battery's name ("InternalBattery-0").
+    if let Some(pct_end) = line.find('%') {
+        let pct_str: String = line[..pct_end]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if let Ok(pct) = pct_str.parse::<u8>() {
+            if pct <= 100 {
+                battery_info.capacity_percent = Some(pct);
+            }
+        }
+    }
+
+    // Parse status. "discharging" contains "charging", so it is tested first.
+    if line.contains("discharging") {
+        battery_info.status = Some(ChargingStatus::Discharging);
+    } else if line.contains("not charging") {
+        battery_info.status = Some(ChargingStatus::NotCharging);
+    } else if line.contains("charging") {
+        battery_info.status = Some(ChargingStatus::Charging);
+    } else if line.contains("charged") {
+        battery_info.status = Some(ChargingStatus::Full);
+    }
+
+    // Parse time remaining: the "H:MM" token before " remaining". A line without
+    // one, such as "(no estimate)", leaves it unset. While charging, pmset's
+    // remaining time is the time until full, not until empty.
+    if let Some(rem) = line.find(" remaining") {
+        if let Some(time_str) = line[..rem].rsplit(' ').next() {
+            if let Some((h, m)) = time_str.split_once(':') {
+                if let (Ok(hours), Ok(mins)) = (h.parse::<u32>(), m.parse::<u32>()) {
+                    let minutes = Some(hours * 60 + mins);
+                    match battery_info.status {
+                        Some(ChargingStatus::Charging) => battery_info.time_to_full_min = minutes,
+                        Some(ChargingStatus::Discharging) => {
+                            battery_info.time_to_empty_min = minutes
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    battery_info
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pmset_line_reads_percentage_status_and_time_to_empty() {
+        let line =
+            " -InternalBattery-0 (id=4653155)\t87%; discharging; 5:23 remaining present: true";
+        let info = parse_pmset_battery_line(line);
+        // The "0" in the battery's name is not the charge.
+        assert_eq!(info.capacity_percent, Some(87));
+        assert_eq!(info.status, Some(ChargingStatus::Discharging));
+        assert_eq!(info.time_to_empty_min, Some(323));
+        assert_eq!(info.time_to_full_min, None);
+    }
+
+    #[test]
+    fn pmset_charging_time_is_time_to_full() {
+        let line = " -InternalBattery-0 (id=4653155)\t52%; charging; 1:20 remaining present: true";
+        let info = parse_pmset_battery_line(line);
+        assert_eq!(info.status, Some(ChargingStatus::Charging));
+        assert_eq!(info.time_to_full_min, Some(80));
+        assert_eq!(info.time_to_empty_min, None);
+    }
+
+    #[test]
+    fn pmset_line_without_estimate_leaves_times_unset() {
+        let line =
+            " -InternalBattery-0 (id=4653155)\t100%; AC attached; not charging present: true";
+        let info = parse_pmset_battery_line(line);
+        assert_eq!(info.capacity_percent, Some(100));
+        assert_eq!(info.status, Some(ChargingStatus::NotCharging));
+        assert_eq!(info.time_to_empty_min, None);
+        assert_eq!(info.time_to_full_min, None);
+    }
 
     #[test]
     fn test_power_supply_info_new_defaults() {
@@ -798,8 +892,8 @@ mod tests {
         assert_eq!(info.name, "BAT0");
         assert_eq!(info.supply_type, PowerSupplyType::Unknown);
         assert_eq!(info.online, None);
-        assert_eq!(info.status, ChargingStatus::Unknown);
-        assert_eq!(info.health, BatteryHealth::Unknown);
+        assert_eq!(info.status, None);
+        assert_eq!(info.health, None);
         assert!(info.capacity_percent.is_none());
     }
 

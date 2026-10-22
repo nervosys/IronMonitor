@@ -346,6 +346,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `get_fan_speeds`, `get_voltage_rails`) return `{<key>: [...], errors: [...]}`
   instead of a bare array. A source that failed to read is listed under
   `errors` with its message, where it was skipped and could leave `[]`.
+- Power supplies and batteries:
+  - macOS: battery charge was read from the first digit on the line, the
+    "0" in "InternalBattery-0", so it was always 0%. The header line could
+    be taken for the battery, "discharging" read as charging, and the time
+    remaining was never parsed. While charging, pmset's time remaining is now
+    the time to full. A failed `pmset` is an error, not an empty list.
+  - Linux: sysfs `time_to_empty_avg` and `time_to_full_avg` are seconds and
+    were stored as minutes, 60 times too large. A capacity above 100% is
+    withheld rather than clamped. `online` other than 0 or 1 is unread. A
+    missing `/sys/class/power_supply` is an error.
+  - Windows: `BatteryFullLifeTime` (how long a full battery lasts) was
+    reported as time to full; it is no longer. Battery flag 255 (unknown)
+    is no longer reported as discharging, and a failed
+    `GetSystemPowerStatus` is an error.
+  - A battery's `online` is no longer a constant `true` on macOS and
+    Windows. `PowerSupplyInfo.status`/`health`, `PowerSummary`
+    battery status/health and `BatteryInfo.state`/`health` are `Option`.
+    `BatteryMonitor` returns an error when enumeration fails, where it
+    reported no batteries.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
