@@ -342,6 +342,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an error when every source failed, where a failed WMI connection or query
   returned an empty list that read as "none on this machine". A partial
   result from the sources that answered is still returned.
+- The AI sensor tools (`get_motherboard_sensors`, `get_system_temperatures`,
+  `get_fan_speeds`, `get_voltage_rails`) return `{<key>: [...], errors: [...]}`
+  instead of a bare array. A source that failed to read is listed under
+  `errors` with its message, where it was skipped and could leave `[]`.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

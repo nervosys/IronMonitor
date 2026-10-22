@@ -499,7 +499,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
     // Hardware tools
     tools.push(ToolDefinition {
         name: "get_motherboard_sensors".to_string(),
-        description: "Get all motherboard sensor readings (temperatures, voltages, fans)."
+        description: "Get all motherboard sensor readings (temperatures, voltages, fans). Returns {\"readings\": [...], \"errors\": [{source, error}]}; a failed source is listed under errors, never read as an empty list."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -512,7 +512,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
 
     tools.push(ToolDefinition {
         name: "get_system_temperatures".to_string(),
-        description: "Get all temperature sensors in the system.".to_string(),
+        description: "Get all temperature sensors in the system. Returns {\"temperatures\": [...], \"errors\": [{source, error}]}; a failed source is listed under errors, never read as an empty list.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {},
@@ -524,7 +524,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
 
     tools.push(ToolDefinition {
         name: "get_fan_speeds".to_string(),
-        description: "Get all fan speeds and status.".to_string(),
+        description: "Get all fan speeds and status. Returns {\"fans\": [...], \"errors\": [{source, error}]}; a failed source is listed under errors, never read as an empty list.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {},
@@ -536,7 +536,7 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
 
     tools.push(ToolDefinition {
         name: "get_voltage_rails".to_string(),
-        description: "Get motherboard voltage rail readings.".to_string(),
+        description: "Get motherboard voltage rail readings. Returns {\"voltage_rails\": [...], \"errors\": [{source, error}]}; a failed source is listed under errors, never read as an empty list.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {},
@@ -2228,52 +2228,62 @@ impl AiDataApi {
             .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut readings = Vec::new();
+        let mut errors = Vec::new();
 
         // Collect temperature sensors
         for sensor in &sensors {
-            if let Ok(temps) = sensor.temperature_sensors() {
-                for t in temps {
-                    readings.push(json!({
-                        "name": t.label,
-                        "sensor_type": "temperature",
-                        "value": t.temperature,
-                        "unit": "°C",
-                        "max": t.max,
-                        "critical": t.critical,
-                    }));
+            match sensor.temperature_sensors() {
+                Ok(temps) => {
+                    for t in temps {
+                        readings.push(json!({
+                            "name": t.label,
+                            "sensor_type": "temperature",
+                            "value": t.temperature,
+                            "unit": "°C",
+                            "max": t.max,
+                            "critical": t.critical,
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/temperatures", sensor.name()), e)),
             }
 
             // Collect voltage rails
-            if let Ok(volts) = sensor.voltage_rails() {
-                for v in volts {
-                    readings.push(json!({
-                        "name": v.label,
-                        "sensor_type": "voltage",
-                        "value": v.voltage,
-                        "unit": "V",
-                        "min": v.min,
-                        "max": v.max,
-                    }));
+            match sensor.voltage_rails() {
+                Ok(volts) => {
+                    for v in volts {
+                        readings.push(json!({
+                            "name": v.label,
+                            "sensor_type": "voltage",
+                            "value": v.voltage,
+                            "unit": "V",
+                            "min": v.min,
+                            "max": v.max,
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/voltages", sensor.name()), e)),
             }
 
             // Collect fan info
-            if let Ok(fans) = sensor.fans() {
-                for f in fans {
-                    readings.push(json!({
-                        "name": f.label,
-                        "sensor_type": "fan",
-                        "value": f.rpm,
-                        "unit": "RPM",
-                        "min": f.min_rpm,
-                        "max": f.max_rpm,
-                    }));
+            match sensor.fans() {
+                Ok(fans) => {
+                    for f in fans {
+                        readings.push(json!({
+                            "name": f.label,
+                            "sensor_type": "fan",
+                            "value": f.rpm,
+                            "unit": "RPM",
+                            "min": f.min_rpm,
+                            "max": f.max_rpm,
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/fans", sensor.name()), e)),
             }
         }
 
-        Ok(json!(readings))
+        Ok(sensor_listing("readings", readings, errors))
     }
 
     pub(crate) fn tool_get_system_temperatures(
@@ -2284,49 +2294,66 @@ impl AiDataApi {
             .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut temps = Vec::new();
+        let mut errors = Vec::new();
 
         // Get temperatures from motherboard sensors
         for sensor in &sensors {
-            if let Ok(temp_sensors) = sensor.temperature_sensors() {
-                for t in temp_sensors {
-                    temps.push(json!({
-                        "name": t.label,
-                        "temperature_c": t.temperature,
-                        "max_c": t.max,
-                        "critical_c": t.critical,
-                        "sensor_type": format!("{:?}", t.sensor_type),
-                    }));
+            match sensor.temperature_sensors() {
+                Ok(temp_sensors) => {
+                    for t in temp_sensors {
+                        temps.push(json!({
+                            "name": t.label,
+                            "temperature_c": t.temperature,
+                            "max_c": t.max,
+                            "critical_c": t.critical,
+                            "sensor_type": format!("{:?}", t.sensor_type),
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/temperatures", sensor.name()), e)),
             }
         }
 
         // Add GPU temperatures
         if let Some(ref gpus) = self.gpus {
-            if let Ok(snapshots) = gpus.snapshot_all() {
-                for (idx, s) in snapshots.iter().enumerate() {
-                    if let Some(temp) = s.dynamic_info.thermal.temperature {
-                        temps.push(json!({
-                            "name": format!("GPU {} ({})", idx, s.static_info.name),
-                            "temperature_c": temp,
-                        }));
+            match gpus.snapshot_all() {
+                Ok(snapshots) => {
+                    for (idx, s) in snapshots.iter().enumerate() {
+                        if let Some(temp) = s.dynamic_info.thermal.temperature {
+                            temps.push(json!({
+                                "name": format!("GPU {} ({})", idx, s.static_info.name),
+                                "temperature_c": temp,
+                            }));
+                        }
                     }
                 }
+                Err(e) => errors.push(sensor_error("gpu/snapshot", e)),
             }
         }
 
         // Add disk temperatures
-        if let Ok(disks) = crate::disk::enumerate_disks() {
-            for disk in &disks {
-                if let (Ok(info), Ok(Some(temp))) = (disk.info(), disk.temperature()) {
-                    temps.push(json!({
-                        "name": format!("Disk ({})", info.name),
-                        "temperature_c": temp,
-                    }));
+        match crate::disk::enumerate_disks() {
+            Ok(disks) => {
+                for (idx, disk) in disks.iter().enumerate() {
+                    match (disk.info(), disk.temperature()) {
+                        (Ok(info), Ok(Some(temp))) => {
+                            temps.push(json!({
+                                "name": format!("Disk ({})", info.name),
+                                "temperature_c": temp,
+                            }));
+                        }
+                        // A disk with no temperature sensor is an absence, not a failure.
+                        (Ok(_), Ok(None)) => {}
+                        (Err(e), _) | (_, Err(e)) => {
+                            errors.push(sensor_error(&format!("disk[{}]/temperature", idx), e))
+                        }
+                    }
                 }
             }
+            Err(e) => errors.push(sensor_error("disks/enumerate", e)),
         }
 
-        Ok(json!(temps))
+        Ok(sensor_listing("temperatures", temps, errors))
     }
 
     pub(crate) fn tool_get_fan_speeds(
@@ -2337,21 +2364,25 @@ impl AiDataApi {
             .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut fans = Vec::new();
+        let mut errors = Vec::new();
 
         for sensor in &sensors {
-            if let Ok(fan_info) = sensor.fans() {
-                for f in fan_info {
-                    fans.push(json!({
-                        "name": f.label,
-                        "rpm": f.rpm,
-                        "pwm": f.pwm,
-                        "controllable": f.controllable,
-                    }));
+            match sensor.fans() {
+                Ok(fan_info) => {
+                    for f in fan_info {
+                        fans.push(json!({
+                            "name": f.label,
+                            "rpm": f.rpm,
+                            "pwm": f.pwm,
+                            "controllable": f.controllable,
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/fans", sensor.name()), e)),
             }
         }
 
-        Ok(json!(fans))
+        Ok(sensor_listing("fans", fans, errors))
     }
 
     pub(crate) fn tool_get_voltage_rails(
@@ -2362,21 +2393,25 @@ impl AiDataApi {
             .map_err(|e| IronError::HardwareError(e.to_string()))?;
 
         let mut voltages = Vec::new();
+        let mut errors = Vec::new();
 
         for sensor in &sensors {
-            if let Ok(voltage_rails) = sensor.voltage_rails() {
-                for v in voltage_rails {
-                    voltages.push(json!({
-                        "name": v.label,
-                        "voltage_v": v.voltage,
-                        "min_v": v.min,
-                        "max_v": v.max,
-                    }));
+            match sensor.voltage_rails() {
+                Ok(voltage_rails) => {
+                    for v in voltage_rails {
+                        voltages.push(json!({
+                            "name": v.label,
+                            "voltage_v": v.voltage,
+                            "min_v": v.min,
+                            "max_v": v.max,
+                        }));
+                    }
                 }
+                Err(e) => errors.push(sensor_error(&format!("{}/voltages", sensor.name()), e)),
             }
         }
 
-        Ok(json!(voltages))
+        Ok(sensor_listing("voltage_rails", voltages, errors))
     }
 
     pub(crate) fn tool_get_driver_info(
@@ -2794,6 +2829,28 @@ impl AiDataApi {
     }
 }
 
+/// Shapes a sensor listing so a failed read cannot pass for an empty one.
+///
+/// The rows sit under `key` beside an `errors` array, empty when every source
+/// answered, so an agent sees "unreadable" rather than `[]` and can tell it from
+/// "none here". The shape does not change with the outcome.
+fn sensor_listing(
+    key: &str,
+    rows: Vec<serde_json::Value>,
+    errors: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    out.insert(key.to_string(), serde_json::Value::Array(rows));
+    out.insert("errors".to_string(), serde_json::Value::Array(errors));
+    serde_json::Value::Object(out)
+}
+
+/// One failed source for `sensor_listing`. `source` names the device and the reading
+/// that was wanted from it, e.g. `nct6798/fans`.
+fn sensor_error(source: &str, error: impl std::fmt::Display) -> serde_json::Value {
+    json!({ "source": source, "error": error.to_string() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2827,5 +2884,28 @@ mod tests {
 
         // A machine with no GPUs refuses index 0 rather than reporting an empty win.
         assert!(AiDataApi::check_gpu_index(Some(0), 0).is_err());
+    }
+
+    /// A sensor source that fails to read is reported, not folded into an empty listing.
+    ///
+    /// The sensor tools used to skip a failed `temperature_sensors()`, `fans()` or
+    /// `voltage_rails()` call with `if let Ok`, so an unreadable device and a device with
+    /// no fans both produced `[]`.
+    #[test]
+    fn failed_sensor_source_is_reported_not_empty() {
+        // The shape is the same with or without failures, so a caller reads one form.
+        let clean = sensor_listing("fans", vec![json!({"name": "cpu"})], vec![]);
+        assert_eq!(clean, json!({"fans": [{"name": "cpu"}], "errors": []}));
+
+        // A failure names its source rather than leaving an empty list.
+        let failed = sensor_error("nct6798/fans", "driver not loaded");
+        let partial = sensor_listing("fans", vec![], vec![failed]);
+        assert!(
+            partial.is_object(),
+            "a failed read must not look like an empty array"
+        );
+        assert_eq!(partial["fans"], json!([]));
+        assert_eq!(partial["errors"][0]["source"], "nct6798/fans");
+        assert_eq!(partial["errors"][0]["error"], "driver not loaded");
     }
 }
