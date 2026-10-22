@@ -385,6 +385,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constant per source (`true` for BIOS and microcode, `false` for storage
   and NICs), and a missing fwupd flags array read as not updatable. The
   ontology gives each unread firmware value its own reason.
+- SMART and disks:
+  - The Windows disk monitor keyed each drive by its position in the
+    enumeration rather than its `PhysicalDriveN` number. Windows lists drives
+    out of order (3, 1, 2, 0 on the test machine), so per-drive lookups could
+    reach another drive.
+  - SMART attribute `threshold` is `Option` in both SMART structs; ATA
+    attributes read without one reported 0. A Linux smartctl attribute with
+    a missing field is skipped, where its gaps became 0 and fed wear.
+  - Linux media type is SSD only for rotational 0 and HDD only for 1; an
+    unreadable value read as HDD. Windows no longer guesses SSD from the model
+    name. An unreadable Linux size is unread, not 0 bytes.
+  - Windows uncorrectable errors are not summed from one counter alone.
+    `FilesystemInfo.read_only` is `Option`; Windows never read it. Failed
+    Windows WMI disk and filesystem queries are errors, not empty lists.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

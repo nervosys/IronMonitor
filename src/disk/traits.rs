@@ -237,8 +237,10 @@ pub struct SmartAttribute {
     pub value: u8,
     /// Worst value seen (0-255)
     pub worst: u8,
-    /// Threshold value
-    pub threshold: u8,
+    /// Threshold value, or `None` where the platform did not report one. Not
+    /// zero: a zero threshold is a value a drive can publish, and Windows' ATA
+    /// path cannot reach the threshold table at all.
+    pub threshold: Option<u8>,
     /// Raw value (interpretation varies by attribute)
     pub raw_value: u64,
     /// Whether this attribute is critical
@@ -336,8 +338,9 @@ pub struct FilesystemInfo {
     pub total_inodes: Option<u64>,
     /// Used inodes
     pub used_inodes: Option<u64>,
-    /// Read-only flag
-    pub read_only: bool,
+    /// Read-only flag, or `None` where the platform did not report it. Windows'
+    /// WMI volume query does not carry it, so there is no `false` to report.
+    pub read_only: Option<bool>,
 }
 
 impl FilesystemInfo {
@@ -566,7 +569,7 @@ mod tests {
             available_size: Some(500_000_000),
             total_inodes: None,
             used_inodes: None,
-            read_only: false,
+            read_only: Some(false),
         };
         assert!((fs.usage_percent().expect("both figures read") - 50.0).abs() < 0.01);
     }
@@ -581,7 +584,7 @@ mod tests {
             available_size: Some(0),
             total_inodes: None,
             used_inodes: None,
-            read_only: false,
+            read_only: Some(false),
         };
         // A tmpfs genuinely reporting zero total has no usage percentage --
         // there is nothing to be a percentage of. This asserted `0.0`, which
@@ -599,7 +602,7 @@ mod tests {
             available_size: Some(0),
             total_inodes: None,
             used_inodes: None,
-            read_only: true,
+            read_only: Some(true),
         };
         assert!((fs.usage_percent().expect("both figures read") - 100.0).abs() < 0.01);
     }

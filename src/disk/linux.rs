@@ -263,7 +263,7 @@ impl DiskDevice for LinuxDisk {
                     name: a.name.clone(),
                     value: a.value.min(u8::MAX as u64) as u8,
                     worst: a.worst.min(u8::MAX as u64) as u8,
-                    threshold: a.threshold.min(u8::MAX as u64) as u8,
+                    threshold: a.threshold.map(|t| t.min(u8::MAX as u64) as u8),
                     raw_value: a.raw_value,
                     critical: a.pre_fail,
                 })
@@ -392,7 +392,9 @@ impl DiskDevice for LinuxDisk {
                         available_size: Some(available_size),
                         total_inodes: Some(stat.files()),
                         used_inodes: Some(stat.files() - stat.files_free()),
-                        read_only: stat.flags().contains(nix::sys::statvfs::FsFlags::ST_RDONLY),
+                        read_only: Some(
+                            stat.flags().contains(nix::sys::statvfs::FsFlags::ST_RDONLY),
+                        ),
                     });
                 }
             }

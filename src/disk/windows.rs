@@ -36,6 +36,24 @@ fn create_wmi_connection() -> Result<WMIConnection, Error> {
         .map_err(|e| Error::InitializationFailed(e.to_string()))
 }
 
+/// Rows from one WMI query. A failed query is recorded in `failure` and reads as
+/// no rows, so a caller can tell "the query failed" from "the machine has none".
+fn wmi_rows<T: serde::de::DeserializeOwned>(
+    con: &WMIConnection,
+    query: &str,
+    failure: &mut Option<String>,
+) -> Vec<T> {
+    match con.raw_query(query) {
+        Ok(rows) => rows,
+        Err(e) => {
+            if failure.is_none() {
+                *failure = Some(format!("{query}: {e}"));
+            }
+            Vec::new()
+        }
+    }
+}
+
 /// What `MSFT_PhysicalDisk` reports about one drive.
 struct PhysicalDiskFacts {
     size: Option<u64>,
@@ -157,9 +175,11 @@ impl WindowsDisk {
         let query =
             format!("{DISK_PERF_SELECT} WHERE Name = \'{index}\' OR Name LIKE \'{index} %\'");
 
+        // A failed query is an error. Read as an empty table it would say this
+        // drive has no instance, which is a different claim.
         let perfs: Vec<DiskPerf> = create_wmi_connection()?
             .raw_query(&query)
-            .unwrap_or_default();
+            .map_err(|e| Error::QueryFailed(format!("PhysicalDisk performance query: {e}")))?;
         let Some(perf) = perfs.first() else {
             return Err(Error::QueryFailed(format!(
                 "no PhysicalDisk performance instance named \'{index}\'"
@@ -233,9 +253,11 @@ impl DiskPerf {
 /// Keyed by `PhysicalDriveN` to match [`DiskInfo::name`], so a caller can join
 /// against an enumeration without re-deriving the index.
 pub fn all_io_counters() -> Result<std::collections::HashMap<String, DiskIoStats>, Error> {
+    // A failed query is an error. An empty map would say the machine has no
+    // drives, which a failed WMI call has not established.
     let perfs: Vec<DiskPerf> = create_wmi_connection()?
         .raw_query(DISK_PERF_SELECT)
-        .unwrap_or_default();
+        .map_err(|e| Error::QueryFailed(format!("PhysicalDisk performance query: {e}")))?;
 
     Ok(perfs
         .iter()
@@ -542,9 +564,8 @@ impl DiskDevice for WindowsDisk {
                             value: a.value,
                             worst: a.worst,
                             // SMART READ THRESHOLDS is a separate ATA command with
-                            // no ioctl of its own; 0 is ATA's own encoding for a
-                            // threshold that never trips.
-                            threshold: 0,
+                            // no ioctl of its own, so no threshold was read here.
+                            threshold: None,
                             raw_value: a.raw,
                             critical: a.pre_fail(),
                         })
@@ -588,7 +609,7 @@ impl DiskDevice for WindowsDisk {
                     name: a.name.clone(),
                     value: a.value.min(u8::MAX as u64) as u8,
                     worst: a.worst.min(u8::MAX as u64) as u8,
-                    threshold: a.threshold.min(u8::MAX as u64) as u8,
+                    threshold: a.threshold.map(|t| t.min(u8::MAX as u64) as u8),
                     raw_value: a.raw_value,
                     critical: a.pre_fail,
                 })
@@ -666,25 +687,37 @@ impl DiskDevice for WindowsDisk {
 
         let mut filesystems = Vec::new();
 
+        // A WMI failure is kept rather than read as an empty table: a machine whose
+        // queries failed must not look like one with no filesystems.
+        let mut wmi_failure: Option<String> = None;
+
         // Try WMI approach first to get partition-to-logical disk mapping
-        if let Ok(wmi_con) = create_wmi_connection() {
+        let wmi_con = create_wmi_connection();
+        if let Err(e) = &wmi_con {
+            wmi_failure = Some(format!("WMI connection: {e}"));
+        }
+        if let Ok(wmi_con) = wmi_con {
             // Get partitions for this disk
             let partition_query = format!(
                 "SELECT DeviceID, DiskIndex, Index, Size FROM Win32_DiskPartition WHERE DiskIndex = {}",
                 self.disk_index
             );
             let partitions: Vec<Win32DiskPartition> =
-                wmi_con.raw_query(&partition_query).unwrap_or_default();
+                wmi_rows(&wmi_con, &partition_query, &mut wmi_failure);
 
             // Get logical disk to partition mappings
-            let mappings: Vec<Win32LogicalDiskToPartition> = wmi_con
-                .raw_query("SELECT Antecedent, Dependent FROM Win32_LogicalDiskToPartition")
-                .unwrap_or_default();
+            let mappings: Vec<Win32LogicalDiskToPartition> = wmi_rows(
+                &wmi_con,
+                "SELECT Antecedent, Dependent FROM Win32_LogicalDiskToPartition",
+                &mut wmi_failure,
+            );
 
             // Get all logical disks
-            let logical_disks: Vec<Win32LogicalDisk> = wmi_con
-                .raw_query("SELECT DeviceID, FileSystem, Size, FreeSpace, VolumeName FROM Win32_LogicalDisk")
-                .unwrap_or_default();
+            let logical_disks: Vec<Win32LogicalDisk> = wmi_rows(
+                &wmi_con,
+                "SELECT DeviceID, FileSystem, Size, FreeSpace, VolumeName FROM Win32_LogicalDisk",
+                &mut wmi_failure,
+            );
 
             // Match partitions to logical disks
             for partition in &partitions {
@@ -725,7 +758,7 @@ impl DiskDevice for WindowsDisk {
                                         available_size: free_space,
                                         total_inodes: None,
                                         used_inodes: None,
-                                        read_only: false,
+                                        read_only: None,
                                     });
                                 }
                             }
@@ -792,13 +825,23 @@ impl DiskDevice for WindowsDisk {
                                         available_size: Some(free_bytes_available),
                                         total_inodes: None,
                                         used_inodes: None,
-                                        read_only: false,
+                                        read_only: None,
                                     });
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        // Neither route found a filesystem and a WMI query failed: that is an error,
+        // not a machine with none.
+        if filesystems.is_empty() {
+            if let Some(reason) = wmi_failure {
+                return Err(Error::QueryFailed(format!(
+                    "filesystem enumeration: {reason}"
+                )));
             }
         }
 
@@ -979,7 +1022,16 @@ impl WindowsDiskMonitor {
         let disks_vec = enumerate()?;
         let mut disks = HashMap::new();
 
-        for (i, disk) in disks_vec.iter().enumerate() {
+        for disk in disks_vec.iter() {
+            // The physical index is the number in the name. The position in the
+            // list is not: a drive missing from enumeration shifts every later one.
+            let Some(disk_index) = disk
+                .name()
+                .strip_prefix("PhysicalDrive")
+                .and_then(|n| n.parse::<u32>().ok())
+            else {
+                continue;
+            };
             disks.insert(
                 disk.name().to_string(),
                 WindowsDisk {
@@ -989,7 +1041,7 @@ impl WindowsDiskMonitor {
                     model: None,
                     serial: None,
                     size: None,
-                    disk_index: i as u32,
+                    disk_index,
                     interface_type: None,
                 },
             );

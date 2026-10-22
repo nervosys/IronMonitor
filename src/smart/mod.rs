@@ -98,8 +98,12 @@ pub struct SmartAttribute {
     pub value: u64,
     /// Worst recorded value
     pub worst: u64,
-    /// Threshold for failure
-    pub threshold: u64,
+    /// Threshold for failure, or `None` where the platform did not report one.
+    ///
+    /// Not zero: the Windows ATA path cannot reach `SMART READ THRESHOLDS`
+    /// through its ioctl, and used to write `0` here, which is a constant
+    /// rather than this drive's threshold.
+    pub threshold: Option<u64>,
     /// Raw value
     pub raw_value: u64,
     /// Whether this attribute is pre-fail (true) or old-age (false)
@@ -419,7 +423,8 @@ impl SmartMonitor {
 
         // Check SMART attributes for pre-fail conditions
         for attr in &disk.attributes {
-            if attr.pre_fail && attr.value <= attr.threshold && attr.threshold > 0 {
+            // An unread threshold cannot trip, and is not a threshold of zero.
+            if attr.pre_fail && matches!(attr.threshold, Some(t) if t > 0 && attr.value <= t) {
                 disk.health = DiskHealth::Critical;
             }
         }
@@ -512,16 +517,21 @@ impl SmartMonitor {
                 let base = entry.path();
                 let device = format!("/dev/{}", name);
 
-                // Detect rotational (1=HDD, 0=SSD)
+                // Detect rotational (1=HDD, 0=SSD). Any other value, including a
+                // sysfs file that could not be read, is not a medium we know.
                 let rotational = Self::read_sys(&base.join("queue/rotational"));
-                let media_type = if rotational == "0" {
-                    DriveMediaType::SSD
-                } else {
-                    DriveMediaType::HDD
+                let media_type = match rotational.as_str() {
+                    "0" => DriveMediaType::SSD,
+                    "1" => DriveMediaType::HDD,
+                    _ => DriveMediaType::Unknown,
                 };
 
-                let size_sectors: u64 = Self::read_sys(&base.join("size")).parse().unwrap_or(0);
-                let capacity_bytes = Some(size_sectors * 512);
+                // sysfs counts 512-byte sectors. An unreadable size is no size,
+                // not a zero-byte disk.
+                let capacity_bytes = Self::read_sys(&base.join("size"))
+                    .parse::<u64>()
+                    .ok()
+                    .map(|sectors| sectors * 512);
 
                 let model = Self::read_sys(&base.join("device/model"));
                 let serial = Self::read_sys(&base.join("device/serial"))
@@ -576,13 +586,31 @@ impl SmartMonitor {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
             if let Some(attrs) = val["ata_smart_attributes"]["table"].as_array() {
                 for attr in attrs {
-                    let id = attr["id"].as_u64().unwrap_or(0) as u16;
-                    let name = attr["name"].as_str().unwrap_or("").to_string();
-                    let value = attr["value"].as_u64().unwrap_or(0);
-                    let worst = attr["worst"].as_u64().unwrap_or(0);
-                    let thresh = attr["thresh"].as_u64().unwrap_or(0);
-                    let raw_val = attr["raw"]["value"].as_u64().unwrap_or(0);
-                    let pre_fail = attr["flags"]["prefailure"].as_bool().unwrap_or(false);
+                    // An attribute missing any of these is left out rather than
+                    // filled with zeros: a `value` of 0 is a reading, and a drive
+                    // that did not publish one has not said it.
+                    let (
+                        Some(id),
+                        Some(name),
+                        Some(value),
+                        Some(worst),
+                        Some(thresh),
+                        Some(raw_val),
+                        Some(pre_fail),
+                    ) = (
+                        attr["id"].as_u64(),
+                        attr["name"].as_str(),
+                        attr["value"].as_u64(),
+                        attr["worst"].as_u64(),
+                        attr["thresh"].as_u64(),
+                        attr["raw"]["value"].as_u64(),
+                        attr["flags"]["prefailure"].as_bool(),
+                    )
+                    else {
+                        continue;
+                    };
+                    let id = id as u16;
+                    let name = name.to_string();
 
                     // Each arm here means the drive actually published that
                     // attribute, so `Some` is the truthful wrapper — unlike the
@@ -609,7 +637,7 @@ impl SmartMonitor {
                         name,
                         value,
                         worst,
-                        threshold: thresh,
+                        threshold: Some(thresh),
                         raw_value: raw_val,
                         pre_fail,
                     });
@@ -686,17 +714,9 @@ Get-PhysicalDisk | ForEach-Object {
                                 "SSD" => DriveMediaType::SSD,
                                 "HDD" => DriveMediaType::HDD,
                                 "NVMe" | "SCM" => DriveMediaType::NVMe,
-                                _ => {
-                                    // Infer from model name
-                                    let model = item["Model"].as_str().unwrap_or("").to_lowercase();
-                                    if model.contains("nvme") {
-                                        DriveMediaType::NVMe
-                                    } else if model.contains("ssd") {
-                                        DriveMediaType::SSD
-                                    } else {
-                                        DriveMediaType::Unknown
-                                    }
-                                }
+                                // Not a medium Windows named. The model string is a
+                                // product name, not a measurement of the medium.
+                                _ => DriveMediaType::Unknown,
                             }
                         };
 
@@ -750,12 +770,15 @@ Get-PhysicalDisk | ForEach-Object {
                             // need a SMART passthrough this path does not make.
                             reallocated_sectors: None,
                             pending_sectors: None,
+                            // Both counters, or no total. A sum with one side
+                            // treated as zero is a count of half the errors, presented
+                            // as all of them.
                             uncorrectable_errors: match (
                                 item["ReadErrorsTotal"].as_u64(),
                                 item["WriteErrorsTotal"].as_u64(),
                             ) {
-                                (None, None) => None,
-                                (r, w) => Some(r.unwrap_or(0) + w.unwrap_or(0)),
+                                (Some(r), Some(w)) => Some(r + w),
+                                _ => None,
                             },
                             wear_leveling_percent: wear,
                             total_bytes_written: None,
@@ -832,7 +855,7 @@ Get-PhysicalDisk | ForEach-Object {
                 value: u64::from(a.value),
                 worst: u64::from(a.worst),
                 // Not reachable through this ioctl — see `disk::windows_ata`.
-                threshold: 0,
+                threshold: None,
                 raw_value: a.raw,
                 pre_fail: a.pre_fail(),
             })

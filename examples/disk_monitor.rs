@@ -157,7 +157,13 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
                 if let Some(used_inodes) = fs.used_inodes {
                     println!("  Used Inodes:    {}", used_inodes);
                 }
-                println!("  Read Only:      {}", fs.read_only);
+                println!(
+                    "  Read Only:      {}",
+                    match fs.read_only {
+                        Some(ro) => ro.to_string(),
+                        None => "not reported".to_string(),
+                    }
+                );
                 println!();
             }
         }

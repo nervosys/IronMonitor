@@ -217,6 +217,28 @@ const BASELINE: &[(&str, &str, &str)] = &[];
 /// read wherever the struct is built. `(file, struct, bare fields, why)`.
 const JUDGED: &[(&str, &str, &str, &str)] = &[
     (
+        "src/disk/traits.rs",
+        "SmartAttribute",
+        "value worst raw_value",
+        concat!(
+            "Built from an AtaSmartAttribute, whose 12-byte table entry always ",
+            "carries the normalized value, worst and raw bytes, or converted from ",
+            "smart::SmartAttribute, which has them read. The threshold comes from a ",
+            "separate table that may be missing, which is why only it is Option."
+        ),
+    ),
+    (
+        "src/smart/mod.rs",
+        "SmartAttribute",
+        "value worst raw_value",
+        concat!(
+            "smartctl JSON attributes missing any of value, worst or raw are skipped, ",
+            "not pushed with gaps, and ATA attributes come from 12-byte table entries ",
+            "that always carry all three. Only the threshold, from a separate table, ",
+            "can be absent for an attribute that exists."
+        ),
+    ),
+    (
         "src/backend.rs",
         "CpuState",
         "threads utilization",
