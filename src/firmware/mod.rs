@@ -22,7 +22,7 @@
 //!
 //! let inventory = FirmwareInventory::new().unwrap();
 //! for fw in inventory.items() {
-//!     println!("{}: {} v{} ({})", fw.component, fw.vendor, fw.version, fw.date);
+//!     println!("{}: {:?} v{:?} ({:?})", fw.component, fw.vendor, fw.version, fw.date);
 //! }
 //! match inventory.risk_score() {
 //!     Some(score) => println!("Inferred risk score: {}/100", score),
@@ -86,16 +86,18 @@ pub enum BootMode {
 pub struct FirmwareEntry {
     /// Component type
     pub component: FirmwareComponent,
-    /// Vendor / manufacturer
-    pub vendor: String,
-    /// Version string
-    pub version: String,
-    /// Release date (YYYY-MM-DD or vendor format)
-    pub date: String,
+    /// Vendor / manufacturer, or `None` where the source did not name one.
+    pub vendor: Option<String>,
+    /// Version string, or `None` where the source did not report one.
+    pub version: Option<String>,
+    /// Release date (YYYY-MM-DD or vendor format), or `None` where the source
+    /// did not report one.
+    pub date: Option<String>,
     /// Device path or identifier
     pub device: String,
-    /// Updateable via OS mechanisms?
-    pub updateable: bool,
+    /// Updateable via OS mechanisms, where the source said so. `None` means
+    /// the source did not say, not that the component cannot be updated.
+    pub updateable: Option<bool>,
     /// Estimated age in days (inferred from date)
     pub estimated_age_days: Option<u32>,
     /// Security risk level (0 = low, 100 = critical), inferred from the
@@ -105,15 +107,24 @@ pub struct FirmwareEntry {
     pub inferred_risk_score: Option<u8>,
 }
 
+/// A reader's string as an owned value, or `None` where it is empty. Absence
+/// is `None`; `""` is what an unread value looked like before this, and it
+/// read as a firmware version or vendor that happened to be blank.
+fn non_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 /// Firmware inventory for the system.
 pub struct FirmwareInventory {
     entries: Vec<FirmwareEntry>,
     secure_boot: SecureBootStatus,
     boot_mode: BootMode,
-    system_vendor: String,
-    system_product: String,
-    /// System serial number.
-    pub system_serial: String,
+    system_vendor: Option<String>,
+    system_product: Option<String>,
+    /// System serial number, or `None` where it was not readable (on Linux
+    /// `product_serial` is root-only).
+    pub system_serial: Option<String>,
 }
 
 impl FirmwareInventory {
@@ -122,9 +133,9 @@ impl FirmwareInventory {
             entries: Vec::new(),
             secure_boot: SecureBootStatus::Unknown,
             boot_mode: BootMode::Unknown,
-            system_vendor: String::new(),
-            system_product: String::new(),
-            system_serial: String::new(),
+            system_vendor: None,
+            system_product: None,
+            system_serial: None,
         };
         inv.refresh()?;
         Ok(inv)
@@ -144,7 +155,7 @@ impl FirmwareInventory {
 
         // Infer risk scores for all entries
         for entry in &mut self.entries {
-            entry.estimated_age_days = Self::estimate_age(&entry.date);
+            entry.estimated_age_days = entry.date.as_deref().and_then(Self::estimate_age);
             entry.inferred_risk_score = Self::infer_risk(entry);
         }
 
@@ -163,12 +174,14 @@ impl FirmwareInventory {
         &self.boot_mode
     }
 
-    pub fn system_vendor(&self) -> &str {
-        &self.system_vendor
+    /// System vendor, or `None` where the firmware source did not report one.
+    pub fn system_vendor(&self) -> Option<&str> {
+        self.system_vendor.as_deref()
     }
 
-    pub fn system_product(&self) -> &str {
-        &self.system_product
+    /// System product name, or `None` where it was not reported.
+    pub fn system_product(&self) -> Option<&str> {
+        self.system_product.as_deref()
     }
 
     /// Overall inferred firmware risk score (max across all components), or
@@ -359,46 +372,38 @@ impl FirmwareInventory {
         }
     }
 
+    /// A trimmed DMI attribute, or `None` where it is absent or unreadable.
+    #[cfg(target_os = "linux")]
+    fn read_dmi(dmi: &std::path::Path, name: &str) -> Option<String> {
+        std::fs::read_to_string(dmi.join(name))
+            .ok()
+            .and_then(|s| non_empty(&s))
+    }
+
     #[cfg(target_os = "linux")]
     fn refresh_linux(&mut self) {
         let dmi = std::path::Path::new("/sys/class/dmi/id");
 
-        // System info
-        self.system_vendor = std::fs::read_to_string(dmi.join("sys_vendor"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        self.system_product = std::fs::read_to_string(dmi.join("product_name"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        self.system_serial = std::fs::read_to_string(dmi.join("product_serial"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        // System info. `product_serial` is root-only on most machines, so
+        // `None` is the usual answer for it and stays that way.
+        self.system_vendor = Self::read_dmi(dmi, "sys_vendor");
+        self.system_product = Self::read_dmi(dmi, "product_name");
+        self.system_serial = Self::read_dmi(dmi, "product_serial");
 
         // BIOS
-        let bios_vendor = std::fs::read_to_string(dmi.join("bios_vendor"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let bios_version = std::fs::read_to_string(dmi.join("bios_version"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let bios_date = std::fs::read_to_string(dmi.join("bios_date"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let bios_vendor = Self::read_dmi(dmi, "bios_vendor");
+        let bios_version = Self::read_dmi(dmi, "bios_version");
+        let bios_date = Self::read_dmi(dmi, "bios_date");
 
-        if !bios_vendor.is_empty() {
+        if let Some(vendor) = bios_vendor {
             self.entries.push(FirmwareEntry {
                 component: FirmwareComponent::SystemBios,
-                vendor: bios_vendor,
+                vendor: Some(vendor),
                 version: bios_version,
                 date: bios_date,
                 device: "System BIOS".into(),
-                updateable: true,
+                // sysfs does not say whether the BIOS can be updated here.
+                updateable: None,
                 estimated_age_days: None,
                 inferred_risk_score: None,
             });
@@ -417,10 +422,10 @@ impl FirmwareInventory {
                         self.entries.push(FirmwareEntry {
                             component: FirmwareComponent::CpuMicrocode,
                             vendor: self.system_vendor.clone(),
-                            version: ver.trim().to_string(),
-                            date: String::new(),
+                            version: non_empty(ver),
+                            date: None,
                             device: "CPU Microcode".into(),
-                            updateable: true,
+                            updateable: None,
                             estimated_age_days: None,
                             inferred_risk_score: None,
                         });
@@ -455,11 +460,11 @@ impl FirmwareInventory {
                     if !version.is_empty() {
                         self.entries.push(FirmwareEntry {
                             component: FirmwareComponent::Nic,
-                            vendor: driver,
-                            version,
-                            date: String::new(),
+                            vendor: non_empty(&driver),
+                            version: Some(version),
+                            date: None,
                             device: iface,
-                            updateable: false,
+                            updateable: None,
                             estimated_age_days: None,
                             inferred_risk_score: None,
                         });
@@ -498,17 +503,14 @@ impl FirmwareInventory {
 
                             self.entries.push(FirmwareEntry {
                                 component,
-                                vendor: vendor.to_string(),
-                                version: version.to_string(),
-                                date: String::new(),
+                                vendor: non_empty(vendor),
+                                version: Some(version.to_string()),
+                                date: None,
                                 device: name.to_string(),
-                                updateable: dev
-                                    .get("Flags")
-                                    .and_then(|f| f.as_array())
-                                    .map(|flags| {
-                                        flags.iter().any(|f| f.as_str() == Some("updatable"))
-                                    })
-                                    .unwrap_or(false),
+                                // No `Flags` array is no answer, not `false`.
+                                updateable: dev.get("Flags").and_then(|f| f.as_array()).map(
+                                    |flags| flags.iter().any(|f| f.as_str() == Some("updatable")),
+                                ),
                                 estimated_age_days: None,
                                 inferred_risk_score: None,
                             });
@@ -533,7 +535,7 @@ impl FirmwareInventory {
     /// applies to the two that enumerate: either succeeding is enough to trust
     /// an empty result, and both failing is an error naming both reasons. The
     /// two that decorate are allowed to fail quietly, because their absence is
-    /// already expressible — `system_vendor` stays empty and `secure_boot`
+    /// already expressible — `system_vendor` stays `None` and `secure_boot`
     /// stays `Unknown`, which is what `Confirm-SecureBootUEFI` does anyway
     /// without elevation.
     #[cfg(target_os = "windows")]
@@ -588,19 +590,20 @@ impl FirmwareInventory {
         // was never computed for a Windows BIOS. This form it does read.
         let raw = crate::platform::windows::wmi_str(row, "ReleaseDate");
         let clean_date = if raw.len() >= 8 && raw[..8].bytes().all(|b| b.is_ascii_digit()) {
-            format!("{}-{}-{}", &raw[0..4], &raw[4..6], &raw[6..8])
+            Some(format!("{}-{}-{}", &raw[0..4], &raw[4..6], &raw[6..8]))
         } else {
-            String::new()
+            None
         };
 
         if !vendor.is_empty() {
             self.entries.push(FirmwareEntry {
                 component: FirmwareComponent::SystemBios,
-                vendor: vendor.to_string(),
-                version: version.to_string(),
+                vendor: non_empty(vendor),
+                version: non_empty(version),
                 date: clean_date,
                 device: "System BIOS".into(),
-                updateable: true,
+                // WMI does not say whether the BIOS can be updated.
+                updateable: None,
                 estimated_age_days: None,
                 inferred_risk_score: None,
             });
@@ -624,11 +627,11 @@ impl FirmwareInventory {
             if !fw.is_empty() {
                 self.entries.push(FirmwareEntry {
                     component: FirmwareComponent::Storage,
-                    vendor: vendor.to_string(),
-                    version: fw.to_string(),
-                    date: String::new(),
+                    vendor: non_empty(vendor),
+                    version: Some(fw.to_string()),
+                    date: None,
                     device: name.to_string(),
-                    updateable: false,
+                    updateable: None,
                     estimated_age_days: None,
                     inferred_risk_score: None,
                 });
@@ -637,8 +640,8 @@ impl FirmwareInventory {
         Ok(())
     }
 
-    /// System vendor and model. Decoration: the resting value is an empty
-    /// string, which already reads as "not established".
+    /// System vendor and model. Decoration: a property the query did not
+    /// return stays `None`.
     #[cfg(target_os = "windows")]
     fn read_windows_system_identity(&mut self) {
         if let Ok(rows) = crate::platform::windows::wmi_query(
@@ -647,8 +650,8 @@ impl FirmwareInventory {
         ) {
             if let Some(row) = rows.first() {
                 self.system_vendor =
-                    crate::platform::windows::wmi_str(row, "Manufacturer").to_string();
-                self.system_product = crate::platform::windows::wmi_str(row, "Model").to_string();
+                    non_empty(crate::platform::windows::wmi_str(row, "Manufacturer"));
+                self.system_product = non_empty(crate::platform::windows::wmi_str(row, "Model"));
             }
         }
     }
@@ -699,17 +702,17 @@ impl FirmwareInventory {
             for line in text.lines() {
                 let line = line.trim();
                 if line.starts_with("Model Name:") {
-                    self.system_product = line.split(':').nth(1).unwrap_or("").trim().to_string();
+                    self.system_product = non_empty(line.split(':').nth(1).unwrap_or(""));
                 }
                 if line.starts_with("Boot ROM Version:") {
                     let version = line.split(':').nth(1).unwrap_or("").trim().to_string();
                     self.entries.push(FirmwareEntry {
                         component: FirmwareComponent::SystemBios,
-                        vendor: "Apple".into(),
-                        version,
-                        date: String::new(),
+                        vendor: Some("Apple".into()),
+                        version: non_empty(&version),
+                        date: None,
                         device: "Boot ROM".into(),
-                        updateable: true,
+                        updateable: None,
                         estimated_age_days: None,
                         inferred_risk_score: None,
                     });
@@ -717,7 +720,7 @@ impl FirmwareInventory {
             }
         }
 
-        self.system_vendor = "Apple".to_string();
+        self.system_vendor = Some("Apple".to_string());
 
         // T2 / Secure Enclave
         if let Ok(output) = std::process::Command::new("system_profiler")
@@ -731,11 +734,11 @@ impl FirmwareInventory {
                     let version = line.split(':').nth(1).unwrap_or("").trim().to_string();
                     self.entries.push(FirmwareEntry {
                         component: FirmwareComponent::EmbeddedController,
-                        vendor: "Apple".into(),
-                        version,
-                        date: String::new(),
+                        vendor: Some("Apple".into()),
+                        version: non_empty(&version),
+                        date: None,
                         device: "T2/Secure Enclave".into(),
-                        updateable: true,
+                        updateable: None,
                         estimated_age_days: None,
                         inferred_risk_score: None,
                     });
@@ -752,9 +755,9 @@ impl Default for FirmwareInventory {
             entries: Vec::new(),
             secure_boot: SecureBootStatus::Unknown,
             boot_mode: BootMode::Unknown,
-            system_vendor: String::new(),
-            system_product: String::new(),
-            system_serial: String::new(),
+            system_vendor: None,
+            system_product: None,
+            system_serial: None,
         })
     }
 }
@@ -822,9 +825,9 @@ mod tests {
             entries: Vec::new(),
             secure_boot: SecureBootStatus::Unknown,
             boot_mode: BootMode::Unknown,
-            system_vendor: String::new(),
-            system_product: String::new(),
-            system_serial: String::new(),
+            system_vendor: None,
+            system_product: None,
+            system_serial: None,
         };
         assert_eq!(inv.risk_score(), None);
     }
@@ -849,11 +852,11 @@ mod tests {
     fn test_risk_inference() {
         let mut entry = FirmwareEntry {
             component: FirmwareComponent::SystemBios,
-            vendor: "Test".into(),
-            version: "1.0".into(),
-            date: String::new(),
+            vendor: Some("Test".into()),
+            version: Some("1.0".into()),
+            date: None,
             device: "BIOS".into(),
-            updateable: true,
+            updateable: None,
             estimated_age_days: Some(2000), // ~5.5 years
             inferred_risk_score: None,
         };
@@ -869,11 +872,11 @@ mod tests {
     fn test_serialization() {
         let entry = FirmwareEntry {
             component: FirmwareComponent::SystemBios,
-            vendor: "AMI".into(),
-            version: "2.10".into(),
-            date: "2024-01-15".into(),
+            vendor: Some("AMI".into()),
+            version: Some("2.10".into()),
+            date: Some("2024-01-15".into()),
             device: "System BIOS".into(),
-            updateable: true,
+            updateable: Some(true),
             estimated_age_days: Some(365),
             inferred_risk_score: Some(20),
         };

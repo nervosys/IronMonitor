@@ -375,6 +375,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SMBIOS placeholders ("Not Specified", "To Be Filled By O.E.M.") are not
   kept as manufacturer, part or serial. Unparseable Windows or macOS output
   is an error, where it was an empty list or a module with no fields.
+- Linux thermal zones: `enabled`, `policy`, `available_policies`,
+  `passive_active` and the overview's `hottest_zone` are `Option`. A missing
+  mode file read as enabled, and an unread trip point compared below any
+  temperature, so it reported passive cooling. A missing `/sys/class/thermal`
+  is an error, not an empty overview.
+- Firmware inventory: entry `vendor`, `version`, `date` and `updateable`, and
+  the system vendor, product and serial, are `Option`. `updateable` was a
+  constant per source (`true` for BIOS and microcode, `false` for storage
+  and NICs), and a missing fwupd flags array read as not updatable. The
+  ontology gives each unread firmware value its own reason.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

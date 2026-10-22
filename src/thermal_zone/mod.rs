@@ -115,9 +115,6 @@ pub struct CoolingDeviceInfo {
 impl CoolingDeviceInfo {
     /// How far into its range the device is throttling, as a percentage, or
     /// `None` where either state is unread or the device reports no range.
-    ///
-    /// Returned `0.0` in all three of those cases, which is the figure for a
-    /// device doing no cooling at all.
     pub fn utilization_pct(&self) -> Option<f64> {
         let (cur, max) = (self.cur_state?, self.max_state?);
         if max == 0 {
@@ -144,16 +141,20 @@ pub struct ThermalZoneInfo {
     /// answered `false`. An unread thermal zone said it was cold and not
     /// throttling, which is the reassuring direction.
     pub temp_mc: Option<i64>,
-    /// Thermal policy/governor (e.g. "step_wise", "user_space").
-    pub policy: String,
-    /// Available policies.
-    pub available_policies: Vec<String>,
+    /// Thermal policy/governor (e.g. "step_wise", "user_space"), or `None`
+    /// where the zone's `policy` file was not read.
+    pub policy: Option<String>,
+    /// Available policies, or `None` where the zone's `available_policies`
+    /// file was not read. An empty list is a read that found none.
+    pub available_policies: Option<Vec<String>>,
     /// Trip points.
     pub trip_points: Vec<TripPoint>,
-    /// Mode (enabled/disabled).
-    pub enabled: bool,
-    /// Whether zone is in passive cooling mode.
-    pub passive_active: bool,
+    /// Mode (enabled/disabled), or `None` where the zone has no readable
+    /// `mode`. A missing `mode` used to read as enabled.
+    pub enabled: Option<bool>,
+    /// Whether the zone is in passive cooling mode, or `None` where the zone
+    /// temperature or the passive trip point was not read.
+    pub passive_active: Option<bool>,
 }
 
 impl ThermalZoneInfo {
@@ -199,8 +200,8 @@ pub struct ThermalZoneOverview {
     pub cooling_devices: Vec<CoolingDeviceInfo>,
     /// Total zone count.
     pub zone_count: u32,
-    /// Hottest zone name, empty when no zone reported a temperature.
-    pub hottest_zone: String,
+    /// Hottest zone name, or `None` when no zone reported a temperature.
+    pub hottest_zone: Option<String>,
     /// Hottest temperature in C, or `None` when no zone reported one.
     ///
     /// `unwrap_or_default()` made this 0.0 with no zones readable, which reads
@@ -271,8 +272,13 @@ impl ThermalZoneMonitor {
     fn scan() -> Result<ThermalZoneOverview, IronError> {
         let thermal_path = std::path::Path::new("/sys/class/thermal");
 
+        // A missing directory means the kernel exposes no thermal zones to
+        // read. That is a failed read of the source, not a machine with none.
         if !thermal_path.exists() {
-            return Ok(Self::empty_overview());
+            return Err(IronError::NotFound(format!(
+                "{} does not exist, so thermal zones cannot be read",
+                thermal_path.display()
+            )));
         }
 
         let mut zones = Vec::new();
@@ -310,8 +316,7 @@ impl ThermalZoneMonitor {
             .iter()
             .filter(|z| z.temp_mc.is_some())
             .max_by_key(|z| z.temp_mc)
-            .map(|z| (z.name.clone(), z.temp_c()))
-            .unwrap_or((String::new(), None));
+            .map_or((None, None), |z| (Some(z.name.clone()), z.temp_c()));
 
         let mut recs = Vec::new();
         if throttling > 0 {
@@ -366,13 +371,15 @@ impl ThermalZoneMonitor {
         // temperature of zero.
         let temp_mc = Self::read_sysfs_i64(&path.join("temp"));
 
-        let policy = Self::read_sysfs(&path.join("policy")).unwrap_or_default();
-        let available_policies = Self::read_sysfs(&path.join("available_policies"))
-            .map(|s| s.split_whitespace().map(String::from).collect())
-            .unwrap_or_default();
+        let policy = Self::read_sysfs(&path.join("policy"));
+        let available_policies = Self::read_sysfs(&path.join("available_policies")).map(|s| {
+            s.split_whitespace()
+                .map(String::from)
+                .collect::<Vec<String>>()
+        });
 
-        let mode_str = Self::read_sysfs(&path.join("mode")).unwrap_or_else(|| "enabled".into());
-        let enabled = mode_str != "disabled";
+        // No `mode` file is no answer about enablement, not an enabled zone.
+        let enabled = Self::read_sysfs(&path.join("mode")).map(|mode| mode != "disabled");
 
         // Read trip points
         let mut trip_points = Vec::new();
@@ -404,10 +411,19 @@ impl ThermalZoneMonitor {
             });
         }
 
-        let passive_active = trip_points
+        // Compared only where both the zone temperature and a passive trip
+        // point were read. `Option` orders `None` below `Some`, so comparing
+        // the raw values reported passive cooling for any zone whose trip
+        // point was unread.
+        let passive: Vec<i64> = trip_points
             .iter()
             .filter(|tp| tp.trip_type == TripPointType::Passive)
-            .any(|tp| temp_mc >= tp.temp_mc);
+            .filter_map(|tp| tp.temp_mc)
+            .collect();
+        let passive_active = match temp_mc {
+            Some(here) if !passive.is_empty() => Some(passive.iter().any(|t| here >= *t)),
+            _ => None,
+        };
 
         Some(ThermalZoneInfo {
             name: name.to_string(),
@@ -475,7 +491,7 @@ impl ThermalZoneMonitor {
             zones: Vec::new(),
             cooling_devices: Vec::new(),
             zone_count: 0,
-            hottest_zone: String::new(),
+            hottest_zone: None,
             hottest_temp_c: None,
             throttling_count: 0,
             recommendations: Vec::new(),
@@ -529,8 +545,8 @@ mod tests {
             zone_type: ThermalZoneType::X86Pkg,
             type_string: "x86_pkg_temp".into(),
             temp_mc: Some(95_000),
-            policy: "step_wise".into(),
-            available_policies: vec!["step_wise".into()],
+            policy: Some("step_wise".into()),
+            available_policies: Some(vec!["step_wise".into()]),
             trip_points: vec![
                 TripPoint {
                     index: 0,
@@ -545,8 +561,8 @@ mod tests {
                     hysteresis_mc: Some(0),
                 },
             ],
-            enabled: true,
-            passive_active: true,
+            enabled: Some(true),
+            passive_active: Some(true),
         };
         assert_eq!(zone.is_throttling(), Some(true));
         assert!((zone.headroom_to_critical_c().unwrap() - 10.0).abs() < 0.01);
@@ -565,16 +581,16 @@ mod tests {
             zone_type: ThermalZoneType::X86Pkg,
             type_string: "x86_pkg_temp".into(),
             temp_mc: None,
-            policy: "step_wise".into(),
-            available_policies: vec!["step_wise".into()],
+            policy: Some("step_wise".into()),
+            available_policies: Some(vec!["step_wise".into()]),
             trip_points: vec![TripPoint {
                 index: 0,
                 trip_type: TripPointType::Passive,
                 temp_mc: Some(90_000),
                 hysteresis_mc: Some(2_000),
             }],
-            enabled: true,
-            passive_active: false,
+            enabled: Some(true),
+            passive_active: None,
         };
 
         assert_eq!(
@@ -617,11 +633,11 @@ mod tests {
             zone_type: ThermalZoneType::Acpi,
             type_string: "acpitz".into(),
             temp_mc: Some(45_000),
-            policy: "step_wise".into(),
-            available_policies: Vec::new(),
+            policy: Some("step_wise".into()),
+            available_policies: Some(Vec::new()),
             trip_points: Vec::new(),
-            enabled: true,
-            passive_active: false,
+            enabled: Some(true),
+            passive_active: Some(false),
         };
         let json = serde_json::to_string(&zone).unwrap();
         assert!(json.contains("acpitz"));

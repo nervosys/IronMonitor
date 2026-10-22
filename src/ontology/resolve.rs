@@ -689,8 +689,22 @@ fn resolve_firmware(out: &mut Vec<Reading>) {
         }
     };
 
-    push_text(out, "board.firmware.vendor", inventory.system_vendor());
-    push_text(out, "board.firmware.product", inventory.system_product());
+    match inventory.system_vendor() {
+        Some(vendor) => push_text(out, "board.firmware.vendor", vendor),
+        None => out.push(Reading::unavailable(
+            "board.firmware.vendor",
+            Some(Unit::Text),
+            "the firmware did not report a system vendor",
+        )),
+    }
+    match inventory.system_product() {
+        Some(product) => push_text(out, "board.firmware.product", product),
+        None => out.push(Reading::unavailable(
+            "board.firmware.product",
+            Some(Unit::Text),
+            "the firmware did not report a product name",
+        )),
+    }
     push_id(
         out,
         "board.firmware.boot_mode",
@@ -703,7 +717,14 @@ fn resolve_firmware(out: &mut Vec<Reading>) {
             format!("board.firmware.{i}.component"),
             &format!("{:?}", entry.component).to_lowercase(),
         );
-        push_text(out, format!("board.firmware.{i}.version"), &entry.version);
+        match &entry.version {
+            Some(version) => push_text(out, format!("board.firmware.{i}.version"), version),
+            None => out.push(Reading::unavailable(
+                format!("board.firmware.{i}.version"),
+                Some(Unit::Text),
+                "the firmware source did not report a version",
+            )),
+        }
     }
 }
 
