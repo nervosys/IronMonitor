@@ -509,17 +509,27 @@ impl PowerProfileMonitor {
         // `read_dir` yields a Result; the doubled loop was iterating that Result as
         // if it were a collection, which reads as two levels of directory when
         // there is only one.
+        //
+        // A machine can have several mains supplies (one per USB-C port), so any
+        // online one means AC; taking the last one read let an unplugged port
+        // override a plugged one. Only "1" and "0" are a reading.
         if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+            let mut mains_online = Vec::new();
             for e in entries.flatten() {
                 let path = e.path();
                 if let Ok(ptype) = std::fs::read_to_string(path.join("type")) {
                     if ptype.trim() == "Mains" {
                         if let Ok(online) = std::fs::read_to_string(path.join("online")) {
-                            self.on_ac_power = Some(online.trim() == "1");
+                            mains_online.push(match online.trim() {
+                                "1" => Some(true),
+                                "0" => Some(false),
+                                _ => None,
+                            });
                         }
                     }
                 }
             }
+            self.on_ac_power = combine_mains_online(&mains_online);
         }
 
         // Charge threshold (ThinkPad, ASUS, etc.)
@@ -757,9 +767,35 @@ impl Default for PowerProfileMonitor {
     }
 }
 
+/// Whether a machine is on AC from each mains supply's `online` reading. Any
+/// supply online means AC; all read and offline means not; otherwise unknown.
+#[cfg(any(target_os = "linux", test))]
+fn combine_mains_online(readings: &[Option<bool>]) -> Option<bool> {
+    if readings.contains(&Some(true)) {
+        Some(true)
+    } else if !readings.is_empty() && readings.iter().all(|r| *r == Some(false)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn any_online_mains_supply_means_ac() {
+        assert_eq!(combine_mains_online(&[Some(true), Some(false)]), Some(true));
+        assert_eq!(combine_mains_online(&[Some(false), Some(true)]), Some(true));
+        assert_eq!(
+            combine_mains_online(&[Some(false), Some(false)]),
+            Some(false)
+        );
+        // An unread supply could be the online one, so "all offline" needs all read.
+        assert_eq!(combine_mains_online(&[Some(false), None]), None);
+        assert_eq!(combine_mains_online(&[]), None);
+    }
 
     /// Constructing the monitor either enumerates or says why it could not.
     ///

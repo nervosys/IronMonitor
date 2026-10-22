@@ -365,6 +365,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     battery status/health and `BatteryInfo.state`/`health` are `Option`.
     `BatteryMonitor` returns an error when enumeration fails, where it
     reported no batteries.
+- Linux power profile `on_ac_power` is true when any mains supply is online.
+  The last supply read decided it, so an unplugged USB-C port could hide a
+  plugged one, and an `online` value other than 0 or 1 read as off AC.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
