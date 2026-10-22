@@ -75,11 +75,14 @@ impl ProfileProvider for MemoryProfileProvider {
                 "DIMM SPD / configured",
                 "SMBIOS Type 17",
             );
-            g.push(Setting::info(
-                "bank",
-                "Bank Locator",
-                SettingValue::Text(dimm.bank.clone()),
-            ));
+            // macOS reports no bank locator. Only a bank that was read gets a row.
+            if !dimm.bank.is_empty() {
+                g.push(Setting::info(
+                    "bank",
+                    "Bank Locator",
+                    SettingValue::Text(dimm.bank.clone()),
+                ));
+            }
             // Rows only for what was read, following the voltage row below.
             if let Some(rated) = dimm.speed_mts {
                 g.push(

@@ -126,10 +126,8 @@ pub struct DimmInfo {
     pub memory_type: MemoryType,
     /// Form factor.
     pub form_factor: FormFactor,
-    /// Data width in bits (typically 64).
     /// Data width in bits, where it was read. See [`Self::is_ecc`].
     pub data_width_bits: Option<u32>,
-    /// Total width in bits (72 = ECC, 64 = non-ECC).
     /// Total width in bits, where it was read. See [`Self::is_ecc`].
     pub total_width_bits: Option<u32>,
     /// Number of ranks, or `None` where it was not read.
@@ -220,8 +218,10 @@ pub struct MemoryAnalysis {
     /// Whether all DIMMs are the same capacity (optimal for interleaving), or
     /// `None` where fewer than two capacities were read.
     pub matched_capacities: Option<bool>,
-    /// Whether ECC is active.
-    pub ecc_active: bool,
+    /// Whether ECC is active: `Some(true)` if any populated module has it,
+    /// `Some(false)` only when every populated module was read and none does,
+    /// and `None` otherwise. Unread widths are not evidence of no ECC.
+    pub ecc_active: Option<bool>,
     /// Estimated peak bandwidth in GB/s, or `None` where no DIMM speed was
     /// read.
     ///
@@ -308,10 +308,18 @@ impl MemoryTopologyMonitor {
             dimms.iter().filter(|d| d.populated == Some(true)).collect();
         // Sums the sizes that were read. One unread size makes the total
         // unknown, rather than a total that quietly leaves that module out.
-        let total_capacity_bytes: Option<u64> = populated.iter().map(|d| d.capacity_bytes).sum();
+        // No enumerated module is no total at all, not a total of zero.
+        let total_capacity_bytes: Option<u64> = if populated.is_empty() {
+            None
+        } else {
+            populated.iter().map(|d| d.capacity_bytes).sum()
+        };
         let populated_count = populated.len();
-        // Only a source that lists empty slots can count them.
-        let total_slots = Self::SOURCE_LISTS_EMPTY_SLOTS.then_some(dimms.len());
+        // Only a source that lists empty slots can count them, and only when it
+        // listed rows: a source with no rows (Apple silicon reports unified
+        // memory with no slots) has no slot count, not a count of zero.
+        let total_slots =
+            (Self::SOURCE_LISTS_EMPTY_SLOTS && !dimms.is_empty()).then_some(dimms.len());
 
         // Matched speeds and capacities need two values to compare. With fewer,
         // there is no match to report, so the answer is unknown rather than
@@ -322,9 +330,15 @@ impl MemoryTopologyMonitor {
         let matched_capacities =
             (capacities.len() >= 2).then(|| capacities.windows(2).all(|w| w[0] == w[1]));
 
-        // ECC detection. `any` over `Option` must ask for `Some(true)`: a DIMM
-        // whose widths were not read is not a DIMM known to lack ECC.
-        let ecc_active = populated.iter().any(|d| d.is_ecc() == Some(true));
+        // ECC detection. A DIMM whose widths were not read is not a DIMM known
+        // to lack ECC, so "no ECC" needs every populated module answered.
+        let ecc_active = if populated.iter().any(|d| d.is_ecc() == Some(true)) {
+            Some(true)
+        } else if !populated.is_empty() && populated.iter().all(|d| d.is_ecc() == Some(false)) {
+            Some(false)
+        } else {
+            None
+        };
 
         // Channel inference from locator naming patterns. `None` when no locator
         // names a channel and the module count does not establish one.
@@ -515,7 +529,7 @@ impl MemoryTopologyMonitor {
         match output {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
-                Ok(Self::parse_windows_wmi(&text))
+                Self::parse_windows_wmi(&text)
             }
             Ok(out) => Err(IronError::CommandFailed(format!(
                 "Get-CimInstance Win32_PhysicalMemory failed: {}",
@@ -535,7 +549,7 @@ impl MemoryTopologyMonitor {
         match output {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
-                Ok(Self::parse_macos_profiler(&text))
+                Self::parse_macos_profiler(&text)
             }
             Ok(out) => Err(IronError::CommandFailed(format!(
                 "system_profiler SPMemoryDataType failed: {}",
@@ -602,7 +616,7 @@ impl MemoryTopologyMonitor {
         let capacity_bytes = if slot_empty {
             None
         } else {
-            Some(Self::parse_size_to_bytes(&size_str)).filter(|&b| b > 0)
+            Self::parse_size_to_bytes(&size_str)
         };
 
         let speed_str = fields.get("Speed").cloned().unwrap_or_default();
@@ -640,12 +654,12 @@ impl MemoryTopologyMonitor {
         // not a single-rank DIMM.
         let rank = fields.get("Rank").and_then(|s| s.parse::<u32>().ok());
 
-        let manufacturer = fields.get("Manufacturer").cloned().unwrap_or_default();
-        let part_number = fields.get("Part Number").cloned().unwrap_or_default();
-        let serial_number = fields.get("Serial Number").cloned().unwrap_or_default();
+        let manufacturer = Self::read_text(fields.get("Manufacturer").map_or("", String::as_str));
+        let part_number = Self::read_text(fields.get("Part Number").map_or("", String::as_str));
+        let serial_number = Self::read_text(fields.get("Serial Number").map_or("", String::as_str));
         let populated = if slot_empty {
             Some(false)
-        } else if capacity_bytes.is_some() || Self::names_a_part(&part_number) {
+        } else if capacity_bytes.is_some() || !part_number.is_empty() {
             Some(true)
         } else {
             None
@@ -684,28 +698,45 @@ impl MemoryTopologyMonitor {
         })
     }
 
-    /// Whether a SMBIOS part-number field names a part rather than a
-    /// placeholder, which is evidence that a module is present.
-    fn names_a_part(part: &str) -> bool {
-        let p = part.trim();
-        !p.is_empty()
-            && !["not specified", "unknown", "none", "[empty]", "no dimm"]
-                .contains(&p.to_ascii_lowercase().as_str())
+    /// A firmware text field as read: trimmed, or `""` where it is empty or
+    /// names a placeholder rather than a value. A placeholder is not a part
+    /// number, a serial or a manufacturer, and is no evidence of a module.
+    fn read_text(s: &str) -> String {
+        let t = s.trim();
+        let placeholder = [
+            "not specified",
+            "unknown",
+            "none",
+            "[empty]",
+            "no dimm",
+            "to be filled by o.e.m.",
+            "undefined",
+        ]
+        .contains(&t.to_ascii_lowercase().as_str());
+        if placeholder {
+            String::new()
+        } else {
+            t.to_string()
+        }
     }
 
-    fn parse_size_to_bytes(s: &str) -> u64 {
+    /// Bytes in a size string such as `16 GB`, or `None` where it does not
+    /// parse. An unrecognised unit used to be read as bytes, which made
+    /// `16 GiB` a 16-byte module.
+    fn parse_size_to_bytes(s: &str) -> Option<u64> {
         let parts: Vec<&str> = s.split_whitespace().collect();
         if parts.len() < 2 {
-            return 0;
+            return None;
         }
-        let value: u64 = parts[0].parse().unwrap_or(0);
-        match parts[1].to_uppercase().as_str() {
-            "KB" => value * 1024,
-            "MB" => value * 1024 * 1024,
-            "GB" => value * 1024 * 1024 * 1024,
-            "TB" => value * 1024 * 1024 * 1024 * 1024,
-            _ => value,
-        }
+        let value: u64 = parts[0].parse().ok()?;
+        let multiplier: u64 = match parts[1].to_uppercase().as_str() {
+            "KB" | "KIB" => 1 << 10,
+            "MB" | "MIB" => 1 << 20,
+            "GB" | "GIB" => 1 << 30,
+            "TB" | "TIB" => 1 << 40,
+            _ => return None,
+        };
+        value.checked_mul(multiplier).filter(|&b| b > 0)
     }
 
     /// The leading number of a speed string, or `None` if there is none.
@@ -768,23 +799,32 @@ impl MemoryTopologyMonitor {
     }
 
     #[allow(dead_code)]
-    fn parse_windows_wmi(text: &str) -> Vec<DimmInfo> {
+    fn parse_windows_wmi(text: &str) -> Result<Vec<DimmInfo>, IronError> {
         // Parse JSON array from PowerShell
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        // Try to parse as JSON array or single object
-        let items: Vec<serde_json::Value> = if trimmed.starts_with('[') {
-            serde_json::from_str(trimmed).unwrap_or_default()
-        } else if trimmed.starts_with('{') {
-            vec![serde_json::from_str(trimmed).unwrap_or_default()]
-        } else {
-            Vec::new()
+        // An array, or one object when a single module is installed. Anything
+        // else is an error. An empty list would read as "no memory modules
+        // here", and a failed parse used to become a module with no fields.
+        let items: Vec<serde_json::Value> = match serde_json::from_str(trimmed) {
+            Ok(serde_json::Value::Array(items)) => items,
+            Ok(obj @ serde_json::Value::Object(_)) => vec![obj],
+            Ok(_) => {
+                return Err(IronError::Parse(
+                    "Win32_PhysicalMemory output is neither an array nor an object".into(),
+                ))
+            }
+            Err(e) => {
+                return Err(IronError::Parse(format!(
+                    "Win32_PhysicalMemory output is not JSON: {e}"
+                )))
+            }
         };
 
-        items
+        let dimms: Vec<DimmInfo> = items
             .iter()
             .map(|item| {
                 let capacity = item["Capacity"]
@@ -832,17 +872,9 @@ impl MemoryTopologyMonitor {
                     // Win32_PhysicalMemory has no rank field. This was `1`
                     // beside a comment saying so.
                     ranks: None,
-                    manufacturer: item["Manufacturer"]
-                        .as_str()
-                        .unwrap_or("")
-                        .trim()
-                        .to_string(),
-                    part_number: item["PartNumber"].as_str().unwrap_or("").trim().to_string(),
-                    serial_number: item["SerialNumber"]
-                        .as_str()
-                        .unwrap_or("")
-                        .trim()
-                        .to_string(),
+                    manufacturer: Self::read_text(item["Manufacturer"].as_str().unwrap_or("")),
+                    part_number: Self::read_text(item["PartNumber"].as_str().unwrap_or("")),
+                    serial_number: Self::read_text(item["SerialNumber"].as_str().unwrap_or("")),
                     // `Win32_PhysicalMemory` lists installed modules only, so
                     // the row is the evidence. This was `capacity > 0`, which
                     // reported a module with an unreadable `Capacity` as an
@@ -857,16 +889,15 @@ impl MemoryTopologyMonitor {
                         .map(|mv| mv as f64 / 1000.0),
                 }
             })
-            .collect()
+            .collect();
+        Ok(dimms)
     }
 
     #[allow(dead_code)]
-    fn parse_macos_profiler(text: &str) -> Vec<DimmInfo> {
+    fn parse_macos_profiler(text: &str) -> Result<Vec<DimmInfo>, IronError> {
         // macOS system_profiler SPMemoryDataType -json
-        let root: serde_json::Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
+        let root: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| IronError::Parse(format!("system_profiler output is not JSON: {e}")))?;
 
         let mut dimms = Vec::new();
         if let Some(items) = root["SPMemoryDataType"].as_array() {
@@ -874,8 +905,7 @@ impl MemoryTopologyMonitor {
                 if let Some(slots) = item["_items"].as_array() {
                     for slot in slots {
                         let size_str = slot["dimm_size"].as_str().unwrap_or("");
-                        let capacity_bytes =
-                            Some(Self::parse_size_to_bytes(size_str)).filter(|&b| b > 0);
+                        let capacity_bytes = Self::parse_size_to_bytes(size_str);
                         // `dimm_status` says "empty" or "ok" where it is
                         // present, and "Empty" appears as the size of an empty
                         // slot. A size that parsed is a module. Anything else
@@ -910,18 +940,15 @@ impl MemoryTopologyMonitor {
                             total_width_bits: None,
                             // system_profiler reports no rank count.
                             ranks: None,
-                            manufacturer: slot["dimm_manufacturer"]
-                                .as_str()
-                                .unwrap_or("")
-                                .to_string(),
-                            part_number: slot["dimm_part_number"]
-                                .as_str()
-                                .unwrap_or("")
-                                .to_string(),
-                            serial_number: slot["dimm_serial_number"]
-                                .as_str()
-                                .unwrap_or("")
-                                .to_string(),
+                            manufacturer: Self::read_text(
+                                slot["dimm_manufacturer"].as_str().unwrap_or(""),
+                            ),
+                            part_number: Self::read_text(
+                                slot["dimm_part_number"].as_str().unwrap_or(""),
+                            ),
+                            serial_number: Self::read_text(
+                                slot["dimm_serial_number"].as_str().unwrap_or(""),
+                            ),
                             populated,
                             // `system_profiler` reports no DIMM voltage.
                             voltage: None,
@@ -929,9 +956,13 @@ impl MemoryTopologyMonitor {
                     }
                 }
             }
+        } else {
+            return Err(IronError::Parse(
+                "system_profiler output has no SPMemoryDataType array".into(),
+            ));
         }
 
-        dimms
+        Ok(dimms)
     }
 }
 
@@ -1204,7 +1235,8 @@ Can't read memory from /dev/mem
             {"_name":"DIMM1","dimm_size":"sixteen gigs"},
             {"_name":"DIMM2","dimm_size":"Empty","dimm_status":"empty"}
         ]}]}"#;
-        let dimms = MemoryTopologyMonitor::parse_macos_profiler(json);
+        let dimms =
+            MemoryTopologyMonitor::parse_macos_profiler(json).expect("system_profiler JSON parses");
         assert_eq!(dimms.len(), 3);
         assert_eq!(dimms[0].populated, Some(true));
         assert_eq!(dimms[0].capacity_bytes, Some(16 * 1024 * 1024 * 1024));
@@ -1248,6 +1280,60 @@ Can't read memory from /dev/mem
         assert_eq!(nothing_known.populated, None);
     }
 
+    /// No enumerated module is unknown, not zero, and "no ECC" needs every
+    /// populated module's widths to have been read.
+    #[test]
+    fn no_enumerated_modules_is_unknown_not_zero() {
+        let none = MemoryTopologyMonitor::analyze(&[]);
+        assert_eq!(none.total_capacity_bytes, None);
+        assert_eq!(none.total_slots, None);
+        assert_eq!(none.ecc_active, None);
+
+        let known = [analysed_dimm("DIMM_A1", Some(8 << 30), Some(3200))];
+        assert_eq!(
+            MemoryTopologyMonitor::analyze(&known).ecc_active,
+            Some(false)
+        );
+
+        let mut unread = analysed_dimm("DIMM_A1", Some(8 << 30), Some(3200));
+        unread.data_width_bits = None;
+        unread.total_width_bits = None;
+        assert_eq!(MemoryTopologyMonitor::analyze(&[unread]).ecc_active, None);
+    }
+
+    /// Output that does not parse is an error, not an empty list. The Windows
+    /// reader turned a `{` it could not parse into a module with every field
+    /// unset and `populated: Some(true)`.
+    #[test]
+    fn unparseable_profiler_output_is_an_error_not_an_empty_list() {
+        assert!(MemoryTopologyMonitor::parse_windows_wmi("not json").is_err());
+        assert!(MemoryTopologyMonitor::parse_windows_wmi("{ truncated").is_err());
+        assert!(MemoryTopologyMonitor::parse_windows_wmi("42").is_err());
+        assert!(MemoryTopologyMonitor::parse_windows_wmi("")
+            .unwrap()
+            .is_empty());
+        assert!(MemoryTopologyMonitor::parse_macos_profiler("not json").is_err());
+        assert!(
+            MemoryTopologyMonitor::parse_macos_profiler(r#"{"SPHardwareDataType":[]}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn size_with_an_unrecognised_unit_is_unread() {
+        assert_eq!(
+            MemoryTopologyMonitor::parse_size_to_bytes("16 GB"),
+            Some(16 << 30)
+        );
+        assert_eq!(
+            MemoryTopologyMonitor::parse_size_to_bytes("16 GiB"),
+            Some(16 << 30)
+        );
+        assert_eq!(
+            MemoryTopologyMonitor::parse_size_to_bytes("16 furlongs"),
+            None
+        );
+    }
+
     #[test]
     fn test_serialization() {
         let analysis = MemoryAnalysis {
@@ -1259,7 +1345,7 @@ Can't read memory from /dev/mem
             quad_channel: Some(false),
             matched_speeds: Some(true),
             matched_capacities: Some(true),
-            ecc_active: false,
+            ecc_active: Some(false),
             estimated_bandwidth_gbs: Some(51.2),
             channel_count: Some(2),
             recommendations: vec!["2 empty DIMM slot(s) available for expansion".into()],

@@ -368,6 +368,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux power profile `on_ac_power` is true when any mains supply is online.
   The last supply read decided it, so an unplugged USB-C port could hide a
   plugged one, and an `online` value other than 0 or 1 read as off AC.
+- Memory topology: `MemoryAnalysis.ecc_active` is `Option<bool>` and is
+  false only when every populated module was read as non-ECC. No enumerated
+  module gives no total capacity or slot count, where both were 0. A size
+  with an unrecognised unit is unread, where `16 GiB` read as 16 bytes.
+  SMBIOS placeholders ("Not Specified", "To Be Filled By O.E.M.") are not
+  kept as manufacturer, part or serial. Unparseable Windows or macOS output
+  is an error, where it was an empty list or a module with no fields.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
