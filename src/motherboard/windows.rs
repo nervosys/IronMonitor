@@ -633,7 +633,7 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
             (Some(ver), None) => Some(ver.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| "Unknown".to_string());
+        .filter(|v| !v.is_empty());
 
     Ok(SystemInfo {
         os_name: os_info

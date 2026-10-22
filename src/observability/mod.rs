@@ -34,7 +34,8 @@
 //! let ctx = RequestContext::new("local-key");
 //!
 //! let response = api.get_context(&ctx)?;
-//! println!("System: {}", response.data.system.hostname);
+//! let hostname = response.data.system.hostname.as_deref().unwrap_or("(not read)");
+//! println!("System: {hostname}");
 //! # Ok(())
 //! # }
 //! ```

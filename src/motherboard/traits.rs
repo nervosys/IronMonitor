@@ -128,7 +128,8 @@ pub struct SensorReading {
 pub struct SystemInfo {
     // Operating System
     pub os_name: String,
-    pub os_version: String,
+    /// `None` when the version was not read.
+    pub os_version: Option<String>,
     pub kernel_version: Option<String>,
     pub architecture: String, // x86_64, aarch64, etc.
     pub hostname: Option<String>,

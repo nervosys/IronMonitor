@@ -5345,8 +5345,13 @@ impl IronMonitorApp {
                             RichText::new("Operating System:")
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
+                        // Without a version the row shows the name alone.
+                        let os_label = match &info.os_version {
+                            Some(version) => format!("{} {}", info.os_name, version),
+                            None => info.os_name.clone(),
+                        };
                         ui.label(
-                            RichText::new(format!("{} {}", info.os_name, info.os_version))
+                            RichText::new(os_label)
                                 .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.end_row();

@@ -94,11 +94,15 @@ impl MacSensor {
             // Look for fan entries
             let mut fan_idx = 0u32;
             for line in text.lines() {
-                if line.contains("FanActualSpeed") || line.contains("Fan") {
+                // Only the actual-speed key is a tachometer reading. Matching any key
+                // containing "Fan" turned `FanCount`, `FanMinSpeed` and the like into
+                // fans spinning at that number.
+                if line.contains("FanActualSpeed") {
                     if let Some(rpm) = extract_ioreg_int(line) {
                         fans.push(FanInfo {
                             label: format!("Fan {}", fan_idx),
-                            rpm: if rpm > 0 { Some(rpm as u32) } else { None },
+                            // A stopped fan reads 0, which is a reading
+                            rpm: u32::try_from(rpm).ok(),
                             pwm: None,
                             min_rpm: None,
                             max_rpm: None,
@@ -166,18 +170,19 @@ fn extract_ioreg_int(line: &str) -> Option<i64> {
 pub fn get_system_info() -> Result<SystemInfo, Error> {
     // macOS version from sw_vers
     let os_version = run_cmd("sw_vers", &["-productVersion"])
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let os_build = run_cmd("sw_vers", &["-buildVersion"])
         .unwrap_or_default()
         .trim()
         .to_string();
-    let os_version_full = if os_build.is_empty() {
-        os_version.clone()
-    } else {
-        format!("{} ({})", os_version, os_build)
-    };
+    let os_version_full = os_version.map(|version| {
+        if os_build.is_empty() {
+            version
+        } else {
+            format!("{} ({})", version, os_build)
+        }
+    });
 
     // Kernel version
     let kernel_version = run_cmd("uname", &["-r"]).map(|s| s.trim().to_string());

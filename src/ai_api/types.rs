@@ -187,8 +187,8 @@ pub struct SystemInfoDetails {
     pub hostname: Option<String>,
     /// OS name
     pub os_name: String,
-    /// OS version
-    pub os_version: String,
+    /// OS version. `None` when the version was not read.
+    pub os_version: Option<String>,
     /// Kernel version. `None` when it could not be read, rather than empty.
     pub kernel_version: Option<String>,
     /// Architecture

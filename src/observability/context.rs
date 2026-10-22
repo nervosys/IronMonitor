@@ -73,7 +73,8 @@ impl SystemContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinimalContext {
     pub timestamp: u64,
-    pub hostname: String,
+    /// `None` when the hostname was not read
+    pub hostname: Option<String>,
     pub os: String,
     /// `None` where the CPU was not read: a zero would say the machine has none.
     pub cpu_count: Option<usize>,
@@ -86,14 +87,14 @@ pub struct MinimalContext {
 /// System identification information
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemIdentity {
-    /// Hostname
-    pub hostname: String,
+    /// Hostname; `None` when it was not read
+    pub hostname: Option<String>,
     /// Operating system name
     pub os_name: String,
-    /// OS version
-    pub os_version: String,
-    /// Kernel version
-    pub kernel_version: String,
+    /// OS version; `None` when it was not read
+    pub os_version: Option<String>,
+    /// Kernel version; `None` when it was not read
+    pub kernel_version: Option<String>,
     /// Architecture (x86_64, aarch64, etc.)
     pub architecture: String,
     /// Machine ID (unique system identifier)

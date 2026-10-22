@@ -496,20 +496,13 @@ impl ObservabilityApi {
     fn collect_system_identity(&self) -> SystemIdentity {
         use crate::motherboard;
         let sys_info = motherboard::get_system_info().ok();
-        let os_version = sys_info
-            .as_ref()
-            .map(|s| s.os_version.clone())
-            .unwrap_or_default();
-        let kernel_version = sys_info
-            .as_ref()
-            .and_then(|s| s.kernel_version.clone())
-            .unwrap_or_default();
+        let os_version = sys_info.as_ref().and_then(|s| s.os_version.clone());
+        let kernel_version = sys_info.as_ref().and_then(|s| s.kernel_version.clone());
         let hostname = sys_info
             .as_ref()
             .and_then(|s| s.hostname.clone())
             .or_else(|| std::env::var("COMPUTERNAME").ok())
-            .or_else(|| std::env::var("HOSTNAME").ok())
-            .unwrap_or_else(|| "unknown".into());
+            .or_else(|| std::env::var("HOSTNAME").ok());
 
         #[cfg(target_os = "windows")]
         let uptime_seconds = Some(crate::platform::windows::get_system_uptime().as_secs());

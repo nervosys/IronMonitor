@@ -31,7 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(info) => {
             println!("[OS] Operating System:");
             println!("  Name:         {}", info.os_name);
-            println!("  Version:      {}", info.os_version);
+            if let Some(version) = &info.os_version {
+                println!("  Version:      {}", version);
+            }
             if let Some(kernel) = &info.kernel_version {
                 println!("  Kernel:       {}", kernel);
             }

@@ -300,11 +300,12 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
         .cloned()
         .unwrap_or_else(|| "Linux".to_string());
 
-    let os_version = os_info
-        .get("VERSION")
-        .or_else(|| os_info.get("VERSION_ID"))
-        .cloned()
-        .unwrap_or_else(|| "Unknown".to_string());
+    // Absent or empty in os-release means the version was not read.
+    let os_version = ["VERSION", "VERSION_ID"]
+        .iter()
+        .filter_map(|key| os_info.get(*key))
+        .find(|v| !v.is_empty())
+        .cloned();
 
     // Kernel version
     let kernel_version = fs::read_to_string("/proc/version")

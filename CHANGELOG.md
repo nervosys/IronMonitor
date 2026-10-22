@@ -330,6 +330,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux SATA disks report their own ATA link speed and port, read from the
   disk's sysfs path. Every disk was given the speed of ATA link 1, and a disk
   not behind libata (USB, virtio) now has no SATA speed.
+- Motherboard `SystemInfo.os_version` is `Option<String>`: an unread
+  version was "Unknown" on Linux and Windows and empty on macOS. The
+  observability `SystemIdentity` hostname, OS version and kernel version are
+  `Option` too, where they were "unknown" or empty, as is
+  `MinimalContext.hostname`. The AI tool's `os_version` is `null` when unread.
+- macOS fans are read only from the `FanActualSpeed` key. Any key containing
+  "Fan" counted, so `FanCount` and similar became fans spinning at that
+  number. A stopped fan reports 0 RPM, where it was `None`.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

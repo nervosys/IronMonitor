@@ -1395,11 +1395,10 @@ impl MonitoringBackend {
         if let Some(ref sys) = self.system_info {
             state.system = Some(SystemInfoState {
                 hostname: self.hostname.clone(),
-                os: if sys.os_version.is_empty() {
-                    self.os_info.clone()
-                } else {
-                    sys.os_version.clone()
-                },
+                os: sys
+                    .os_version
+                    .clone()
+                    .unwrap_or_else(|| self.os_info.clone()),
                 kernel: sys.kernel_version.clone().unwrap_or_else(String::new),
                 uptime_secs: self.uptime().as_secs(),
             });

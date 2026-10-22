@@ -104,7 +104,7 @@ Comprehensive system information:
 
 **Operating System:**
 - `os_name`: OS distribution/product name
-- `os_version`: Version number
+- `os_version`: Version number (optional)
 - `kernel_version`: Kernel version string (optional)
 - `architecture`: CPU architecture (x86_64, aarch64, etc.)
 - `hostname`: System hostname (optional)
@@ -185,7 +185,7 @@ use ironmon::motherboard;
 
 let info = motherboard::get_system_info()?;
 
-println!("OS: {} {}", info.os_name, info.os_version);
+println!("OS: {} {}", info.os_name, info.os_version.unwrap_or_default());
 println!("Kernel: {}", info.kernel_version.unwrap_or_default());
 println!("Architecture: {}", info.architecture);
 
