@@ -376,9 +376,15 @@ impl MotherboardDevice for WindowsSensor {
         }
 
         let mut sensors = Vec::new();
+        // Failed reads are collected and reported only when they left no sensor at all.
+        let mut errors: Vec<String> = Vec::new();
 
         // First, try Win32_TemperatureProbe in root\CIMV2 (doesn't require admin)
-        if let Ok(wmi_cimv2) = create_wmi_connection() {
+        let cimv2_conn = create_wmi_connection();
+        if let Err(e) = &cimv2_conn {
+            errors.push(format!("root\\CIMV2 connection: {}", e));
+        }
+        if let Ok(wmi_cimv2) = cimv2_conn {
             // Win32_TemperatureProbe - standard WMI class
             #[derive(Deserialize, Debug)]
             #[serde(rename_all = "PascalCase")]
@@ -390,9 +396,13 @@ impl MotherboardDevice for WindowsSensor {
                 status: Option<String>,
             }
 
-            if let Ok(probes) = wmi_cimv2.raw_query::<Win32TemperatureProbe>(
+            let probes = wmi_cimv2.raw_query::<Win32TemperatureProbe>(
                 "SELECT Description, CurrentReading, NominalReading, Status FROM Win32_TemperatureProbe",
-            ) {
+            );
+            if let Err(e) = &probes {
+                errors.push(format!("Win32_TemperatureProbe query: {}", e));
+            }
+            if let Ok(probes) = probes {
                 for probe in probes {
                     if let Some(temp_tenths) = probe.current_reading {
                         // Convert from tenths of Celsius
@@ -413,24 +423,30 @@ impl MotherboardDevice for WindowsSensor {
             }
         }
 
-        // Try WMI with root\WMI namespace for ACPI thermal zones (may require admin)
-        let Ok(_base_conn) = create_wmi_connection() else {
-            return Ok(sensors);
-        };
+        // Try WMI with root\WMI namespace for ACPI thermal zones (may require admin).
+        // A failed connection is recorded rather than returned early, so the probes
+        // read above still count toward the result.
+        let base_conn = create_wmi_connection();
+        if let Err(e) = &base_conn {
+            errors.push(format!("WMI connection: {}", e));
+        }
         // Drop base_conn as we need a different namespace
-        drop(_base_conn);
+        drop(base_conn);
 
         // We need to get the COM library to create a namespace-specific connection
-        // Since create_wmi_connection succeeded, we can try assume_initialized
         let com = unsafe { COMLibrary::assume_initialized() };
-        let Ok(wmi_conn) = WMIConnection::with_namespace_path("root\\WMI", com) else {
-            return Ok(sensors);
-        };
 
         // Query MSAcpi_ThermalZoneTemperature (requires admin and WMI namespace root\WMI)
-        match wmi_conn.raw_query::<MsAcpiThermalZoneTemperature>(
-            "SELECT InstanceName, CurrentTemperature, Active FROM MSAcpi_ThermalZoneTemperature",
-        ) {
+        let thermal_zones = WMIConnection::with_namespace_path("root\\WMI", com)
+            .map_err(|e| Error::InitializationFailed(e.to_string()))
+            .and_then(|wmi_conn| {
+                wmi_conn
+                    .raw_query::<MsAcpiThermalZoneTemperature>(
+                        "SELECT InstanceName, CurrentTemperature, Active FROM MSAcpi_ThermalZoneTemperature",
+                    )
+                    .map_err(|e| Error::QueryFailed(e.to_string()))
+            });
+        match thermal_zones {
             Ok(thermal_zones) => {
                 for zone in thermal_zones {
                     if let Some(temp_decikelvin) = zone.current_temperature {
@@ -455,10 +471,15 @@ impl MotherboardDevice for WindowsSensor {
                     }
                 }
             }
-            Err(_e) => {
-                // MSAcpi thermal zones often require admin privileges
-                // Silently ignore - this is expected on most systems without admin
+            Err(e) => {
+                // MSAcpi thermal zones often require admin privileges. Recorded, and
+                // reported only if no other sensor was read.
+                errors.push(format!("MSAcpi_ThermalZoneTemperature: {}", e));
             }
+        }
+
+        if sensors.is_empty() && !errors.is_empty() {
+            return Err(Error::QueryFailed(errors.join("; ")));
         }
 
         Ok(sensors)
@@ -481,14 +502,14 @@ impl MotherboardDevice for WindowsSensor {
             return Ok(lhm_fans);
         }
 
-        // Fall back to Win32_Fan
-        let Ok(wmi_cimv2) = create_wmi_connection() else {
-            return Ok(Vec::new());
-        };
+        // Fall back to Win32_Fan. Reached only when LibreHardwareMonitor found no
+        // fans, so a failed connection here means no fan source could be read at all.
+        let wmi_cimv2 = create_wmi_connection()?;
 
         let mut fans = Vec::new();
 
-        // Query Win32_Fan (rarely populated on most systems)
+        // Query Win32_Fan (rarely populated on most systems). Zero rows is a real
+        // answer; a failed query is not, so it is returned rather than read as no fans.
         match wmi_cimv2
             .raw_query::<Win32Fan>("SELECT Name, DeviceID, Status, ActiveCooling FROM Win32_Fan")
         {
@@ -504,8 +525,8 @@ impl MotherboardDevice for WindowsSensor {
                     });
                 }
             }
-            Err(_e) => {
-                // Win32_Fan is rarely populated on most systems - silently ignore
+            Err(e) => {
+                return Err(Error::QueryFailed(format!("Win32_Fan query: {}", e)));
             }
         }
 
@@ -742,6 +763,9 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
     let wmi_conn = create_wmi_connection()?;
 
     let mut drivers = Vec::new();
+    // Failed queries are collected here. They are reported only when they left no
+    // driver to return, so a partial list is still a reading.
+    let mut errors: Vec<String> = Vec::new();
 
     // Query specific driver classes that are most useful
     let driver_classes = ["Display", "Net", "DiskDrive", "USB", "Processor"];
@@ -785,8 +809,9 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
                     }
                 }
             }
-            Err(_e) => {
-                // Some driver classes may not exist - silently ignore
+            Err(e) => {
+                // Recorded rather than dropped. Reported only if no driver was read.
+                errors.push(format!("{} drivers query: {}", class, e));
             }
         }
     }
@@ -794,7 +819,11 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
     // Also get any driver with NVIDIA, AMD, or Intel in the name (GPU drivers)
     let gpu_query = "SELECT DeviceName, DriverVersion, DeviceClass, Manufacturer, DriverDate FROM Win32_PnPSignedDriver WHERE DeviceName LIKE '%NVIDIA%' OR DeviceName LIKE '%AMD%' OR DeviceName LIKE '%Intel%'";
 
-    if let Ok(gpu_drivers) = wmi_conn.raw_query::<Win32PnPSignedDriver>(gpu_query) {
+    let gpu_drivers = wmi_conn.raw_query::<Win32PnPSignedDriver>(gpu_query);
+    if let Err(e) = &gpu_drivers {
+        errors.push(format!("GPU driver query: {}", e));
+    }
+    if let Ok(gpu_drivers) = gpu_drivers {
         for driver in gpu_drivers {
             if let Some(name) = driver.device_name {
                 // Skip if we already have this driver
@@ -818,6 +847,12 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
                 });
             }
         }
+    }
+
+    // Errors are returned only when they left nothing to report. A partial list from
+    // the queries that did answer is still a reading.
+    if drivers.is_empty() && !errors.is_empty() {
+        return Err(Error::QueryFailed(errors.join("; ")));
     }
 
     Ok(drivers)

@@ -338,6 +338,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS fans are read only from the `FanActualSpeed` key. Any key containing
   "Fan" counted, so `FanCount` and similar became fans spinning at that
   number. A stopped fan reports 0 RPM, where it was `None`.
+- Windows motherboard temperature sensors, fans and driver versions return
+  an error when every source failed, where a failed WMI connection or query
+  returned an empty list that read as "none on this machine". A partial
+  result from the sources that answered is still returned.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:
