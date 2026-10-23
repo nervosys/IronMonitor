@@ -32,7 +32,10 @@ use std::path::Path;
 pub struct AmdGpu {
     index: usize,
     name: String,
-    pci_bus_id: String,
+    /// `domain:bus:device.function`, or `None` when no address could be read.
+    /// Windows gives a PnP instance path here, which is not an address; see
+    /// `detect_amd_gpus_wmi`.
+    pci_bus_id: Option<String>,
     #[cfg(target_os = "linux")]
     card_path: String,
     #[cfg(target_os = "linux")]
@@ -42,7 +45,7 @@ pub struct AmdGpu {
 impl AmdGpu {
     /// Create new AMD GPU instance
     #[cfg(target_os = "linux")]
-    pub fn new(index: usize, pci_bus_id: String, card_path: String) -> Result<Self, Error> {
+    pub fn new(index: usize, pci_bus_id: Option<String>, card_path: String) -> Result<Self, Error> {
         let device_path = format!("{}/device", card_path);
 
         // Try to read GPU name from product_name or uevent
@@ -62,7 +65,7 @@ impl AmdGpu {
 
     /// Create new AMD GPU instance (non-Linux stub)
     #[cfg(not(target_os = "linux"))]
-    pub fn new(index: usize, pci_bus_id: String) -> Result<Self, Error> {
+    pub fn new(index: usize, pci_bus_id: Option<String>) -> Result<Self, Error> {
         let name = format!("AMD GPU {}", index);
         Ok(Self {
             index,
@@ -137,25 +140,21 @@ impl Gpu for AmdGpu {
                 .ok()
                 .map(|s| s.trim().to_string());
 
-            // Read EU/shader info if available
-            let shader_cores = fs::read_to_string(format!("{}/gpu_busy_percent", device_path))
-                .ok()
-                .and({
-                    // This indicates the file exists, but we need a different approach for EU count
-                    // Try reading from debugfs or another source
-                    None
-                });
-
+            // Shader (CU) count is not read here. This used to read
+            // `gpu_busy_percent` and discard it, so the field was always
+            // `None` while looking like a probe. No sysfs file in the amdgpu
+            // tree holds the count; the DRM_IOCTL_AMDGPU_INFO device-info
+            // query would, but this reader does not issue it.
             Ok(GpuStaticInfo {
                 index: self.index,
                 vendor: GpuVendor::Amd,
                 name: self.name.clone(),
-                pci_bus_id: Some(self.pci_bus_id.clone()),
+                pci_bus_id: self.pci_bus_id.clone(),
                 uuid: None,
                 vbios_version,
                 driver_version,
                 compute_capability: None,
-                shader_cores,
+                shader_cores: None,
                 l2_cache: None,
                 num_engines: None,
                 integrated: self.name.to_lowercase().contains("vega")
@@ -171,7 +170,7 @@ impl Gpu for AmdGpu {
             index: self.index,
             vendor: GpuVendor::Amd,
             name: self.name.clone(),
-            pci_bus_id: Some(self.pci_bus_id.clone()),
+            pci_bus_id: self.pci_bus_id.clone(),
             uuid: None,
             vbios_version: None,
             driver_version: None,
@@ -576,23 +575,20 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
                     .unwrap_or("");
 
                 if driver_name == "amdgpu" {
-                    // Get PCI bus ID from device path symlink
-                    let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
+                    // PCI address from the device path symlink, whose file name
+                    // is `domain:bus:device.function`. A link that cannot be read
+                    // used to become the string "unknown" here, which then
+                    // reached the snapshot as an address.
+                    let pci_bus_id = fs::read_link(&device_path).ok().and_then(|dev_link| {
                         dev_link
                             .file_name()
                             .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string()
-                    } else {
-                        "unknown".to_string()
-                    };
+                            .map(str::to_string)
+                    });
 
-                    let bus_id = pci_bus_id.clone();
-                    match AmdGpu::new(
-                        gpu_index,
-                        pci_bus_id,
-                        card_path.to_string_lossy().to_string(),
-                    ) {
+                    let card_str = card_path.to_string_lossy().to_string();
+                    let bus_id = pci_bus_id.clone().unwrap_or_else(|| card_str.clone());
+                    match AmdGpu::new(gpu_index, pci_bus_id, card_str) {
                         Ok(gpu) => {
                             collection.add_gpu(Box::new(gpu));
                             gpu_index += 1;
@@ -664,20 +660,23 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
             continue;
         }
 
-        let pci_bus_id = ctrl
-            .pnp_device_i_d
-            .as_deref()
-            .unwrap_or("unknown")
-            .to_string();
+        // WMI's PNPDeviceID is a PnP instance path (`PCI\VEN_1002&DEV_...\...`),
+        // which is not an address. This used to be stored as the bus id, so the
+        // ontology could never join the adapter to `pci.*`. The address is the
+        // one the PCI enumerator reads from the same device's registry
+        // `LocationInformation`; `None` when Windows records no PCI location.
+        let pnp_id = ctrl.pnp_device_i_d.as_deref().unwrap_or("");
+        let pci_bus_id = crate::pci_devices::pci_address_of(pnp_id);
+        let label = pci_bus_id.clone().unwrap_or_else(|| pnp_id.to_string());
 
         // A controller that fails is recorded and the rest are still read; the
         // index still advances so later adapters keep theirs.
-        let mut gpu = match AmdGpu::new(gpu_index, pci_bus_id.clone()) {
+        let mut gpu = match AmdGpu::new(gpu_index, pci_bus_id) {
             Ok(gpu) => gpu,
             Err(e) => {
                 collection
                     .detection_failures
-                    .push(("amd", format!("{pci_bus_id}: {e}")));
+                    .push(("amd", format!("{label}: {e}")));
                 gpu_index += 1;
                 continue;
             }
@@ -783,7 +782,7 @@ impl Gpu for WmiAmdGpu {
             index: self.inner.index,
             vendor: GpuVendor::Amd,
             name: self.inner.name.clone(),
-            pci_bus_id: Some(self.inner.pci_bus_id.clone()),
+            pci_bus_id: self.inner.pci_bus_id.clone(),
             uuid: None,
             vbios_version: None,
             driver_version: self.driver_version.clone(),
@@ -902,7 +901,7 @@ mod tests {
             // This will fail on systems without AMD GPUs, which is expected
             let result = AmdGpu::new(
                 0,
-                "0000:03:00.0".to_string(),
+                Some("0000:03:00.0".to_string()),
                 "/sys/class/drm/card0".to_string(),
             );
             // Just verify it doesn't panic
