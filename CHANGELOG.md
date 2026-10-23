@@ -48,6 +48,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows PCI devices no longer report their PnP health (`OK`) as a power
+  state, and the subsystem vendor and device ids are split from `SUBSYS_` as
+  Microsoft lays it out (device, then vendor); both fields held the whole
+  eight digits.
+- The AMD GPU's PCI address on Windows is its bus address, from the device's
+  location, not its PnP instance path, so it now joins its PCI topology. On
+  Linux the shader count is unread rather than filled from a utilisation file.
+- Camera formats on Linux are enumerated with `VIDIOC_ENUM_FMT`; every camera
+  reported `YUYV` and `MJPG`. Audio devices are enabled or not by their real
+  Windows endpoint state, and unknown elsewhere instead of always enabled.
+  Display HDR is unknown where it is not read, instead of always off.
+- Windows turbo is reported as the boost mode the active power scheme permits
+  (`powercfg`), where it was enabled unconditionally. Cache associativity from
+  the WMI fallback is a way count, not the CIM enum code, and a fully
+  associative cache reads as such on the native path.
+- NVMe spare capacity, its threshold, controller busy time and unsafe
+  shutdowns, parsed from the health log and then dropped, are published as
+  `disk.{n}.nvme.*`.
 - `disk.{n}.rotation_rate` is no longer a flag or a classification. Linux
   passed sysfs `queue/rotational` (0 or 1) through as the RPM, so every hard
   disk spun at 1 RPM, and macOS reported 0 RPM for anything it classified as an
