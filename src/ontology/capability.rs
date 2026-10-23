@@ -371,11 +371,12 @@ pub fn catalogue() -> Vec<Capability> {
                     (Platform::Windows, Support::Implemented),
                     (
                         Platform::MacOS,
-                        Support::Unimplemented {
-                            reason: "powermetrics requires root, so it may not be reachable \
-                                 unelevated at all; that is worth establishing before \
-                                 anything is written"
-                                .into(),
+                        Support::Partial {
+                            missing: concat!(
+                                "power supplies and batteries are read; package and rail ",
+                                "power need powermetrics, which requires root"
+                            )
+                            .into(),
                         },
                     ),
                 ]),

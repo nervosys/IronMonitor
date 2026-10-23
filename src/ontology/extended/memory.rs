@@ -55,8 +55,8 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         K::Measurement,
         Some(U::Count),
         P::Derived,
-        false,
-        "Number of DIMM slots the reader established as holding a module, counted from the per-slot populated flags.",
+        true,
+        "Number of DIMM slots the reader established as holding a module, counted from the per-slot populated flags. Unavailable where the slot table cannot be read, as on Linux without root.",
     )
     .derived(&["memory.dimm.{n}.populated"]));
     add(Entity::new(
