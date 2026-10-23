@@ -2736,6 +2736,8 @@ dependencies = [
  "nix 0.29.0",
  "num_cpus",
  "nvml-wrapper",
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
  "open",
  "parquet",
  "ratatui",

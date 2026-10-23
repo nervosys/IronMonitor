@@ -627,11 +627,23 @@ fn collector_loop(
     };
 
     // Static GPU descriptors are captured once; they do not change at runtime.
+    //
+    // Read from each device's static query alone, in collection order so they stay
+    // index-aligned with `collect_gpu`. This went through `snapshot_all`, which also
+    // takes a dynamic sample and fails if any device's sample fails. On Apple
+    // silicon the sample comes from `powermetrics`, which needs root, so a
+    // non-root GUI reported no accelerators on a machine whose GPU had been
+    // enumerated.
     let gpu_static: Vec<GpuStaticInfo> = sources
         .gpu
         .as_ref()
-        .and_then(|g| g.snapshot_all().ok())
-        .map(|infos| infos.iter().map(|i| i.static_info.clone()).collect())
+        .and_then(|g| {
+            g.gpus()
+                .iter()
+                .map(|gpu| gpu.static_info())
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+        })
         .unwrap_or_default();
 
     // Size the per-GPU series now that the device count is known. The warm-up pass

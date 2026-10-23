@@ -252,6 +252,16 @@ winreg = "0.52"
 
 # macOS dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
+# The GUI reads the screen's visible frame (less the menu bar and Dock) and the
+# title bar height before opening its window. Both crates are already in the
+# graph through winit; the versions match it.
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "NSResponder",
+    "NSScreen",
+    "NSWindow",
+] }
 
 [dev-dependencies]
 tokio = { version = "1.41", features = ["full", "test-util"] }
@@ -304,6 +314,8 @@ cli = [
 gui = [
     "eframe",
     "egui",
+    "objc2",
+    "objc2-app-kit",
     "open",
     "tokio",
 

@@ -674,11 +674,16 @@ impl MonitoringBackend {
 
         // Initialize GPU static info
         let (gpu_static_info, gpu_dynamic_info) = if let Some(ref gpus) = gpu_collection {
-            let infos = gpus.snapshot_all().unwrap_or_default();
-            let static_info: Vec<GpuStaticInfo> =
-                infos.iter().map(|i| i.static_info.clone()).collect();
-            let dynamic_info: Vec<GpuDynamicInfo> =
-                infos.iter().map(|i| i.dynamic_info.clone()).collect();
+            // Static descriptors come from the static query alone. `snapshot_all`
+            // also needs every device's dynamic sample, and Apple silicon's comes
+            // from `powermetrics`, which needs root, so a non-root run listed no GPU.
+            let static_info: Vec<GpuStaticInfo> = gpus
+                .gpus()
+                .iter()
+                .map(|gpu| gpu.static_info())
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap_or_default();
+            let dynamic_info = Self::dynamic_slots(gpus, static_info.len());
             (static_info, dynamic_info)
         } else {
             (Vec::new(), Vec::new())
@@ -936,10 +941,26 @@ impl MonitoringBackend {
 
     // === GPUs/Accelerators ===
 
+    /// One dynamic sample per static descriptor, in collection order. A device
+    /// whose sample failed keeps its slot with every field unknown, rather than
+    /// blanking every other device or shifting their indices.
+    fn dynamic_slots(gpus: &GpuCollection, len: usize) -> Vec<GpuDynamicInfo> {
+        let mut samples = gpus.snapshot_all_partial().into_iter();
+        (0..len)
+            .map(|_| {
+                samples
+                    .next()
+                    .and_then(|sample| sample.ok())
+                    .map(|info| info.dynamic_info)
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     fn update_gpus(&mut self) -> Result<()> {
         if let Some(ref gpus) = self.gpu_collection {
-            if let Ok(infos) = gpus.snapshot_all() {
-                self.gpu_dynamic_info = infos.iter().map(|i| i.dynamic_info.clone()).collect();
+            {
+                self.gpu_dynamic_info = Self::dynamic_slots(gpus, self.gpu_static_info.len());
 
                 // Update histories
                 for (i, info) in self.gpu_dynamic_info.iter().enumerate() {

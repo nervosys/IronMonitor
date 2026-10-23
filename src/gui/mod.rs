@@ -105,7 +105,51 @@ fn screen_room() -> Option<ScreenRoom> {
     })
 }
 
-#[cfg(not(windows))]
+/// The main screen's visible frame and the title bar's height, from AppKit.
+///
+/// `visibleFrame` already leaves out the menu bar and the Dock, which is what
+/// the Windows work area does for the taskbar. Without this the window opened at
+/// 1400x900 points, taller than a 13-inch MacBook's whole screen.
+///
+/// AppKit measures from the bottom-left corner of the main screen with y up;
+/// egui places windows from the top-left with y down, so the visible frame's top
+/// edge is flipped against the screen's height.
+#[cfg(target_os = "macos")]
+fn screen_room() -> Option<ScreenRoom> {
+    use objc2_app_kit::{NSScreen, NSWindow, NSWindowStyleMask};
+
+    // AppKit may only be asked from the main thread, which is where `run` is.
+    let mtm = objc2::MainThreadMarker::new()?;
+    let screen = NSScreen::mainScreen(mtm)?;
+    let full = screen.frame();
+    let visible = screen.visibleFrame();
+    if visible.size.width <= 0.0 || visible.size.height <= 0.0 {
+        return None;
+    }
+
+    // The frame a titled, resizable window adds around its content: the
+    // difference between a content rect and the window frame AppKit builds
+    // around it.
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable;
+    let outer = NSWindow::frameRectForContentRect_styleMask(full, style, mtm);
+
+    let top = full.size.height - (visible.origin.y + visible.size.height);
+    Some(ScreenRoom {
+        work_area: egui::Rect::from_min_size(
+            egui::pos2(visible.origin.x as f32, top as f32),
+            egui::vec2(visible.size.width as f32, visible.size.height as f32),
+        ),
+        frame: egui::vec2(
+            (outer.size.width - full.size.width).max(0.0) as f32,
+            (outer.size.height - full.size.height).max(0.0) as f32,
+        ),
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn screen_room() -> Option<ScreenRoom> {
     // winit reports this only once a window exists, which is after the size has
     // to be chosen. Left unimplemented rather than guessed.

@@ -280,6 +280,10 @@ pub struct IronMonitorApp {
     /// Whether the one-shot fit to the Overview has happened.
     autofit_done: bool,
 
+    /// The UI scale as of the last frame, kept so `save` can store it; egui
+    /// changes it on Cmd/Ctrl + `=`, `-` and `0`.
+    ui_scale: f32,
+
     /// How much taller the Overview's content is than the room it was given,
     /// recorded by `draw_overview` on the frame it was last drawn. Measured at
     /// full chart height, so the autofit grows the window toward the layout's
@@ -835,9 +839,34 @@ impl DiskColumns {
     }
 }
 
+/// Storage key for the UI scale the user last chose.
+const UI_SCALE_KEY: &str = "ironmonitor_ui_scale";
+
+/// The UI scale on first run. macOS draws egui's light default face noticeably
+/// smaller than its own system font at the same point size, and on a 13-inch
+/// MacBook's high-density panel that left body text too small to read.
+#[cfg(target_os = "macos")]
+const DEFAULT_UI_SCALE: f32 = 1.15;
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_UI_SCALE: f32 = 1.0;
+
+/// The range a stored scale is accepted from; anything outside it is treated as
+/// unreadable rather than applied.
+const MIN_UI_SCALE: f32 = 0.5;
+const MAX_UI_SCALE: f32 = 3.0;
 impl IronMonitorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_context(&cc.egui_ctx)
+        let mut app = Self::with_context(&cc.egui_ctx);
+        // The scale the user last chose, or the platform default on first run.
+        let scale = cc
+            .storage
+            .and_then(|storage| storage.get_string(UI_SCALE_KEY))
+            .and_then(|stored| stored.parse::<f32>().ok())
+            .filter(|scale| (MIN_UI_SCALE..=MAX_UI_SCALE).contains(scale))
+            .unwrap_or(DEFAULT_UI_SCALE);
+        cc.egui_ctx.set_zoom_factor(scale);
+        app.ui_scale = scale;
+        app
     }
 
     /// Build the app from a bare [`egui::Context`].
@@ -1086,6 +1115,7 @@ impl IronMonitorApp {
             profile_sync_attempted: false,
             applied_color_theme: None,
             autofit_done: false,
+            ui_scale: 1.0,
             overview_shortfall: None,
             overview_chart_scale: 1.0,
             process_list_version: 0,
@@ -1927,9 +1957,11 @@ impl IronMonitorApp {
         // taskbar rather than filling the panel and tucking the bottom edge
         // under one.
         const SCREEN_FRACTION: f32 = 0.92;
+        // `MAX_INNER_SIZE` is in screen points and the viewport in UI points,
+        // which differ by the UI scale.
         let ceiling = super::MAX_INNER_SIZE
             .get()
-            .map(|room| room.y)
+            .map(|room| room.y / ctx.zoom_factor())
             .or_else(|| {
                 ctx.input(|i| i.viewport().monitor_size)
                     .map(|monitor| monitor.y * SCREEN_FRACTION)
@@ -1945,8 +1977,13 @@ impl IronMonitorApp {
 }
 
 impl eframe::App for IronMonitorApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(UI_SCALE_KEY, self.ui_scale.to_string());
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let palette_ctx = ctx.clone();
+        self.ui_scale = ctx.zoom_factor();
         // Apply theme only when it actually changes. `apply_*_theme` calls
         // `ctx.set_fonts()` which rebuilds the font atlas — doing that every
         // frame causes ~100ms paint stalls and ruins tab-switch latency.
