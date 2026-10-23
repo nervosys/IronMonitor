@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The full hardware inventory in the ontology (version 1.1), from the
+  motherboard to the network the machine is attached to. `ironmon snapshot`,
+  `get` and `describe` now carry, alongside what they already did:
+  - board, system and chassis identity, BIOS revision, firmware entries, TPM
+    detail, voltage rails and fans; batteries (`power.battery.{n}.*`) and power
+    supplies (`power.supply.{n}.*`);
+  - per-core cpufreq policy, idle states, turbo, cache geometry, P/E-core
+    microarchitecture, CPU vulnerabilities and kernel hardening
+    (`cpu.vulnerability.*`, `system.security.*`), OS, boot and virtualization
+    detail;
+  - DIMM serial, bank, ranks and form factor, slot topology, EDAC controllers
+    and rows, and NUMA free memory, hugepages and distances;
+  - GPU UUID, PCI address, VBIOS, driver, compute capability, memory, video and
+    SM clocks, PCIe link state and throughput, engine utilisation, topology and
+    links; PCI vendor, device, subsystem, class, IOMMU group and SR-IOV; IOMMU
+    state;
+  - an `npu` domain for neural processing units;
+  - disk firmware, vendor, sector sizes and transport, NVMe controller,
+    power-state and sensor detail, the SMART attribute table, storage
+    controller links, RAID arrays and per-partition filesystems;
+  - USB serials and topology, display, camera, input and sensor detail, and
+    paired Bluetooth devices;
+  - each network adapter's MAC, addresses, MTU, media and driver; default
+    gateways with their MAC (`network.gateway.{n}.*`); DNS servers and search
+    domains (`network.dns.*`); and the Wi-Fi connection: SSID, BSSID, radio,
+    band, channel, security, signal, noise and link rates
+    (`network.wifi.{n}.*`). Read by the new `net_context` module.
+- The GUI's Network tab and the TUI's System tab show gateways, DNS and Wi-Fi.
+
+### Changed
+
+- Identifying values (serial numbers, UUIDs, MAC and IP addresses, SSIDs and
+  BSSIDs) are published like any other. Until ontology 1.1, DIMM serials and
+  paired Bluetooth devices were deliberately withheld.
+- The ontology's per-area resolvers run in parallel; on Windows the added
+  inventory costs about 8 s of the snapshot rather than 25 s.
+
 ### Fixed
+
+- `disk.{n}.rotation_rate` is no longer a flag or a classification. Linux
+  passed sysfs `queue/rotational` (0 or 1) through as the RPM, so every hard
+  disk spun at 1 RPM, and macOS reported 0 RPM for anything it classified as an
+  SSD.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a

@@ -1585,7 +1585,10 @@ mod tests {
                             .unwrap();
                             assert_eq!(result["success"], true);
                             assert_eq!(result["tool_name"], "describe_entities");
-                            assert_eq!(result["data"]["schema_version"], "1.0");
+                            assert_eq!(
+                                result["data"]["schema_version"],
+                                crate::ontology::ONTOLOGY_VERSION
+                            );
                         }
                         if round == 2 {
                             assert!(body.get("tools").is_none());

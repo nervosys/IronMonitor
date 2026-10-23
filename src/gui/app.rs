@@ -4627,11 +4627,13 @@ impl IronMonitorApp {
             ui.label(RichText::new("Loading gateways, DNS and Wi-Fi…").color(muted));
             return;
         };
+        // Wrapped: an adapter with several addresses is wider than a narrow
+        // window, and a clipped address reads as a missing one.
         let row = |ui: &mut egui::Ui, label: &str, text: String| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(20.0);
                 ui.label(RichText::new(format!("{label}:")).color(muted));
-                ui.label(RichText::new(text).color(value).monospace());
+                ui.add(egui::Label::new(RichText::new(text).color(value).monospace()).wrap());
             });
         };
         let unread = |ui: &mut egui::Ui, why: &str| {
@@ -4641,10 +4643,15 @@ impl IronMonitorApp {
             });
         };
 
+        let t = super::widgets::domain_section_title("network", "Gateways");
+        ui.add(SectionHeader::new(&t).icon("🛣"));
         ui.horizontal(|ui| {
-            let t = super::widgets::domain_section_title("network", "Gateways");
-            ui.add(SectionHeader::new(&t).icon("🛣"));
-            if ui.small_button("Refresh").clicked() {
+            ui.add_space(20.0);
+            if ui
+                .small_button("Refresh")
+                .on_hover_text("Re-read gateways, DNS and Wi-Fi")
+                .clicked()
+            {
                 self.start_net_context_load(true);
             }
         });

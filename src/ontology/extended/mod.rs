@@ -35,12 +35,39 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
 }
 
 pub(super) fn resolve(out: &mut Vec<Reading>) {
-    board::resolve(out);
-    cpu::resolve(out);
-    gpu::resolve(out);
-    memory::resolve(out);
-    network::resolve(out);
-    npu::resolve(out);
-    peripherals::resolve(out);
-    storage::resolve(out);
+    // The areas share nothing, and most of their time is spent waiting on
+    // PowerShell, WMI or sysfs, so they run side by side: sequentially a
+    // snapshot took most of a minute on Windows. Results are appended in a
+    // fixed order, so the output does not depend on which thread finished
+    // first.
+    let areas: [fn(&mut Vec<Reading>); 8] = [
+        board::resolve,
+        cpu::resolve,
+        gpu::resolve,
+        memory::resolve,
+        network::resolve,
+        npu::resolve,
+        peripherals::resolve,
+        storage::resolve,
+    ];
+    let results: Vec<Vec<Reading>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = areas
+            .iter()
+            .map(|area| {
+                scope.spawn(move || {
+                    let mut rows = Vec::new();
+                    area(&mut rows);
+                    rows
+                })
+            })
+            .collect();
+        // A reader that panics loses its own area, not the snapshot.
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+    for rows in results {
+        out.extend(rows);
+    }
 }

@@ -820,7 +820,9 @@ fn resolve_cpufreq(out: &mut Vec<Reading>) {
         push_spec_opt(
             out,
             format!("cpu.core.{n}.frequency.base"),
-            cpu.base_freq_khz.map(khz_to_mhz),
+            // Linux only. Off Linux the reader fills this from the registry's
+            // `~MHz`, the clock the kernel measured at boot, not a rated base.
+            cpu.base_freq_khz.filter(|_| on_linux).map(khz_to_mhz),
             Some(U::Megahertz),
             &absent(on_linux, offline, n, "base frequency"),
         );

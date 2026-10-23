@@ -1084,9 +1084,9 @@ impl Ontology {
         // before it decides. `ecc` stays `Derived`: it is a comparison of two of
         // the fields below rather than a field of its own.
         //
-        // Serial numbers are readable here and deliberately left out. They
-        // identify the individual module rather than describe it, no agent task
-        // needs one, and a hardware report carrying them is harder to share.
+        // Serial numbers, bank labels and ranks are in `extended::memory`.
+        // Until ontology 1.1 serials were left out as identifying; the
+        // inventory now publishes identifying values like any other.
         add(Entity::new(
             "memory.dimm.{n}.locator",
             D::Memory,
@@ -1650,12 +1650,9 @@ impl Ontology {
 
         // ── Bluetooth radios ─────────────────────────────────────────────────
         //
-        // Adapters only. Paired and nearby devices are readable too and are not
-        // published here: they are other people's hardware as much as this
-        // machine's, they change without anything on this machine doing
-        // anything, and a hardware report that enumerates the phones in the
-        // room is a different and more sensitive artefact than one that
-        // describes the computer.
+        // Adapters here. Paired devices, and each adapter's address, are in
+        // `extended::peripherals` under `network.bluetooth.device.{n}.*`:
+        // since ontology 1.1 identifying values are published, not withheld.
         add(Entity::new(
             "network.bluetooth.<none>",
             D::Network,

@@ -1182,7 +1182,15 @@ There is 1 interface on the system:
             "fe80::1c2b:aaaa:bbbb:cccc"
         );
 
-        let netstat = "Routing tables\n\nInternet:\nDestination        Gateway            Flags               Netif Expire\ndefault            192.168.1.1        UGScg                 en0\n127                127.0.0.1          UCS                   lo0\n\nInternet6:\nDestination        Gateway            Flags               Netif Expire\ndefault            fe80::1%en0        UGcg                  en0\n";
+        let netstat = concat!(
+            "Routing tables\n\nInternet:\n",
+            "Destination Gateway Flags Netif Expire\n",
+            "default 192.168.1.1 UGScg en0\n",
+            "127 127.0.0.1 UCS lo0\n\n",
+            "Internet6:\n",
+            "Destination Gateway Flags Netif Expire\n",
+            "default fe80::1%en0 UGcg en0\n",
+        );
         let arp = "? (192.168.1.1) at f4:92:bf:1:2:3 on en0 ifscope [ethernet]\n";
         let gw = parse_netstat_defaults(netstat, arp);
         assert_eq!(gw.len(), 2);
