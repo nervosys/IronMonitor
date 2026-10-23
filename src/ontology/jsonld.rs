@@ -71,6 +71,8 @@ pub fn qudt_unit(unit: Unit) -> Option<&'static str> {
         Unit::Hours => "HR",
         Unit::Milliseconds => "MilliSEC",
         Unit::Count => "NUM",
+        Unit::Dbm => "DeciB_M",
+        Unit::MegabitsPerSecond => "MegaBIT-PER-SEC",
         // Not quantities. See the module documentation.
         Unit::Identifier | Unit::Text => return None,
     })

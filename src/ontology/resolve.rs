@@ -44,7 +44,11 @@ pub struct Reading {
 }
 
 impl Reading {
-    fn measured(id: impl Into<String>, value: serde_json::Value, unit: Option<Unit>) -> Self {
+    pub(super) fn measured(
+        id: impl Into<String>,
+        value: serde_json::Value,
+        unit: Option<Unit>,
+    ) -> Self {
         Self {
             id: id.into(),
             value: Some(value),
@@ -54,7 +58,11 @@ impl Reading {
         }
     }
 
-    fn derived(id: impl Into<String>, value: serde_json::Value, unit: Option<Unit>) -> Self {
+    pub(super) fn derived(
+        id: impl Into<String>,
+        value: serde_json::Value,
+        unit: Option<Unit>,
+    ) -> Self {
         Self {
             id: id.into(),
             value: Some(value),
@@ -68,7 +76,11 @@ impl Reading {
     /// ironmon sampled. A DIMM part number and a CPU base clock are both this: a
     /// consumer may rely on them to be stable, and may not treat them as
     /// evidence of the machine's state right now.
-    fn spec(id: impl Into<String>, value: serde_json::Value, unit: Option<Unit>) -> Self {
+    pub(super) fn spec(
+        id: impl Into<String>,
+        value: serde_json::Value,
+        unit: Option<Unit>,
+    ) -> Self {
         Self {
             id: id.into(),
             value: Some(value),
@@ -80,7 +92,11 @@ impl Reading {
 
     /// A value that could not be obtained. The reason is mandatory: "unavailable"
     /// without a cause is the same dead end as a fabricated number.
-    fn unavailable(id: impl Into<String>, unit: Option<Unit>, why: impl Into<String>) -> Self {
+    pub(super) fn unavailable(
+        id: impl Into<String>,
+        unit: Option<Unit>,
+        why: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             value: None,
@@ -141,6 +157,7 @@ pub fn snapshot() -> Vec<Reading> {
     resolve_power_profiles(&mut out);
     resolve_codecs(&mut out);
     resolve_settings(&mut out);
+    super::extended::resolve(&mut out);
 
     // Anything the ontology names but nothing above produced.
     //
@@ -1766,23 +1783,23 @@ pub fn names_an_absence(value: &str) -> bool {
     ABSENCE_WORDS.contains(&v.as_str())
 }
 
-fn push_text(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
+pub(super) fn push_text(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
     push_str_as(out, id, value, Unit::Text, Provenance::Measured);
 }
 
 /// `push_text` for a firmware-declared string. The absence handling is
 /// identical; only the provenance differs, and it differs because a DIMM's
 /// manufacturer was not measured off the module -- the SMBIOS table said so.
-fn push_spec_text(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
+pub(super) fn push_spec_text(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
     push_str_as(out, id, value, Unit::Text, Provenance::Specification);
 }
 
-fn push_id(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
+pub(super) fn push_id(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
     push_str_as(out, id, value, Unit::Identifier, Provenance::Measured);
 }
 
 /// `push_id` for a firmware-declared identifier.
-fn push_spec_id(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
+pub(super) fn push_spec_id(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
     push_str_as(out, id, value, Unit::Identifier, Provenance::Specification);
 }
 
@@ -1794,7 +1811,7 @@ fn push_spec_id(out: &mut Vec<Reading>, id: impl Into<String>, value: &str) {
 /// an absence however confidently it arrives. Keeping this in one function is
 /// why the second guard only had to be written once: the conformance test has
 /// caught this class three times, in three different readers.
-fn push_str_as(
+pub(super) fn push_str_as(
     out: &mut Vec<Reading>,
     id: impl Into<String>,
     value: &str,
@@ -1829,7 +1846,7 @@ fn push_str_as(
     });
 }
 
-fn push_opt(
+pub(super) fn push_opt(
     out: &mut Vec<Reading>,
     id: impl Into<String>,
     value: Option<serde_json::Value>,
@@ -3949,7 +3966,7 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
 /// `push_opt` for firmware-declared values: same absence handling, but the
 /// present case carries `Specification` rather than `Measured`. Without this a
 /// DIMM's part number would claim to have been measured off the module.
-fn push_spec_opt(
+pub(super) fn push_spec_opt(
     out: &mut Vec<Reading>,
     id: impl Into<String>,
     value: Option<serde_json::Value>,

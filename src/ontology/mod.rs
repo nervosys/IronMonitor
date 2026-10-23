@@ -26,6 +26,7 @@
 //! [`Provenance`] makes the distinction explicit and machine-checkable, so an agent
 //! can refuse to reason about a specification constant as though it were a sample.
 
+mod extended;
 pub mod resolve;
 
 pub mod capability;
@@ -36,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Ontology format version. Bump the major on any breaking id or field change.
-pub const ONTOLOGY_VERSION: &str = "1.0";
+pub const ONTOLOGY_VERSION: &str = "1.1";
 
 /// Where a value came from.
 ///
@@ -98,6 +99,10 @@ pub enum Unit {
     Count,
     Identifier,
     Text,
+    /// Radio signal power, decibels relative to one milliwatt. Negative.
+    Dbm,
+    /// Data rate in megabits per second, as radios and links quote it.
+    MegabitsPerSecond,
 }
 
 impl Unit {
@@ -120,6 +125,8 @@ impl Unit {
             Self::Count => "count",
             Self::Identifier => "identifier",
             Self::Text => "text",
+            Self::Dbm => "dbm",
+            Self::MegabitsPerSecond => "megabits_per_second",
         }
     }
 
@@ -128,7 +135,7 @@ impl Unit {
     /// Used by [`Entity::validate_range`] so a consumer can reject impossible
     /// readings without hardcoding per-field knowledge.
     pub fn allows_negative(self) -> bool {
-        matches!(self, Self::Celsius | Self::Volts)
+        matches!(self, Self::Celsius | Self::Volts | Self::Dbm)
     }
 }
 
@@ -182,6 +189,7 @@ pub enum Domain {
     Board,
     Pci,
     Usb,
+    Npu,
 }
 
 impl Domain {
@@ -198,6 +206,7 @@ impl Domain {
         Domain::Board,
         Domain::Pci,
         Domain::Usb,
+        Domain::Npu,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -214,6 +223,7 @@ impl Domain {
             Self::Board => "board",
             Self::Pci => "pci",
             Self::Usb => "usb",
+            Self::Npu => "npu",
         }
     }
 
@@ -3148,6 +3158,9 @@ impl Ontology {
              list is not absence from the machine.",
         ));
 
+        // The full hardware inventory, one file per area. See `extended`.
+        extended::declare(&mut add);
+
         Self {
             version: ONTOLOGY_VERSION.to_string(),
             entities,
@@ -3467,6 +3480,7 @@ pub mod labels {
             // precisely what `hardcoded_headings_do_not_contradict_the_ontology`
             // exists to catch — and did, on the commit that introduced the domain.
             "usb" => "USB".to_string(),
+            "npu" => "NPU".to_string(),
             _ => title_case(domain),
         }
     }

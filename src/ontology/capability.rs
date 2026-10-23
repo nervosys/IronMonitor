@@ -440,6 +440,22 @@ pub fn catalogue() -> Vec<Capability> {
                 ]),
                 implemented_everywhere,
             ),
+            D::Npu => (
+                "neural processing units: identity, and live figures where the driver reports them",
+                per(&[
+                    (Platform::Linux, Support::Implemented),
+                    (Platform::Windows, Support::Implemented),
+                    (
+                        Platform::MacOS,
+                        Support::Partial {
+                            missing:
+                                "the Neural Engine's power needs powermetrics, which needs root"
+                                    .into(),
+                        },
+                    ),
+                ]),
+                implemented_everywhere,
+            ),
             D::Usb => (
                 "USB device enumeration and descriptors",
                 per(&[
