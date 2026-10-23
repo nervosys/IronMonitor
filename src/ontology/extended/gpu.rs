@@ -237,7 +237,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Text),
         P::Measured,
         true,
-        "The driver version the adapter reports. On Intel adapters this is the kernel driver name, i915 or xe, rather than a version number.",
+        "The driver version the adapter reports. Unavailable on Intel, whose reader holds the kernel driver's name (i915, xe) rather than a version.",
     ));
     add(Entity::new(
         "gpu.{n}.compute_capability",
@@ -281,10 +281,14 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         K::Identity,
         None,
         P::Derived,
-        false,
-        "Whether the adapter shares system memory with the CPU. Computed from the adapter name and vendor, or for Intel from whether the device is discrete.",
+        true,
+        concat!(
+            "Whether the adapter shares system memory with the CPU. Published for Apple ",
+            "silicon, where the GPU is on the SoC by construction. The other readers ",
+            "guess it from the product name, so elsewhere it is unavailable."
+        ),
     )
-    .derived(&["gpu.{n}.name", "gpu.{n}.vendor"]));
+    .derived(&["gpu.{n}.vendor"]));
 
     // Memory. Free and utilization are computed from total and used, so they are
     // derived, not read.
@@ -729,10 +733,17 @@ fn resolve_adapter(out: &mut Vec<Reading>, index: usize, gpu: &GpuInfo) {
         P::Measured,
         VBIOS_WHY,
     );
+    // The Intel reader stores the kernel driver's name (i915, xe) in this
+    // field. A name is not a version.
+    let driver_version = if s.vendor == crate::gpu::GpuVendor::Intel {
+        None
+    } else {
+        s.driver_version.as_deref()
+    };
     str_or_unavailable(
         out,
         format!("{base}.driver_version"),
-        s.driver_version.as_deref(),
+        driver_version,
         U::Text,
         P::Measured,
         DRIVER_WHY,
@@ -769,11 +780,22 @@ fn resolve_adapter(out: &mut Vec<Reading>, index: usize, gpu: &GpuInfo) {
         Some(U::Count),
         ENGINES_WHY,
     );
-    out.push(Reading::derived(
-        format!("{base}.integrated"),
-        serde_json::json!(s.integrated),
-        None,
-    ));
+    // The NVIDIA, AMD and Intel readers set `integrated` from substrings of
+    // the product name ("vega", "arc"), which calls a Radeon 780M discrete.
+    // Only Apple's is known rather than guessed.
+    if s.vendor == crate::gpu::GpuVendor::Apple {
+        out.push(Reading::derived(
+            format!("{base}.integrated"),
+            serde_json::json!(true),
+            None,
+        ));
+    } else {
+        out.push(Reading::unavailable(
+            format!("{base}.integrated"),
+            None,
+            "this vendor's reader guesses it from the product name rather than reading it",
+        ));
+    }
 
     let mem = &d.memory;
     push_derived(
