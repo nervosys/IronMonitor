@@ -49,6 +49,7 @@ pub(crate) static DISPLAY_PPI: std::sync::OnceLock<f32> = std::sync::OnceLock::n
 /// A pixel density outside this range is a panel size the display misreported
 /// (EDID fields of 0 or 1 cm are common on projectors and capture cards), not a
 /// screen anyone reads.
+#[cfg(any(windows, target_os = "macos"))]
 const PLAUSIBLE_PPI: std::ops::RangeInclusive<f32> = 50.0..=600.0;
 
 /// The primary display's physical pixels per inch, from its reported width.
