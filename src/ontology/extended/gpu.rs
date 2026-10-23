@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::gpu::GpuInfo;
 use crate::gpu_topology::{GpuInterconnectType, GpuTopologyMonitor, GpuTopologyNode};
-use crate::pci_devices::{PciDeviceInfo, PciDeviceMonitor};
+use crate::pci_devices::PciDeviceMonitor;
 
 #[allow(unused_imports)]
 use super::super::resolve::*;
@@ -180,12 +180,10 @@ const PCI_SRIOV_VFS_WHY: &str = concat!(
     "the enabled virtual function count was not read for this device. It is ",
     "published only for devices whose platform reports SR-IOV"
 );
-const PCI_POWER_STATE_WINDOWS_WHY: &str = concat!(
-    "Windows stores the PnP device status in the power-state field, not a power ",
-    "state, so no power state is published on Windows"
+const PCI_POWER_STATE_WHY: &str = concat!(
+    "no PCI power state was read for this device. Linux reads it from sysfs; ",
+    "Windows reports only device health, not a power state, and macOS reports none"
 );
-const PCI_POWER_STATE_WHY: &str =
-    "the kernel exposes no power state for this device, so none is published";
 const IOMMU_DISABLED_WHY: &str =
     "no IOMMU is enabled on this machine, so there is no IOMMU type to report";
 const IOMMU_TYPE_WHY: &str = concat!(
@@ -1197,18 +1195,21 @@ fn resolve_pci_extras(out: &mut Vec<Reading>) {
             PCI_ID_WHY,
         );
 
-        let (sub_vendor, sub_device) = subsystem_ids(dev);
         push_opt(
             out,
             format!("{base}.subsystem_vendor_id"),
-            sub_vendor.map(|s| serde_json::json!(s)),
+            dev.subsystem_vendor_id
+                .as_ref()
+                .map(|s| serde_json::json!(s)),
             Some(U::Identifier),
             PCI_SUBSYSTEM_WHY,
         );
         push_opt(
             out,
             format!("{base}.subsystem_device_id"),
-            sub_device.map(|s| serde_json::json!(s)),
+            dev.subsystem_device_id
+                .as_ref()
+                .map(|s| serde_json::json!(s)),
             Some(U::Identifier),
             PCI_SUBSYSTEM_WHY,
         );
@@ -1263,42 +1264,16 @@ fn resolve_pci_extras(out: &mut Vec<Reading>) {
             PCI_SRIOV_VFS_WHY,
         );
 
-        // On Windows the reader stores the PnP status here, which is not a power
-        // state. Publishing it would hand an agent "OK" as a D-state.
-        if cfg!(target_os = "windows") {
-            out.push(Reading::unavailable(
-                format!("{base}.power_state"),
-                Some(U::Identifier),
-                PCI_POWER_STATE_WINDOWS_WHY,
-            ));
-        } else {
-            push_opt(
-                out,
-                format!("{base}.power_state"),
-                nonempty(&dev.power_state),
-                Some(U::Identifier),
-                PCI_POWER_STATE_WHY,
-            );
-        }
+        // The reader is `None` on Windows. It used to store the PnP device status
+        // here, and that was published as a D-state ("OK").
+        push_opt(
+            out,
+            format!("{base}.power_state"),
+            dev.power_state.as_ref().map(|s| serde_json::json!(s)),
+            Some(U::Identifier),
+            PCI_POWER_STATE_WHY,
+        );
     }
-}
-
-/// The subsystem IDs of a device. On Windows the reader stores the whole
-/// `SUBSYS_` field, eight hex digits, in both fields. Microsoft's layout puts the
-/// subsystem device ID first and the subsystem vendor ID second, so the split is
-/// taken from that layout; any other length is reported as absent.
-fn subsystem_ids(dev: &PciDeviceInfo) -> (Option<String>, Option<String>) {
-    if cfg!(target_os = "windows") {
-        let field = dev.subsystem_device_id.trim();
-        if field.len() == 8 && field.is_ascii() {
-            return (Some(field[4..].to_string()), Some(field[..4].to_string()));
-        }
-        return (None, None);
-    }
-    (
-        nonempty_string(&dev.subsystem_vendor_id),
-        nonempty_string(&dev.subsystem_device_id),
-    )
 }
 
 fn nonempty(value: &str) -> Option<serde_json::Value> {

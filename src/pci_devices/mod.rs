@@ -95,10 +95,10 @@ pub struct PciDeviceInfo {
     pub vendor_id: String,
     /// Device ID (hex, e.g., "a170")
     pub device_id: String,
-    /// Subsystem vendor ID
-    pub subsystem_vendor_id: String,
-    /// Subsystem device ID
-    pub subsystem_device_id: String,
+    /// Subsystem vendor ID, `None` where the platform does not report one
+    pub subsystem_vendor_id: Option<String>,
+    /// Subsystem device ID, `None` where the platform does not report one
+    pub subsystem_device_id: Option<String>,
     /// PCI class code (2-digit hex)
     pub class_code: String,
     /// Decoded device class
@@ -127,8 +127,10 @@ pub struct PciDeviceInfo {
     /// NUMA node affinity, `None` where the platform reports none. Linux
     /// writes -1 for that, and this passed the -1 through as a node number.
     pub numa_node: Option<u32>,
-    /// Power state (e.g., "D0", "D3hot")
-    pub power_state: String,
+    /// Power state (e.g., "D0", "D3hot"), `None` where the platform does not
+    /// report a PCI power state. Windows does not: its `Win32_PnPEntity.Status`
+    /// is device health ("OK", "Error"), and was stored here as if it were one.
+    pub power_state: Option<String>,
 }
 
 /// Monitor for PCI devices
@@ -276,8 +278,10 @@ impl PciDeviceMonitor {
 
             let vendor_id = Self::read_hex_id(&base.join("vendor"));
             let device_id = Self::read_hex_id(&base.join("device"));
-            let subsystem_vendor_id = Self::read_hex_id(&base.join("subsystem_vendor"));
-            let subsystem_device_id = Self::read_hex_id(&base.join("subsystem_device"));
+            let subsystem_vendor_id =
+                Self::present(Self::read_hex_id(&base.join("subsystem_vendor")));
+            let subsystem_device_id =
+                Self::present(Self::read_hex_id(&base.join("subsystem_device")));
             let revision = Self::read_hex_id(&base.join("revision"));
 
             let class_hex = Self::read_trimmed(&base.join("class"));
@@ -307,7 +311,7 @@ impl PciDeviceMonitor {
                 .and_then(|n| u32::try_from(n).ok());
 
             // Power state
-            let power_state = Self::read_trimmed(&base.join("power_state"));
+            let power_state = Self::present(Self::read_trimmed(&base.join("power_state")));
 
             // SR-IOV
             let sriov_capable = base.join("sriov_totalvfs").exists();
@@ -415,11 +419,18 @@ impl PciDeviceMonitor {
             .to_lowercase()
     }
 
+    /// A sysfs value as `Some` when the file held one. An absent file reads as
+    /// the empty string, which must not pass through as a value.
+    #[cfg(target_os = "linux")]
+    fn present(value: String) -> Option<String> {
+        (!value.is_empty()).then_some(value)
+    }
+
     #[cfg(target_os = "windows")]
     fn refresh_windows(&mut self) -> Result<(), IronError> {
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command",
-                r#"Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'PCI\*' } | Select-Object Name, Manufacturer, PNPDeviceID, Status, ConfigManagerErrorCode -First 500 | ConvertTo-Json -Compress"#])
+                r#"Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'PCI\*' } | Select-Object Name, Manufacturer, PNPDeviceID, ConfigManagerErrorCode -First 500 | ConvertTo-Json -Compress"#])
             .output()
             .map_err(|e| IronError::CommandFailed(format!("powershell: {e}")))?;
         if !output.status.success() {
@@ -451,7 +462,10 @@ impl PciDeviceMonitor {
             // Parse VEN_XXXX&DEV_XXXX from PNP ID
             let vendor_id = Self::extract_pnp_field(pnp_id, "VEN_");
             let device_id = Self::extract_pnp_field(pnp_id, "DEV_");
-            let subsys_id = Self::extract_pnp_field(pnp_id, "SUBSYS_");
+            // SUBSYS_ is absent for a device with no subsystem ID; both halves
+            // are then None rather than an empty string.
+            let (subsystem_vendor_id, subsystem_device_id) =
+                split_subsys_field(&Self::extract_pnp_field(pnp_id, "SUBSYS_"));
 
             // Infer class from name
             let class = Self::infer_class_from_name(&name);
@@ -466,8 +480,8 @@ impl PciDeviceMonitor {
                 address: bdf.unwrap_or_else(|| pnp_id.to_string()),
                 vendor_id,
                 device_id,
-                subsystem_vendor_id: subsys_id.clone(),
-                subsystem_device_id: subsys_id,
+                subsystem_vendor_id,
+                subsystem_device_id,
                 class_code: String::new(),
                 class,
                 vendor_name,
@@ -480,7 +494,11 @@ impl PciDeviceMonitor {
                 sriov_capable: None,
                 sriov_vfs: None,
                 numa_node: None,
-                power_state: item["Status"].as_str().unwrap_or("").to_string(),
+                // Win32_PnPEntity.Status is device health ("OK", "Error",
+                // "Degraded"), not a PCI power state. The reader used to store
+                // it here, and the ontology published "OK" as a D-state. No
+                // Windows source for D0 or D3hot is read, so this is absent.
+                power_state: None,
             });
         }
         Ok(())
@@ -778,8 +796,8 @@ impl PciDeviceMonitor {
                     address: slot,
                     vendor_id,
                     device_id,
-                    subsystem_vendor_id: String::new(),
-                    subsystem_device_id: String::new(),
+                    subsystem_vendor_id: None,
+                    subsystem_device_id: None,
                     class_code: String::new(),
                     class,
                     vendor_name: String::new(),
@@ -792,7 +810,7 @@ impl PciDeviceMonitor {
                     sriov_capable: None,
                     sriov_vfs: None,
                     numa_node: None,
-                    power_state: String::new(),
+                    power_state: None,
                 });
             }
         }
@@ -858,9 +876,61 @@ impl std::fmt::Display for PciClass {
     }
 }
 
+/// Split a Windows `SUBSYS_` field into `(subsystem vendor, subsystem device)`.
+///
+/// Microsoft writes the subsystem device ID first and the subsystem vendor ID
+/// second, four hex digits each: `SUBSYS_88771043` is device 8877 from vendor
+/// 1043 (ASUS). The reader used to store all eight digits in both fields, so
+/// neither field held an ID. Any other shape is not that layout and is reported
+/// as absent rather than guessed at.
+#[cfg(any(target_os = "windows", test))]
+fn split_subsys_field(field: &str) -> (Option<String>, Option<String>) {
+    let field = field.trim();
+    if field.len() != 8 || !field.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (None, None);
+    }
+    let lower = field.to_ascii_lowercase();
+    let device = lower[..4].to_string();
+    let vendor = lower[4..].to_string();
+    (Some(vendor), Some(device))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `SUBSYS_88771043` is subsystem device 8877 from vendor 1043, the layout
+    /// Microsoft documents. Splitting it the other way round named vendor 8877.
+    #[test]
+    fn subsys_field_splits_device_then_vendor() {
+        let (vendor, device) = split_subsys_field("88771043");
+        assert_eq!(vendor.as_deref(), Some("1043"));
+        assert_eq!(device.as_deref(), Some("8877"));
+    }
+
+    /// A PnP id carries the eight digits in upper case, as in the storage
+    /// controller example above. They are published in lower case, as the Linux
+    /// reader publishes them.
+    #[test]
+    fn subsys_field_from_a_pnp_id_is_lowercased() {
+        let pnp = r"PCI\VEN_144D&DEV_A810&SUBSYS_A801144D&REV_00\4&2EC11BF&0&000A";
+        let field = pnp
+            .find("SUBSYS_")
+            .map(|p| &pnp[p + 7..p + 7 + 8])
+            .unwrap_or("");
+        let (vendor, device) = split_subsys_field(field);
+        assert_eq!(vendor.as_deref(), Some("144d"));
+        assert_eq!(device.as_deref(), Some("a801"));
+    }
+
+    /// A field of any other length, or with non-hex text, is not an ID and is
+    /// not split into one.
+    #[test]
+    fn subsys_field_of_the_wrong_shape_is_absent() {
+        assert_eq!(split_subsys_field(""), (None, None));
+        assert_eq!(split_subsys_field("1043"), (None, None));
+        assert_eq!(split_subsys_field("8877104G"), (None, None));
+    }
 
     /// The property holds a PCIe *generation*, not a transfer rate. Reporting the
     /// raw 4 would describe a Gen 4 link as slower than Gen 1 — a number that is
@@ -978,8 +1048,8 @@ mod tests {
             address: "0000:00:02.0".into(),
             vendor_id: "8086".into(),
             device_id: "a780".into(),
-            subsystem_vendor_id: String::new(),
-            subsystem_device_id: String::new(),
+            subsystem_vendor_id: Some("1043".into()),
+            subsystem_device_id: Some("8877".into()),
             class_code: "03".into(),
             class: PciClass::DisplayController,
             vendor_name: "Intel Corporation".into(),
@@ -992,7 +1062,7 @@ mod tests {
             sriov_capable: Some(false),
             sriov_vfs: Some(0),
             numa_node: Some(0),
-            power_state: "D0".into(),
+            power_state: Some("D0".into()),
         };
         let json = serde_json::to_string(&dev).unwrap();
         assert!(json.contains("Intel"));
