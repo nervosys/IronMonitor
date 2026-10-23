@@ -677,6 +677,10 @@ pub struct App {
     /// Background channel for the profile snapshot preload. Drained by
     /// [`Self::check_background_init`].
     profile_init_rx: Option<std::sync::mpsc::Receiver<crate::profile::ProfileSnapshot>>,
+    /// Addresses, gateways, DNS and Wi-Fi, read once in the background: on
+    /// Windows the read is a PowerShell query and `netsh`, a second or more.
+    pub net_context: Option<crate::net_context::NetworkContext>,
+    net_context_rx: Option<std::sync::mpsc::Receiver<crate::net_context::NetworkContext>>,
     /// True once *any* load (bg or sync) has been attempted, to prevent
     /// per-frame respawn if the bg thread panicked. Cleared by `r` (refresh).
     profile_load_attempted: bool,
@@ -992,6 +996,11 @@ impl App {
             let _ = agent_tx.send(agent);
         });
 
+        let (net_tx, net_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = net_tx.send(crate::net_context::read());
+        });
+
         // Spawn background thread for process monitor (can be slow on Windows)
         let (proc_tx, proc_rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -1074,6 +1083,8 @@ impl App {
             profile_subsystem_idx: 0,
             profile_show_deviations: false,
             profile_init_rx: Some(profile_rx),
+            net_context: None,
+            net_context_rx: Some(net_rx),
             profile_load_attempted: true, // bg load started above
             profile_sync_attempted: false,
             collector: Some(crate::pipeline::Collector::spawn(
@@ -1268,6 +1279,7 @@ impl App {
 
     /// Check and apply background initialization results
     pub fn check_background_init(&mut self) {
+        self.poll_net_context();
         let mut all_done = true;
 
         // GPU data arrives with the collector snapshot; there is no separate
@@ -1371,6 +1383,19 @@ impl App {
             self.init_state = InitState::Ready;
             self.status_message = None; // Clear "Loading..." message
         }
+    }
+
+    /// Take the network context if its background read has finished. Returns
+    /// whether a read is still outstanding.
+    pub fn poll_net_context(&mut self) -> bool {
+        if let Some(rx) = self.net_context_rx.take() {
+            match rx.try_recv() {
+                Ok(context) => self.net_context = Some(context),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.net_context_rx = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        self.net_context_rx.is_some()
     }
 
     /// Check if app is still initializing

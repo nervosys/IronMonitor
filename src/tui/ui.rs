@@ -694,6 +694,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(4),    // Disk details
             Constraint::Length(3), // Network bar
             Constraint::Min(4),    // Network details
+            Constraint::Length(6), // Gateways, DNS, Wi-Fi
         ])
         .split(area);
 
@@ -840,6 +841,107 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().fg(Color::White));
     f.render_widget(net_list, chunks[4]);
+
+    draw_network_context(f, app, chunks[5]);
+}
+
+/// Gateways, DNS and Wi-Fi, one line each. Something not read says why
+/// rather than leaving a blank that looks like "none".
+fn draw_network_context(f: &mut Frame, app: &App, area: Rect) {
+    let label = |s: &str| {
+        Span::styled(
+            format!("{s:<9}"),
+            Style::default().fg(glances_colors::NETWORK_TITLE),
+        )
+    };
+    let unread = |why: &str| {
+        Span::styled(
+            format!("not read: {why}"),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+    let lines: Vec<Line> = match &app.net_context {
+        None => vec![Line::from("Loading gateways, DNS and Wi-Fi...")],
+        Some(ctx) => {
+            let gateways = match &ctx.gateways {
+                Ok(g) if g.is_empty() => unread("no default route"),
+                Ok(g) => Span::raw(
+                    g.iter()
+                        .map(|g| {
+                            let mut s = g.address.clone();
+                            if let Some(i) = &g.interface {
+                                s.push_str(&format!(" via {i}"));
+                            }
+                            if let Some(m) = &g.mac {
+                                s.push_str(&format!(" ({m})"));
+                            }
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join("  │  "),
+                ),
+                Err(e) => unread(e),
+            };
+            let dns = match &ctx.dns_servers {
+                Ok(s) if s.is_empty() => unread("no DNS servers configured"),
+                Ok(s) => Span::raw(s.join(", ")),
+                Err(e) => unread(e),
+            };
+            let wifi = match &ctx.wifi {
+                Ok(w) if w.is_empty() => vec![unread("no Wi-Fi interface")],
+                Ok(w) => w
+                    .iter()
+                    .map(|w| {
+                        let mut s = format!(
+                            "{}: {}",
+                            w.interface,
+                            w.state.as_deref().unwrap_or("state not reported")
+                        );
+                        if w.connected == Some(true) {
+                            s.push_str(&format!(
+                                " │ SSID {} │ BSSID {}",
+                                w.ssid.as_deref().unwrap_or("—"),
+                                w.bssid.as_deref().unwrap_or("—")
+                            ));
+                            if let Some(c) = w.channel {
+                                s.push_str(&format!(" │ ch {c}"));
+                            }
+                            if let Some(b) = &w.band {
+                                s.push_str(&format!(" {b}"));
+                            }
+                            if let Some(p) = w.signal_percent {
+                                s.push_str(&format!(" │ {p}%"));
+                            }
+                            if let Some(r) = w.rssi_dbm {
+                                s.push_str(&format!(" {r} dBm"));
+                            }
+                            if let Some(a) = &w.authentication {
+                                s.push_str(&format!(" │ {a}"));
+                            }
+                        }
+                        Span::raw(s)
+                    })
+                    .collect(),
+                Err(e) => vec![unread(e)],
+            };
+            let mut lines = vec![
+                Line::from(vec![label("Gateway"), gateways]),
+                Line::from(vec![label("DNS"), dns]),
+            ];
+            for span in wifi {
+                lines.push(Line::from(vec![label("Wi-Fi"), span]));
+            }
+            lines
+        }
+    };
+    let panel = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Network Context"),
+        )
+        .style(Style::default().fg(Color::White));
+    f.render_widget(panel, area);
 }
 
 /// Draw all accelerators (GPUs, NPUs, FPGAs, etc.) with detailed metrics

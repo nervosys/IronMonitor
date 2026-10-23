@@ -219,6 +219,10 @@ pub struct IronMonitorApp {
     disk_receiver: Option<Receiver<Vec<Box<dyn DiskDevice + Send>>>>,
     disk_loading: bool,
     disk_loaded: bool,
+    /// Addresses, gateways, DNS and Wi-Fi. Read off the UI thread: on Windows
+    /// it is a PowerShell query and `netsh`, which take a second or more.
+    net_context: Option<crate::net_context::NetworkContext>,
+    net_context_receiver: Option<Receiver<crate::net_context::NetworkContext>>,
     agent_receiver: Option<Receiver<Option<crate::agent::Agent>>>,
     agent_loading: bool,
     agent_loading_start: Instant,
@@ -1104,6 +1108,8 @@ impl IronMonitorApp {
             disk_receiver: None,
             disk_loading: false,
             disk_loaded: false,
+            net_context: None,
+            net_context_receiver: None,
             agent_receiver: Some(agent_rx),
             agent_loading: true,
             agent_loading_start: Instant::now(),
@@ -1426,11 +1432,27 @@ impl IronMonitorApp {
             // 20 seconds of work whose result this tab never displays.
             Tab::Peripherals => self.peripherals.is_none() && self.system_info_loading,
             Tab::Profiles => self.profile_snapshot_loading,
+            Tab::Network => self.net_context.is_none(),
             _ => false,
         }
     }
 
     fn check_background_loaders(&mut self, ctx: &egui::Context) {
+        if self.current_tab == Tab::Network {
+            self.start_net_context_load(false);
+        }
+        if let Some(ref receiver) = self.net_context_receiver {
+            match receiver.try_recv() {
+                Ok(context) => {
+                    self.net_context = Some(context);
+                    self.net_context_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.net_context_receiver = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         // Hardware data no longer arrives through a per-poll channel; it is pulled
         // from the collector's published snapshot in `sync_snapshot`.
 
@@ -1689,6 +1711,19 @@ impl IronMonitorApp {
     }
 
     /// Start lazy loading of disk data
+    /// Read the network context in the background. `force` re-reads it (the
+    /// Refresh button); otherwise it is read once.
+    fn start_net_context_load(&mut self, force: bool) {
+        if self.net_context_receiver.is_some() || (!force && self.net_context.is_some()) {
+            return;
+        }
+        let (tx, rx) = channel();
+        self.net_context_receiver = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::net_context::read());
+        });
+    }
+
     fn start_disk_loading(&mut self) {
         if self.disk_loaded || self.disk_loading {
             return;
@@ -4445,6 +4480,8 @@ impl IronMonitorApp {
             );
 
             ui.add_space(16.0);
+            self.draw_network_context(ui);
+            ui.add_space(16.0);
 
             // Interface details
             if let Some(ref mut monitor) = self.network_monitor {
@@ -4578,6 +4615,161 @@ impl IronMonitorApp {
                 );
             }
         });
+    }
+
+    /// Gateways, DNS and Wi-Fi: where this machine is attached, as opposed to
+    /// how much it is sending.
+    fn draw_network_context(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
+        let muted = theme::color(&palette_ctx, CyberColors::TEXT_MUTED);
+        let value = theme::color(&palette_ctx, DeviceTitleColors::NETWORK);
+        let Some(context) = self.net_context.clone() else {
+            ui.label(RichText::new("Loading gateways, DNS and Wi-Fi…").color(muted));
+            return;
+        };
+        let row = |ui: &mut egui::Ui, label: &str, text: String| {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new(format!("{label}:")).color(muted));
+                ui.label(RichText::new(text).color(value).monospace());
+            });
+        };
+        let unread = |ui: &mut egui::Ui, why: &str| {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new(format!("Not read: {why}")).color(muted));
+            });
+        };
+
+        ui.horizontal(|ui| {
+            let t = super::widgets::domain_section_title("network", "Gateways");
+            ui.add(SectionHeader::new(&t).icon("🛣"));
+            if ui.small_button("Refresh").clicked() {
+                self.start_net_context_load(true);
+            }
+        });
+        match &context.gateways {
+            Ok(gateways) if gateways.is_empty() => unread(ui, "no default route is configured"),
+            Ok(gateways) => {
+                for g in gateways {
+                    let mut text = g.address.clone();
+                    if let Some(iface) = &g.interface {
+                        text.push_str(&format!("  via {iface}"));
+                    }
+                    if let Some(mac) = &g.mac {
+                        text.push_str(&format!("  MAC {mac}"));
+                    }
+                    if let Some(metric) = g.metric {
+                        text.push_str(&format!("  metric {metric}"));
+                    }
+                    row(ui, &g.family.to_uppercase(), text);
+                }
+            }
+            Err(e) => unread(ui, e),
+        }
+
+        let t = super::widgets::domain_section_title("network", "DNS");
+        ui.add(SectionHeader::new(&t).icon("📖"));
+        match &context.dns_servers {
+            Ok(servers) if servers.is_empty() => unread(ui, "no DNS servers are configured"),
+            Ok(servers) => row(ui, "Servers", servers.join(", ")),
+            Err(e) => unread(ui, e),
+        }
+        if let Ok(search) = &context.search_domains {
+            if !search.is_empty() {
+                row(ui, "Search", search.join(", "));
+            }
+        }
+
+        let t = super::widgets::domain_section_title("network", "Wi-Fi");
+        ui.add(SectionHeader::new(&t).icon("📶"));
+        match &context.wifi {
+            Ok(wifi) if wifi.is_empty() => unread(ui, "no Wi-Fi interface on this machine"),
+            Ok(wifi) => {
+                for w in wifi {
+                    let state = w
+                        .state
+                        .clone()
+                        .unwrap_or_else(|| "state not reported".into());
+                    row(ui, &w.interface, state);
+                    if let Some(d) = &w.description {
+                        row(ui, "Adapter", d.clone());
+                    }
+                    if w.connected != Some(true) {
+                        continue;
+                    }
+                    let or_dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "—".into());
+                    row(ui, "SSID", or_dash(&w.ssid));
+                    row(ui, "BSSID", or_dash(&w.bssid));
+                    let mut radio = Vec::new();
+                    radio.extend(w.radio_type.clone());
+                    radio.extend(w.band.clone());
+                    radio.extend(w.channel.map(|c| format!("channel {c}")));
+                    radio.extend(w.channel_width_mhz.map(|m| format!("{m} MHz wide")));
+                    if !radio.is_empty() {
+                        row(ui, "Radio", radio.join(", "));
+                    }
+                    let mut signal = Vec::new();
+                    signal.extend(w.signal_percent.map(|p| format!("{p}%")));
+                    signal.extend(w.rssi_dbm.map(|r| format!("{r} dBm")));
+                    signal.extend(w.noise_dbm.map(|n| format!("noise {n} dBm")));
+                    if !signal.is_empty() {
+                        row(ui, "Signal", signal.join(", "));
+                    }
+                    let mut security = Vec::new();
+                    security.extend(w.authentication.clone());
+                    security.extend(w.cipher.clone());
+                    if !security.is_empty() {
+                        row(ui, "Security", security.join(" / "));
+                    }
+                    if w.receive_rate_mbps.is_some() || w.transmit_rate_mbps.is_some() {
+                        let rate = |r: Option<f64>| {
+                            r.map(|v| format!("{v} Mbps")).unwrap_or_else(|| "—".into())
+                        };
+                        row(
+                            ui,
+                            "Link rate",
+                            format!(
+                                "↓ {}  ↑ {}",
+                                rate(w.receive_rate_mbps),
+                                rate(w.transmit_rate_mbps)
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(e) => unread(ui, e),
+        }
+
+        // What the traffic counters below do not say: MAC, addresses, driver.
+        let t = super::widgets::domain_section_title("network", "Adapters");
+        ui.add(SectionHeader::new(&t).icon("🔌"));
+        match &context.adapters {
+            Ok(adapters) => {
+                for a in adapters {
+                    let mut parts = vec![a.status.clone().unwrap_or_else(|| "—".into())];
+                    parts.extend(a.mac.clone());
+                    for ip in &a.addresses {
+                        parts.push(match ip.prefix_length {
+                            Some(p) => format!("{}/{p}", ip.address),
+                            None => ip.address.clone(),
+                        });
+                    }
+                    row(ui, &a.name, parts.join("  "));
+                    let mut driver = Vec::new();
+                    driver.extend(a.description.clone());
+                    driver.extend(a.driver.clone());
+                    driver.extend(a.driver_version.clone());
+                    if !driver.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.add_space(40.0);
+                            ui.label(RichText::new(driver.join(" · ")).color(muted).small());
+                        });
+                    }
+                }
+            }
+            Err(e) => unread(ui, e),
+        }
     }
 
     fn draw_disk_tab(&mut self, ui: &mut egui::Ui) {

@@ -4527,6 +4527,11 @@ fn handle_tui_frame_command(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    // The System tab's gateway, DNS and Wi-Fi rows come from their own
+    // background read; a frame taken before it lands would say "Loading".
+    while app.poll_net_context() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     if !have_snapshot {
         eprintln!(concat!(
             "warning: no complete snapshot arrived within 10s. The frame below ",

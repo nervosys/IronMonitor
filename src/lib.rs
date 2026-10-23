@@ -182,6 +182,7 @@ pub mod hwmon; // Hardware monitoring (temperatures, voltages, fans) - native im
 pub mod legacy_paths; // Adoption of files stranded by the simon -> IronMonitor rename
 pub mod memory_management; // Memory and swap management (jetson_stats style)
 pub mod motherboard; // Motherboard sensors, BIOS, system information
+pub mod net_context; // Addresses, gateways, DNS and Wi-Fi: where this machine sits on the network
 pub mod network_monitor; // Network interface monitoring
 pub mod network_tools; // Network diagnostic tools (ping, traceroute, port scan) - nmap/netcat style
 pub mod observability; // Full system observability API with MCP-like permissions for external AI access
