@@ -45,7 +45,11 @@ pub struct DisplayInfo {
     /// display on those platforms reported 0 Hz as though measured.
     pub refresh_rate: Option<f32>,
     pub brightness: Option<f32>,
-    pub hdr: HdrMode,
+    /// HDR mode of the display, or `None` where it was not read. No reader on
+    /// any platform reads it yet. The field used to hold `HdrMode::Off` on
+    /// every path that did not read it, which reported an HDR-capable panel as
+    /// SDR without anyone having asked the panel.
+    pub hdr: Option<HdrMode>,
     pub scale_factor: Option<f64>,
     pub physical_width_mm: Option<u32>,
     pub physical_height_mm: Option<u32>,
@@ -278,7 +282,10 @@ impl DisplayMonitor {
                 // full instance name, and the hardware id this reader joins on
                 // does not distinguish two panels of the same model.
                 brightness: None,
-                hdr: HdrMode::Off,
+                // Not read. The Windows advanced-colour query reports whether
+                // HDR is on, but not which of HDR10, HDR10+ or Dolby Vision it is,
+                // so it would not fill this field honestly either.
+                hdr: None,
                 scale_factor: None,
                 physical_width_mm: meta.and_then(|m| m.physical_width_mm),
                 physical_height_mm: meta.and_then(|m| m.physical_height_mm),
@@ -461,7 +468,9 @@ impl DisplayMonitor {
                         // reader never parsed one. None, not zero hertz.
                         refresh_rate: None,
                         brightness: read_backlight_brightness(),
-                        hdr: HdrMode::Off,
+                        // DRM connector properties carry HDR metadata, which this
+                        // reader does not parse. Unknown, not SDR.
+                        hdr: None,
                         scale_factor: None,
                         physical_width_mm: phys_w,
                         physical_height_mm: phys_h,
@@ -548,7 +557,8 @@ impl DisplayMonitor {
                                 // xrandr's rate is not parsed here.
                                 refresh_rate: None,
                                 brightness: read_backlight_brightness(),
-                                hdr: HdrMode::Off,
+                                // Not read by the xrandr path. See the DRM path.
+                                hdr: None,
                                 scale_factor: None,
                                 physical_width_mm: phys_w,
                                 physical_height_mm: phys_h,
@@ -642,7 +652,8 @@ impl DisplayMonitor {
                                         // system_profiler's rate is not parsed here.
                                         refresh_rate: None,
                                         brightness: None,
-                                        hdr: HdrMode::Off,
+                                        // system_profiler's HDR state is not parsed here.
+                                        hdr: None,
                                         scale_factor: None,
                                         physical_width_mm: None,
                                         physical_height_mm: None,
@@ -821,7 +832,7 @@ mod tests {
             height: Some(1080),
             refresh_rate: Some(60.0),
             brightness: None,
-            hdr: HdrMode::Off,
+            hdr: None,
             scale_factor: Some(1.0),
             physical_width_mm: None,
             physical_height_mm: None,
@@ -842,7 +853,7 @@ mod tests {
             height: Some(2160),
             refresh_rate: Some(144.0),
             brightness: Some(0.8),
-            hdr: HdrMode::Hdr10,
+            hdr: Some(HdrMode::Hdr10),
             scale_factor: Some(1.5),
             physical_width_mm: Some(600),
             physical_height_mm: Some(340),
@@ -863,7 +874,7 @@ mod tests {
             height: Some(1080),
             refresh_rate: Some(60.0),
             brightness: Some(0.5),
-            hdr: HdrMode::Off,
+            hdr: None,
             scale_factor: Some(1.0),
             physical_width_mm: Some(530),
             physical_height_mm: Some(300),

@@ -100,7 +100,13 @@ impl ProfileProvider for DisplayProfileProvider {
                 Setting::info(
                     "hdr_mode",
                     "HDR Mode",
-                    SettingValue::Text(format!("{:?}", d.hdr)),
+                    // `None` is "not read", shown as unreadable rather than as a mode.
+                    match d.hdr {
+                        Some(mode) => SettingValue::Text(format!("{mode:?}")),
+                        None => SettingValue::Unreadable(
+                            "HDR state is not read on this platform".into(),
+                        ),
+                    },
                 )
                 .with_risk(SettingRisk::Safe),
             );

@@ -2534,7 +2534,8 @@ impl AiDataApi {
                     "aspect_ratio": d.aspect_ratio(),
                     "refresh_rate": d.refresh_rate,
                     "brightness": d.brightness,
-                    "hdr": format!("{:?}", d.hdr),
+                    // Null where HDR state was not read, never a mode.
+                    "hdr": d.hdr.map(|mode| format!("{mode:?}")),
                 })
             })
             .collect();
@@ -2569,7 +2570,7 @@ impl AiDataApi {
             "aspect_ratio": display.aspect_ratio(),
             "refresh_rate": display.refresh_rate,
             "brightness": display.brightness,
-            "hdr": format!("{:?}", display.hdr),
+            "hdr": display.hdr.map(|mode| format!("{mode:?}")),
         }))
     }
     // ============== USB Tools ==============

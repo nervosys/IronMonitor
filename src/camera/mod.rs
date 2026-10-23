@@ -80,8 +80,14 @@ pub struct CameraInfo {
     pub max_width: u32,
     /// Maximum resolution (height)
     pub max_height: u32,
-    /// Supported pixel formats (e.g., YUYV, MJPG, H264)
-    pub formats: Vec<String>,
+    /// Supported pixel formats (e.g., YUYV, MJPG, H264).
+    ///
+    /// `None` where they were not read. Only the Linux reader enumerates them
+    /// (`VIDIOC_ENUM_FMT`). It used to return `["YUYV", "MJPG"]` for every
+    /// camera, and the Windows and macOS readers used to write an empty list,
+    /// which the ontology then published as a list the camera had listed as
+    /// empty.
+    pub formats: Option<Vec<String>>,
     /// Device capabilities
     pub capabilities: Vec<CameraCapability>,
     /// Whether the camera is currently in use / streaming
@@ -114,6 +120,44 @@ impl CameraInfo {
     pub fn megapixels(&self) -> f64 {
         (self.max_width as f64 * self.max_height as f64) / 1_000_000.0
     }
+}
+
+/// `VIDIOC_ENUM_FMT`, which is `_IOWR('V', 2, struct v4l2_fmtdesc)`.
+#[cfg(target_os = "linux")]
+const VIDIOC_ENUM_FMT: u32 = 0xC040_5602;
+/// `V4L2_BUF_TYPE_VIDEO_CAPTURE`.
+#[cfg(target_os = "linux")]
+const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
+/// A cap on the format walk. No driver offers anywhere near this many.
+#[cfg(target_os = "linux")]
+const V4L2_ENUM_FMT_LIMIT: u32 = 256;
+
+/// `struct v4l2_fmtdesc` from `linux/videodev2.h`, 64 bytes on every
+/// architecture because it holds no pointers or `long`s.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Default)]
+struct V4l2Fmtdesc {
+    index: u32,
+    buf_type: u32,
+    flags: u32,
+    description: [u8; 32],
+    pixelformat: u32,
+    mbus_code: u32,
+    reserved: [u32; 3],
+}
+
+#[cfg(target_os = "linux")]
+const _: () = assert!(std::mem::size_of::<V4l2Fmtdesc>() == 64);
+
+/// Spells a V4L2 pixel format. The format is a FourCC packed little-endian
+/// into a `u32`, so `YUYV` is `0x5659_5559`; space padding (`"Z16 "`) is
+/// dropped.
+#[cfg(any(target_os = "linux", test))]
+fn fourcc_to_string(code: u32) -> String {
+    String::from_utf8_lossy(&code.to_le_bytes())
+        .trim_end()
+        .to_string()
 }
 
 /// Monitor for camera and webcam devices
@@ -216,17 +260,18 @@ impl CameraMonitor {
 
             let mut capabilities = vec![CameraCapability::VideoCapture];
 
-            // Try to read supported formats from /dev/videoN
+            // Try to read supported formats from /dev/videoN. Capabilities are
+            // derived from them only when they were read: with no list there is
+            // no H264 or Z16 to find, and that is not the same as finding none.
             let dev_file = format!("/dev/{}", dev_name);
             let formats = Self::read_v4l2_formats(&dev_file);
-            if formats.iter().any(|f| f == "H264" || f == "HEVC") {
-                capabilities.push(CameraCapability::HardwareEncoding);
-            }
-            if formats
-                .iter()
-                .any(|f| f.contains("Z16") || f.contains("INZI"))
-            {
-                capabilities.push(CameraCapability::DepthSensing);
+            if let Some(list) = &formats {
+                if list.iter().any(|f| f == "H264" || f == "HEVC") {
+                    capabilities.push(CameraCapability::HardwareEncoding);
+                }
+                if list.iter().any(|f| f.contains("Z16") || f.contains("INZI")) {
+                    capabilities.push(CameraCapability::DepthSensing);
+                }
             }
             if name.to_lowercase().contains("ir ") || name.to_lowercase().contains("infrared") {
                 capabilities.push(CameraCapability::Infrared);
@@ -264,11 +309,51 @@ impl CameraMonitor {
             .unwrap_or_default()
     }
 
+    /// The capture formats a V4L2 device offers, from `VIDIOC_ENUM_FMT`, which
+    /// is asked for each index in turn until the driver answers `EINVAL`.
+    ///
+    /// `None` when the node cannot be opened, or the driver lists no capture
+    /// format at index zero (a metadata node looks like that). No external tool
+    /// is involved, so a missing `v4l2-ctl` is not a reason for a constant.
     #[cfg(target_os = "linux")]
-    fn read_v4l2_formats(_dev: &str) -> Vec<String> {
-        // Reading actual V4L2 formats requires ioctl; check common format descriptions
-        // from /sys instead. This is a best-effort heuristic.
-        vec!["YUYV".into(), "MJPG".into()]
+    fn read_v4l2_formats(dev: &str) -> Option<Vec<String>> {
+        use std::os::unix::io::AsRawFd;
+
+        let file = std::fs::OpenOptions::new().read(true).open(dev).ok()?;
+        let fd = file.as_raw_fd();
+        let mut formats = Vec::new();
+        for index in 0..V4L2_ENUM_FMT_LIMIT {
+            let mut desc = V4l2Fmtdesc {
+                index,
+                buf_type: V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                ..Default::default()
+            };
+            // SAFETY: `desc` is a live `v4l2_fmtdesc`-sized struct for the whole
+            // call, and `fd` stays open until `file` is dropped at the end of
+            // this function.
+            let rc = unsafe {
+                libc::ioctl(
+                    fd,
+                    VIDIOC_ENUM_FMT as libc::c_ulong,
+                    &mut desc as *mut V4l2Fmtdesc,
+                )
+            };
+            if rc < 0 {
+                // EINVAL after at least one format is how the driver ends the
+                // list. Anything else, or EINVAL at index zero, is not a list.
+                let end_of_list =
+                    std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL);
+                return if end_of_list && index > 0 {
+                    Some(formats)
+                } else {
+                    None
+                };
+            }
+            formats.push(fourcc_to_string(desc.pixelformat));
+        }
+        // The driver never ran out of formats within the limit, so the list is
+        // not one this reader can vouch for.
+        None
     }
 
     #[cfg(target_os = "linux")]
@@ -417,7 +502,9 @@ impl CameraMonitor {
                 // reporting that the camera listed no modes.
                 max_width: 0,
                 max_height: 0,
-                formats: Vec::new(),
+                // Not read on Windows. The Media Foundation format list is not
+                // queried here, and an empty list would claim the camera has none.
+                formats: None,
                 capabilities: vec![CameraCapability::VideoCapture],
                 // See `camera_in_use_windows`: the negative is attributable
                 // to every camera, the positive is not attributable to any.
@@ -459,7 +546,7 @@ impl CameraMonitor {
                         vendor: "Apple".into(),
                         max_width: 0,
                         max_height: 0,
-                        formats: Vec::new(),
+                        formats: None,
                         capabilities: vec![
                             CameraCapability::VideoCapture,
                             CameraCapability::Autofocus,
@@ -488,7 +575,7 @@ impl CameraMonitor {
                 vendor: "Apple".into(),
                 max_width: 0,
                 max_height: 0,
-                formats: Vec::new(),
+                formats: None,
                 capabilities: vec![CameraCapability::VideoCapture],
                 is_active: None,
                 index,
@@ -560,7 +647,7 @@ mod tests {
             vendor: String::new(),
             max_width: 1920,
             max_height: 1080,
-            formats: Vec::new(),
+            formats: None,
             capabilities: Vec::new(),
             is_active: Some(false),
             index: 0,
@@ -579,7 +666,7 @@ mod tests {
             vendor: "Logitech".into(),
             max_width: 1920,
             max_height: 1080,
-            formats: vec!["YUYV".into(), "MJPG".into()],
+            formats: Some(vec!["YUYV".into(), "MJPG".into()]),
             capabilities: vec![CameraCapability::VideoCapture],
             is_active: Some(false),
             index: 0,
@@ -587,5 +674,24 @@ mod tests {
         let json = serde_json::to_string(&cam).unwrap();
         assert!(json.contains("Test Camera"));
         let _: CameraInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    /// The FourCC codes below are the little-endian `u32` values a driver
+    /// returns in `v4l2_fmtdesc.pixelformat`, computed from the ASCII bytes.
+    #[test]
+    fn test_fourcc_spelling() {
+        assert_eq!(fourcc_to_string(0x5659_5559), "YUYV");
+        assert_eq!(fourcc_to_string(0x4750_4A4D), "MJPG");
+        assert_eq!(fourcc_to_string(0x3436_3248), "H264");
+        // Depth formats are space-padded to four bytes.
+        assert_eq!(fourcc_to_string(0x2036_315A), "Z16");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_v4l2_fmtdesc_matches_kernel_layout() {
+        assert_eq!(std::mem::size_of::<V4l2Fmtdesc>(), 64);
+        assert_eq!(std::mem::offset_of!(V4l2Fmtdesc, pixelformat), 44);
+        assert_eq!(VIDIOC_ENUM_FMT, 0xC040_5602);
     }
 }

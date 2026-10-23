@@ -55,7 +55,13 @@ pub struct AudioDevice {
     /// came first", which named an audio *controller* as the default output.
     pub is_default: Option<bool>,
     pub is_output: bool,
-    pub is_enabled: bool,
+    /// Whether the endpoint is enabled, from the same `DeviceState` as
+    /// [`Self::state`]: `Some(state == active)` where that was read.
+    ///
+    /// `None` on Linux (ALSA card enumeration carries no enable state) and macOS
+    /// (`system_profiler` does not report one). Both used to write `true`, so
+    /// every device was enabled whether or not it was.
+    pub is_enabled: Option<bool>,
     /// Device volume, if it has been read. Nothing reads it: the default
     /// device was given `Some(100)` and every other device `None`, so the one
     /// device a user looks at was the one carrying an invented figure.
@@ -484,7 +490,9 @@ impl AudioMonitor {
                 // to report and is not given one.
                 is_default: mixer.get(&guid).map(|m| m.is_default),
                 is_output: endpoint.is_output,
-                is_enabled: endpoint.state == Some(AudioState::Active),
+                // Unknown when the state is: `None == Some(Active)` was false,
+                // which reported an endpoint whose state was never read as disabled.
+                is_enabled: endpoint.state.map(|s| s == AudioState::Active),
                 volume: mixer.get(&guid).and_then(|m| m.volume),
                 muted: mixer.get(&guid).and_then(|m| m.muted),
             });
@@ -597,7 +605,8 @@ impl AudioMonitor {
                             state: None,
                             is_default: Some(card_num == 0),
                             is_output,
-                            is_enabled: true,
+                            // ALSA's card list has no enable state. This used to be `true`.
+                            is_enabled: None,
                             volume: None,
                             muted: None,
                         });
@@ -684,7 +693,8 @@ impl AudioMonitor {
                                 state: None,
                                 is_default: Some(has_output || has_input),
                                 is_output: has_output || (!has_input),
-                                is_enabled: true,
+                                // `system_profiler` reports no enable state. This used to be `true`.
+                                is_enabled: None,
                                 volume: None,
                                 muted: None,
                             });
@@ -866,7 +876,7 @@ mod tests {
             state: Some(AudioState::Active),
             is_default: Some(true),
             is_output: true,
-            is_enabled: true,
+            is_enabled: Some(true),
             volume: Some(50),
             muted: Some(false),
         };

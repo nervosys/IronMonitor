@@ -43,7 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // is not "not the default".
             None => "",
         };
-        let enabled = if device.is_enabled { "" } else { " [Disabled]" };
+        let enabled = match device.is_enabled {
+            Some(true) => "",
+            Some(false) => " [Disabled]",
+            // The platform did not report whether this endpoint is enabled.
+            None => " [enabled state unknown]",
+        };
 
         println!(
             "  {} {}{}{}",

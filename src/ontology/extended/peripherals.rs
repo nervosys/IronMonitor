@@ -100,6 +100,15 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         true,
         "Backlight level as a percentage of the maximum, read from the panel's backlight control. Null where the display exposes no backlight level.",
     ));
+    add(Entity::new(
+        "board.display.{n}.hdr",
+        D::Board,
+        K::Identity,
+        Some(U::Identifier),
+        P::Measured,
+        true,
+        "HDR mode the display is using, such as hdr10, hdr10_plus or dolby_vision, or null where it was not read. No reader on any platform reads it yet, so this is null everywhere: unknown, not standard dynamic range.",
+    ));
 
     // ── Cameras ─────────────────────────────────────────────────────────────
     add(Entity::new(
@@ -110,6 +119,26 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         P::Measured,
         true,
         "Vendor of the camera as the platform reports it. Null where the platform names none.",
+    ));
+    add(Entity::new(
+        "board.camera.{n}.formats",
+        D::Board,
+        K::Identity,
+        None,
+        P::Measured,
+        true,
+        "JSON array of the pixel formats the camera offers, such as YUYV, MJPG or H264, as its driver enumerates them. Null where they were not read: only the Linux V4L2 path enumerates them.",
+    ));
+
+    // ── Audio endpoints ─────────────────────────────────────────────────────
+    add(Entity::new(
+        "board.audio.{n}.enabled",
+        D::Board,
+        K::Measurement,
+        None,
+        P::Measured,
+        true,
+        "Whether the audio endpoint is enabled, from the endpoint's device state on Windows. Null where the platform does not report an enable state, which is Linux and macOS today.",
     ));
 
     // ── Input devices ───────────────────────────────────────────────────────
@@ -213,6 +242,7 @@ pub(super) fn resolve(out: &mut Vec<Reading>) {
     resolve_usb_detail(out);
     resolve_display_detail(out);
     resolve_camera_detail(out);
+    resolve_audio_detail(out);
     resolve_input_detail(out);
     resolve_sensor_detail(out);
     resolve_bluetooth_detail(out);
@@ -311,6 +341,20 @@ fn resolve_display_detail(out: &mut Vec<Reading>) {
             Some(U::Percent),
             "this display exposes no backlight level",
         );
+        // No reader fills `hdr` yet, so this is always absent. It says so rather
+        // than publishing the standard-range mode that the field used to hold.
+        push_opt(
+            out,
+            format!("{base}.hdr"),
+            d.hdr
+                .map(|mode| serde_json::json!(format!("{mode:?}").to_lowercase())),
+            Some(U::Identifier),
+            concat!(
+                "HDR state is not read on any platform: the Windows advanced-colour ",
+                "query, the DRM connector properties and the macOS display profile ",
+                "are not parsed, so the display's HDR mode is unknown, not standard"
+            ),
+        );
     }
 }
 
@@ -326,6 +370,32 @@ fn resolve_camera_detail(out: &mut Vec<Reading>) {
             U::Text,
             "the platform names no vendor for this camera",
             P::Measured,
+        );
+        push_opt(
+            out,
+            format!("board.camera.{i}.formats"),
+            c.formats.as_ref().map(|f| serde_json::json!(f)),
+            None,
+            concat!(
+                "this camera's pixel formats were not read: only the Linux V4L2 path ",
+                "enumerates them, and on other platforms no reader does. On Linux, a ",
+                "device that refuses the enumeration or lists no capture format is unread"
+            ),
+        );
+    }
+}
+
+fn resolve_audio_detail(out: &mut Vec<Reading>) {
+    let Ok(monitor) = crate::audio::AudioMonitor::new() else {
+        return;
+    };
+    for (i, d) in monitor.devices().iter().enumerate() {
+        push_opt(
+            out,
+            format!("board.audio.{i}.enabled"),
+            d.is_enabled.map(|e| serde_json::json!(e)),
+            None,
+            "the platform reports no enable state for this endpoint",
         );
     }
 }
