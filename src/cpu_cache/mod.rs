@@ -571,7 +571,11 @@ impl CpuCacheMonitor {
 
             let size_kb = item["InstalledSize"].as_u64();
             let line_size = item["LineSize"].as_u64().map(|v| v as u32);
-            let assoc = item["Associativity"].as_u64().map(|v| v as u32);
+            // The property is a CIM code, not a way count. See
+            // `wmi_associativity_ways`.
+            let assoc = item["Associativity"]
+                .as_u64()
+                .and_then(wmi_associativity_ways);
 
             self.topology.caches.push(CpuCacheInfo {
                 level,
@@ -704,6 +708,76 @@ impl std::fmt::Display for CacheType {
             Self::Unified => write!(f, "Unified"),
             Self::Unknown => write!(f, "Unknown"),
         }
+    }
+}
+
+/// Ways of set associativity for a `Win32_CacheMemory.Associativity` code.
+///
+/// That property is a CIM enumeration, not a way count: 8 means 16-way and 13
+/// means 64-way. Passing the code through as the number of ways reported a
+/// 4-way cache as 5-way, for example. The codes are, in order: 1 Other,
+/// 2 Unknown, 3 Direct Mapped, 4 2-way, 5 4-way, 6 Fully Associative, 7 8-way,
+/// 8 16-way, 9 12-way, 10 24-way, 11 32-way, 12 48-way, 13 64-way, 14 20-way.
+///
+/// Direct mapped is 1 way. Fully associative is `Some(0)`, the value the
+/// `CpuCacheInfo::associativity` field documents for it. Other, Unknown and
+/// any code not listed here are `None`, because they name no way count.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn wmi_associativity_ways(code: u64) -> Option<u32> {
+    match code {
+        3 => Some(1),
+        4 => Some(2),
+        5 => Some(4),
+        6 => Some(0),
+        7 => Some(8),
+        8 => Some(16),
+        9 => Some(12),
+        10 => Some(24),
+        11 => Some(32),
+        12 => Some(48),
+        13 => Some(64),
+        14 => Some(20),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod wmi_associativity_tests {
+    use super::wmi_associativity_ways;
+
+    #[test]
+    fn win32_cache_memory_codes_map_to_ways_not_to_themselves() {
+        // Each row is (CIM code, documented meaning, expected ways).
+        let table: [(u64, &str, Option<u32>); 14] = [
+            (1, "Other", None),
+            (2, "Unknown", None),
+            (3, "Direct Mapped", Some(1)),
+            (4, "2-way", Some(2)),
+            (5, "4-way", Some(4)),
+            (6, "Fully Associative", Some(0)),
+            (7, "8-way", Some(8)),
+            (8, "16-way", Some(16)),
+            (9, "12-way", Some(12)),
+            (10, "24-way", Some(24)),
+            (11, "32-way", Some(32)),
+            (12, "48-way", Some(48)),
+            (13, "64-way", Some(64)),
+            (14, "20-way", Some(20)),
+        ];
+        for (code, meaning, ways) in table {
+            assert_eq!(
+                wmi_associativity_ways(code),
+                ways,
+                "code {code} ({meaning})"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unlisted_code_is_unknown_not_a_way_count() {
+        assert_eq!(wmi_associativity_ways(0), None);
+        assert_eq!(wmi_associativity_ways(15), None);
+        assert_eq!(wmi_associativity_ways(255), None);
     }
 }
 

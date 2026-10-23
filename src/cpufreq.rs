@@ -325,8 +325,13 @@ pub struct CpuFreqPolicy {
 pub struct TurboStatus {
     /// Is turbo available on this system
     pub available: bool,
-    /// Is turbo currently enabled
-    pub enabled: bool,
+    /// Whether turbo is enabled. Linux: the kernel's current state. Windows:
+    /// whether the active power scheme permits boost (the processor performance
+    /// boost mode is not 0), which is not the same as boost running now. `None`
+    /// when the state was not read. It used to be a `bool` set to `true`
+    /// unconditionally on Windows, which reported boost as on whatever the
+    /// power scheme said.
+    pub enabled: Option<bool>,
     /// Can turbo be controlled
     pub controllable: bool,
     /// Turbo frequency boost (MHz above base)
@@ -356,7 +361,7 @@ impl CpuFreqMonitor {
             policies: Vec::new(),
             turbo: TurboStatus {
                 available: false,
-                enabled: false,
+                enabled: None,
                 controllable: false,
                 boost_mhz: None,
             },
@@ -847,7 +852,7 @@ impl CpuFreqMonitor {
             self.turbo.available = true;
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(intel_turbo) {
-                self.turbo.enabled = val.trim() == "0"; // no_turbo=0 means turbo enabled
+                self.turbo.enabled = Some(val.trim() == "0"); // no_turbo=0 means turbo enabled
             }
             return Ok(());
         }
@@ -858,7 +863,7 @@ impl CpuFreqMonitor {
             self.turbo.available = true;
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(amd_boost) {
-                self.turbo.enabled = val.trim() == "1";
+                self.turbo.enabled = Some(val.trim() == "1");
             }
             return Ok(());
         }
@@ -869,7 +874,7 @@ impl CpuFreqMonitor {
             self.turbo.available = true;
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(generic_boost) {
-                self.turbo.enabled = val.trim() == "1";
+                self.turbo.enabled = Some(val.trim() == "1");
             }
         }
 
@@ -1029,7 +1034,7 @@ impl CpuFreqMonitor {
             let value = if enabled { "0" } else { "1" }; // no_turbo is inverted
             fs::write(intel_turbo, value)
                 .map_err(|e| IronError::System(format!("Failed to set turbo: {}", e)))?;
-            self.turbo.enabled = enabled;
+            self.turbo.enabled = Some(enabled);
             return Ok(());
         }
 
@@ -1039,7 +1044,7 @@ impl CpuFreqMonitor {
             let value = if enabled { "1" } else { "0" };
             fs::write(generic_boost, value)
                 .map_err(|e| IronError::System(format!("Failed to set turbo: {}", e)))?;
-            self.turbo.enabled = enabled;
+            self.turbo.enabled = Some(enabled);
             return Ok(());
         }
 
@@ -1168,13 +1173,19 @@ impl CpuFreqMonitor {
             });
         }
 
+        // Boost mode is a setting of the active power scheme, not a clock, so it
+        // is read whether or not a clock above base was seen. Reading it only
+        // inside the clock check left `enabled` unread on a machine with no
+        // such clock, even though powercfg reports it.
+        self.turbo.enabled = windows_boost_permitted();
+
         // Try to detect turbo
         if let (Some(_current), Some(max)) = (current_mhz, max_mhz) {
             let base = windows_get_base_frequency();
             if max > base {
                 self.turbo = TurboStatus {
                     available: true,
-                    enabled: true,
+                    enabled: self.turbo.enabled,
                     controllable: false,
                     boost_mhz: Some(max - base),
                 };
@@ -1337,6 +1348,44 @@ fn windows_get_power_scheme() -> (Option<String>, Governor) {
     (None, Governor::Unknown("unknown".to_string()))
 }
 
+/// Whether the active power scheme permits processor boost, from the AC value
+/// of its "Processor performance boost mode" setting. `None` if `powercfg`
+/// cannot be run or its output has no such value. A failed query is not read
+/// as "permitted".
+///
+/// `/qh` (show hidden) and not `/query`: `powercfg /query` omits
+/// PERFBOOSTMODE from its output on current Windows builds, so a plain query
+/// returns the scheme header with no setting in it. `/qh` lists it, with its
+/// `Current AC Power Setting Index` line.
+#[cfg(target_os = "windows")]
+fn windows_boost_permitted() -> Option<bool> {
+    let text = crate::core::command::capture(
+        "powercfg",
+        &["/qh", "SCHEME_CURRENT", "SUB_PROCESSOR", "PERFBOOSTMODE"],
+    )
+    .ok()?;
+    parse_boost_mode_ac(&text)
+}
+
+/// Parse the `Current AC Power Setting Index` line of
+/// `powercfg /query SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE`.
+///
+/// Index 0 is "Disabled". Every other index (1 "Enabled", 2 "Aggressive", and
+/// any later value) permits boost. The DC line is ignored: the reading is the
+/// AC setting, as the machine is on mains power when it is read.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn parse_boost_mode_ac(text: &str) -> Option<bool> {
+    let index = text.lines().find_map(|line| {
+        let rest = line
+            .trim()
+            .strip_prefix("Current AC Power Setting Index:")?
+            .trim();
+        let hex = rest.strip_prefix("0x")?;
+        u32::from_str_radix(hex, 16).ok()
+    })?;
+    Some(index != 0)
+}
+
 /// Summary of CPU frequency status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuFreqSummary {
@@ -1354,8 +1403,9 @@ pub struct CpuFreqSummary {
     pub max_freq_mhz: Option<u32>,
     /// Lowest frequency seen (MHz), or `None` if no core reported one.
     pub min_freq_mhz: Option<u32>,
-    /// Turbo enabled
-    pub turbo_enabled: bool,
+    /// Turbo enabled: on Windows, whether the active power scheme permits
+    /// boost. `None` when it was not read.
+    pub turbo_enabled: Option<bool>,
     /// CPU model
     pub cpu_model: Option<String>,
     /// Scaling driver
@@ -1475,6 +1525,64 @@ mod tests {
         let json = serde_json::to_string(&gov_unk).unwrap();
         let parsed: Governor = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, gov_unk);
+    }
+
+    /// Output of `powercfg /qh SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE`
+    /// captured on Windows 11 with the Balanced scheme, boost mode "Aggressive"
+    /// on AC and on DC.
+    const BOOST_QUERY_AGGRESSIVE_AC: &str = r#"
+Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
+  GUID Alias: SCHEME_BALANCED
+  Subgroup GUID: 54533251-82be-4824-96c1-47b60b740d00  (Processor power management)
+    GUID Alias: SUB_PROCESSOR
+    Power Setting GUID: be337238-0d82-4146-a960-4f3749d470c7  (Processor performance boost mode)
+      GUID Alias: PERFBOOSTMODE
+      Possible Setting Index: 000
+      Possible Setting Friendly Name: Disabled
+      Possible Setting Index: 001
+      Possible Setting Friendly Name: Enabled
+      Possible Setting Index: 002
+      Possible Setting Friendly Name: Aggressive
+      Possible Setting Index: 003
+      Possible Setting Friendly Name: Efficient Enabled
+      Possible Setting Index: 004
+      Possible Setting Friendly Name: Efficient Aggressive
+      Possible Setting Index: 005
+      Possible Setting Friendly Name: Aggressive At Guaranteed
+      Possible Setting Index: 006
+      Possible Setting Friendly Name: Efficient Aggressive At Guaranteed
+    Current AC Power Setting Index: 0x00000002
+    Current DC Power Setting Index: 0x00000002
+"#;
+
+    #[test]
+    fn boost_mode_ac_nonzero_permits_boost() {
+        assert_eq!(parse_boost_mode_ac(BOOST_QUERY_AGGRESSIVE_AC), Some(true));
+    }
+
+    #[test]
+    fn boost_mode_ac_zero_forbids_boost_even_when_dc_allows_it() {
+        let text = BOOST_QUERY_AGGRESSIVE_AC
+            .replace(
+                "Current AC Power Setting Index: 0x00000002",
+                "Current AC Power Setting Index: 0x00000000",
+            )
+            .replace(
+                "Current DC Power Setting Index: 0x00000002",
+                "Current DC Power Setting Index: 0x00000001",
+            );
+        assert_eq!(parse_boost_mode_ac(&text), Some(false));
+    }
+
+    #[test]
+    fn boost_mode_without_an_ac_value_is_unknown() {
+        // A query that names no AC index, or one that is not hex, is not a
+        // reading. Neither is an empty output.
+        let no_ac = "Current DC Power Setting Index: 0x00000001\n";
+        let not_hex = "Current AC Power Setting Index: two\n";
+        assert_eq!(parse_boost_mode_ac(no_ac), None);
+        assert_eq!(parse_boost_mode_ac(not_hex), None);
+        assert_eq!(parse_boost_mode_ac(""), None);
     }
 
     #[test]

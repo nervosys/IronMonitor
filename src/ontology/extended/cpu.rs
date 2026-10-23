@@ -214,7 +214,9 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         None,
         P::Measured,
         true,
-        "Whether turbo or boost is currently enabled. Linux only.",
+        "Whether turbo or boost is enabled. Linux: the kernel's current state. Windows: \
+         boost permitted by the active power scheme (its processor performance boost \
+         mode is not Disabled), which is not the same as boost currently active.",
     ));
     add(Entity::new(
         "cpu.turbo.controllable",
@@ -931,11 +933,19 @@ fn push_turbo(out: &mut Vec<Reading>, turbo: Option<crate::cpufreq::TurboStatus>
             serde_json::json!(turbo.available),
             None,
         ));
-        if turbo.available {
+        if let (true, Some(enabled)) = (turbo.available, turbo.enabled) {
             out.push(Reading::measured(
                 "cpu.turbo.enabled",
-                serde_json::json!(turbo.enabled),
+                serde_json::json!(enabled),
                 None,
+            ));
+        } else if turbo.available {
+            // The control exists but its file could not be read. Reporting
+            // `false` here would present an unread state as a disabled one.
+            out.push(Reading::unavailable(
+                "cpu.turbo.enabled",
+                None,
+                "the kernel exposes a boost control but its state file could not be read",
             ));
         } else {
             out.push(Reading::unavailable(
@@ -955,19 +965,33 @@ fn push_turbo(out: &mut Vec<Reading>, turbo: Option<crate::cpufreq::TurboStatus>
             "the Linux reader does not compute a boost figure; compare each core's current frequency with its base frequency",
         ));
     } else {
-        // Windows infers turbo from WMI clock values and then sets `enabled`
-        // unconditionally, so neither state is a reading on that platform.
+        // Windows infers availability from WMI clock values and has no control
+        // interface to read, so neither is reported there. `enabled` is the
+        // boost mode the active power scheme permits, read with powercfg. It is
+        // not whether boost is running now.
         let why = if cfg!(windows) {
-            "the Windows turbo reader infers boost from WMI clock values and does not report a boost state"
+            "the Windows turbo reader infers boost from WMI clock values and reads no boost control"
         } else {
             "this platform's turbo reader does not detect boost state"
         };
-        for id in [
-            "cpu.turbo.available",
-            "cpu.turbo.enabled",
-            "cpu.turbo.controllable",
-        ] {
+        for id in ["cpu.turbo.available", "cpu.turbo.controllable"] {
             out.push(Reading::unavailable(id, None, why));
+        }
+        match turbo.enabled {
+            Some(permitted) => out.push(Reading::measured(
+                "cpu.turbo.enabled",
+                serde_json::json!(permitted),
+                None,
+            )),
+            None => out.push(Reading::unavailable(
+                "cpu.turbo.enabled",
+                None,
+                if cfg!(windows) {
+                    "powercfg did not report the active power scheme's processor performance boost mode"
+                } else {
+                    "this platform's turbo reader does not detect boost state"
+                },
+            )),
         }
         match turbo.boost_mhz {
             Some(mhz) => out.push(Reading::derived(

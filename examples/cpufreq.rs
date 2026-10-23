@@ -56,10 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("├─ Average freq: {} MHz", mhz(summary.avg_freq_mhz));
             println!(
                 "└─ Turbo boost: {}",
-                if summary.turbo_enabled {
-                    "✅ Enabled"
-                } else {
-                    "❌ Disabled"
+                match summary.turbo_enabled {
+                    Some(true) => "✅ Enabled",
+                    Some(false) => "❌ Disabled",
+                    None => "? not read",
                 }
             );
         }
@@ -128,7 +128,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "   Enabled: {}",
-        if turbo.enabled { "✅ Yes" } else { "❌ No" }
+        match turbo.enabled {
+            Some(true) => "✅ Yes",
+            Some(false) => "❌ No",
+            None => "? not read",
+        }
     );
     println!(
         "   Controllable: {}",
