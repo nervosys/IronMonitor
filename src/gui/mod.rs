@@ -42,6 +42,78 @@ impl ScreenRoom {
 /// rather than toward a fraction of the monitor.
 pub(crate) static MAX_INNER_SIZE: std::sync::OnceLock<egui::Vec2> = std::sync::OnceLock::new();
 
+/// The primary display's physical pixels per inch, where the OS reports the
+/// panel's size. The default UI scale is derived from it.
+pub(crate) static DISPLAY_PPI: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// A pixel density outside this range is a panel size the display misreported
+/// (EDID fields of 0 or 1 cm are common on projectors and capture cards), not a
+/// screen anyone reads.
+const PLAUSIBLE_PPI: std::ops::RangeInclusive<f32> = 50.0..=600.0;
+
+/// The primary display's physical pixels per inch, from its reported width.
+#[cfg(windows)]
+fn display_ppi() -> Option<f32> {
+    const HORZSIZE: i32 = 4;
+    const DESKTOPHORZRES: i32 = 118;
+    unsafe extern "system" {
+        fn GetDC(hwnd: isize) -> isize;
+        fn ReleaseDC(hwnd: isize, hdc: isize) -> i32;
+    }
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn GetDeviceCaps(hdc: isize, index: i32) -> i32;
+    }
+    // SAFETY: the screen DC is acquired, read and released here; both
+    // `GetDeviceCaps` indices are plain integer queries.
+    let (width_mm, width_px) = unsafe {
+        let dc = GetDC(0);
+        if dc == 0 {
+            return None;
+        }
+        let read = (
+            GetDeviceCaps(dc, HORZSIZE),
+            GetDeviceCaps(dc, DESKTOPHORZRES),
+        );
+        ReleaseDC(0, dc);
+        read
+    };
+    if width_mm <= 0 || width_px <= 0 {
+        return None;
+    }
+    Some(width_px as f32 / (width_mm as f32 / 25.4)).filter(|ppi| PLAUSIBLE_PPI.contains(ppi))
+}
+
+/// The main display's backing pixels per inch: its width in points times the
+/// backing scale, over the panel's physical width.
+#[cfg(target_os = "macos")]
+fn display_ppi() -> Option<f32> {
+    #[repr(C)]
+    struct CgSize {
+        width: f64,
+        height: f64,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayScreenSize(display: u32) -> CgSize;
+    }
+    let mtm = objc2::MainThreadMarker::new()?;
+    let screen = objc2_app_kit::NSScreen::mainScreen(mtm)?;
+    let width_px = screen.frame().size.width * screen.backingScaleFactor();
+    // SAFETY: both are plain value queries on the main display's id.
+    let size = unsafe { CGDisplayScreenSize(CGMainDisplayID()) };
+    if size.width <= 0.0 || width_px <= 0.0 {
+        return None;
+    }
+    Some((width_px / (size.width / 25.4)) as f32).filter(|ppi| PLAUSIBLE_PPI.contains(ppi))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn display_ppi() -> Option<f32> {
+    None
+}
+
 /// The primary monitor's work area and the window frame's thickness, if they
 /// can be read.
 ///
@@ -222,6 +294,9 @@ pub fn run() -> Result<(), eframe::Error> {
     let room = screen_room();
     if let Some(room) = room {
         let _ = MAX_INNER_SIZE.set(room.max_inner_size());
+    }
+    if let Some(ppi) = display_ppi() {
+        let _ = DISPLAY_PPI.set(ppi);
     }
     let (size, position) = opening_geometry(preferred, room);
 

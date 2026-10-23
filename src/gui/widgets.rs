@@ -1174,7 +1174,7 @@ impl Widget for ThresholdLegend {
                     .rect
                     .width();
 
-                painter.text(
+                let range_rect = painter.text(
                     Pos2::new(x + 16.0 + label_width, y),
                     egui::Align2::LEFT_CENTER,
                     range,
@@ -1185,7 +1185,9 @@ impl Widget for ThresholdLegend {
                     ),
                 );
 
-                x += 90.0;
+                // Advance past what was drawn. A fixed 90 points overlapped as
+                // soon as the bold data face made "CAREFUL 50-70%" wider.
+                x = range_rect.max.x + 16.0;
             }
         }
 

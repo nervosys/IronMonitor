@@ -44,9 +44,13 @@ use std::collections::BTreeSet;
 /// on macOS failed with `unresolved import 'nvml_wrapper'`. It is now declared
 /// cross-platform instead, which is why it does not appear here.
 ///
+/// `objc2`/`objc2-app-kit` are AppKit bindings the `gui` feature uses to measure
+/// the macOS screen; their only use is `screen_room` and `display_ppi` in
+/// `src/gui/mod.rs`, each behind `cfg(target_os = "macos")`.
+///
 /// Anything new that reaches this list needs the same discipline, so adding to it
 /// should be a conscious act rather than a way to quiet the test.
-const PLATFORM_GATED_BY_DESIGN: &[&str] = &["drm", "drm-ffi", "plist"];
+const PLATFORM_GATED_BY_DESIGN: &[&str] = &["drm", "drm-ffi", "plist", "objc2", "objc2-app-kit"];
 
 fn features_to_check(manifest: &toml::Value) -> Vec<String> {
     manifest

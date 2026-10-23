@@ -399,18 +399,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Windows uncorrectable errors are not summed from one counter alone.
     `FilesystemInfo.read_only` is `Option`; Windows never read it. Failed
     Windows WMI disk and filesystem queries are errors, not empty lists.
-- GUI on macOS:
-  - The window opens within the screen's visible frame (less the menu bar and
-    Dock), read from AppKit along with the title bar height. It opened at
-    1400x900 points, taller than a 13-inch MacBook's screen.
-  - The UI scale is remembered between runs, and Cmd/Ctrl with `=`, `-` and
-    `0` change it. It starts at 1.15 on macOS, where egui's default face drew
-    body text too small to read on a 13-inch MacBook, and 1.0 elsewhere.
-  - Apple silicon GPUs appear under Accelerators. Static GPU descriptors were
-    taken from a full snapshot, which also needs every GPU's dynamic sample,
-    and Apple's comes from `powermetrics`, which needs root. So a non-root GUI
-    or TUI listed no accelerators. Descriptors now come from the static query,
-    and the TUI keeps a failed device's dynamic slot instead of blanking all.
+- GUI sizing:
+  - On macOS the window opens within the screen's visible frame (less the menu
+    bar and Dock), read from AppKit along with the title bar height. It opened
+    at 1400x900 points, taller than a 13-inch MacBook's screen.
+  - The default UI scale comes from the display's physical pixel density, so a
+    point is about 1/96 inch, held between 1 and 1.5. The OS scale alone left
+    points smaller than that: about 1/128 inch on a 13-inch MacBook, where body
+    text was too small to read, and 1/109 inch on a 34-inch 3440x1440 panel at
+    Windows 100%. The density is read from GDI on Windows and CoreGraphics on
+    macOS. Linux, or a size outside 50-600 ppi, keeps the OS scale.
+  - Cmd/Ctrl with `=`, `-` and `0` change the scale. Only a scale that differs
+    from the display's default is remembered, so the default follows the app
+    to another screen.
+  - Overview charts grow, up to twice their natural height, to fill a window
+    taller than they need, instead of leaving the bottom empty.
+  - The threshold legend spaces items by their drawn width. A fixed 90-point
+    step let the bold labels overlap.
+- Apple silicon GPUs appear under Accelerators. Static GPU descriptors were
+  taken from a full snapshot, which also needs every GPU's dynamic sample, and
+  Apple's comes from `powermetrics`, which needs root. So a non-root GUI or TUI
+  listed no accelerators. Descriptors now come from the static query, and the
+  TUI keeps a failed device's dynamic slot instead of blanking all.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

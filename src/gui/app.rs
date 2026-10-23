@@ -46,6 +46,9 @@ const SLOW_UPDATE_INTERVAL: Duration = Duration::from_secs(2); // Slow updates f
 /// to before the tab scrolls instead. Half keeps a 70 px chart's three scale
 /// labels apart.
 const OVERVIEW_MIN_CHART_SCALE: f32 = 0.5;
+/// The largest multiple of their natural height the Overview's charts grow to
+/// when the window has room to spare, rather than leaving it empty below them.
+const OVERVIEW_MAX_CHART_SCALE: f32 = 2.0;
 /// The Overview's content width at which CPU, memory and network share one row
 /// of four charts rather than two rows of two. Below it a chart column is too
 /// narrow for its title, min/max and current value to sit side by side.
@@ -283,6 +286,12 @@ pub struct IronMonitorApp {
     /// The UI scale as of the last frame, kept so `save` can store it; egui
     /// changes it on Cmd/Ctrl + `=`, `-` and `0`.
     ui_scale: f32,
+    /// The scale the display calls for; see `display_ui_scale`.
+    default_ui_scale: f32,
+    /// A scale the user chose on an earlier run, if any.
+    stored_ui_scale: Option<f32>,
+    /// Whether the starting scale still has to be applied.
+    ui_scale_pending: bool,
 
     /// How much taller the Overview's content is than the room it was given,
     /// recorded by `draw_overview` on the frame it was last drawn. Measured at
@@ -291,7 +300,8 @@ pub struct IronMonitorApp {
     overview_shortfall: Option<f32>,
 
     /// The fraction of their natural height the Overview's charts are drawn at,
-    /// between `OVERVIEW_MIN_CHART_SCALE` and 1. Recomputed from what the last
+    /// between `OVERVIEW_MIN_CHART_SCALE` and `OVERVIEW_MAX_CHART_SCALE`.
+    /// Recomputed from what the last
     /// frame measured; see `draw_overview`.
     overview_chart_scale: f32,
 
@@ -839,34 +849,71 @@ impl DiskColumns {
     }
 }
 
-/// Storage key for the UI scale the user last chose.
-const UI_SCALE_KEY: &str = "ironmonitor_ui_scale";
-
-/// The UI scale on first run. macOS draws egui's light default face noticeably
-/// smaller than its own system font at the same point size, and on a 13-inch
-/// MacBook's high-density panel that left body text too small to read.
-#[cfg(target_os = "macos")]
-const DEFAULT_UI_SCALE: f32 = 1.15;
-#[cfg(not(target_os = "macos"))]
-const DEFAULT_UI_SCALE: f32 = 1.0;
+/// Storage key for a UI scale the user chose over the display's default.
+///
+/// Not `ironmonitor_ui_scale`: 7.0.18's first macOS build stored every scale
+/// under that name, chosen or not, so a value there cannot be told from a choice.
+const UI_SCALE_KEY: &str = "ironmonitor_ui_scale_chosen";
 
 /// The range a stored scale is accepted from; anything outside it is treated as
 /// unreadable rather than applied.
 const MIN_UI_SCALE: f32 = 0.5;
 const MAX_UI_SCALE: f32 = 3.0;
+
+/// The physical size of one point the default UI scale aims for: 1/96 inch, the
+/// reference pixel CSS and Windows' 100% scaling are defined by.
+const REFERENCE_POINTS_PER_INCH: f32 = 96.0;
+
+/// The largest scale the display-derived default picks. Beyond it the Overview no
+/// longer fits a laptop screen; a user can still go further by hand.
+const MAX_DEFAULT_UI_SCALE: f32 = 1.5;
+
+/// The UI scale that draws one point at `REFERENCE_POINTS_PER_INCH`, from the
+/// display's physical pixels per inch and the scale the OS already applies.
+///
+/// The OS scale alone does not do this: Windows at 100% on a 34-inch 3440x1440
+/// panel draws a point at 1/109 inch, and macOS at its default "looks like"
+/// resolution on a 13-inch MacBook at about 1/128 inch, so 13-point body text came
+/// out smaller than the reference on both, and unreadably so on the MacBook.
+///
+/// Never below 1: a coarse panel gets the size the OS chose rather than a smaller
+/// one. With no physical size reported, 1.
+fn display_ui_scale(display_ppi: Option<f32>, native_pixels_per_point: f32) -> f32 {
+    match display_ppi {
+        Some(ppi) if native_pixels_per_point > 0.0 => {
+            (ppi / native_pixels_per_point / REFERENCE_POINTS_PER_INCH)
+                .clamp(1.0, MAX_DEFAULT_UI_SCALE)
+        }
+        _ => 1.0,
+    }
+}
 impl IronMonitorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self::with_context(&cc.egui_ctx);
-        // The scale the user last chose, or the platform default on first run.
-        let scale = cc
+        // A scale the user chose. Without one, the display's default is applied on
+        // the first frame, once the OS scale is known.
+        app.stored_ui_scale = cc
             .storage
             .and_then(|storage| storage.get_string(UI_SCALE_KEY))
             .and_then(|stored| stored.parse::<f32>().ok())
-            .filter(|scale| (MIN_UI_SCALE..=MAX_UI_SCALE).contains(scale))
-            .unwrap_or(DEFAULT_UI_SCALE);
-        cc.egui_ctx.set_zoom_factor(scale);
-        app.ui_scale = scale;
+            .filter(|scale| (MIN_UI_SCALE..=MAX_UI_SCALE).contains(scale));
+        app.ui_scale_pending = true;
         app
+    }
+
+    /// Apply the starting UI scale, once the OS scale it depends on is known.
+    fn settle_ui_scale(&mut self, ctx: &egui::Context) {
+        if !self.ui_scale_pending {
+            return;
+        }
+        let Some(native) = ctx.native_pixels_per_point() else {
+            return;
+        };
+        self.ui_scale_pending = false;
+        self.default_ui_scale = display_ui_scale(super::DISPLAY_PPI.get().copied(), native);
+        let scale = self.stored_ui_scale.unwrap_or(self.default_ui_scale);
+        ctx.set_zoom_factor(scale);
+        self.ui_scale = scale;
     }
 
     /// Build the app from a bare [`egui::Context`].
@@ -1116,6 +1163,9 @@ impl IronMonitorApp {
             applied_color_theme: None,
             autofit_done: false,
             ui_scale: 1.0,
+            default_ui_scale: 1.0,
+            stored_ui_scale: None,
+            ui_scale_pending: false,
             overview_shortfall: None,
             overview_chart_scale: 1.0,
             process_list_version: 0,
@@ -1978,11 +2028,21 @@ impl IronMonitorApp {
 
 impl eframe::App for IronMonitorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string(UI_SCALE_KEY, self.ui_scale.to_string());
+        // Only a scale the user changed is kept. One that matches the display's
+        // default is not, so the next run recomputes it for whatever screen it
+        // opens on.
+        let chosen = (self.ui_scale - self.default_ui_scale).abs() > 0.01;
+        let value = if chosen {
+            self.ui_scale.to_string()
+        } else {
+            String::new()
+        };
+        storage.set_string(UI_SCALE_KEY, value);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let palette_ctx = ctx.clone();
+        self.settle_ui_scale(ctx);
         self.ui_scale = ctx.zoom_factor();
         // Apply theme only when it actually changes. `apply_*_theme` calls
         // `ctx.set_fonts()` which rebuilds the font atlas — doing that every
@@ -3283,11 +3343,11 @@ impl IronMonitorApp {
         let fixed = scrolled.content_size.y - drawn_chart_height;
 
         // The scale at which the charts exactly fill the room, held between the
-        // floor and natural size. Fixed content does not depend on it, so this
+        // floor and the ceiling. Fixed content does not depend on it, so this
         // lands in one step; repaint once to draw at it.
         if natural_chart_height > 0.0 {
-            let fitted =
-                ((room - fixed) / natural_chart_height).clamp(OVERVIEW_MIN_CHART_SCALE, 1.0);
+            let fitted = ((room - fixed) / natural_chart_height)
+                .clamp(OVERVIEW_MIN_CHART_SCALE, OVERVIEW_MAX_CHART_SCALE);
             if (fitted - self.overview_chart_scale).abs() > 0.005 {
                 self.overview_chart_scale = fitted;
                 ui.ctx().request_repaint();
@@ -9125,5 +9185,26 @@ mod overview_disk_tests {
             text.iter().any(|label| label == "D:\\  Samsung SSD"),
             "distinct model names should remain: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod ui_scale_tests {
+    use super::{display_ui_scale, MAX_DEFAULT_UI_SCALE};
+
+    #[test]
+    fn display_ui_scale_aims_for_the_reference_point_size() {
+        // A 34-inch 3440x1440 panel (80 cm wide) at Windows 100%: ~109 points/inch.
+        let ultrawide = 3440.0 / (800.0 / 25.4);
+        assert!((display_ui_scale(Some(ultrawide), 1.0) - 1.137).abs() < 0.01);
+        // A 13.6-inch MacBook Air at "looks like 1470x956": a 2940-pixel backing
+        // store on a ~11.4-inch-wide panel, 2 pixels per point.
+        let air = 2940.0 / (290.0 / 25.4);
+        assert!((display_ui_scale(Some(air), 2.0) - 1.34).abs() < 0.02);
+        // A coarse 24-inch 1080p panel is not shrunk below what the OS chose.
+        assert_eq!(display_ui_scale(Some(92.0), 1.0), 1.0);
+        // Nor is anything scaled up past the ceiling, or guessed without a size.
+        assert_eq!(display_ui_scale(Some(400.0), 1.0), MAX_DEFAULT_UI_SCALE);
+        assert_eq!(display_ui_scale(None, 1.0), 1.0);
     }
 }
