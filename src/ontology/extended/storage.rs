@@ -98,6 +98,14 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
       "Host read commands the controller has completed since it was last reset, from the SMART/Health log page.");
     e(add, "disk.{n}.nvme.host_write_commands", D::Disk, K::Measurement, Some(U::Count), P::Measured, true,
       "Host write commands the controller has completed since it was last reset, from the SMART/Health log page.");
+    e(add, "disk.{n}.nvme.available_spare", D::Disk, K::Measurement, Some(U::Percent), P::Measured, true,
+      "Remaining spare capacity the controller reports, percent, from the SMART/Health log page. Null where the health log was not read.");
+    e(add, "disk.{n}.nvme.available_spare_threshold", D::Disk, K::Limit, Some(U::Percent), P::Measured, true,
+      "Available spare level below which the controller raises a warning, percent, from the SMART/Health log page. Null where the health log was not read.");
+    e(add, "disk.{n}.nvme.controller_busy_time", D::Disk, K::Measurement, Some(U::Seconds), P::Measured, true,
+      "Time the controller has spent processing commands since it was last reset, in seconds. The SMART/Health log reports minutes; this is converted. Null where the health log was not read.");
+    e(add, "disk.{n}.nvme.unsafe_shutdowns", D::Disk, K::Measurement, Some(U::Count), P::Measured, true,
+      "Power losses the controller saw without a shutdown notification, from the SMART/Health log page. Null where the health log was not read.");
     e(
         add,
         "disk.{n}.nvme.sensor.<none>",
@@ -521,6 +529,36 @@ fn resolve_nvme(out: &mut Vec<Reading>, base: &str, disk: &dyn DiskDevice) {
                 Some(U::Count),
                 "the controller did not report a host write command count",
             );
+            push_opt(
+                out,
+                format!("{base}.nvme.available_spare"),
+                n.available_spare.map(|v| serde_json::json!(v)),
+                Some(U::Percent),
+                "this reader did not obtain the available spare from the SMART/Health log",
+            );
+            push_opt(
+                out,
+                format!("{base}.nvme.available_spare_threshold"),
+                n.available_spare_threshold.map(|v| serde_json::json!(v)),
+                Some(U::Percent),
+                "this reader did not obtain the spare threshold from the SMART/Health log",
+            );
+            // The log reports minutes; the ontology publishes seconds.
+            push_opt(
+                out,
+                format!("{base}.nvme.controller_busy_time"),
+                n.controller_busy_time_minutes
+                    .map(|m| serde_json::json!(m.saturating_mul(60))),
+                Some(U::Seconds),
+                "this reader did not obtain the controller busy time from the SMART/Health log",
+            );
+            push_opt(
+                out,
+                format!("{base}.nvme.unsafe_shutdowns"),
+                n.unsafe_shutdowns.map(|v| serde_json::json!(v)),
+                Some(U::Count),
+                "this reader did not obtain the unsafe shutdown count from the SMART/Health log",
+            );
 
             if n.temperature_sensors.is_empty() {
                 out.push(Reading::unavailable(
@@ -593,6 +631,10 @@ fn resolve_nvme(out: &mut Vec<Reading>, base: &str, disk: &dyn DiskDevice) {
                 ("num_namespaces", U::Count),
                 ("host_read_commands", U::Count),
                 ("host_write_commands", U::Count),
+                ("available_spare", U::Percent),
+                ("available_spare_threshold", U::Percent),
+                ("controller_busy_time", U::Seconds),
+                ("unsafe_shutdowns", U::Count),
             ] {
                 out.push(Reading::unavailable(
                     format!("{base}.nvme.{suffix}"),

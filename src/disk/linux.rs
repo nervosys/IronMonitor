@@ -345,6 +345,14 @@ impl DiskDevice for LinuxDisk {
             host_read_commands: None,
             host_write_commands: None,
             critical_warnings: None,
+            // The `nvme smart-log` output is parsed by the SMART collector, which
+            // keeps only the wear, temperature and counter fields above. Its spare,
+            // threshold, busy-time and unsafe-shutdown keys are not read, so they
+            // stay unread here rather than being guessed.
+            available_spare: None,
+            available_spare_threshold: None,
+            controller_busy_time_minutes: None,
+            unsafe_shutdowns: None,
         })
     }
 

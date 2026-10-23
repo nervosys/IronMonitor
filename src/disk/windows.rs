@@ -372,6 +372,14 @@ impl WindowsDisk {
                 .as_ref()
                 .map(|h| h.host_write_commands.min(u64::MAX as u128) as u64),
             critical_warnings: health.as_ref().map(|h| h.critical_warning),
+            available_spare: health.as_ref().map(|h| h.available_spare_percent),
+            available_spare_threshold: health.as_ref().map(|h| h.available_spare_threshold_percent),
+            controller_busy_time_minutes: health
+                .as_ref()
+                .map(|h| h.controller_busy_time.min(u64::MAX as u128) as u64),
+            unsafe_shutdowns: health
+                .as_ref()
+                .map(|h| h.unsafe_shutdowns.min(u64::MAX as u128) as u64),
         }
     }
 
@@ -410,6 +418,12 @@ impl WindowsDisk {
             host_read_commands: None,
             host_write_commands: None,
             critical_warnings: None,
+            // This fallback never reads the health log, so the SMART/Health fields
+            // stay unread rather than being filled from WMI.
+            available_spare: None,
+            available_spare_threshold: None,
+            controller_busy_time_minutes: None,
+            unsafe_shutdowns: None,
         })
     }
 }

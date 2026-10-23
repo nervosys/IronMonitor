@@ -299,6 +299,14 @@ pub struct NvmeInfo {
     /// Critical warnings (bit flags). `None` when the health log was not read —
     /// distinct from `Some(0)`, which means the drive reported no warnings.
     pub critical_warnings: Option<u8>,
+    /// Available spare capacity, percent. `None` when the health log was not read.
+    pub available_spare: Option<u8>,
+    /// Available spare threshold, percent. `None` when the health log was not read.
+    pub available_spare_threshold: Option<u8>,
+    /// Controller busy time, in minutes. `None` when the health log was not read.
+    pub controller_busy_time_minutes: Option<u64>,
+    /// Unsafe shutdowns, a count. `None` when the health log was not read.
+    pub unsafe_shutdowns: Option<u64>,
 }
 
 /// NVMe power state information
