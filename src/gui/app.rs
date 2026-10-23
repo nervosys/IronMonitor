@@ -293,6 +293,10 @@ pub struct IronMonitorApp {
     /// Whether the starting scale still has to be applied.
     ui_scale_pending: bool,
 
+    /// NPUs, and Apple silicon's core types and unified memory, read once in
+    /// the background. See `super::soc`.
+    silicon: std::sync::Arc<std::sync::OnceLock<super::soc::SiliconDetails>>,
+
     /// How much taller the Overview's content is than the room it was given,
     /// recorded by `draw_overview` on the frame it was last drawn. Measured at
     /// full chart height, so the autofit grows the window toward the layout's
@@ -1166,6 +1170,7 @@ impl IronMonitorApp {
             default_ui_scale: 1.0,
             stored_ui_scale: None,
             ui_scale_pending: false,
+            silicon: super::soc::spawn_read(),
             overview_shortfall: None,
             overview_chart_scale: 1.0,
             process_list_version: 0,
@@ -3498,12 +3503,14 @@ impl IronMonitorApp {
                         .color(theme::color(&palette_ctx, CyberColors::ERROR)),
                 );
             }
+            super::soc::draw_cpu_section(ui, self.silicon.get());
         });
     }
 
     fn draw_accelerators_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        if self.gpu_static_info.is_empty() {
+        let silicon = std::sync::Arc::clone(&self.silicon);
+        if self.gpu_static_info.is_empty() && super::soc::npu_count(silicon.get()) == 0 {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
                 ui.label(RichText::new("⚡").size(48.0));
@@ -3678,12 +3685,24 @@ impl IronMonitorApp {
                             let mb = |v: Option<u64>| {
                                 v.map_or_else(|| "-".to_string(), |b| (b / 1024 / 1024).to_string())
                             };
+                            // An Apple GPU has no VRAM. It uses the SoC's
+                            // unified memory and has no total of its own, so
+                            // "VRAM 404/-MB" misdescribed it twice over.
+                            let unified = static_info.integrated
+                                && static_info.vendor == crate::gpu::GpuVendor::Apple;
                             ui.label(
-                                RichText::new(format!(
-                                    "VRAM {}/{}MB",
-                                    mb(dynamic_info.memory.used),
-                                    mb(dynamic_info.memory.total)
-                                ))
+                                RichText::new(if unified {
+                                    format!(
+                                        "Unified memory in use {}MB",
+                                        mb(dynamic_info.memory.used)
+                                    )
+                                } else {
+                                    format!(
+                                        "VRAM {}/{}MB",
+                                        mb(dynamic_info.memory.used),
+                                        mb(dynamic_info.memory.total)
+                                    )
+                                })
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
                                 .size(13.0),
                             );
@@ -3708,6 +3727,17 @@ impl IronMonitorApp {
                                     .color(theme::color(&palette_ctx, accel_color))
                                     .size(12.0),
                             );
+                            if let Some(cores) = static_info.shader_cores {
+                                ui.label(
+                                    RichText::new(if unified {
+                                        format!("{cores} GPU cores")
+                                    } else {
+                                        format!("{cores} shader cores")
+                                    })
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .size(12.0),
+                                );
+                            }
                             if let Some(ref driver) = static_info.driver_version {
                                 ui.label(
                                     RichText::new(format!("Driver: {}", driver))
@@ -3757,6 +3787,8 @@ impl IronMonitorApp {
                     ui.add_space(2.0);
                 }
             }
+
+            super::soc::draw_npus(ui, silicon.get(), available_width);
         });
     }
 
@@ -4024,6 +4056,7 @@ impl IronMonitorApp {
                         .color(theme::color(&palette_ctx, CyberColors::ERROR)),
                 );
             }
+            super::soc::draw_memory_section(ui, self.silicon.get());
         });
     }
 

@@ -421,6 +421,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Apple's comes from `powermetrics`, which needs root. So a non-root GUI or TUI
   listed no accelerators. Descriptors now come from the static query, and the
   TUI keeps a failed device's dynamic slot instead of blanking all.
+- Apple silicon SoC parts are read without root, in `silicon::apple`:
+  - GPU live figures come from IOKit's `PerformanceStatistics` for the GPU's
+    `IOAccelerator`: utilization (`Device Utilization %`), renderer and tiler
+    activity, and the unified memory in use. They came only from
+    `powermetrics`, so without root the GPU had no live figure. Clock and power
+    still need `powermetrics` and stay unread.
+  - The Neural Engine is listed from IOKit (`H11ANEIn`), in the TUI and now
+    the GUI's Accelerators tab. It was built from the `powermetrics` sample, so
+    without root it was not listed at all. An empty lookup is an error, not
+    "no Neural Engine": every Apple silicon chip has one.
+  - The CPU's core types come from `hw.perflevelN.*`: name, core and thread
+    counts, and L2 size and sharing. The GUI's CPU tab lists them with the chip
+    name.
+  - Unified memory is one on-package module. `system_profiler` lists no slots
+    on Apple silicon, only the package's size, type and maker, and the parser
+    read only slots, so the memory went unreported. The new
+    `FormFactor::OnPackage` claims no slot or channel count. The GUI's Memory
+    tab shows its size, type and maker.
+  - The GUI shows an Apple GPU's memory as unified memory in use, not as
+    "VRAM used/-", and shows its GPU core count.
+  - `tests/macos_readers.rs` checks each reader against the raw `ioreg`,
+    `sysctl` and `system_profiler` output on the macOS runner. The parsers were
+    written from captured output, without a Mac.
+- `silicon::query_npus` replaces the TUI's private copy. Where no reader
+  exists, it returns an error, not an empty list.
 - `tests/partial_correction.rs` gains a `JUDGED` list: matches traced to every
   constructor and found sound, each with its reason. The seven network structs
   moved there from the untriaged `BASELINE`. The `BASELINE` is now empty:

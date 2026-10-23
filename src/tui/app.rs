@@ -1380,37 +1380,7 @@ impl App {
 
     /// Query NPU info from the platform-specific silicon monitor.
     fn query_npus() -> std::result::Result<Vec<NpuInfo>, Box<dyn std::error::Error>> {
-        use crate::silicon::SiliconMonitor as SiliconMonitorTrait;
-
-        #[cfg(target_os = "linux")]
-        {
-            let monitor = crate::silicon::linux::LinuxSiliconMonitor::new()?;
-            Ok(monitor.npu_info()?)
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let monitor = crate::silicon::windows::WindowsSiliconMonitor::new()?;
-            Ok(monitor.npu_info()?)
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            #[cfg(feature = "apple")]
-            {
-                let monitor = crate::silicon::apple::AppleSiliconMonitor::new()?;
-                Ok(monitor.npu_info()?)
-            }
-            #[cfg(not(feature = "apple"))]
-            {
-                Ok(Vec::new())
-            }
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-        {
-            Ok(Vec::new())
-        }
+        Ok(crate::silicon::query_npus()?)
     }
 
     /// Update all monitoring data (legacy - calls both fast and slow)

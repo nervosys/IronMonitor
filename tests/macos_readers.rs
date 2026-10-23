@@ -276,3 +276,138 @@ fn uptime_is_positive_and_not_a_wrapped_duration() {
         uptime.as_secs()
     );
 }
+
+/// Raw output of a macOS tool, for checking a parser against what the tool
+/// actually printed on this machine.
+#[cfg(feature = "apple")]
+fn raw(program: &str, args: &[&str]) -> String {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap_or_else(|e| panic!("{program} must run on macOS: {e}"));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The SoC readers were written without a Mac to run them on, from captured
+/// output. So each is checked against the tool's own output here: where the
+/// raw text carries a key, the parser must have read it.
+#[cfg(feature = "apple")]
+#[test]
+fn performance_levels_account_for_every_logical_cpu() {
+    use ironmonitor::silicon::apple::read_perf_levels;
+    let raw_count = raw("sysctl", &["-n", "hw.nperflevels"]);
+    let Ok(count) = raw_count.trim().parse::<usize>() else {
+        // Intel Macs have no performance levels; the reader must say so.
+        assert!(read_perf_levels().is_err());
+        return;
+    };
+    let levels = read_perf_levels().expect("hw.nperflevels read, so the levels must");
+    assert_eq!(levels.len(), count, "{levels:?}");
+    let logical: Option<u32> = levels.iter().map(|l| l.logical_cores).sum();
+    let total: u32 = raw("sysctl", &["-n", "hw.logicalcpu"])
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        logical,
+        Some(total),
+        "the performance levels must cover every logical CPU: {levels:?}"
+    );
+    for level in &levels {
+        assert!(level.name.is_some(), "every level has a name: {levels:?}");
+    }
+}
+
+#[cfg(feature = "apple")]
+#[test]
+fn gpu_counters_read_every_key_ioreg_printed() {
+    use ironmonitor::silicon::apple::{parse_ioreg_accelerators, read_gpu_counters};
+    let text = raw(
+        "ioreg",
+        &["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+    );
+    eprintln!("ioreg IOAccelerator:\n{text}");
+    let gpus = read_gpu_counters().expect("ioreg runs on every Mac");
+    let parsed = parse_ioreg_accelerators(&text);
+    // Live counters move between the two reads; the device count does not.
+    assert_eq!(gpus.len(), parsed.len(), "{gpus:?} vs {parsed:?}");
+    assert_eq!(
+        parsed.len(),
+        text.lines()
+            .filter(|l| l.trim_start().starts_with("+-o "))
+            .count(),
+        "one entry per accelerator ioreg listed"
+    );
+    if text.contains("\"gpu-core-count\"") {
+        assert!(parsed.iter().any(|g| g.core_count.is_some()), "{parsed:?}");
+    }
+    if text.contains("\"Device Utilization %\"") {
+        assert!(
+            parsed.iter().any(|g| g.device_utilization.is_some()),
+            "{parsed:?}"
+        );
+    }
+    if text.contains("\"In use system memory\"") {
+        assert!(
+            parsed.iter().any(|g| g.in_use_system_memory.is_some()),
+            "{parsed:?}"
+        );
+    }
+}
+
+#[cfg(feature = "apple")]
+#[test]
+fn neural_engine_count_matches_ioreg() {
+    use ironmonitor::silicon::apple::read_neural_engines;
+    let text = raw("ioreg", &["-r", "-d", "1", "-w", "0", "-c", "H11ANEIn"]);
+    let listed = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("+-o "))
+        .count() as u32;
+    match read_neural_engines() {
+        Ok(count) => assert_eq!(count, listed),
+        // None listed is reported as a lookup that found nothing, not as zero.
+        Err(why) => assert_eq!(listed, 0, "{why}"),
+    }
+}
+
+#[cfg(feature = "apple")]
+#[test]
+fn unified_memory_is_read_where_system_profiler_lists_no_slots() {
+    use ironmonitor::memory_topology::{FormFactor, MemoryTopologyMonitor};
+    use ironmonitor::silicon::apple::read_unified_memory;
+    let text = raw("system_profiler", &["SPMemoryDataType", "-json"]);
+    eprintln!("system_profiler SPMemoryDataType:\n{text}");
+    let root: serde_json::Value = serde_json::from_str(&text).expect("system_profiler JSON");
+    let items = root["SPMemoryDataType"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let on_package = items
+        .iter()
+        .any(|item| item.get("_items").is_none() && item.get("dimm_type").is_some());
+
+    let memory = read_unified_memory();
+    let memsize: u64 = raw("sysctl", &["-n", "hw.memsize"]).trim().parse().unwrap();
+    assert_eq!(memory.total_bytes, Some(memsize));
+
+    if on_package {
+        let topology = MemoryTopologyMonitor::new().expect("topology reads");
+        assert!(
+            topology
+                .topology()
+                .dimms
+                .iter()
+                .any(|d| d.form_factor == FormFactor::OnPackage && d.populated == Some(true)),
+            "system_profiler listed on-package memory and the topology has none"
+        );
+        let named = items[0]["dimm_type"].as_str().unwrap_or("");
+        if ["LPDDR4", "LPDDR5"].iter().any(|t| named.contains(t)) {
+            assert!(
+                memory.memory_type.is_some(),
+                "{named} was not read: {memory:?}"
+            );
+        }
+    }
+}

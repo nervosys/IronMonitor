@@ -69,6 +69,9 @@ pub enum FormFactor {
     UDIMM,
     NVDIMM,
     OnBoard,
+    /// In the processor package itself, as Apple silicon's unified memory is.
+    /// There is no slot, and the channel count is not reported.
+    OnPackage,
     Unknown,
 }
 
@@ -82,6 +85,7 @@ impl std::fmt::Display for FormFactor {
             Self::UDIMM => "U-DIMM",
             Self::NVDIMM => "NV-DIMM",
             Self::OnBoard => "On-Board",
+            Self::OnPackage => "On-Package",
             Self::Unknown => "Unknown",
         };
         write!(f, "{}", s)
@@ -315,11 +319,15 @@ impl MemoryTopologyMonitor {
             populated.iter().map(|d| d.capacity_bytes).sum()
         };
         let populated_count = populated.len();
+        // Memory in the processor package has no slots, and its one row says
+        // nothing about channels: an M1's LPDDR4X runs on several, and
+        // `system_profiler` reports none of them.
+        let on_package = dimms.iter().any(|d| d.form_factor == FormFactor::OnPackage);
         // Only a source that lists empty slots can count them, and only when it
-        // listed rows: a source with no rows (Apple silicon reports unified
-        // memory with no slots) has no slot count, not a count of zero.
-        let total_slots =
-            (Self::SOURCE_LISTS_EMPTY_SLOTS && !dimms.is_empty()).then_some(dimms.len());
+        // listed rows: a source with no rows has no slot count, not a count of
+        // zero.
+        let total_slots = (Self::SOURCE_LISTS_EMPTY_SLOTS && !dimms.is_empty() && !on_package)
+            .then_some(dimms.len());
 
         // Matched speeds and capacities need two values to compare. With fewer,
         // there is no match to report, so the answer is unknown rather than
@@ -342,7 +350,11 @@ impl MemoryTopologyMonitor {
 
         // Channel inference from locator naming patterns. `None` when no locator
         // names a channel and the module count does not establish one.
-        let channel_count = Self::infer_channels(&populated);
+        let channel_count = if on_package {
+            None
+        } else {
+            Self::infer_channels(&populated)
+        };
         let dual_channel = channel_count.map(|c| c >= 2);
         let quad_channel = channel_count.map(|c| c >= 4);
 
@@ -902,6 +914,40 @@ impl MemoryTopologyMonitor {
         let mut dimms = Vec::new();
         if let Some(items) = root["SPMemoryDataType"].as_array() {
             for item in items {
+                // Apple silicon lists no slots. Its one item is the memory in
+                // the SoC package, with the size under the data type's own key
+                // and the type and maker beside it. Read as no modules, the
+                // machine's whole unified memory went unreported.
+                if item.get("_items").is_none()
+                    && (item.get("dimm_type").is_some() || item.get("SPMemoryDataType").is_some())
+                {
+                    let size_str = item["SPMemoryDataType"].as_str().unwrap_or("");
+                    let capacity_bytes = Self::parse_size_to_bytes(size_str);
+                    let type_str = item["dimm_type"].as_str().unwrap_or("Unknown");
+                    dimms.push(DimmInfo {
+                        locator: "SoC package".to_string(),
+                        bank: String::new(),
+                        capacity_bytes,
+                        // `system_profiler` gives no speed for on-package memory.
+                        speed_mts: None,
+                        configured_speed_mts: None,
+                        memory_type: Self::parse_memory_type(type_str),
+                        form_factor: FormFactor::OnPackage,
+                        data_width_bits: None,
+                        total_width_bits: None,
+                        ranks: None,
+                        manufacturer: Self::read_text(
+                            item["dimm_manufacturer"].as_str().unwrap_or(""),
+                        ),
+                        part_number: String::new(),
+                        serial_number: String::new(),
+                        // The item describes installed memory; there is no
+                        // empty package to report.
+                        populated: Some(true),
+                        voltage: None,
+                    });
+                    continue;
+                }
                 if let Some(slots) = item["_items"].as_array() {
                     for slot in slots {
                         let size_str = slot["dimm_size"].as_str().unwrap_or("");
@@ -1247,6 +1293,36 @@ Can't read memory from /dev/mem
         assert_eq!(dimms[1].capacity_bytes, None);
         assert_eq!(dimms[2].populated, Some(false));
         assert_eq!(dimms[2].capacity_bytes, None);
+    }
+
+    /// Apple silicon's `system_profiler` lists no slots, only the memory in the
+    /// package. That is one on-package module, not none, and it establishes no
+    /// slot or channel count.
+    #[test]
+    fn apple_silicon_unified_memory_is_one_on_package_module() {
+        let json = r#"{"SPMemoryDataType":[{
+            "SPMemoryDataType":"16 GB","dimm_manufacturer":"Hynix","dimm_type":"LPDDR5"
+        }]}"#;
+        let dimms =
+            MemoryTopologyMonitor::parse_macos_profiler(json).expect("system_profiler JSON parses");
+        assert_eq!(dimms.len(), 1);
+        let unified = &dimms[0];
+        assert_eq!(unified.form_factor, FormFactor::OnPackage);
+        assert_eq!(unified.capacity_bytes, Some(16 * 1024 * 1024 * 1024));
+        assert_eq!(unified.memory_type, MemoryType::LPDDR5);
+        assert_eq!(unified.manufacturer, "Hynix");
+        assert_eq!(unified.populated, Some(true));
+        assert_eq!(unified.speed_mts, None);
+
+        let analysis = MemoryTopologyMonitor::analyze(&dimms);
+        assert_eq!(analysis.total_capacity_bytes, Some(16 * 1024 * 1024 * 1024));
+        assert_eq!(analysis.total_slots, None, "a package is not a slot");
+        assert_eq!(
+            analysis.channel_count, None,
+            "one row says nothing of channels"
+        );
+        assert_eq!(analysis.dual_channel, None);
+        assert_eq!(analysis.efficiency_score, None);
     }
 
     /// SMBIOS "Unknown" is not "No Module Installed", and a real part number is

@@ -187,6 +187,41 @@ pub struct NetworkSilicon {
     pub power_state: Option<String>,
 }
 
+/// The NPUs this platform's silicon monitor lists.
+///
+/// An error where nothing could be looked up, rather than an empty list:
+/// "this build cannot look" is not "this machine has none".
+pub fn query_npus() -> Result<Vec<NpuInfo>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::LinuxSiliconMonitor::new()?.npu_info()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::WindowsSiliconMonitor::new()?.npu_info()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "apple"))]
+    {
+        apple::AppleSiliconMonitor::new()?.npu_info()
+    }
+
+    #[cfg(all(target_os = "macos", not(feature = "apple")))]
+    {
+        Err(crate::error::IronError::FeatureNotAvailable(
+            "the Neural Engine is read by the `apple` feature, which this build omits".into(),
+        ))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        Err(crate::error::IronError::UnsupportedPlatform(
+            "no NPU reader for this platform".into(),
+        ))
+    }
+}
+
 /// Silicon monitor trait
 pub trait SiliconMonitor {
     /// Get CPU information (cores and clusters)

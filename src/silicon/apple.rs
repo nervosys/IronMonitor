@@ -193,23 +193,33 @@ impl SiliconMonitor for AppleSiliconMonitor {
     }
 
     fn npu_info(&self) -> Result<Vec<NpuInfo>> {
-        let data = self.parse_powermetrics()?;
+        // The device comes from IOKit and needs no root. It was read from the
+        // `powermetrics` sample, so without root the Neural Engine was not
+        // listed at all, though it was there.
+        let count = read_neural_engines().map_err(crate::error::IronError::DeviceNotFound)?;
+        // `powermetrics` gives one ANE figure, so it belongs to a lone device.
+        let power_watts = (count == 1)
+            .then(|| self.parse_powermetrics().ok())
+            .flatten()
+            .map(|data| data.ane_power_mw as f32 / 1000.0);
 
-        Ok(vec![NpuInfo {
-            name: "Apple Neural Engine".to_string(),
-            vendor: "Apple".to_string(),
-            // "Most" is not this machine. The ANE core count is not read.
-            cores: None,
-            // Not reported. This was the ANE's measured draw divided by a
-            // ceiling from a brand-string table -- 8 W for any chip the table
-            // did not name -- which is the GPU power-percentage defect over
-            // again: a real numerator over an invented denominator, reaching
-            // the TUI's accelerator panel as a utilisation. `powermetrics`
-            // reports no ANE activity figure, so there is nothing to put here.
-            utilization: None,
-            power_watts: Some(data.ane_power_mw as f32 / 1000.0),
-            frequency_mhz: None,
-        }])
+        Ok((0..count)
+            .map(|_| NpuInfo {
+                name: "Apple Neural Engine".to_string(),
+                vendor: "Apple".to_string(),
+                // "Most" is not this machine. The ANE core count is not read.
+                cores: None,
+                // Not reported. This was the ANE's measured draw divided by a
+                // ceiling from a brand-string table -- 8 W for any chip the table
+                // did not name -- which is the GPU power-percentage defect over
+                // again: a real numerator over an invented denominator, reaching
+                // the TUI's accelerator panel as a utilisation. `powermetrics`
+                // reports no ANE activity figure, so there is nothing to put here.
+                utilization: None,
+                power_watts,
+                frequency_mhz: None,
+            })
+            .collect())
     }
 
     fn io_info(&self) -> Result<Vec<IoController>> {
@@ -338,6 +348,263 @@ fn classify_macos_interface(iface: &str) -> String {
     }
 }
 
+/// One CPU performance level, as `hw.perflevelN.*` reports it.
+///
+/// Apple silicon numbers its levels from 0, the fastest: on every shipping
+/// chip level 0 is the performance cores and level 1 the efficiency cores. The
+/// name is read rather than assumed from the index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerfLevel {
+    /// N in `hw.perflevelN`.
+    pub index: u32,
+    /// `hw.perflevelN.name`, e.g. "Performance" or "Efficiency".
+    pub name: Option<String>,
+    /// `hw.perflevelN.physicalcpu`.
+    pub physical_cores: Option<u32>,
+    /// `hw.perflevelN.logicalcpu`.
+    pub logical_cores: Option<u32>,
+    /// `hw.perflevelN.l2cachesize`, in bytes. Each L2 is shared by
+    /// [`Self::cores_per_l2`] cores.
+    pub l2_cache_bytes: Option<u64>,
+    /// `hw.perflevelN.cpusperl2`.
+    pub cores_per_l2: Option<u32>,
+}
+
+/// What IOKit reports for one Apple GPU, without root.
+///
+/// `ioreg` lists each GPU as an `IOAccelerator` whose `PerformanceStatistics`
+/// dictionary the driver keeps current. It is the GPU's own activity counter,
+/// so it is a reading where `powermetrics` cannot be run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppleGpuCounters {
+    /// `model`, e.g. "Apple M2 Pro".
+    pub model: Option<String>,
+    /// `gpu-core-count`.
+    pub core_count: Option<u32>,
+    /// `Device Utilization %`: the share of time the GPU was busy.
+    pub device_utilization: Option<u8>,
+    /// `Renderer Utilization %`.
+    pub renderer_utilization: Option<u8>,
+    /// `Tiler Utilization %`.
+    pub tiler_utilization: Option<u8>,
+    /// `In use system memory`, bytes: unified memory the GPU is using now.
+    pub in_use_system_memory: Option<u64>,
+    /// `Alloc system memory`, bytes: unified memory allocated to the GPU.
+    pub allocated_system_memory: Option<u64>,
+}
+
+/// The SoC's unified memory, shared by the CPU, GPU and Neural Engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnifiedMemory {
+    /// `hw.memsize`, bytes.
+    pub total_bytes: Option<u64>,
+    /// The memory type `system_profiler` names, e.g. "LPDDR5".
+    pub memory_type: Option<String>,
+    /// The memory maker `system_profiler` names.
+    pub manufacturer: Option<String>,
+}
+
+/// Everything about an Apple silicon SoC that can be read without root.
+///
+/// Each part carries its own failure, so one unreadable part does not hide
+/// the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppleSocInventory {
+    /// `machdep.cpu.brand_string`, e.g. "Apple M3 Max".
+    pub chip: Option<String>,
+    /// The CPU's performance levels, fastest first.
+    pub perf_levels: std::result::Result<Vec<PerfLevel>, String>,
+    /// The GPUs IOKit lists.
+    pub gpus: std::result::Result<Vec<AppleGpuCounters>, String>,
+    /// How many Neural Engine devices IOKit lists. An error, not zero, where
+    /// none was found: every Apple silicon chip has one, so an empty lookup
+    /// says the lookup missed, not that the chip lacks it.
+    pub neural_engines: std::result::Result<u32, String>,
+    /// The unified memory.
+    pub unified_memory: UnifiedMemory,
+}
+
+/// The IOKit class the Neural Engine's driver registers.
+const ANE_IOKIT_CLASS: &str = "H11ANEIn";
+
+/// Run a command and return its stdout, or why it could not be read.
+fn command_text(program: &str, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|e| format!("{program} could not be run: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{program} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The value of an `ioreg` property line `"key" = value`, unquoted.
+fn ioreg_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.trim().strip_prefix('"')?.strip_prefix(key)?;
+    let value = rest
+        .strip_prefix('"')?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    // Strings print as "x"; device-tree data as <"x">.
+    let value = value.trim_start_matches('<').trim_end_matches('>');
+    Some(value.trim_matches('"'))
+}
+
+/// The integer entries of an `ioreg` inline dictionary `{"a"=1,"b"=2}`.
+///
+/// Entries whose value is not an integer are skipped rather than read as 0.
+fn ioreg_int_dict(dict: &str) -> HashMap<String, u64> {
+    let mut entries = HashMap::new();
+    let inner = dict.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut rest = inner;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else { break };
+        let key = &after[..end];
+        let tail = &after[end + 1..];
+        let Some(tail) = tail.trim_start().strip_prefix('=') else {
+            rest = tail;
+            continue;
+        };
+        let stop = tail.find([',', '}']).unwrap_or(tail.len());
+        if let Ok(value) = tail[..stop].trim().parse::<u64>() {
+            entries.insert(key.to_string(), value);
+        }
+        rest = &tail[stop..];
+    }
+    entries
+}
+
+/// A percentage counter, withheld rather than clamped when it exceeds 100.
+fn percent(stats: &HashMap<String, u64>, key: &str) -> Option<u8> {
+    stats
+        .get(key)
+        .copied()
+        .filter(|v| *v <= 100)
+        .map(|v| v as u8)
+}
+
+/// Parse `ioreg -r -d 1 -w 0 -c IOAccelerator` into one entry per GPU.
+pub fn parse_ioreg_accelerators(text: &str) -> Vec<AppleGpuCounters> {
+    let mut gpus: Vec<AppleGpuCounters> = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with("+-o ") {
+            gpus.push(AppleGpuCounters::default());
+            continue;
+        }
+        let Some(gpu) = gpus.last_mut() else {
+            continue;
+        };
+        if let Some(model) = ioreg_value(line, "model") {
+            gpu.model = Some(model.to_string()).filter(|m| !m.is_empty());
+        } else if let Some(count) = ioreg_value(line, "gpu-core-count") {
+            gpu.core_count = count.parse().ok().filter(|n| *n > 0);
+        } else if let Some(dict) = ioreg_value(line, "PerformanceStatistics") {
+            let stats = ioreg_int_dict(dict);
+            gpu.device_utilization = percent(&stats, "Device Utilization %");
+            gpu.renderer_utilization = percent(&stats, "Renderer Utilization %");
+            gpu.tiler_utilization = percent(&stats, "Tiler Utilization %");
+            gpu.in_use_system_memory = stats.get("In use system memory").copied();
+            gpu.allocated_system_memory = stats.get("Alloc system memory").copied();
+        }
+    }
+    gpus
+}
+
+/// How many objects an `ioreg -r -d 1 -c <class>` listing holds.
+pub fn count_ioreg_objects(text: &str) -> u32 {
+    text.lines()
+        .filter(|line| line.trim_start().starts_with("+-o "))
+        .count() as u32
+}
+
+/// Read every GPU IOKit lists, with its live counters.
+pub fn read_gpu_counters() -> std::result::Result<Vec<AppleGpuCounters>, String> {
+    command_text(
+        "ioreg",
+        &["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+    )
+    .map(|text| parse_ioreg_accelerators(&text))
+}
+
+/// Count the Neural Engine devices IOKit lists. See
+/// [`AppleSocInventory::neural_engines`].
+pub fn read_neural_engines() -> std::result::Result<u32, String> {
+    let text = command_text(
+        "ioreg",
+        &["-r", "-d", "1", "-w", "0", "-c", ANE_IOKIT_CLASS],
+    )?;
+    match count_ioreg_objects(&text) {
+        0 => Err(format!(
+            "IOKit lists no {ANE_IOKIT_CLASS} object, the Neural Engine driver's class"
+        )),
+        n => Ok(n),
+    }
+}
+
+/// Read the CPU's performance levels from `hw.nperflevels` and
+/// `hw.perflevelN.*`.
+pub fn read_perf_levels() -> std::result::Result<Vec<PerfLevel>, String> {
+    use crate::platform::macos::{sysctl_string, sysctl_u64};
+    let count = sysctl_u64("hw.nperflevels")
+        .ok_or_else(|| "sysctl hw.nperflevels could not be read".to_string())?;
+    Ok((0..count as u32)
+        .map(|index| {
+            let key = |field: &str| format!("hw.perflevel{index}.{field}");
+            let small = |field: &str| sysctl_u64(&key(field)).and_then(|v| u32::try_from(v).ok());
+            PerfLevel {
+                index,
+                name: sysctl_string(&key("name")).filter(|n| !n.is_empty()),
+                physical_cores: small("physicalcpu"),
+                logical_cores: small("logicalcpu"),
+                l2_cache_bytes: sysctl_u64(&key("l2cachesize")),
+                cores_per_l2: small("cpusperl2"),
+            }
+        })
+        .collect())
+}
+
+/// Read the unified memory's size, and its type and maker where
+/// `system_profiler` names them.
+pub fn read_unified_memory() -> UnifiedMemory {
+    use crate::memory_topology::{FormFactor, MemoryTopologyMonitor, MemoryType};
+    let package = MemoryTopologyMonitor::new().ok().and_then(|monitor| {
+        monitor
+            .topology()
+            .dimms
+            .iter()
+            .find(|d| d.form_factor == FormFactor::OnPackage)
+            .cloned()
+    });
+    UnifiedMemory {
+        total_bytes: crate::platform::macos::sysctl_u64("hw.memsize").filter(|b| *b > 0),
+        memory_type: package
+            .as_ref()
+            .filter(|d| d.memory_type != MemoryType::Unknown)
+            .map(|d| d.memory_type.to_string()),
+        manufacturer: package.map(|d| d.manufacturer).filter(|m| !m.is_empty()),
+    }
+}
+
+/// Read everything [`AppleSocInventory`] describes.
+pub fn read_soc_inventory() -> AppleSocInventory {
+    AppleSocInventory {
+        chip: crate::platform::macos::sysctl_string("machdep.cpu.brand_string")
+            .filter(|c| !c.is_empty()),
+        perf_levels: read_perf_levels(),
+        gpus: read_gpu_counters(),
+        neural_engines: read_neural_engines(),
+        unified_memory: read_unified_memory(),
+    }
+}
+
 // `estimate_link_speed` was here, and its own doc comment said what was wrong
 // with it: "These are guesses keyed off the interface name, not measurements:
 // `en0` is assumed to be Wi-Fi 6 and anything else `en*`/`bridge*` gigabit
@@ -370,7 +637,65 @@ mod tests {
             "{err:?}"
         );
         assert!(monitor.cpu_info().is_err());
-        assert!(monitor.npu_info().is_err());
+        // The Neural Engine is listed from IOKit, without root; its power
+        // figure is the part that needs `powermetrics`.
+        if let Ok(npus) = monitor.npu_info() {
+            assert!(npus.iter().all(|npu| npu.power_watts.is_none()), "{npus:?}");
+        }
+    }
+
+    /// A trimmed capture of `ioreg -r -d 1 -w 0 -c IOAccelerator` on an M1.
+    const IOREG_AGX: &str = r#"+-o AGXAcceleratorG13G  <class AGXAcceleratorG13G, id 0x1000004b8, registered, matched, active, busy 0 (0 ms), retain 49>
+    {
+      "IOClass" = "AGXAcceleratorG13G"
+      "gpu-core-count" = 8
+      "model" = "Apple M1"
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=1012334592,"Tiler Utilization %"=7,"recoveryCount"=0,"lastRecoveryTime"=0,"Renderer Utilization %"=11,"TiledSceneBytes"=1638400,"Device Utilization %"=12,"SplitSceneCount"=0,"Allocated PB Size"=168820736,"In use system memory"=423624704}
+      "IOMatchedAtBoot" = Yes
+    }
+"#;
+
+    #[test]
+    fn ioreg_accelerator_counters_are_read_by_name() {
+        let gpus = parse_ioreg_accelerators(IOREG_AGX);
+        assert_eq!(gpus.len(), 1);
+        let gpu = &gpus[0];
+        assert_eq!(gpu.model.as_deref(), Some("Apple M1"));
+        assert_eq!(gpu.core_count, Some(8));
+        assert_eq!(gpu.device_utilization, Some(12));
+        assert_eq!(gpu.renderer_utilization, Some(11));
+        assert_eq!(gpu.tiler_utilization, Some(7));
+        assert_eq!(gpu.in_use_system_memory, Some(423_624_704));
+        assert_eq!(gpu.allocated_system_memory, Some(1_012_334_592));
+    }
+
+    /// A missing or impossible counter is unread, not 0 and not clamped.
+    #[test]
+    fn missing_or_impossible_gpu_counters_are_unread() {
+        let gpus = parse_ioreg_accelerators(concat!(
+            "+-o AGXAcceleratorG14X  <class AGXAcceleratorG14X>\n",
+            "      \"PerformanceStatistics\" = {\"Device Utilization %\"=140,",
+            "\"Renderer Utilization %\"=bad}\n",
+            "+-o AppleParavirtGPU  <class AppleParavirtGPU>\n",
+        ));
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].device_utilization, None);
+        assert_eq!(gpus[0].renderer_utilization, None);
+        assert_eq!(gpus[0].core_count, None);
+        assert_eq!(gpus[1], AppleGpuCounters::default());
+        assert!(parse_ioreg_accelerators("").is_empty());
+    }
+
+    #[test]
+    fn ioreg_objects_are_counted_by_their_tree_lines() {
+        let ane = concat!(
+            "+-o H11ANEIn  <class H11ANEIn, id 0x100000254, registered>\n",
+            "    {\n",
+            "      \"IOClass\" = \"H11ANEIn\"\n",
+            "    }\n",
+        );
+        assert_eq!(count_ioreg_objects(ane), 1);
+        assert_eq!(count_ioreg_objects(""), 0);
     }
 
     #[test]
