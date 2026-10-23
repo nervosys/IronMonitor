@@ -133,14 +133,11 @@ impl DiskDevice for LinuxDisk {
             .ok()
             .map(|v| v as u32);
 
-        // Read rotation rate (0 = SSD, >0 = HDD RPM)
-        let rotation_rate = self.read_sysfs_u64("queue/rotational").ok().and_then(|r| {
-            if r > 0 {
-                Some(r as u32)
-            } else {
-                None
-            }
-        });
+        // Not read. sysfs `queue/rotational` is a 0/1 flag, not a speed, and
+        // this used to pass the flag through as the RPM: every hard disk
+        // spun at 1 RPM. The nominal rate is in the ATA IDENTIFY data, which
+        // needs an ioctl this reader does not make.
+        let rotation_rate = None;
 
         Ok(DiskInfo {
             name: self.name.clone(),

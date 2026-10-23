@@ -75,7 +75,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         "Logical sector size in bytes, the unit the operating system addresses the device in.",
     );
     e(add, "disk.{n}.rotation_rate", D::Disk, K::Measurement, Some(U::Rpm), P::Measured, true,
-      "Spindle speed in RPM for a rotating drive. Where the reader classifies a solid-state device it may report 0, meaning it does not rotate.");
+      "Nominal spindle speed of a rotating drive, as the drive declares it. No platform reader currently obtains it, so this is unavailable with a reason.");
     e(add, "disk.{n}.interface_type", D::Disk, K::Identity, Some(U::Identifier), P::Measured, true,
       "Transport the device is attached over, such as NVMe, SATA or USB, as the platform names it.");
 

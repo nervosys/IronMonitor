@@ -72,13 +72,9 @@ impl DiskDevice for MacDisk {
             // logical over 4096 physical — for every disk on every Mac.
             physical_sector_size: None,
             logical_sector_size: None,
-            rotation_rate: if self.disk_type == DiskType::SataSsd
-                || self.disk_type == DiskType::NvmeSsd
-            {
-                Some(0)
-            } else {
-                None
-            },
+            // Not read. This reported 0 RPM for anything classified as an
+            // SSD, a figure from the classification rather than the drive.
+            rotation_rate: None,
             vendor: None,
         })
     }
