@@ -481,9 +481,15 @@ impl CpuCacheMonitor {
                 };
 
                 // 0xFF is the documented marker for fully associative, which is
-                // not a way count and must not be reported as 255 ways.
-                let associativity = (cache.Associativity != 0xFF && cache.Associativity != 0)
-                    .then_some(cache.Associativity as u32);
+                // not a way count and must not be reported as 255 ways. It is
+                // `Some(0)`, the field's fully-associative value, as on Linux
+                // and the WMI path; it used to become `None`, unknown, for a
+                // value Windows had stated. 0 itself is undocumented here.
+                let associativity = match cache.Associativity {
+                    0xFF => Some(0),
+                    0 => None,
+                    ways => Some(ways as u32),
+                };
 
                 // SAFETY: `GroupCount` is 0 or 1 for a single-group machine and
                 // the union's first arm covers that case, which is the only one
