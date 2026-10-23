@@ -163,6 +163,16 @@ pub struct SmartDiskInfo {
     pub nvme_percentage_used: Option<u8>,
     /// NVMe available spare percentage
     pub nvme_available_spare: Option<u8>,
+    /// NVMe available spare threshold, percent (`spare_thresh`). Read from the
+    /// same `nvme smart-log` run as the spare itself.
+    #[serde(default)]
+    pub nvme_available_spare_threshold: Option<u8>,
+    /// NVMe controller busy time, in minutes (`controller_busy_time`).
+    #[serde(default)]
+    pub nvme_controller_busy_time_minutes: Option<u64>,
+    /// NVMe unsafe shutdown count (`unsafe_shutdowns`).
+    #[serde(default)]
+    pub nvme_unsafe_shutdowns: Option<u64>,
     /// All raw S.M.A.R.T. attributes
     pub attributes: Vec<SmartAttribute>,
     /// Estimated remaining life percentage (0-100)
@@ -464,6 +474,9 @@ impl SmartMonitor {
                         total_bytes_read: None,
                         nvme_percentage_used: None,
                         nvme_available_spare: None,
+                        nvme_available_spare_threshold: None,
+                        nvme_controller_busy_time_minutes: None,
+                        nvme_unsafe_shutdowns: None,
                         attributes: Vec::new(),
                         estimated_life_remaining: None,
                         estimated_days_remaining: None,
@@ -476,28 +489,7 @@ impl SmartMonitor {
                     {
                         if let Ok(text) = String::from_utf8(output.stdout) {
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                                // Absent keys stay `None`: `nvme smart-log` omits
-                                // what the drive did not report, and the previous
-                                // `.unwrap_or(0)` turned every omission into a
-                                // reading of zero.
-                                disk.temperature_celsius = val["temperature"]
-                                    .as_u64()
-                                    .or_else(|| val["composite_temperature"].as_u64())
-                                    .map(|t| if t > 273 { (t - 273) as u32 } else { t as u32 });
-                                disk.power_on_hours = val["power_on_hours"].as_u64();
-                                disk.power_cycle_count = val["power_cycles"].as_u64();
-                                disk.nvme_percentage_used =
-                                    val["percent_used"].as_u64().map(|v| v as u8);
-                                disk.nvme_available_spare =
-                                    val["avail_spare"].as_u64().map(|v| v as u8);
-                                disk.uncorrectable_errors = val["media_errors"].as_u64();
-                                // NVMe reports data units of 512 bytes, in
-                                // thousands.
-                                disk.total_bytes_written = val["data_units_written"]
-                                    .as_u64()
-                                    .map(|units| units * 512_000);
-                                disk.total_bytes_read =
-                                    val["data_units_read"].as_u64().map(|units| units * 512_000);
+                                Self::apply_nvme_smart_log(&mut disk, &val);
                             }
                         }
                     }
@@ -560,6 +552,9 @@ impl SmartMonitor {
                     total_bytes_read: None,
                     nvme_percentage_used: None,
                     nvme_available_spare: None,
+                    nvme_available_spare_threshold: None,
+                    nvme_controller_busy_time_minutes: None,
+                    nvme_unsafe_shutdowns: None,
                     attributes: Vec::new(),
                     estimated_life_remaining: None,
                     estimated_days_remaining: None,
@@ -579,6 +574,39 @@ impl SmartMonitor {
             }
         }
         Ok(())
+    }
+
+    /// Fill an NVMe disk from the JSON that `nvme smart-log -o json` prints.
+    ///
+    /// Every key is optional. `nvme-cli` omits what the drive did not report, and
+    /// an omitted key stays `None` here rather than becoming zero.
+    #[cfg(any(target_os = "linux", test))]
+    fn apply_nvme_smart_log(disk: &mut SmartDiskInfo, val: &serde_json::Value) {
+        // Absent keys stay `None`: `nvme smart-log` omits
+        // what the drive did not report, and the previous
+        // `.unwrap_or(0)` turned every omission into a
+        // reading of zero.
+        disk.temperature_celsius = val["temperature"]
+            .as_u64()
+            .or_else(|| val["composite_temperature"].as_u64())
+            .map(|t| if t > 273 { (t - 273) as u32 } else { t as u32 });
+        disk.power_on_hours = val["power_on_hours"].as_u64();
+        disk.power_cycle_count = val["power_cycles"].as_u64();
+        disk.nvme_percentage_used = val["percent_used"].as_u64().map(|v| v as u8);
+        disk.nvme_available_spare = val["avail_spare"].as_u64().map(|v| v as u8);
+        // Percentages are one byte; a value that does not fit is not a reading.
+        disk.nvme_available_spare_threshold = val["spare_thresh"]
+            .as_u64()
+            .and_then(|v| u8::try_from(v).ok());
+        disk.nvme_controller_busy_time_minutes = val["controller_busy_time"].as_u64();
+        disk.nvme_unsafe_shutdowns = val["unsafe_shutdowns"].as_u64();
+        disk.uncorrectable_errors = val["media_errors"].as_u64();
+        // NVMe reports data units of 512 bytes, in
+        // thousands.
+        disk.total_bytes_written = val["data_units_written"]
+            .as_u64()
+            .map(|units| units * 512_000);
+        disk.total_bytes_read = val["data_units_read"].as_u64().map(|units| units * 512_000);
     }
 
     #[cfg(target_os = "linux")]
@@ -785,6 +813,9 @@ Get-PhysicalDisk | ForEach-Object {
                             total_bytes_read: None,
                             nvme_percentage_used: wear.map(|w| w as u8),
                             nvme_available_spare: None,
+                            nvme_available_spare_threshold: None,
+                            nvme_controller_busy_time_minutes: None,
+                            nvme_unsafe_shutdowns: None,
                             attributes: Vec::new(),
                             estimated_life_remaining: None,
                             estimated_days_remaining: None,
@@ -916,6 +947,9 @@ Get-PhysicalDisk | ForEach-Object {
                                 total_bytes_read: None,
                                 nvme_percentage_used: None,
                                 nvme_available_spare: None,
+                                nvme_available_spare_threshold: None,
+                                nvme_controller_busy_time_minutes: None,
+                                nvme_unsafe_shutdowns: None,
                                 attributes: Vec::new(),
                                 estimated_life_remaining: None,
                                 estimated_days_remaining: None,
@@ -998,6 +1032,9 @@ Get-PhysicalDisk | ForEach-Object {
                                 total_bytes_read: None,
                                 nvme_percentage_used: None,
                                 nvme_available_spare: None,
+                                nvme_available_spare_threshold: None,
+                                nvme_controller_busy_time_minutes: None,
+                                nvme_unsafe_shutdowns: None,
                                 attributes: Vec::new(),
                                 estimated_life_remaining: None,
                                 estimated_days_remaining: None,
@@ -1102,6 +1139,9 @@ mod tests {
             total_bytes_read: None,
             nvme_percentage_used: None,
             nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1137,6 +1177,9 @@ mod tests {
             total_bytes_read: None,
             nvme_percentage_used: None,
             nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1166,6 +1209,9 @@ mod tests {
             total_bytes_read: None,
             nvme_percentage_used: None,
             nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1198,6 +1244,9 @@ mod tests {
             total_bytes_read: Some(2_000_000_000),
             nvme_percentage_used: None,
             nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
             attributes: Vec::new(),
             estimated_life_remaining: Some(95.0),
             estimated_days_remaining: Some(3650),
@@ -1237,6 +1286,9 @@ mod tests {
             total_bytes_read: None,
             nvme_percentage_used: None,
             nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1253,5 +1305,81 @@ mod tests {
             disk.estimated_life_remaining.is_none(),
             "a life estimate was published for a drive nothing was read from"
         );
+    }
+
+    fn blank_nvme_disk() -> SmartDiskInfo {
+        SmartDiskInfo {
+            device: "/dev/nvme0".into(),
+            model: "Test NVMe".into(),
+            serial: "NVME1".into(),
+            firmware: "1.0".into(),
+            media_type: DriveMediaType::NVMe,
+            capacity_bytes: None,
+            health: DiskHealth::Unknown,
+            temperature_celsius: None,
+            power_on_hours: None,
+            power_cycle_count: None,
+            reallocated_sectors: None,
+            pending_sectors: None,
+            uncorrectable_errors: None,
+            wear_leveling_percent: None,
+            total_bytes_written: None,
+            total_bytes_read: None,
+            nvme_percentage_used: None,
+            nvme_available_spare: None,
+            nvme_available_spare_threshold: None,
+            nvme_controller_busy_time_minutes: None,
+            nvme_unsafe_shutdowns: None,
+            attributes: Vec::new(),
+            estimated_life_remaining: None,
+            estimated_days_remaining: None,
+        }
+    }
+
+    /// Output shaped like `nvme smart-log /dev/nvme0n1 -o json` from nvme-cli. The
+    /// keys are nvme-cli's own; the values describe a healthy drive.
+    #[test]
+    fn nvme_smart_log_json_fills_spare_threshold_busy_time_and_unsafe_shutdowns() {
+        let text = concat!(
+            "{\"critical_warning\" : 0,",
+            "\"temperature\" : 312,",
+            "\"avail_spare\" : 98,",
+            "\"spare_thresh\" : 10,",
+            "\"percent_used\" : 3,",
+            "\"endurance_group_critical_warning_summary\" : 0,",
+            "\"data_units_read\" : 9876543,",
+            "\"data_units_written\" : 4567890,",
+            "\"host_read_commands\" : 123456789,",
+            "\"host_write_commands\" : 87654321,",
+            "\"controller_busy_time\" : 412,",
+            "\"power_cycles\" : 233,",
+            "\"power_on_hours\" : 5120,",
+            "\"unsafe_shutdowns\" : 17,",
+            "\"media_errors\" : 0,",
+            "\"num_err_log_entries\" : 0}"
+        );
+        let val: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut disk = blank_nvme_disk();
+        SmartMonitor::apply_nvme_smart_log(&mut disk, &val);
+
+        assert_eq!(disk.nvme_available_spare, Some(98));
+        assert_eq!(disk.nvme_available_spare_threshold, Some(10));
+        assert_eq!(disk.nvme_controller_busy_time_minutes, Some(412));
+        assert_eq!(disk.nvme_unsafe_shutdowns, Some(17));
+        assert_eq!(disk.nvme_percentage_used, Some(3));
+    }
+
+    /// A drive or nvme-cli that omits these keys must leave them unread, not zero.
+    #[test]
+    fn nvme_smart_log_keys_that_are_absent_stay_unread() {
+        let text = concat!("{\"avail_spare\" : 100,", "\"percent_used\" : 0}");
+        let val: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut disk = blank_nvme_disk();
+        SmartMonitor::apply_nvme_smart_log(&mut disk, &val);
+
+        assert_eq!(disk.nvme_available_spare, Some(100));
+        assert_eq!(disk.nvme_available_spare_threshold, None);
+        assert_eq!(disk.nvme_controller_busy_time_minutes, None);
+        assert_eq!(disk.nvme_unsafe_shutdowns, None);
     }
 }

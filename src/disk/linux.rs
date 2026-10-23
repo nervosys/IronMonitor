@@ -74,6 +74,15 @@ impl LinuxDisk {
     }
 }
 
+/// The NVMe controller a namespace belongs to: `nvme0n1` is on `nvme0`.
+///
+/// `None` for anything that is not an `nvme<N>n<M>` name.
+fn nvme_controller(name: &str) -> Option<&str> {
+    let digits = name.strip_prefix("nvme")?;
+    let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+    (n > 0).then(|| &name[..4 + n])
+}
+
 impl LinuxDisk {
     /// This drive's entry from the SMART collector, matched on device path.
     ///
@@ -82,8 +91,16 @@ impl LinuxDisk {
     /// and the worst case of the two platforms. It now reads a run shared across
     /// every drive and every accessor,
     /// [`crate::smart::SmartMonitor::cached_disks`].
+    ///
+    /// NVMe namespaces (`nvme0n1`) match the collector's entry for their
+    /// controller (`/dev/nvme0`), which is the device `nvme smart-log` is run on.
+    /// Matching the namespace path found nothing, so no NVMe drive ever had
+    /// SMART data.
     fn smart_disk(&self) -> Option<crate::smart::SmartDiskInfo> {
-        let wanted = format!("/dev/{}", self.name);
+        let wanted = match nvme_controller(&self.name) {
+            Some(controller) => format!("/dev/{controller}"),
+            None => format!("/dev/{}", self.name),
+        };
         crate::smart::SmartMonitor::cached_disks()
             .iter()
             .find(|d| d.device == wanted)
@@ -279,13 +296,10 @@ impl DiskDevice for LinuxDisk {
 
     fn nvme_info(&self) -> Result<NvmeInfo, Error> {
         // Namespaces are named `nvme0n1`; the controller they belong to is
-        // `nvme0`, and that is what sysfs keys on.
-        let Some(controller) = self
-            .name
-            .split('n')
-            .next()
-            .filter(|c| c.starts_with("nvme"))
-        else {
+        // `nvme0`, and that is what sysfs keys on. This used to split on every
+        // `n`, which takes `nvme0n1` to "" and returned NotSupported for every
+        // NVMe drive.
+        let Some(controller) = nvme_controller(&self.name) else {
             return Err(Error::NotSupported);
         };
         let base = PathBuf::from("/sys/class/nvme").join(controller);
@@ -345,14 +359,16 @@ impl DiskDevice for LinuxDisk {
             host_read_commands: None,
             host_write_commands: None,
             critical_warnings: None,
-            // The `nvme smart-log` output is parsed by the SMART collector, which
-            // keeps only the wear, temperature and counter fields above. Its spare,
-            // threshold, busy-time and unsafe-shutdown keys are not read, so they
-            // stay unread here rather than being guessed.
-            available_spare: None,
-            available_spare_threshold: None,
-            controller_busy_time_minutes: None,
-            unsafe_shutdowns: None,
+            // The same `nvme smart-log` run as the wear and temperature fields
+            // above, parsed by the SMART collector. Absent keys stay None.
+            available_spare: smart.as_ref().and_then(|d| d.nvme_available_spare),
+            available_spare_threshold: smart
+                .as_ref()
+                .and_then(|d| d.nvme_available_spare_threshold),
+            controller_busy_time_minutes: smart
+                .as_ref()
+                .and_then(|d| d.nvme_controller_busy_time_minutes),
+            unsafe_shutdowns: smart.as_ref().and_then(|d| d.nvme_unsafe_shutdowns),
         })
     }
 
@@ -406,6 +422,24 @@ impl DiskDevice for LinuxDisk {
         }
 
         Ok(filesystems)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nvme_controller;
+
+    #[test]
+    fn a_namespace_is_on_its_controller() {
+        assert_eq!(nvme_controller("nvme0n1"), Some("nvme0"));
+        assert_eq!(nvme_controller("nvme12n3"), Some("nvme12"));
+    }
+
+    #[test]
+    fn names_that_are_not_nvme_namespaces_have_no_controller() {
+        assert_eq!(nvme_controller("sda"), None);
+        assert_eq!(nvme_controller("nvme"), None);
+        assert_eq!(nvme_controller("nvmeXn1"), None);
     }
 }
 
