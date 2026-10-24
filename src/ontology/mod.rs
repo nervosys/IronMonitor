@@ -1879,8 +1879,8 @@ impl Ontology {
             K::Limit,
             Some(U::Identifier),
             P::Specification,
-            false,
-            "Largest frame class this engine handles, as the reader classifies it - hd, full_hd, qhd, uhd_4k, uhd_8k. A class rather than a pixel count because that is what the underlying source provides. Measured on a queried row; declared at the weaker provenance an inferred row carries.",
+            true,
+            "Largest frame class this engine handles, as the reader classifies it - hd, full_hd, qhd, uhd_4k, uhd_8k. A class rather than a pixel count because that is what the underlying source provides. Unavailable on a VA-API row, whose vainfo query names the profile and entrypoint but not a frame size. Measured on a queried row; declared at the weaker provenance an inferred row carries.",
         ));
         add(Entity::new(
             "gpu.codec.{n}.max_width",

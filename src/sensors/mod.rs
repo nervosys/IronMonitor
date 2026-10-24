@@ -298,7 +298,13 @@ impl SensorMonitor {
                     for i in 0..16 {
                         let input_path = base.join(format!("in{}_input", i));
                         if input_path.exists() {
-                            let raw: f64 = Self::read_trimmed(&input_path).parse().unwrap_or(0.0);
+                            // An unreadable input is skipped. It used to parse as
+                            // 0 mV, a voltage the sensor never reported.
+                            let Some(raw) =
+                                Self::parse_hwmon_value(&Self::read_trimmed(&input_path))
+                            else {
+                                continue;
+                            };
                             let label_path = base.join(format!("in{}_label", i));
                             let label = Self::read_trimmed(&label_path);
                             let channel = if label.is_empty() {
@@ -330,7 +336,12 @@ impl SensorMonitor {
                     for i in 0..8 {
                         let input_path = base.join(format!("curr{}_input", i));
                         if input_path.exists() {
-                            let raw: f64 = Self::read_trimmed(&input_path).parse().unwrap_or(0.0);
+                            // An unreadable input is skipped, not recorded as 0 mA.
+                            let Some(raw) =
+                                Self::parse_hwmon_value(&Self::read_trimmed(&input_path))
+                            else {
+                                continue;
+                            };
                             self.items.push(SensorInfo {
                                 name: format!("{} current {}", hwmon_name, i),
                                 sensor_type: SensorType::Current,
@@ -463,6 +474,13 @@ impl SensorMonitor {
             .unwrap_or_default()
             .trim()
             .to_string()
+    }
+
+    /// Parse a hwmon `*_input` value. `None` when the text is not a number:
+    /// an unreadable input is not a reading of zero.
+    #[cfg(target_os = "linux")]
+    fn parse_hwmon_value(text: &str) -> Option<f64> {
+        text.trim().parse().ok()
     }
 
     #[cfg(target_os = "windows")]
@@ -647,6 +665,16 @@ impl std::fmt::Display for SensorType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hwmon_input_that_is_not_a_number_is_not_zero() {
+        // Captured sysfs text: a plain integer in millivolts, and the empty or
+        // garbled reads that a failing driver leaves behind.
+        assert_eq!(SensorMonitor::parse_hwmon_value("12000\n"), Some(12000.0));
+        assert_eq!(SensorMonitor::parse_hwmon_value(""), None);
+        assert_eq!(SensorMonitor::parse_hwmon_value("N/A"), None);
+    }
 
     /// Constructing the monitor either enumerates or says why it could not.
     ///

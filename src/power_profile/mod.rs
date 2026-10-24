@@ -164,9 +164,9 @@ pub struct PowerProfileMonitor {
     pub on_ac_power: Option<bool>,
     /// Display brightness (0-100)
     pub display_brightness: Option<u8>,
-    /// Auto-sleep timeout (seconds)
+    /// Auto-sleep timeout (seconds). On macOS, the `AC Power` value only.
     pub sleep_timeout_secs: Option<u32>,
-    /// Disk standby timeout (seconds)
+    /// Disk standby timeout (seconds). On macOS, the `AC Power` value only.
     pub disk_standby_secs: Option<u32>,
 }
 
@@ -664,38 +664,9 @@ impl PowerProfileMonitor {
         // `pmset` ships with macOS, so a failure to run it is a failure.
         {
             let text = crate::core::command::capture("pmset", &["-g", "custom"])?;
-            let mut sleep = None;
-            let mut disk_sleep = None;
-            let mut in_battery_section = false;
-
-            for line in text.lines() {
-                let line = line.trim();
-                if line.starts_with("Battery Power:") {
-                    in_battery_section = true;
-                } else if line.starts_with("AC Power:") {
-                    in_battery_section = false;
-                }
-
-                if line.starts_with("sleep") {
-                    if let Some(val) = line.split_whitespace().nth(1) {
-                        if let Ok(v) = val.parse::<u32>() {
-                            sleep = Some(v * 60); // minutes to seconds
-                        }
-                    }
-                }
-                if line.starts_with("disksleep") {
-                    if let Some(val) = line.split_whitespace().nth(1) {
-                        if let Ok(v) = val.parse::<u32>() {
-                            disk_sleep = Some(v * 60);
-                        }
-                    }
-                }
-            }
-
+            let (sleep, disk_sleep) = parse_pmset_custom(&text);
             self.sleep_timeout_secs = sleep;
             self.disk_standby_secs = disk_sleep;
-
-            let _ = in_battery_section;
         }
 
         // Infer profile from pmset settings. `lowpowermode` is the only profile
@@ -713,13 +684,7 @@ impl PowerProfileMonitor {
                     }
                 })
                 .collect();
-            self.active_profile = if modes.contains(&"1") {
-                PowerProfile::PowerSaver
-            } else if modes.contains(&"0") {
-                PowerProfile::Balanced
-            } else {
-                PowerProfile::Unknown
-            };
+            self.active_profile = profile_from_pmset_modes(&modes);
         }
 
         // Check AC power. `pmset -g ps` names the source it is drawing from. A
@@ -731,6 +696,55 @@ impl PowerProfileMonitor {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|text| parse_pmset_power_source(&text));
         Ok(())
+    }
+}
+
+/// Sleep and disk-sleep timeouts, in seconds, from `pmset -g custom`.
+///
+/// Only the `AC Power:` section is read. Both sections used to write the same
+/// fields, so whichever came last in the output won, and a battery figure could
+/// stand in for the mains one.
+#[cfg(any(target_os = "macos", test))]
+fn parse_pmset_custom(text: &str) -> (Option<u32>, Option<u32>) {
+    let mut sleep = None;
+    let mut disk_sleep = None;
+    let mut in_ac_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("Battery Power:") {
+            in_ac_section = false;
+        } else if line.starts_with("AC Power:") {
+            in_ac_section = true;
+        }
+        if !in_ac_section {
+            continue;
+        }
+        // The value is in minutes.
+        let minutes = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<u32>().ok())
+            .map(|v| v.saturating_mul(60));
+        if line.starts_with("disksleep") {
+            disk_sleep = minutes.or(disk_sleep);
+        } else if line.starts_with("sleep") {
+            sleep = minutes.or(sleep);
+        }
+    }
+    (sleep, disk_sleep)
+}
+
+/// The profile implied by the `lowpowermode` values in `pmset -g`.
+///
+/// `1` is Low Power Mode, which is `PowerSaver`. `0` means Low Power Mode is
+/// off, and that is not a profile this enum names. It used to map to `Balanced`,
+/// a name pmset never reports, so it is `Unknown` here.
+#[cfg(any(target_os = "macos", test))]
+fn profile_from_pmset_modes(modes: &[&str]) -> PowerProfile {
+    if modes.contains(&"1") {
+        PowerProfile::PowerSaver
+    } else {
+        PowerProfile::Unknown
     }
 }
 
@@ -899,6 +913,36 @@ mod tests {
         assert_eq!(behavior.estimated_max_watts, None);
         assert_eq!(behavior.efficiency_score, None);
         assert!(behavior.recommendations.is_empty());
+    }
+
+    /// Captured shape of `pmset -g custom` on a laptop. The battery section comes
+    /// last, which is the order that used to let its figures overwrite the mains
+    /// ones.
+    #[test]
+    fn test_pmset_custom_reads_ac_section_only() {
+        let text = concat!(
+            "System-wide power settings:\n",
+            "AC Power:\n",
+            "sleep 30\n",
+            "disksleep 10\n",
+            "Battery Power:\n",
+            "sleep 2\n",
+            "disksleep 5\n",
+        );
+        assert_eq!(parse_pmset_custom(text), (Some(1800), Some(600)));
+    }
+
+    #[test]
+    fn test_pmset_custom_without_ac_section_is_unknown() {
+        let text = "Battery Power:\nsleep 2\ndisksleep 5\n";
+        assert_eq!(parse_pmset_custom(text), (None, None));
+    }
+
+    #[test]
+    fn test_pmset_lowpowermode_zero_is_not_balanced() {
+        assert_eq!(profile_from_pmset_modes(&["1"]), PowerProfile::PowerSaver);
+        assert_eq!(profile_from_pmset_modes(&["0"]), PowerProfile::Unknown);
+        assert_eq!(profile_from_pmset_modes(&[]), PowerProfile::Unknown);
     }
 
     #[test]

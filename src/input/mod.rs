@@ -678,35 +678,7 @@ impl InputMonitor {
             "system_profiler",
             &["SPBluetoothDataType", "-detailLevel", "mini"],
         )?;
-        for line in text.lines() {
-            let trimmed = line.trim();
-            let lower = trimmed.to_lowercase();
-            if (lower.contains("keyboard")
-                || lower.contains("mouse")
-                || lower.contains("trackpad")
-                || lower.contains("magic"))
-                && trimmed.ends_with(':')
-            {
-                let name = trimmed.trim_end_matches(':').to_string();
-                let device_type = if lower.contains("keyboard") {
-                    InputDeviceType::Keyboard
-                } else if lower.contains("trackpad") {
-                    InputDeviceType::Touchpad
-                } else {
-                    InputDeviceType::Mouse
-                };
-                self.devices.push(InputDevice {
-                    name,
-                    device_type,
-                    interface: InputInterface::Bluetooth,
-                    vendor: "Apple".into(),
-                    product: String::new(),
-                    physical_path: String::new(),
-                    is_active: None,
-                    capabilities: Vec::new(),
-                });
-            }
-        }
+        self.devices.extend(parse_macos_bluetooth_inputs(&text));
         Ok(())
     }
 
@@ -918,6 +890,63 @@ mod windows_vendor_tests {
     }
 }
 
+/// Bluetooth input devices from `system_profiler SPBluetoothDataType`.
+///
+/// A `Vendor ID:` line belongs to the device whose block contains it: the
+/// nearest header above it, indented less than the line itself. The vendor is
+/// empty when no such line is present. It used to be the literal "Apple" for
+/// every device, which named a vendor that was never read.
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_bluetooth_inputs(text: &str) -> Vec<InputDevice> {
+    let mut found: Vec<InputDevice> = Vec::new();
+    // (index into `found`, header indent) while that device's block is open.
+    let mut owner: Option<(usize, usize)> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        if let Some((_, header_indent)) = owner {
+            if !trimmed.is_empty() && indent <= header_indent {
+                owner = None;
+            }
+        }
+        if let Some(v) = trimmed.strip_prefix("Vendor ID:") {
+            let v = v.trim();
+            if let (Some((idx, _)), false) = (owner, v.is_empty()) {
+                found[idx].vendor = v.to_string();
+            }
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        if (lower.contains("keyboard")
+            || lower.contains("mouse")
+            || lower.contains("trackpad")
+            || lower.contains("magic"))
+            && trimmed.ends_with(':')
+        {
+            let name = trimmed.trim_end_matches(':').to_string();
+            let device_type = if lower.contains("keyboard") {
+                InputDeviceType::Keyboard
+            } else if lower.contains("trackpad") {
+                InputDeviceType::Touchpad
+            } else {
+                InputDeviceType::Mouse
+            };
+            found.push(InputDevice {
+                name,
+                device_type,
+                interface: InputInterface::Bluetooth,
+                vendor: String::new(),
+                product: String::new(),
+                physical_path: String::new(),
+                is_active: None,
+                capabilities: Vec::new(),
+            });
+            owner = Some((found.len() - 1, indent));
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,6 +985,35 @@ mod tests {
             InputDeviceType::GameController.to_string(),
             "Game Controller"
         );
+    }
+
+    /// Shaped like `system_profiler SPBluetoothDataType` output: a device's
+    /// attributes sit one level below its header, and a sibling header ends the
+    /// block. Indentation is built here, not written as a literal run.
+    #[test]
+    fn test_macos_bluetooth_vendor_is_read_per_device_not_assumed() {
+        let i = |n: usize| " ".repeat(n);
+        let text = [
+            "Bluetooth:".to_string(),
+            format!("{}Connected:", i(6)),
+            format!("{}Magic Keyboard:", i(10)),
+            format!("{}Address: AA:BB:CC:DD:EE:FF", i(14)),
+            format!("{}Vendor ID: 0x004C", i(14)),
+            format!("{}Product ID: 0x0320", i(14)),
+            format!("{}Magic Trackpad:", i(10)),
+            format!("{}Address: 11:22:33:44:55:66", i(14)),
+            format!("{}Headphones:", i(10)),
+            format!("{}Vendor ID: 0x0075", i(14)),
+        ]
+        .join("\n");
+        let devices = parse_macos_bluetooth_inputs(&text);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "Magic Keyboard");
+        assert_eq!(devices[0].vendor, "0x004C");
+        // No Vendor ID under the trackpad, and the headphones' ID does not
+        // belong to it: it stays empty, not "Apple".
+        assert_eq!(devices[1].name, "Magic Trackpad");
+        assert_eq!(devices[1].vendor, "");
     }
 
     #[test]

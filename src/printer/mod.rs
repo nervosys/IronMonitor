@@ -120,8 +120,12 @@ pub struct PrinterInfo {
     pub color: Option<bool>,
     /// Whether the printer supports duplex (double-sided)
     pub duplex: bool,
-    /// Number of jobs in queue
-    pub jobs_in_queue: u32,
+    /// Number of jobs in queue. `None` on both platforms: no live count is
+    /// read here. This was a literal `0` on every printer, which read as an
+    /// empty queue. On Windows the query selected `JobCountSinceLastReset`, a
+    /// counter since the spooler last reset rather than the queue depth, and
+    /// ignored it.
+    pub jobs_in_queue: Option<u32>,
     /// Location string (if configured)
     pub location: String,
 }
@@ -224,6 +228,23 @@ impl PrinterMonitor {
             .collect()
     }
 
+    /// Read the accepting state from one line of `lpstat -a`.
+    ///
+    /// The line is `NAME accepting requests since ...` or `NAME not accepting
+    /// requests since ...`. Anything else is `None`. This used to be a
+    /// substring test for "accepting", which matched the negative too.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn parse_lpstat_accepting(line: &str) -> Option<bool> {
+        let (_name, state) = line.trim().split_once(' ')?;
+        if state.starts_with("not accepting requests") {
+            Some(false)
+        } else if state.starts_with("accepting requests") {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn refresh_cups(&mut self) -> Result<(), IronError> {
         // Get default printer
@@ -297,10 +318,11 @@ impl PrinterMonitor {
         let mut accept_map: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
         for line in accept_output.lines() {
-            let parts: Vec<&str> = line.splitn(2, ' ').collect();
-            if parts.len() >= 2 {
-                let accepting = line.contains("accepting");
-                accept_map.insert(parts[0].to_string(), accepting);
+            if let (Some(name), Some(accepting)) = (
+                line.split_whitespace().next(),
+                Self::parse_lpstat_accepting(line),
+            ) {
+                accept_map.insert(name.to_string(), accepting);
             }
         }
 
@@ -316,7 +338,8 @@ impl PrinterMonitor {
                 if in_printer && !current_name.is_empty() {
                     let port = device_map.get(&current_name).cloned().unwrap_or_default();
                     let connection = Self::classify_connection_cups(&port);
-                    let accepting = accept_map.get(&current_name).copied().unwrap_or(false);
+                    // Absent from `lpstat -a` means unknown, not "not accepting".
+                    let accepting = accept_map.get(&current_name).copied();
                     self.printers.push(PrinterInfo {
                         name: current_name.clone(),
                         description: current_desc.clone(),
@@ -326,12 +349,12 @@ impl PrinterMonitor {
                         status: current_status.clone(),
                         printer_type: PrinterType::Unknown,
                         is_default: current_name == default_name,
-                        accepting_jobs: Some(accepting),
+                        accepting_jobs: accepting,
                         shared: false,
                         // Not read on this path.
                         color: None,
                         duplex: false,
-                        jobs_in_queue: 0,
+                        jobs_in_queue: None,
                         location: String::new(),
                     });
                 }
@@ -369,7 +392,7 @@ impl PrinterMonitor {
         if in_printer && !current_name.is_empty() {
             let port = device_map.get(&current_name).cloned().unwrap_or_default();
             let connection = Self::classify_connection_cups(&port);
-            let accepting = accept_map.get(&current_name).copied().unwrap_or(false);
+            let accepting = accept_map.get(&current_name).copied();
             self.printers.push(PrinterInfo {
                 name: current_name.clone(),
                 description: current_desc,
@@ -379,12 +402,12 @@ impl PrinterMonitor {
                 status: current_status,
                 printer_type: PrinterType::Unknown,
                 is_default: current_name == default_name,
-                accepting_jobs: Some(accepting),
+                accepting_jobs: accepting,
                 shared: false,
                 // Not read on this path.
                 color: None,
                 duplex: false,
-                jobs_in_queue: 0,
+                jobs_in_queue: None,
                 location: String::new(),
             });
         }
@@ -490,7 +513,7 @@ impl PrinterMonitor {
                     shared,
                     color,
                     duplex: false,
-                    jobs_in_queue: 0,
+                    jobs_in_queue: None,
                     location,
                 });
             }
@@ -611,12 +634,30 @@ mod tests {
             shared: false,
             color: Some(true),
             duplex: true,
-            jobs_in_queue: 0,
+            jobs_in_queue: None,
             location: "Office".into(),
         };
         let json = serde_json::to_string(&printer).unwrap();
         assert!(json.contains("TestPrinter"));
         let _: PrinterInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    /// Captured `lpstat -a` lines. The negative must not read as the positive.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn lpstat_accepting_state_is_read_not_matched() {
+        let accepting = "HP_Laser accepting requests since Mon 05 Oct 2026 09:14:02 AM BST";
+        let refusing = "Office_MFP not accepting requests since Tue 06 Oct 2026 11:02:47 AM BST";
+        assert_eq!(
+            PrinterMonitor::parse_lpstat_accepting(accepting),
+            Some(true)
+        );
+        assert_eq!(
+            PrinterMonitor::parse_lpstat_accepting(refusing),
+            Some(false)
+        );
+        assert_eq!(PrinterMonitor::parse_lpstat_accepting("garbage"), None);
+        assert_eq!(PrinterMonitor::parse_lpstat_accepting(""), None);
     }
 
     #[test]

@@ -147,14 +147,18 @@ pub struct ComputeCapability {
     /// CUDA compute capability (e.g., "8.9") — NVIDIA only; `None` when the
     /// generation is not known
     pub cuda_version: Option<String>,
-    /// OpenCL version supported
-    pub opencl_version: String,
-    /// Vulkan compute supported
-    pub vulkan_compute: bool,
+    /// OpenCL version supported. `None` where it was not read. The NVIDIA
+    /// rows used to hold the literal "3.0" for every card, whatever its
+    /// generation, and the Apple rows an empty string.
+    pub opencl_version: Option<String>,
+    /// Vulkan compute supported. `None` where it was not read: the NVIDIA rows
+    /// used to hold `true` unconditionally.
+    pub vulkan_compute: Option<bool>,
     /// Metal compute supported (Apple)
     pub metal_compute: bool,
-    /// DirectCompute version (Windows)
-    pub direct_compute: String,
+    /// DirectCompute version (Windows). `None` where it was not read: the
+    /// NVIDIA rows used to hold the literal "5.0" for every card.
+    pub direct_compute: Option<String>,
     /// Estimated TFLOPS (FP32); `None` for a generation the table does not know
     pub estimated_tflops_fp32: Option<f32>,
     /// Estimated TFLOPS (FP16 / half precision); `None` when FP32 is unknown
@@ -246,6 +250,9 @@ impl CodecMonitor {
             .filter(|c| {
                 &c.codec == codec
                     && matches!(c.direction, CodecDirection::Decode | CodecDirection::Both)
+                    // `Unknown` sorts above every real class in the derived
+                    // ordering, so an unclassified row must not reach `max()`.
+                    && c.max_resolution != MaxResolution::Unknown
             })
             .map(|c| c.max_resolution.clone())
             .max()
@@ -696,10 +703,10 @@ impl CodecMonitor {
             self.compute_caps.push(ComputeCapability {
                 device: gpu_name.to_string(),
                 cuda_version: cuda.map(String::from),
-                opencl_version: "3.0".into(),
-                vulkan_compute: true,
+                opencl_version: None,
+                vulkan_compute: None,
                 metal_compute: false,
-                direct_compute: "5.0".into(),
+                direct_compute: None,
                 estimated_tflops_fp32: tflops_32,
                 estimated_tflops_fp16: tflops_16,
                 has_tensor_cores: tensor,
@@ -729,10 +736,10 @@ impl CodecMonitor {
             self.compute_caps.push(ComputeCapability {
                 device: gpu_name.to_string(),
                 cuda_version: None,
-                opencl_version: String::new(),
-                vulkan_compute: false,
+                opencl_version: None,
+                vulkan_compute: None,
                 metal_compute: true,
-                direct_compute: String::new(),
+                direct_compute: None,
                 estimated_tflops_fp32: tflops,
                 estimated_tflops_fp16: tflops.map(|t| t * 2.0),
                 // The Neural Engine is a separate block, not tensor cores in the
@@ -807,7 +814,10 @@ impl CodecMonitor {
                     device: device.to_string(),
                     codec,
                     direction,
-                    max_resolution: MaxResolution::UHD4K,
+                    // vainfo's profile and entrypoint lines carry no frame size,
+                    // and this reader does not query one. It used to be the
+                    // literal UHD4K on every row.
+                    max_resolution: MaxResolution::Unknown,
                     max_bit_depth: if profile.contains("10") {
                         BitDepth::Bit10
                     } else {
@@ -879,6 +889,46 @@ impl std::fmt::Display for MaxResolution {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_row(res: MaxResolution) -> CodecCapability {
+        CodecCapability {
+            device: "VA-API".into(),
+            codec: VideoCodec::H264,
+            direction: CodecDirection::Decode,
+            max_resolution: res,
+            max_bit_depth: BitDepth::Bit8,
+            max_fps: None,
+            engine: "VA-API".into(),
+            source: CapabilitySource::DirectQuery,
+            confidence: 1.0,
+        }
+    }
+
+    /// A VA-API row whose frame size was never read must not win the maximum,
+    /// and a row with no size at all must not make the answer `Unknown` when a
+    /// classified row exists.
+    #[test]
+    fn test_unclassified_row_does_not_win_max_decode_resolution() {
+        let monitor = CodecMonitor {
+            codec_caps: vec![
+                decode_row(MaxResolution::Unknown),
+                decode_row(MaxResolution::FullHD),
+            ],
+            compute_caps: Vec::new(),
+        };
+        assert_eq!(
+            monitor.max_decode_resolution(&VideoCodec::H264),
+            MaxResolution::FullHD
+        );
+        let only_unknown = CodecMonitor {
+            codec_caps: vec![decode_row(MaxResolution::Unknown)],
+            compute_caps: Vec::new(),
+        };
+        assert_eq!(
+            only_unknown.max_decode_resolution(&VideoCodec::H264),
+            MaxResolution::Unknown
+        );
+    }
 
     #[test]
     fn test_codec_monitor_creation() {

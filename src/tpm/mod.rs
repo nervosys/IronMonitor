@@ -119,6 +119,20 @@ fn security_device_ids(query: &str) -> Result<String, IronError> {
 /// The list may hold several security devices; on the development host it holds
 /// the AMD PSP alongside the TPM. Anything that is not one of the two known ids
 /// is passed over rather than treated as a TPM of unknown version.
+/// Count the hash banks a Linux TPM exposes as `pcr-<alg>` directories.
+///
+/// `None` when the directory cannot be read or holds no `pcr-*` entries:
+/// neither is a count of zero banks.
+#[cfg(target_os = "linux")]
+fn count_pcr_banks(base: &std::path::Path) -> Option<u32> {
+    let entries = std::fs::read_dir(base).ok()?;
+    let banks = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("pcr-") && e.path().is_dir())
+        .count() as u32;
+    (banks > 0).then_some(banks)
+}
+
 #[cfg(target_os = "windows")]
 fn version_from_node(pnp_ids: &str) -> Option<TpmVersion> {
     pnp_ids.lines().find_map(|line| {
@@ -243,14 +257,10 @@ impl TpmMonitor {
                         .to_string();
                 }
 
-                // PCR banks. A directory that is absent and one that will not
-                // open are different answers, and both used to be zero.
-                let pcr_path = base.join("pcr-sha256");
-                let pcr_banks = if pcr_path.exists() {
-                    std::fs::read_dir(&pcr_path).ok().map(|d| d.count() as u32)
-                } else {
-                    None
-                };
+                // PCR banks: one `pcr-<alg>` directory per hash bank. This used
+                // to count the entries inside `pcr-sha256`, which are the PCR
+                // registers (typically 24), not the banks.
+                let pcr_banks = count_pcr_banks(&base);
 
                 // Algorithms, from the `pcr-*` directories the driver exposes.
                 // An empty result is left empty: it used to be replaced with
@@ -525,6 +535,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_count_pcr_banks_counts_algorithm_directories() {
+        let dir = std::env::temp_dir().join(format!("ironmon-pcr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Three banks, each holding 24 register files, plus an unrelated file.
+        for alg in ["pcr-sha1", "pcr-sha256", "pcr-sha384"] {
+            let bank = dir.join(alg);
+            std::fs::create_dir_all(&bank).unwrap();
+            for i in 0..24 {
+                std::fs::write(bank.join(i.to_string()), "").unwrap();
+            }
+        }
+        std::fs::write(dir.join("caps"), "").unwrap();
+        assert_eq!(count_pcr_banks(&dir), Some(3));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_count_pcr_banks_none_without_banks() {
+        let dir = std::env::temp_dir().join(format!("ironmon-pcr-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(count_pcr_banks(&dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            count_pcr_banks(&dir),
+            None,
+            "a missing directory is None too"
+        );
     }
 
     #[test]
