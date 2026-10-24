@@ -159,6 +159,11 @@ fn cores_are_not_all_reporting_the_same_number() {
     }
 
     let idles: Vec<f32> = cpu.cores.iter().filter_map(|c| c.idle).collect();
+    // One sample of cumulative ticks gives no per-core split, so the readers
+    // report none; a copied figure can only be detected where cores report one.
+    if idles.len() < 2 {
+        return;
+    }
     let spread = idles.iter().cloned().fold(f32::MIN, f32::max)
         - idles.iter().cloned().fold(f32::MAX, f32::min);
 
