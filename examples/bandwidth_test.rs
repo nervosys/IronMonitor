@@ -55,12 +55,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
             }
             println!(
-                "║    Bytes Transferred: {} KB                                     ║",
-                result.bytes_transferred / 1024
+                "║    Bytes Transferred: {}                                     ║",
+                result
+                    .bytes_transferred
+                    .map_or("unknown".to_string(), |b| format!("{} KB", b / 1024))
             );
             println!(
-                "║    Duration: {:.3}s                                               ║",
-                result.duration_secs
+                "║    Duration: {}                                               ║",
+                result
+                    .duration_secs
+                    .map_or("unknown".to_string(), |d| format!("{d:.3}s"))
             );
         }
         Err(e) => {

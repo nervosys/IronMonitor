@@ -123,6 +123,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ironmon tune` no longer classifies a machine idle when a utilisation
     reading is missing; it reports the use case as unknown and recommends
     nothing. A machine with no GPU at all can still be idle.
+  - `ironmon tune` also treats a failed AI-workload or game-process probe as
+    unread rather than as nothing found.
+  - Process CPU for a process that started within the sampling interval is
+    unavailable with a reason, not a measured null.
+  - Windows traceroute finds its target in tracert's bracketed header, so it
+    can report the destination reached; a timed-out hop is not a reply, and
+    `<1 ms` is kept as below one millisecond rather than dropped. An SMTP
+    greeting is no longer classified FTP, service names taken from the port
+    table are labelled as such, a host with no ICMP reply is not "DOWN", and
+    an empty port list no longer panics.
+  - The agent API: macOS cores are not all `"online": true`, sub-GiB disks are
+    not 0 GB in the system summary, unreadable disks are listed with their
+    error instead of dropped, and service state, enablement and bandwidth
+    figures are unread where they were not obtained.
+  - The observability context reads PCIe generation and width, CPU vendor
+    (CPUID) and interface type (sysfs) where it wrote zeros, an empty string
+    and a guess from the interface name.
+  - Profiles: NVIDIA DRS matches are unchecked rather than "0 of N" where the
+    database was not read; NVML versions and device names are unreadable
+    rather than `?` and `NVIDIA GPU {i}`; an EDID model year is not "week
+    255"; the NVMe asynchronous-event bits are labelled per the spec
+    (Telemetry is bit 10, not 11).
+  - Jetson CUDA architecture, codename and L4T version are no longer derived
+    from model-name tables, cuDNN and TensorRT versions are the version and
+    not the whole dpkg line, "average" power is not the instantaneous value,
+    thermal max and critical come from typed trip points, and a failed
+    `ipmitool` with no IPMI hwmon device is a failed read, not no sensors.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a

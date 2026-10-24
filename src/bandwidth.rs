@@ -114,10 +114,13 @@ pub struct BandwidthResult {
     pub port: u16,
     /// Whether this was an upload test
     pub upload: bool,
-    /// Test duration in seconds
-    pub duration_secs: f64,
-    /// Total bytes transferred
-    pub bytes_transferred: u64,
+    /// Test duration in seconds. `None` for a test that failed before it ran;
+    /// this was `0.0`, a duration nothing measured.
+    pub duration_secs: Option<f64>,
+    /// Total bytes transferred. `None` where it was not counted: a test that
+    /// failed before it ran, or a loopback test whose receiver failed. This was
+    /// `0`, which reads as a measured stall.
+    pub bytes_transferred: Option<u64>,
     /// Bandwidth in bits per second. `None` where no rate was measured: a
     /// failed test, or one with zero elapsed time. Not `0.0`, which reads as
     /// a measured stall.
@@ -144,8 +147,8 @@ impl BandwidthResult {
             host: host.to_string(),
             port,
             upload: false,
-            duration_secs: 0.0,
-            bytes_transferred: 0,
+            duration_secs: None,
+            bytes_transferred: None,
             bandwidth_bps: None,
             bandwidth_mbps: None,
             bandwidth_mbytes_per_sec: None,
@@ -245,8 +248,8 @@ pub fn bandwidth_test(host: &str, port: u16, config: &BandwidthConfig) -> Result
         host: host.to_string(),
         port,
         upload: config.upload,
-        duration_secs,
-        bytes_transferred: total_bytes,
+        duration_secs: Some(duration_secs),
+        bytes_transferred: Some(total_bytes),
         bandwidth_bps,
         bandwidth_mbps,
         bandwidth_mbytes_per_sec: bandwidth_mbytes,
@@ -334,22 +337,22 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
     // Use the minimum of sent/received for conservative estimate. With no
     // receiver count there is nothing to take the minimum of, so no bytes
     // are reported.
-    let bytes_transferred = total_received.map_or(0, |received| total_sent.min(received));
-    let measured = receive_error.is_none() && duration_secs > 0.0;
-    let bandwidth_bps = measured.then(|| (bytes_transferred * 8) as f64 / duration_secs);
-    let bandwidth_mbytes = measured.then(|| bytes_transferred as f64 / duration_secs / 1_000_000.0);
-    let success = bytes_transferred > 0 && receive_error.is_none();
+    let bytes_transferred = total_received.map(|received| total_sent.min(received));
+    let counted = bytes_transferred.filter(|_| receive_error.is_none() && duration_secs > 0.0);
+    let bandwidth_bps = counted.map(|b| (b * 8) as f64 / duration_secs);
+    let bandwidth_mbytes = counted.map(|b| b as f64 / duration_secs / 1_000_000.0);
+    let success = bytes_transferred.is_some_and(|b| b > 0) && receive_error.is_none();
 
     Ok(BandwidthResult {
         host: "127.0.0.1".to_string(),
         port,
         upload: true,
-        duration_secs,
+        duration_secs: Some(duration_secs),
         bytes_transferred,
         bandwidth_bps,
         bandwidth_mbps: bandwidth_bps.map(|bps| bps / 1_000_000.0),
         bandwidth_mbytes_per_sec: bandwidth_mbytes,
-        transfer_count: bytes_transferred / buffer_size as u64,
+        transfer_count: bytes_transferred.map_or(0, |b| b / buffer_size as u64),
         connect_time_ms: Some(connect_time_ms),
         success,
         error: receive_error,
