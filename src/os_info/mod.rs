@@ -16,7 +16,10 @@
 //! println!("OS: {} {} ({})", info.os_name, info.os_version, info.architecture);
 //! println!("Kernel: {}", info.kernel_version);
 //! println!("Hostname: {}", info.hostname);
-//! println!("Uptime: {} seconds", info.uptime_seconds);
+//! match info.uptime_seconds {
+//!     Some(s) => println!("Uptime: {s} seconds"),
+//!     None => println!("Uptime: not read"),
+//! }
 //! println!("Loaded modules: {}", info.loaded_modules.len());
 //! ```
 

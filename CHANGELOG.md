@@ -159,6 +159,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A systemd unit shown `active (exited)` is reported exited rather than
     stopped, and an active sub-state the reader does not know is unknown
     rather than running.
+  - The TUI, GUI and CLI render unread values as unknown where they drew
+    them as readings: an unread core was a full red 100% bar in `ironmon cli
+    cpu`, an unread GPU was "0°C | 0W", uptime was "0d 0h 0m" off Windows,
+    the kernel fell back to "Windows NT", and unread gauges were drawn empty
+    in the idle colour or, for the network, at a constant 30%.
+  - The backend's "uptime" was the monitor's own age; it is the system's.
+    One GPU failing its static query no longer drops every GPU, and a failed
+    disk, process, connection, sensor or driver enumeration reads as not read
+    rather than none.
+  - A failed process enumeration no longer exports `ironmon_process_count 0`
+    or marks the snapshot's processes sampled.
+  - OS info: an unread Windows build is no version rather than "10.0.0";
+    user count, uptime and boot time are unread rather than 0; macOS boot mode
+    is unknown rather than UEFI, which Apple silicon does not use.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a
