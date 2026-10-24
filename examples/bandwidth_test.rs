@@ -44,10 +44,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match loopback_test(Duration::from_secs(2)) {
         Ok(result) => {
-            println!(
-                "║    Loopback Bandwidth: {:.2} Mbps                                  ║",
-                result.bandwidth_mbps
-            );
+            match result.bandwidth_mbps {
+                Some(mbps) => println!(
+                    "║    Loopback Bandwidth: {:.2} Mbps                                  ║",
+                    mbps
+                ),
+                None => println!(
+                    "║    Loopback Bandwidth: unknown ({})                                ║",
+                    result.error.as_deref().unwrap_or("no rate measured")
+                ),
+            }
             println!(
                 "║    Bytes Transferred: {} KB                                     ║",
                 result.bytes_transferred / 1024
@@ -104,7 +110,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "║     let result = bandwidth_test(\"server_ip\", {}, &config)?;       ║",
         DEFAULT_PORT
     );
-    println!("║     println!(\"Bandwidth: {{:.2}} Mbps\", result.bandwidth_mbps);      ║");
+    println!("║     if let Some(mbps) = result.bandwidth_mbps {{                   ║");
+    println!("║         println!(\"Bandwidth: {{:.2}} Mbps\", mbps);                  ║");
+    println!("║     }}                                                             ║");
     println!("║     ```                                                            ║");
     println!("║                                                                    ║");
     println!("║  Configuration options:                                            ║");

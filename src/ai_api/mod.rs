@@ -583,7 +583,9 @@ impl AiDataApi {
                     summary.disks.push(DiskSummary {
                         name: info.name.clone(),
                         model: info.model.clone(),
-                        size_gb: info.capacity.map(|c| c / 1024 / 1024 / 1024),
+                        // Integer division truncated every drive under a
+                        // gibibyte to 0 GB, which reads as a zero-size disk.
+                        size_gb: info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
                         disk_type: format!("{:?}", info.disk_type),
                         temperature_c: disk.temperature().ok().flatten(),
                     });

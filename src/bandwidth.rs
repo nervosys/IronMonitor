@@ -18,7 +18,9 @@
 //!     .with_duration(Duration::from_secs(5));
 //!
 //! let result = bandwidth_test("speedtest.example.com", 5201, &config)?;
-//! println!("Bandwidth: {:.2} Mbps", result.bandwidth_mbps);
+//! if let Some(mbps) = result.bandwidth_mbps {
+//!     println!("Bandwidth: {:.2} Mbps", mbps);
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -116,16 +118,19 @@ pub struct BandwidthResult {
     pub duration_secs: f64,
     /// Total bytes transferred
     pub bytes_transferred: u64,
-    /// Bandwidth in bits per second
-    pub bandwidth_bps: f64,
-    /// Bandwidth in megabits per second
-    pub bandwidth_mbps: f64,
-    /// Bandwidth in megabytes per second
-    pub bandwidth_mbytes_per_sec: f64,
+    /// Bandwidth in bits per second. `None` where no rate was measured: a
+    /// failed test, or one with zero elapsed time. Not `0.0`, which reads as
+    /// a measured stall.
+    pub bandwidth_bps: Option<f64>,
+    /// Bandwidth in megabits per second (`None` as for `bandwidth_bps`)
+    pub bandwidth_mbps: Option<f64>,
+    /// Bandwidth in megabytes per second (`None` as for `bandwidth_bps`)
+    pub bandwidth_mbytes_per_sec: Option<f64>,
     /// Number of successful transfers
     pub transfer_count: u64,
-    /// Connection time in milliseconds
-    pub connect_time_ms: f64,
+    /// Connection time in milliseconds, `None` where the connection was not
+    /// timed (a failed test)
+    pub connect_time_ms: Option<f64>,
     /// Whether the test succeeded
     pub success: bool,
     /// Error message (if failed)
@@ -141,11 +146,11 @@ impl BandwidthResult {
             upload: false,
             duration_secs: 0.0,
             bytes_transferred: 0,
-            bandwidth_bps: 0.0,
-            bandwidth_mbps: 0.0,
-            bandwidth_mbytes_per_sec: 0.0,
+            bandwidth_bps: None,
+            bandwidth_mbps: None,
+            bandwidth_mbytes_per_sec: None,
             transfer_count: 0,
-            connect_time_ms: 0.0,
+            connect_time_ms: None,
             success: false,
             error: Some(error.to_string()),
         }
@@ -228,19 +233,13 @@ pub fn bandwidth_test(host: &str, port: u16, config: &BandwidthConfig) -> Result
     let duration = test_start.elapsed();
     let duration_secs = duration.as_secs_f64();
 
-    // Calculate bandwidth
+    // Calculate bandwidth. A zero-length test has no rate, so the rate is
+    // `None` rather than 0.0.
     let bits_transferred = total_bytes * 8;
-    let bandwidth_bps = if duration_secs > 0.0 {
-        bits_transferred as f64 / duration_secs
-    } else {
-        0.0
-    };
-    let bandwidth_mbps = bandwidth_bps / 1_000_000.0;
-    let bandwidth_mbytes = if duration_secs > 0.0 {
-        total_bytes as f64 / duration_secs / 1_000_000.0
-    } else {
-        0.0
-    };
+    let bandwidth_bps = (duration_secs > 0.0).then(|| bits_transferred as f64 / duration_secs);
+    let bandwidth_mbps = bandwidth_bps.map(|bps| bps / 1_000_000.0);
+    let bandwidth_mbytes =
+        (duration_secs > 0.0).then(|| total_bytes as f64 / duration_secs / 1_000_000.0);
 
     Ok(BandwidthResult {
         host: host.to_string(),
@@ -252,7 +251,7 @@ pub fn bandwidth_test(host: &str, port: u16, config: &BandwidthConfig) -> Result
         bandwidth_mbps,
         bandwidth_mbytes_per_sec: bandwidth_mbytes,
         transfer_count,
-        connect_time_ms: connect_time.as_secs_f64() * 1000.0,
+        connect_time_ms: Some(connect_time.as_secs_f64() * 1000.0),
         success: total_bytes > 0,
         error: None,
     })
@@ -277,10 +276,8 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
     let test_duration = duration;
 
     // Spawn receiver thread
-    let receiver = thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
-            return 0u64;
-        };
+    let receiver = thread::spawn(move || -> std::io::Result<u64> {
+        let (mut stream, _) = listener.accept()?;
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .ok();
@@ -299,15 +296,17 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
             }
         }
 
-        total_bytes
+        Ok(total_bytes)
     });
 
     // Give the listener time to start
     thread::sleep(Duration::from_millis(50));
 
     // Connect and send data
+    let connect_start = Instant::now();
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .map_err(|e| IronError::Other(e.to_string()))?;
+    let connect_time_ms = connect_start.elapsed().as_secs_f64() * 1000.0;
     stream.set_nodelay(true).ok();
 
     let buffer = vec![0xABu8; buffer_size];
@@ -323,17 +322,23 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
 
     drop(stream);
 
-    let total_received = receiver.join().unwrap_or(0);
+    // A receiver that failed or panicked is an error. `unwrap_or(0)` made it a
+    // measured zero with no error attached.
+    let (total_received, receive_error) = match receiver.join() {
+        Ok(Ok(n)) => (Some(n), None),
+        Ok(Err(e)) => (None, Some(format!("loopback receiver failed: {e}"))),
+        Err(_) => (None, Some("loopback receiver thread panicked".to_string())),
+    };
     let duration_secs = start.elapsed().as_secs_f64();
 
-    // Use the minimum of sent/received for conservative estimate
-    let bytes_transferred = total_sent.min(total_received);
-    let bits_transferred = bytes_transferred * 8;
-    let bandwidth_bps = if duration_secs > 0.0 {
-        bits_transferred as f64 / duration_secs
-    } else {
-        0.0
-    };
+    // Use the minimum of sent/received for conservative estimate. With no
+    // receiver count there is nothing to take the minimum of, so no bytes
+    // are reported.
+    let bytes_transferred = total_received.map_or(0, |received| total_sent.min(received));
+    let measured = receive_error.is_none() && duration_secs > 0.0;
+    let bandwidth_bps = measured.then(|| (bytes_transferred * 8) as f64 / duration_secs);
+    let bandwidth_mbytes = measured.then(|| bytes_transferred as f64 / duration_secs / 1_000_000.0);
+    let success = bytes_transferred > 0 && receive_error.is_none();
 
     Ok(BandwidthResult {
         host: "127.0.0.1".to_string(),
@@ -342,12 +347,12 @@ pub fn loopback_test(duration: Duration) -> Result<BandwidthResult> {
         duration_secs,
         bytes_transferred,
         bandwidth_bps,
-        bandwidth_mbps: bandwidth_bps / 1_000_000.0,
-        bandwidth_mbytes_per_sec: bytes_transferred as f64 / duration_secs / 1_000_000.0,
+        bandwidth_mbps: bandwidth_bps.map(|bps| bps / 1_000_000.0),
+        bandwidth_mbytes_per_sec: bandwidth_mbytes,
         transfer_count: bytes_transferred / buffer_size as u64,
-        connect_time_ms: 0.0,
-        success: bytes_transferred > 0,
-        error: None,
+        connect_time_ms: Some(connect_time_ms),
+        success,
+        error: receive_error,
     })
 }
 
@@ -417,8 +422,8 @@ pub fn quick_bandwidth_estimate() -> Option<f64> {
 
     for (host, port) in &servers {
         if let Ok(result) = bandwidth_test(host, *port, &config) {
-            if result.success && result.bandwidth_mbps > 0.0 {
-                return Some(result.bandwidth_mbps);
+            if let Some(mbps) = result.bandwidth_mbps.filter(|m| result.success && *m > 0.0) {
+                return Some(mbps);
             }
         }
     }
@@ -435,8 +440,8 @@ mod tests {
         let result = loopback_test(Duration::from_secs(1));
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.bandwidth_mbps > 0.0);
-        println!("Loopback bandwidth: {:.2} Mbps", result.bandwidth_mbps);
+        assert!(result.bandwidth_mbps.is_some_and(|m| m > 0.0));
+        println!("Loopback bandwidth: {:?} Mbps", result.bandwidth_mbps);
     }
 
     #[test]

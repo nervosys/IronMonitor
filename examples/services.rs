@@ -137,14 +137,12 @@ fn main() {
     {
         let services_to_check = ["wuauserv", "Spooler", "BITS", "WinDefend", "nonexistent"];
         for name in services_to_check {
-            let running = is_service_running(name);
-            let icon = if running { "✅" } else { "⏹️" };
-            println!(
-                "   {} {} is {}",
-                icon,
-                name,
-                if running { "running" } else { "not running" }
-            );
+            let (icon, state) = match is_service_running(name) {
+                Some(true) => ("✅", "running"),
+                Some(false) => ("⏹️", "not running"),
+                None => ("❔", "unknown (not queryable)"),
+            };
+            println!("   {} {} is {}", icon, name, state);
         }
     }
 
@@ -152,14 +150,12 @@ fn main() {
     {
         let services_to_check = ["sshd", "docker", "nginx", "cron", "nonexistent"];
         for name in services_to_check {
-            let running = is_service_running(name);
-            let icon = if running { "✅" } else { "⏹️" };
-            println!(
-                "   {} {} is {}",
-                icon,
-                name,
-                if running { "running" } else { "not running" }
-            );
+            let (icon, state) = match is_service_running(name) {
+                Some(true) => ("✅", "running"),
+                Some(false) => ("⏹️", "not running"),
+                None => ("❔", "unknown (not queryable)"),
+            };
+            println!("   {} {} is {}", icon, name, state);
         }
     }
 
@@ -167,14 +163,12 @@ fn main() {
     {
         let services_to_check = ["com.apple.dock", "com.apple.Finder", "nonexistent"];
         for name in services_to_check {
-            let running = is_service_running(name);
-            let icon = if running { "✅" } else { "⏹️" };
-            println!(
-                "   {} {} is {}",
-                icon,
-                name,
-                if running { "running" } else { "not running" }
-            );
+            let (icon, state) = match is_service_running(name) {
+                Some(true) => ("✅", "running"),
+                Some(false) => ("⏹️", "not running"),
+                None => ("❔", "unknown (not queryable)"),
+            };
+            println!("   {} {} is {}", icon, name, state);
         }
     }
 

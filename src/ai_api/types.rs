@@ -151,8 +151,9 @@ pub struct DiskSummary {
     pub model: Option<String>,
     /// Size in GB
     /// Total size in GB, or `None` where the capacity was not read. A disk
-    /// of unknown size is not a disk of zero size.
-    pub size_gb: Option<u64>,
+    /// of unknown size is not a disk of zero size. Fractional, so a sub-GiB
+    /// device is not rounded to zero.
+    pub size_gb: Option<f64>,
     /// Disk type (NVMe, SATA, etc.)
     pub disk_type: String,
     /// Temperature in Celsius

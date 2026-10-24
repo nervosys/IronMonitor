@@ -134,8 +134,10 @@ pub struct ServiceInfo {
     pub dependencies: Vec<String>,
     /// Services that depend on this
     pub dependents: Vec<String>,
-    /// Is service enabled at boot
-    pub enabled: bool,
+    /// Is service enabled at boot. `None` where the boot-time state was not
+    /// read (for example `systemctl show` failed). Not `false`: that would
+    /// claim the service is disabled.
+    pub enabled: Option<bool>,
     /// Load state (systemd)
     pub load_state: Option<String>,
     /// Sub-state (systemd)
@@ -162,7 +164,7 @@ impl ServiceInfo {
             unit_file: None,
             dependencies: Vec::new(),
             dependents: Vec::new(),
-            enabled: false,
+            enabled: None,
             load_state: None,
             sub_state: None,
             error_message: None,
@@ -209,6 +211,12 @@ impl ServiceMonitor {
 
     /// Create a monitor for specific services
     pub fn with_filter(service_names: Vec<String>) -> Result<Self> {
+        // Stored names carry no `.service` suffix, so a filter given as
+        // `sshd.service` would match nothing.
+        let service_names = service_names
+            .into_iter()
+            .map(|n| normalise_service_name(&n).to_string())
+            .collect();
         let mut monitor = Self {
             services: Vec::new(),
             service_map: HashMap::new(),
@@ -237,7 +245,7 @@ impl ServiceMonitor {
     /// Get service by name
     pub fn get_service(&self, name: &str) -> Option<&ServiceInfo> {
         self.service_map
-            .get(name)
+            .get(normalise_service_name(name))
             .and_then(|&idx| self.services.get(idx))
     }
 
@@ -257,11 +265,10 @@ impl ServiceMonitor {
             .collect()
     }
 
-    /// Check if a service is active
-    pub fn is_active(&self, name: &str) -> bool {
-        self.get_service(name)
-            .map(|s| s.is_active())
-            .unwrap_or(false)
+    /// Check if a service is active. `None` when this monitor holds no
+    /// service of that name, which is not the same as inactive.
+    pub fn is_active(&self, name: &str) -> Option<bool> {
+        self.get_service(name).map(|s| s.is_active())
     }
 
     /// Start a service
@@ -412,23 +419,27 @@ impl ServiceMonitor {
             ])
             .output();
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        if let Some(service) = self.linux_parse_service_line(line) {
-                            // Apply filter if set
-                            if let Some(ref filter) = self.filter {
-                                if !filter.iter().any(|f| service.name.contains(f)) {
-                                    continue;
-                                }
-                            }
-
-                            let idx = self.services.len();
-                            self.service_map.insert(service.name.clone(), idx);
-                            self.services.push(service);
+        // A failed `systemctl` is an error, not an empty machine. Returning
+        // `Ok` with no services made every lookup report NotFound.
+        let output = output.map_err(|e| IronError::HardwareError(format!("systemctl: {e}")))?;
+        if !output.status.success() {
+            return Err(IronError::HardwareError(
+                "systemctl list-units --type=service failed".to_string(),
+            ));
+        }
+        if let Ok(stdout) = String::from_utf8(output.stdout) {
+            for line in stdout.lines() {
+                if let Some(service) = self.linux_parse_service_line(line) {
+                    // Apply filter if set
+                    if let Some(ref filter) = self.filter {
+                        if !filter.iter().any(|f| service.name.contains(f)) {
+                            continue;
                         }
                     }
+
+                    let idx = self.services.len();
+                    self.service_map.insert(service.name.clone(), idx);
+                    self.services.push(service);
                 }
             }
         }
@@ -532,7 +543,7 @@ impl ServiceMonitor {
                                 };
                             }
                             "UnitFileState" => {
-                                service.enabled = value == "enabled";
+                                service.enabled = Some(value == "enabled");
                                 service.startup_type = match value {
                                     "enabled" => StartupType::Automatic,
                                     "disabled" => StartupType::Disabled,
@@ -748,7 +759,8 @@ impl ServiceMonitor {
                         _ => StartupType::Unknown,
                     };
 
-                    service.enabled = matches!(ps_svc.start_type, Some(0) | Some(1) | Some(2));
+                    // Unknown start type stays `None`, not `false`.
+                    service.enabled = ps_svc.start_type.map(|t| matches!(t, 0..=2));
 
                     let idx = self.services.len();
                     self.service_map.insert(name, idx);
@@ -905,17 +917,23 @@ pub fn service_summary() -> Result<ServiceSummary> {
             .iter()
             .filter(|s| s.status == ServiceStatus::Failed)
             .count(),
-        enabled: services.iter().filter(|s| s.enabled).count(),
+        enabled: services.iter().filter(|s| s.enabled == Some(true)).count(),
     })
 }
 
-/// Check if a specific service is running
-pub fn is_service_running(name: &str) -> bool {
-    if let Ok(monitor) = ServiceMonitor::with_filter(vec![name.to_string()]) {
-        monitor.is_active(name)
-    } else {
-        false
-    }
+/// Check if a specific service is running. `None` when the service could not
+/// be queried (the monitor could not be built, or the service is not known),
+/// rather than `false`, which would say it is stopped.
+pub fn is_service_running(name: &str) -> Option<bool> {
+    ServiceMonitor::with_filter(vec![name.to_string()])
+        .ok()
+        .and_then(|monitor| monitor.is_active(name))
+}
+
+/// Strip the systemd `.service` suffix so `sshd` and `sshd.service` name the
+/// same unit. Other platforms' names pass through unchanged.
+fn normalise_service_name(name: &str) -> &str {
+    name.strip_suffix(".service").unwrap_or(name)
 }
 
 /// Get status of specific services
@@ -1003,7 +1021,7 @@ mod tests {
         let info = ServiceInfo::new("sshd");
         assert_eq!(info.name, "sshd");
         assert_eq!(info.status, ServiceStatus::Unknown);
-        assert!(!info.enabled);
+        assert_eq!(info.enabled, None);
         assert!(info.dependencies.is_empty());
         assert!(info.dependents.is_empty());
         assert!(info.pid.is_none());
@@ -1054,5 +1072,12 @@ mod tests {
         let parsed: ServiceInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "nginx");
         assert_eq!(parsed.status, ServiceStatus::Unknown);
+    }
+
+    #[test]
+    fn test_normalise_service_name_strips_systemd_suffix() {
+        assert_eq!(normalise_service_name("sshd.service"), "sshd");
+        assert_eq!(normalise_service_name("sshd"), "sshd");
+        assert_eq!(normalise_service_name("com.apple.dock"), "com.apple.dock");
     }
 }

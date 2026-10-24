@@ -827,7 +827,9 @@ impl AiDataApi {
         capabilities.insert("gpus_detected".to_string(), json!(self.gpus.is_some()));
         capabilities.insert(
             "gpu_count".to_string(),
-            json!(self.gpus.as_ref().map(|g| g.device_count()).unwrap_or(0)),
+            // `null` when no GPU monitor exists. `0` here said the machine
+            // has no GPUs, which is a claim about hardware not yet read.
+            json!(self.gpus.as_ref().map(|g| g.device_count())),
         );
         capabilities.insert(
             "process_monitor".to_string(),
@@ -1349,11 +1351,14 @@ impl AiDataApi {
                 .and_then(|s| s.parse::<u64>().ok())
                 .map(|hz| hz / 1_000_000);
 
+            // `"online": true` was a literal on every core. Nothing on this
+            // platform reads core state, so the field is `null` (unknown)
+            // rather than an assertion that each core is up.
             let ncpu = num_cpus::get();
             let cores: Vec<_> = (0..ncpu)
                 .map(|i| {
                     json!({
-                        "id": i, "online": true, "model": model,
+                        "id": i, "online": null, "model": model,
                         "frequency_mhz": freq_mhz,
                     })
                 })
@@ -1739,24 +1744,31 @@ impl AiDataApi {
         let disks =
             crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
+        // A disk that was enumerated but whose query failed is reported as
+        // that disk, with its index and the error. Dropping it with
+        // `filter_map` made it indistinguishable from a disk that is absent.
         let list: Vec<_> = disks
             .iter()
-            .filter_map(|d| {
-                d.info().ok().map(|info| {
-                    json!({
-                        "name": info.name,
-                        "model": info.model,
-                        // Integer division truncated every drive smaller than a
-                        // gibibyte to `size_gb: 0`. The USB gadget on the
-                        // development machine is 16,450,560 bytes and reported
-                        // as sizeless, which is a different claim from small.
-                        // The exact figure goes alongside so the answer is
-                        // never rounded away.
-                        "size_bytes": info.capacity,
-                        "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
-                        "disk_type": format!("{:?}", info.disk_type),
-                    })
-                })
+            .enumerate()
+            .map(|(index, d)| match d.info() {
+                Ok(info) => json!({
+                    "name": info.name,
+                    "model": info.model,
+                    // Integer division truncated every drive smaller than a
+                    // gibibyte to `size_gb: 0`. The USB gadget on the
+                    // development machine is 16,450,560 bytes and reported
+                    // as sizeless, which is a different claim from small.
+                    // The exact figure goes alongside so the answer is
+                    // never rounded away.
+                    "size_bytes": info.capacity,
+                    "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
+                    "disk_type": format!("{:?}", info.disk_type),
+                }),
+                Err(e) => json!({
+                    "index": index,
+                    "name": null,
+                    "error": e.to_string(),
+                }),
             })
             .collect();
 
@@ -1812,23 +1824,41 @@ impl AiDataApi {
         let disks =
             crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
+        // A disk whose name or counters cannot be read cannot be matched
+        // against the filter, so it is reported with its error rather than
+        // silently left out of the answer.
         let io_stats: Vec<_> = disks
             .iter()
-            .filter(|d| {
-                disk_name
-                    .map(|name| d.info().map(|i| i.name.contains(name)).unwrap_or(false))
-                    .unwrap_or(true)
-            })
-            .filter_map(|d| {
-                let info = d.info().ok()?;
-                let io = d.io_stats().ok()?;
-                Some(json!({
-                    "name": info.name,
-                    "bytes_read": io.read_bytes,
-                    "bytes_written": io.write_bytes,
-                    "read_ops": io.read_ops,
-                    "write_ops": io.write_ops,
-                }))
+            .enumerate()
+            .filter_map(|(index, d)| {
+                let info = match d.info() {
+                    Ok(info) => info,
+                    Err(e) => {
+                        return Some(json!({
+                            "index": index,
+                            "name": null,
+                            "error": e.to_string(),
+                        }))
+                    }
+                };
+                if let Some(name) = disk_name {
+                    if !info.name.contains(name) {
+                        return None;
+                    }
+                }
+                Some(match d.io_stats() {
+                    Ok(io) => json!({
+                        "name": info.name,
+                        "bytes_read": io.read_bytes,
+                        "bytes_written": io.write_bytes,
+                        "read_ops": io.read_ops,
+                        "write_ops": io.write_ops,
+                    }),
+                    Err(e) => json!({
+                        "name": info.name,
+                        "error": e.to_string(),
+                    }),
+                })
             })
             .collect();
 
@@ -1844,21 +1874,38 @@ impl AiDataApi {
         let disks =
             crate::disk::enumerate_disks().map_err(|e| IronError::DiskError(e.to_string()))?;
 
+        // As in `tool_get_disk_io`: an unreadable disk is reported as that
+        // disk, with its error, not dropped.
         let health: Vec<_> = disks
             .iter()
-            .filter(|d| {
-                disk_name
-                    .map(|name| d.info().map(|i| i.name.contains(name)).unwrap_or(false))
-                    .unwrap_or(true)
-            })
-            .filter_map(|d| {
-                let info = d.info().ok()?;
-                let h = d.health().ok()?;
-                Some(json!({
-                    "name": info.name,
-                    "overall_health": format!("{:?}", h),
-                    "temperature_c": d.temperature().ok().flatten(),
-                }))
+            .enumerate()
+            .filter_map(|(index, d)| {
+                let info = match d.info() {
+                    Ok(info) => info,
+                    Err(e) => {
+                        return Some(json!({
+                            "index": index,
+                            "name": null,
+                            "error": e.to_string(),
+                        }))
+                    }
+                };
+                if let Some(name) = disk_name {
+                    if !info.name.contains(name) {
+                        return None;
+                    }
+                }
+                Some(match d.health() {
+                    Ok(h) => json!({
+                        "name": info.name,
+                        "overall_health": format!("{:?}", h),
+                        "temperature_c": d.temperature().ok().flatten(),
+                    }),
+                    Err(e) => json!({
+                        "name": info.name,
+                        "error": e.to_string(),
+                    }),
+                })
             })
             .collect();
 
@@ -2642,16 +2689,22 @@ impl AiDataApi {
         let subsystems: Vec<_> = Subsystem::ALL
             .iter()
             .map(|s| {
-                let groups = snapshot.providers.get(s);
-                let (group_count, setting_count) = match groups {
-                    Some(g) => (g.len(), g.iter().map(|x| x.settings.len()).sum::<usize>()),
-                    None => (0, 0),
-                };
-                json!({
-                    "subsystem": s.as_str(),
-                    "groups": group_count,
-                    "settings": setting_count,
-                })
+                // No provider is registered for this subsystem on this build or
+                // platform, so the counts are unknown. Reporting `0` would say
+                // the subsystem was read and holds nothing.
+                match snapshot.providers.get(s) {
+                    Some(g) => json!({
+                        "subsystem": s.as_str(),
+                        "groups": g.len(),
+                        "settings": g.iter().map(|x| x.settings.len()).sum::<usize>(),
+                    }),
+                    None => json!({
+                        "subsystem": s.as_str(),
+                        "groups": null,
+                        "settings": null,
+                        "reason": "no profile provider is registered for this subsystem on this build or platform",
+                    }),
+                }
             })
             .collect();
         Ok(json!({"timestamp": snapshot.timestamp, "subsystems": subsystems}))
