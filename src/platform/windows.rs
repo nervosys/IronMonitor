@@ -20,12 +20,13 @@ use windows::Win32::System::SystemInformation::{
     GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };
 
-/// The previous `GetSystemTimes` reading, kept whole.
+/// The previous collection's raw counters, kept whole.
 ///
-/// The three counters are stored together under one lock. Stored as three separate
-/// atomics, two threads could interleave their loads and stores and pair one call's
-/// idle with another's kernel, producing a split that no single reading ever showed.
-static PREV_SYSTEM_TIMES: Mutex<Option<SystemTimesSample>> = Mutex::new(None);
+/// The whole-CPU and per-processor readings are stored together under one lock. Stored
+/// as separate atomics, two threads could interleave their loads and stores and pair
+/// one call's idle with another's kernel, producing a split that no single reading
+/// ever showed.
+static PREV_CPU_COUNTERS: Mutex<Option<CpuCounters>> = Mutex::new(None);
 
 /// How long a first call waits between its two readings.
 ///
@@ -43,6 +44,29 @@ struct SystemTimesSample {
     user: u64,
 }
 
+/// The raw counters of one collection: the whole-CPU reading and the per-processor
+/// records, read back to back so that both describe the same interval.
+#[derive(Clone)]
+struct CpuCounters {
+    system: SystemTimesSample,
+    /// `None` if the per-processor query failed.
+    cores: Option<Vec<SystemProcessorPerformanceInformation>>,
+}
+
+/// A `(user, system, idle)` split, in percent of one interval.
+type Percent3 = (f32, f32, f32);
+
+/// One split per processor, `None` where no figure was read.
+type CoreSplits = Vec<Option<Percent3>>;
+
+/// The split of one interval, for the whole CPU and for each processor separately.
+#[derive(Default)]
+struct CpuSplit {
+    system: Option<Percent3>,
+    /// `None` as a whole if the processor counts did not match.
+    cores: Option<CoreSplits>,
+}
+
 /// Read CPU statistics on Windows
 pub fn read_cpu_stats() -> Result<CpuStats> {
     let mut stats = CpuStats::empty();
@@ -52,8 +76,9 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     unsafe { GetSystemInfo(&mut sys_info) };
     let cpu_count = sys_info.dwNumberOfProcessors as usize;
 
-    // Get system times for overall CPU utilization
-    let (user_percent, system_percent, idle_percent) = get_system_cpu_utilization()?;
+    // The whole-CPU split and the per-processor split come from one sampling pass, so
+    // a first call pays for one priming interval, not one per figure.
+    let ((user_percent, system_percent, idle_percent), per_core) = sample_cpu_split(cpu_count)?;
 
     // Model name is fixed for the life of the process and cached behind a OnceLock.
     // Clocks are not: each core boosts and parks independently, so they are sampled
@@ -65,14 +90,13 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     // on the first call of the process: a rate needs two collections.
     let delivered = crate::platform::windows_pdh::processor_performance_percent();
 
-    // Real per-processor times. Falls back to `None` if the query fails, which
-    // consumers render as "unavailable" — deliberately not the system average.
+    // Real per-processor times, sampled above alongside the whole-CPU split. Each core
+    // with no figure is `None`, which consumers render as "unavailable" — deliberately
+    // not the system average.
     //
     // Until this existed, every core was assigned the *system-wide* figure from
     // GetSystemTimes, so a 24-core machine showed 24 identical bars that looked like
     // per-core measurements but were one number repeated.
-    let per_core = read_per_core_utilization(cpu_count);
-
     for cpu_id in 0..cpu_count {
         let (core_user, core_system, core_idle) = match per_core
             .as_ref()
@@ -153,11 +177,6 @@ extern "system" {
         return_length: *mut u32,
     ) -> i32;
 }
-
-/// Previous per-processor sample, for delta calculation.
-static PREV_PER_CORE: std::sync::OnceLock<
-    std::sync::Mutex<Vec<SystemProcessorPerformanceInformation>>,
-> = std::sync::OnceLock::new();
 
 /// Read raw per-processor times.
 fn query_per_core_times(cpu_count: usize) -> Option<Vec<SystemProcessorPerformanceInformation>> {
@@ -405,88 +424,68 @@ pub(crate) fn is_elevated() -> Option<bool> {
     Some(elevation.TokenIsElevated != 0)
 }
 
-/// Per-core `(user, system, idle)` percentages, one entry per core. An entry is
-/// `None` where no figure was read.
+/// Samples the whole-CPU and per-processor split together.
 ///
-/// A percentage is the share of the interval between two samples, so the first call
-/// has no interval and reports nothing: it stores its sample and returns `None` for
-/// every core. This used to report each core's average since boot under the name of
-/// the current figure. A core whose counters did not move has no interval to share
-/// out either, and is `None` rather than the fully idle `(0, 0, 100)` it used to be.
-fn read_per_core_utilization(cpu_count: usize) -> Option<Vec<Option<(f32, f32, f32)>>> {
-    let current = query_per_core_times(cpu_count)?;
+/// A percentage is the share of the interval between two samples. A call with an
+/// earlier sample in the process differences against it. The first call has none, so it
+/// primes: it takes a second pair after `PRIME_INTERVAL` and differences that. This
+/// used to report the since-boot average in its place, which every one-shot command
+/// showed as current load. A per-processor entry whose counters did not move has no
+/// interval to share out, and is `None` rather than the fully idle `(0, 0, 100)` it
+/// used to be.
+///
+/// Returns the whole-CPU split, which is an error if it could not be read, and the
+/// per-processor entries, which are `None` where no figure was read.
+fn sample_cpu_split(cpu_count: usize) -> Result<(Percent3, Option<CoreSplits>)> {
+    let now = read_cpu_counters(cpu_count)?;
 
-    let lock = PREV_PER_CORE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
-    let mut previous = lock.lock().ok()?;
-
-    // Only a sample of the same length can be differenced against.
-    let result = if previous.len() == current.len() {
-        current
-            .iter()
-            .enumerate()
-            .map(|(i, now)| {
-                let before = &previous[i];
-                let idle = now.idle_time.saturating_sub(before.idle_time);
-                let kernel = now.kernel_time.saturating_sub(before.kernel_time);
-                let user = now.user_time.saturating_sub(before.user_time);
-
-                // kernel_time includes idle_time, so system time is the remainder.
-                let system = kernel.saturating_sub(idle);
-                let total = idle + system + user;
-
-                if total <= 0 {
-                    return None;
-                }
-
-                let total = total as f32;
-                Some((
-                    (user as f32 / total) * 100.0,
-                    (system as f32 / total) * 100.0,
-                    (idle as f32 / total) * 100.0,
-                ))
-            })
-            .collect()
-    } else {
-        vec![None; current.len()]
+    // Store this sample and difference against the one it replaces.
+    let mut split = match replace_previous_counters(now.clone()) {
+        Some(before) => counter_split(&before, &now),
+        None => CpuSplit::default(),
     };
 
-    *previous = current;
-    Some(result)
-}
-
-/// Get CPU utilization using kernel32 GetSystemTimes via FFI
-fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
-    let now = read_system_times()?;
-
-    // Store this reading and take the previous one. Only a difference between two
-    // readings is a rate, so a call with no usable previous reading primes one.
-    if let Some(split) =
-        replace_previous_sample(now).and_then(|before| split_system_times(before, now))
-    {
-        return Ok(split);
-    }
-
-    // Priming. This used to fall back to the totals accumulated since boot whenever
-    // there was no previous sample, and reported that as the current split. It is an
-    // average over the whole uptime, so every one-shot command showed it as current
-    // load. Take a second reading after a short interval instead, and retry once if
-    // the interval was too short for the counters to move.
+    // Retry once if the interval was too short for the counters to move. Each pass
+    // stores its later sample, so the next pass differences against it.
     let mut earlier = now;
     for _ in 0..2 {
-        std::thread::sleep(PRIME_INTERVAL);
-        let later = read_system_times()?;
-        replace_previous_sample(later);
-        if let Some(split) = split_system_times(earlier, later) {
-            return Ok(split);
+        if split.system.is_some() {
+            break;
         }
+        std::thread::sleep(PRIME_INTERVAL);
+        let later = read_cpu_counters(cpu_count)?;
+        replace_previous_counters(later.clone());
+        split = counter_split(&earlier, &later);
         earlier = later;
     }
 
     // Still no movement after two intervals: report no reading rather than the
     // since-boot split.
-    Err(IronError::Parse(
-        "GetSystemTimes reported no CPU time over the sampling interval".to_string(),
-    ))
+    match split.system {
+        Some(system) => Ok((system, split.cores)),
+        None => Err(IronError::Parse(
+            "GetSystemTimes reported no CPU time over the sampling interval".to_string(),
+        )),
+    }
+}
+
+/// Reads the whole-CPU and per-processor counters back to back.
+fn read_cpu_counters(cpu_count: usize) -> Result<CpuCounters> {
+    Ok(CpuCounters {
+        system: read_system_times()?,
+        cores: query_per_core_times(cpu_count),
+    })
+}
+
+/// The split of the interval between two collections, for each figure.
+fn counter_split(before: &CpuCounters, now: &CpuCounters) -> CpuSplit {
+    CpuSplit {
+        system: split_system_times(before.system, now.system),
+        cores: match (&before.cores, &now.cores) {
+            (Some(before), Some(now)) => split_processor_times(before, now),
+            _ => None,
+        },
+    }
 }
 
 /// Reads `GetSystemTimes` once.
@@ -520,9 +519,9 @@ fn read_system_times() -> Result<SystemTimesSample> {
     })
 }
 
-/// Stores `now` as the previous sample and returns the one it replaces.
-fn replace_previous_sample(now: SystemTimesSample) -> Option<SystemTimesSample> {
-    let mut previous = PREV_SYSTEM_TIMES
+/// Stores `now` as the previous collection and returns the one it replaces.
+fn replace_previous_counters(now: CpuCounters) -> Option<CpuCounters> {
+    let mut previous = PREV_CPU_COUNTERS
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     previous.replace(now)
@@ -540,10 +539,43 @@ fn split_system_times(
     let idle = now.idle.checked_sub(before.idle)?;
     let kernel = now.kernel.checked_sub(before.kernel)?;
     let user = now.user.checked_sub(before.user)?;
+    percentages(user, kernel, idle)
+}
 
-    // Kernel time includes idle time, so system time is the remainder.
+/// The per-processor split of the interval between two collections, one entry per
+/// processor. `None` if the processor counts differ, since the entries cannot be paired.
+fn split_processor_times(
+    before: &[SystemProcessorPerformanceInformation],
+    now: &[SystemProcessorPerformanceInformation],
+) -> Option<Vec<Option<(f32, f32, f32)>>> {
+    if before.len() != now.len() {
+        return None;
+    }
+    // The counters are signed in the record. A delta that is negative, or does not fit,
+    // is a counter that went backwards and yields no reading for that processor.
+    let delta = |now: i64, before: i64| u64::try_from(now.checked_sub(before)?).ok();
+    Some(
+        before
+            .iter()
+            .zip(now)
+            .map(|(before, now)| {
+                percentages(
+                    delta(now.user_time, before.user_time)?,
+                    delta(now.kernel_time, before.kernel_time)?,
+                    delta(now.idle_time, before.idle_time)?,
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The `(user, system, idle)` percentages from the tick deltas of one interval.
+///
+/// `kernel` is the kernel time as the API reports it, which includes `idle`, so the
+/// system time is the remainder. `None` when no ticks elapsed.
+fn percentages(user: u64, kernel: u64, idle: u64) -> Option<(f32, f32, f32)> {
     let system = kernel.checked_sub(idle)?;
-    let total = idle + system + user;
+    let total = idle.checked_add(system)?.checked_add(user)?;
     if total == 0 {
         return None;
     }
@@ -1693,6 +1725,85 @@ mod tests {
         assert_eq!(super::split_system_times(before, now), None);
     }
 
+    /// A per-processor record with the given cumulative counters.
+    fn processor(
+        idle: i64,
+        kernel: i64,
+        user: i64,
+    ) -> super::SystemProcessorPerformanceInformation {
+        super::SystemProcessorPerformanceInformation {
+            idle_time: idle,
+            kernel_time: kernel,
+            user_time: user,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn processor_times_split_is_the_interval_between_two_readings() {
+        // One second is 10_000_000 ticks. Over the second the processor was idle for
+        // 7_500_000 ticks and in the kernel for 8_000_000 ticks (kernel includes idle, so
+        // 500_000 of system work), and in user mode for 2_000_000. Kernel plus user is the
+        // whole second: 75% idle, 5% system, 20% user.
+        let before = processor(500_000_000, 600_000_000, 100_000_000);
+        let now = processor(
+            before.idle_time + 7_500_000,
+            before.kernel_time + 8_000_000,
+            before.user_time + 2_000_000,
+        );
+
+        let splits = super::split_processor_times(&[before], &[now]).expect("split");
+        let (user, system, idle) = splits[0].expect("a core that moved has a split");
+        assert!((user - 20.0).abs() < 0.01, "user {user}");
+        assert!((system - 5.0).abs() < 0.01, "system {system}");
+        assert!((idle - 75.0).abs() < 0.01, "idle {idle}");
+    }
+
+    #[test]
+    fn processor_with_no_movement_is_no_reading_for_that_core_only() {
+        // Core 0 did not move between the two collections; core 1 did. Core 0 must be
+        // `None`, not the fully idle split, and core 1 must still be reported.
+        let still = processor(500_000_000, 600_000_000, 100_000_000);
+        let moved_before = processor(400_000_000, 300_000_000, 50_000_000);
+        let moved_now = processor(
+            moved_before.idle_time + 5_000_000,
+            moved_before.kernel_time + 5_000_000,
+            moved_before.user_time + 5_000_000,
+        );
+
+        let splits = super::split_processor_times(&[still, moved_before], &[still, moved_now])
+            .expect("split");
+        assert_eq!(splits[0], None);
+        let (user, system, idle) = splits[1].expect("core 1 moved");
+        assert!((user - 50.0).abs() < 0.01, "user {user}");
+        assert!(system.abs() < 0.01, "system {system}");
+        assert!((idle - 50.0).abs() < 0.01, "idle {idle}");
+    }
+
+    #[test]
+    fn processor_counter_going_backwards_is_no_reading() {
+        let before = processor(500_000_000, 600_000_000, 100_000_000);
+        let now = processor(
+            before.idle_time - 1,
+            before.kernel_time + 8_000_000,
+            before.user_time,
+        );
+        let splits = super::split_processor_times(&[before], &[now]).expect("split");
+        assert_eq!(splits[0], None);
+    }
+
+    #[test]
+    fn processor_counts_that_differ_give_no_per_core_split() {
+        // A changed processor count cannot be paired entry by entry.
+        let one = processor(500_000_000, 600_000_000, 100_000_000);
+        assert_eq!(super::split_processor_times(&[one], &[one, one]), None);
+    }
+
+    #[test]
+    fn percentages_of_no_elapsed_ticks_is_no_reading() {
+        assert_eq!(super::percentages(0, 0, 0), None);
+    }
+
     /// The process table's reserved-field offsets are checked, not trusted:
     /// for this process, which can be opened, the table must agree with
     /// `GetProcessTimes` and `GetProcessMemoryInfo`.
@@ -1854,11 +1965,11 @@ mod tests {
     /// value and a 24-core box drew 24 identical bars that looked measured.
     /// The aggregate figure must not contradict the per-core breakdown.
     ///
-    /// `get_system_cpu_utilization` used to return a hardcoded (0, 0, 100) on its
-    /// first call, so any one-shot invocation reported the machine as completely idle
-    /// while the per-core rows directly beneath it showed real load. The aggregate now
-    /// takes a two-reading sample on its first call, so both describe the same
-    /// interval and agree.
+    /// The whole-CPU split used to return a hardcoded (0, 0, 100) on its first call, so
+    /// any one-shot invocation reported the machine as completely idle while the
+    /// per-core rows directly beneath it showed real load. The aggregate and the
+    /// per-core figures now share one two-reading sample on their first call, so both
+    /// describe the same interval and agree.
     #[test]
     fn aggregate_cpu_agrees_with_per_core() {
         let stats = read_cpu_stats().expect("cpu stats");
@@ -1933,12 +2044,16 @@ mod tests {
             );
         }
 
-        // A percentage is a share of the interval between two samples. The first call
-        // stores its sample and reports nothing, so take a second one after an
-        // interval, and check the figures it yields are well-formed.
-        let _ = read_per_core_utilization(cpu_count);
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let cores = read_per_core_utilization(cpu_count).expect("per-core utilization");
+        // A percentage is a share of the interval between two samples. This is the
+        // first call of the test process's sampling, so it primes with its own second
+        // reading. It must still yield per-core figures, not `None` for every core, and
+        // each figure it yields must be well-formed.
+        let (_, cores) = sample_cpu_split(cpu_count).expect("cpu split");
+        let cores = cores.expect("per-core utilization");
+        assert!(
+            cores.iter().any(Option::is_some),
+            "first call reported no per-core figure for any core"
+        );
         for (i, entry) in cores.iter().enumerate() {
             // An entry is `None` where no time elapsed on that core; nothing to check.
             let Some((user, system, idle)) = *entry else {

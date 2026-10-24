@@ -565,23 +565,25 @@ mod macos_stats {
         let model = macos::sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
         // `host_processor_info` is preferred over parsing `top`: it is the only
-        // source of per-core figures and of nice time. Its whole-CPU split is the
-        // difference between two readings, shared with the platform reader through
-        // `current_total_usage`, so the two agree.
-        if let Ok((total, core_count)) = macos::current_total_usage() {
-            let cores = (0..core_count)
-                .map(|id| CpuCore {
+        // source of per-core figures and of nice time. Its whole-CPU and per-core
+        // splits are differences between two readings, shared with the platform reader
+        // through `current_total_usage`, so the two agree.
+        if let Ok((total, per_core)) = macos::current_total_usage() {
+            let cores = per_core
+                .iter()
+                .enumerate()
+                .map(|(id, usage)| CpuCore {
                     id,
                     online: true,
                     // macOS exposes no governor.
                     governor: None,
                     frequency: None,
-                    // Not computed per core. A single reading would be an average
-                    // since boot, so these stay unread rather than take that figure.
-                    user: None,
-                    nice: None,
-                    system: None,
-                    idle: None,
+                    // Each core's own split over the same window as the total. `None`
+                    // for a core that did not move, rather than its since-boot share.
+                    user: usage.map(|u| u.user),
+                    nice: usage.map(|u| u.nice),
+                    system: usage.map(|u| u.system),
+                    idle: usage.map(|u| u.idle),
                     model: model.clone(),
                 })
                 .collect();

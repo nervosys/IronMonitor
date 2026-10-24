@@ -124,31 +124,50 @@ fn every_logical_core_is_enumerated() {
 }
 
 /// Per-core figures come from `host_processor_info`, which returns cumulative ticks.
-/// One sample yields an average since boot, not a current split, so no core reports
-/// one: the four fields are absent together until a reader keeps a previous sample.
+/// A single reading is an average since boot, so the reader takes its own second
+/// reading on the first call and differences the two. Each core therefore reports a
+/// current split, or nothing: its four fields are present together or absent together,
+/// and a core that reports one sums to about 100 percent.
 #[test]
-fn a_single_sample_reports_no_per_core_split() {
+fn a_first_sample_reports_a_per_core_split() {
     let ironmon = IronMonitor::new().expect("construct");
     let cpu = ironmon.cpu().expect("CPU statistics");
 
+    let mut reporting = 0;
     for core in &cpu.cores {
         let split = [core.user, core.nice, core.system, core.idle];
+        let present = split.iter().filter(|field| field.is_some()).count();
         assert!(
-            split.iter().all(Option::is_none),
-            "core {} reports a split from one sample of cumulative ticks",
+            present == 0 || present == 4,
+            "core {} reports {present} of its four split fields, not all or none",
             core.id
         );
+        if let (Some(user), Some(nice), Some(system), Some(idle)) =
+            (core.user, core.nice, core.system, core.idle)
+        {
+            reporting += 1;
+            let total = user + nice + system + idle;
+            assert!(
+                (total - 100.0).abs() < 1.0,
+                "core {} split sums to {total}, expected about 100",
+                core.id
+            );
+        }
     }
+    assert!(
+        reporting > 0,
+        "no core reports a split on the first call, so the per-core figures are still \
+         the since-boot average or absent"
+    );
 }
 
 /// The whole point of reading per-core ticks rather than copying an aggregate. If
 /// a refactor ever fills each core from the average, every core reads identically
 /// and this fails.
 ///
-/// Not asserted on a single sample of a *busy* machine — under a saturated CI
-/// runner every core can legitimately read the same. Cumulative since-boot ticks
-/// are what is compared, and those diverge across cores on any machine that has
-/// been up for more than a moment.
+/// Not asserted where cores would legitimately read the same: the comparison is over
+/// the per-core splits of one window, and a saturated CI runner can pin every core
+/// at 100 percent busy.
 #[test]
 fn cores_are_not_all_reporting_the_same_number() {
     let ironmon = IronMonitor::new().expect("construct");
@@ -159,8 +178,8 @@ fn cores_are_not_all_reporting_the_same_number() {
     }
 
     let idles: Vec<f32> = cpu.cores.iter().filter_map(|c| c.idle).collect();
-    // One sample of cumulative ticks gives no per-core split, so the readers
-    // report none; a copied figure can only be detected where cores report one.
+    // A core with no movement in the sampling window reports no split, so a copied
+    // figure can only be detected where at least two cores report one.
     if idles.len() < 2 {
         return;
     }

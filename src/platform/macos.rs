@@ -259,13 +259,34 @@ pub fn aggregate_ticks(cores: &[CoreTicks]) -> CoreTicks {
 /// that the first call of a one-shot command does not stall on it.
 pub const PRIME_INTERVAL: Duration = Duration::from_millis(200);
 
-/// The aggregate reading the last whole-CPU split was taken from.
+/// The per-core readings the last split was taken from.
 ///
 /// Process-wide, because a split is a difference between two readings and no caller
 /// should have to hold the earlier one itself. Both the platform reader and the
 /// `stats` reader go through [`current_total_usage`], so they share this one value.
+/// The whole-CPU reading is the sum of these, so keeping the per-core vector keeps both
+/// figures on the same interval.
 #[cfg(target_os = "macos")]
-static PREVIOUS_TOTAL: Mutex<Option<CoreTicks>> = Mutex::new(None);
+static PREVIOUS_CORES: Mutex<Option<Vec<CoreTicks>>> = Mutex::new(None);
+
+/// The per-core splits between two readings, one entry per core.
+///
+/// Each core is differenced against its own earlier reading, through [`usage_between`].
+/// A core whose counters went backwards or did not move is `None`. A change in the core
+/// count leaves every entry `None`: the cores cannot be paired, so none is a split.
+pub fn per_core_usage_between(
+    earlier: &[CoreTicks],
+    later: &[CoreTicks],
+) -> Vec<Option<CoreUsage>> {
+    if earlier.len() != later.len() {
+        return vec![None; later.len()];
+    }
+    earlier
+        .iter()
+        .zip(later)
+        .map(|(before, now)| usage_between(before, now))
+        .collect()
+}
 
 /// The whole-CPU split between two aggregate readings, or `None` if there is none.
 ///
@@ -286,7 +307,10 @@ pub fn usage_between(earlier: &CoreTicks, later: &CoreTicks) -> Option<CoreUsage
     delta.percentages()
 }
 
-/// The whole-CPU split over the window since the previous call, and the core count.
+/// The whole-CPU split and the per-core splits over the window since the previous call.
+///
+/// The per-core vector has one entry per core. It is `None` for a core that did not
+/// move, and entirely `None` if the core count changed since the earlier reading.
 ///
 /// Before this existed the first call in a process differenced nothing and reported
 /// the average since boot. Every one-shot command (`ironmon get`, `ironmon snapshot`)
@@ -298,25 +322,24 @@ pub fn usage_between(earlier: &CoreTicks, later: &CoreTicks) -> Option<CoreUsage
 /// same baseline, which gives a longer window. If that also gives nothing, it returns
 /// an error rather than the since-boot figure.
 #[cfg(target_os = "macos")]
-pub fn current_total_usage() -> crate::error::Result<(CoreUsage, usize)> {
+pub fn current_total_usage() -> crate::error::Result<(CoreUsage, Vec<Option<CoreUsage>>)> {
     use crate::error::IronError;
 
-    let read = || -> crate::error::Result<(CoreTicks, usize)> {
-        let cores = per_core_ticks().ok_or_else(|| {
+    let read = || -> crate::error::Result<Vec<CoreTicks>> {
+        per_core_ticks().ok_or_else(|| {
             IronError::UnsupportedPlatform("host_processor_info returned no per-core ticks".into())
-        })?;
-        Ok((aggregate_ticks(&cores), cores.len()))
+        })
     };
 
     // Held across the waits so two callers cannot prime the cache at once.
-    let mut previous = PREVIOUS_TOTAL
+    let mut previous = PREVIOUS_CORES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let baseline = match *previous {
-        Some(prior) => prior,
+    let baseline: Vec<CoreTicks> = match previous.as_ref() {
+        Some(prior) => prior.clone(),
         None => {
-            let (first, _) = read()?;
+            let first = read()?;
             std::thread::sleep(PRIME_INTERVAL);
             first
         }
@@ -326,9 +349,11 @@ pub fn current_total_usage() -> crate::error::Result<(CoreUsage, usize)> {
         if attempt > 0 {
             std::thread::sleep(PRIME_INTERVAL);
         }
-        let (now, cores) = read()?;
+        let now = read()?;
+        let total = usage_between(&aggregate_ticks(&baseline), &aggregate_ticks(&now));
+        let cores = per_core_usage_between(&baseline, &now);
         *previous = Some(now);
-        if let Some(usage) = usage_between(&baseline, &now) {
+        if let Some(usage) = total {
             return Ok((usage, cores));
         }
     }
@@ -475,7 +500,7 @@ pub fn swap_usage() -> Option<SwapUsage> {
 pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     use crate::core::cpu::{CpuCore, CpuStats, CpuTotal};
 
-    let (total_usage, core_count) = current_total_usage()?;
+    let (total_usage, per_core) = current_total_usage()?;
 
     // Only the CPU brand string. An earlier version fell back to `hw.model`,
     // which is the *machine* identifier — "Mac14,2" — and reporting that as the
@@ -489,13 +514,14 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     // one this crate's ontology asks for.
     let model = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
-    // Per-core utilization is not reported. The whole-CPU split is measured over a
-    // window, but the per-core split is not computed from the same per-core deltas
-    // here, so each core is `None` rather than its since-boot share, which is an
-    // average over uptime. This used to fill the four fields from
-    // `CoreTicks::percentages`.
-    let cores = (0..core_count)
-        .map(|id| CpuCore {
+    // Each core's split is the difference between its own two readings over the same
+    // window as the total. A core with no split (it did not move, or the core count
+    // changed) is `None`, never its since-boot share, which is an average over uptime.
+    // The `top` fallback has no per-core readings and leaves every core `None`.
+    let cores = per_core
+        .iter()
+        .enumerate()
+        .map(|(id, usage)| CpuCore {
             id,
             online: true,
             // macOS exposes no governor. `None`, not a placeholder.
@@ -504,10 +530,10 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
             // `None` says that; a nominal figure would repeat the mistake
             // Windows makes with `CurrentMhz`.
             frequency: None,
-            user: None,
-            nice: None,
-            system: None,
-            idle: None,
+            user: usage.map(|u| u.user),
+            nice: usage.map(|u| u.nice),
+            system: usage.map(|u| u.system),
+            idle: usage.map(|u| u.idle),
             model: model.clone(),
         })
         .collect();
@@ -811,6 +837,49 @@ Pages occupied by compressor:             34567.
         let since_boot_idle = later.percentages().expect("has time").idle;
         assert!(since_boot_idle > 70.0);
         assert!((usage.idle - since_boot_idle).abs() > 10.0);
+    }
+
+    /// Each core is split over its own window, and a core that did not move, or went
+    /// backwards, is `None` without taking the others down with it.
+    #[test]
+    fn per_core_splits_pair_each_core_with_its_own_earlier_reading() {
+        let core_a = since_boot();
+        let core_b = CoreTicks {
+            user: 9_000,
+            system: 1_000,
+            idle: 90_000,
+            nice: 0,
+        };
+        let later_a = CoreTicks {
+            user: core_a.user + 250,
+            system: core_a.system + 150,
+            idle: core_a.idle + 550,
+            nice: core_a.nice + 50,
+        };
+        // Core B did not move, so it has no split of its own.
+        let splits = per_core_usage_between(&[core_a, core_b], &[later_a, core_b]);
+        assert_eq!(splits.len(), 2);
+        let a = splits[0].expect("core A advanced");
+        assert!((a.user - 25.0).abs() < 0.01, "user {}", a.user);
+        assert!((a.idle - 55.0).abs() < 0.01, "idle {}", a.idle);
+        assert_eq!(splits[1], None);
+    }
+
+    /// A change in the core count cannot be paired entry by entry, so no core has a split.
+    #[test]
+    fn a_core_count_change_gives_no_per_core_split() {
+        let core = since_boot();
+        let later = CoreTicks {
+            user: core.user + 250,
+            system: core.system + 150,
+            idle: core.idle + 550,
+            nice: core.nice + 50,
+        };
+        assert_eq!(
+            per_core_usage_between(&[core], &[later, later]),
+            vec![None, None]
+        );
+        assert_eq!(per_core_usage_between(&[core, core], &[later]), vec![None]);
     }
 
     /// Two reads inside one tick: nothing moved, so there is no split to report.
