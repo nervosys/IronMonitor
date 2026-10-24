@@ -999,19 +999,20 @@ fn handle_cli_command(
             // Use MonitoringBackend for GPU data
             let backend = MonitoringBackend::with_config(config)?;
             if format == "json" {
+                // One entry per device; a field whose query failed is null.
                 let gpu_info: Vec<_> = backend
                     .gpu_static_info()
                     .iter()
                     .zip(backend.gpu_dynamic_info().iter())
                     .map(|(s, d)| {
                         serde_json::json!({
-                            "name": s.name,
-                            "vendor": s.vendor.to_string(),
-                            "utilization": d.utilization,
-                            "memory_used": d.memory.used,
-                            "memory_total": d.memory.total,
-                            "temperature": d.thermal.temperature,
-                            "power_draw": d.power.draw,
+                            "name": s.as_ref().map(|s| s.name.clone()),
+                            "vendor": s.as_ref().map(|s| s.vendor.to_string()),
+                            "utilization": d.as_ref().and_then(|d| d.utilization),
+                            "memory_used": d.as_ref().and_then(|d| d.memory.used),
+                            "memory_total": d.as_ref().and_then(|d| d.memory.total),
+                            "temperature": d.as_ref().and_then(|d| d.thermal.temperature),
+                            "power_draw": d.as_ref().and_then(|d| d.power.draw),
                         })
                     })
                     .collect();
@@ -1914,7 +1915,21 @@ fn print_gpu_info_backend(backend: &ironmonitor::backend::MonitoringBackend) {
         return;
     }
 
-    for (si, di) in static_info.iter().zip(dynamic_info.iter()) {
+    for (index, (si_slot, di_slot)) in static_info.iter().zip(dynamic_info.iter()).enumerate() {
+        // A device whose query failed is named as such, not dropped or blanked.
+        let Some(si) = si_slot else {
+            println!("\n  {} GPU {index}: static info not read", "▶".green());
+            continue;
+        };
+        let Some(di) = di_slot else {
+            println!(
+                "\n  {} {} ({}): sample not read",
+                "▶".green(),
+                si.name.white().bold(),
+                si.vendor.to_string().magenta()
+            );
+            continue;
+        };
         println!(
             "\n  {} {} ({})",
             "▶".green(),
@@ -2177,7 +2192,10 @@ fn print_process_info_backend(
 
     println!("{}", "═══ Process Information ═══".cyan().bold());
 
-    let processes = backend.processes();
+    let Some(processes) = backend.processes() else {
+        println!("  {}", "Process list not read".yellow());
+        return Ok(());
+    };
 
     if processes.is_empty() {
         println!("  {}", "No process data available".yellow());
@@ -2328,13 +2346,22 @@ fn print_all_info(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // System info
     println!("{}", "═══ System Overview ═══".cyan().bold());
+    let or_unknown = |s: &str| if s.is_empty() { "unknown" } else { s }.to_string();
     println!(
         "  {} {}",
         "Host:".white().bold(),
-        backend.hostname().green()
+        or_unknown(backend.hostname()).green()
     );
     println!("  {} {}", "OS:".white().bold(), backend.os_info().green());
-    println!("  {} {:?}", "Uptime:".white().bold(), backend.uptime());
+    // The OS's boot clock. The monitor's own age is not the machine's uptime.
+    let uptime = match ironmonitor::backend::MonitoringBackend::system_uptime() {
+        Some(d) => {
+            let secs = d.as_secs();
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        }
+        None => "unknown".to_string(),
+    };
+    println!("  {} {}", "Uptime:".white().bold(), uptime);
     println!();
 
     // CPU
@@ -2350,15 +2377,19 @@ fn print_all_info(
     println!();
 
     // Processes summary
-    let procs = backend.processes();
-    let gpu_procs: Vec<_> = procs.iter().filter(|p| p.is_gpu_process()).collect();
     println!("{}", "═══ Processes ═══".cyan().bold());
-    println!(
-        "  {} {} ({} using GPU)",
-        "Total:".white().bold(),
-        procs.len().to_string().cyan(),
-        gpu_procs.len().to_string().magenta()
-    );
+    match backend.processes() {
+        Some(procs) => {
+            let gpu_procs: Vec<_> = procs.iter().filter(|p| p.is_gpu_process()).collect();
+            println!(
+                "  {} {} ({} using GPU)",
+                "Total:".white().bold(),
+                procs.len().to_string().cyan(),
+                gpu_procs.len().to_string().magenta()
+            );
+        }
+        None => println!("  {}", "Process list not read".yellow()),
+    }
 
     Ok(())
 }

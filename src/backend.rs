@@ -45,14 +45,17 @@ pub struct FullSystemState {
     /// GPU/Accelerator states
     pub accelerators: Vec<AcceleratorState>,
 
-    /// Disk states
-    pub disks: Vec<DiskState>,
+    /// Disk states, or `None` where enumeration failed. `Some(vec![])` is a
+    /// machine with no disks. Was a `Vec` filled by `unwrap_or_default()`, so a
+    /// failed enumeration read as "no disks".
+    pub disks: Option<Vec<DiskState>>,
 
     /// Network interface states
     pub network: Vec<NetworkState>,
 
-    /// Top processes by resource usage
-    pub top_processes: Vec<ProcessState>,
+    /// Top processes by resource usage, or `None` where the process list was
+    /// not read. Was a `Vec`, so an unread list read as "no processes".
+    pub top_processes: Option<Vec<ProcessState>>,
 
     /// System information
     pub system: Option<SystemInfoState>,
@@ -180,8 +183,10 @@ pub struct AcceleratorState {
     /// Memory clock (MHz)
     pub memory_clock_mhz: Option<u32>,
 
-    /// Number of processes using this accelerator
-    pub process_count: usize,
+    /// Number of processes using this accelerator, or `None` when its sample
+    /// failed. Was `dynamic_info.processes.len()` over a default sample, which
+    /// reported a failed read as zero processes.
+    pub process_count: Option<usize>,
 }
 
 /// Disk state for AI context
@@ -272,8 +277,10 @@ pub struct SystemInfoState {
     /// Kernel version
     pub kernel: String,
 
-    /// System uptime (seconds)
-    pub uptime_secs: u64,
+    /// System uptime (seconds) as the OS reports it, or `None` when it was not
+    /// read. This was the monitor's own age (`start_time.elapsed()`), which
+    /// the AI context then presented as how long the machine had been up.
+    pub uptime_secs: Option<u64>,
 }
 
 impl FullSystemState {
@@ -283,9 +290,9 @@ impl FullSystemState {
             cpu: None,
             memory: None,
             accelerators: Vec::new(),
-            disks: Vec::new(),
+            disks: None,
             network: Vec::new(),
-            top_processes: Vec::new(),
+            top_processes: None,
             system: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -301,13 +308,18 @@ impl FullSystemState {
 
         // System info
         if let Some(ref sys) = self.system {
+            // An empty string is a field that was not read; it is named as such.
+            let or_unknown = |s: &str| if s.is_empty() { "unknown" } else { s }.to_string();
+            let uptime = sys.uptime_secs.map_or_else(
+                || "unknown".to_string(),
+                |secs| format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
+            );
             ctx.push_str(&format!(
-                "Host: {} | OS: {} | Kernel: {} | Uptime: {}h {}m\n\n",
-                sys.hostname,
-                sys.os,
-                sys.kernel,
-                sys.uptime_secs / 3600,
-                (sys.uptime_secs % 3600) / 60
+                "Host: {} | OS: {} | Kernel: {} | Uptime: {}\n\n",
+                or_unknown(&sys.hostname),
+                or_unknown(&sys.os),
+                or_unknown(&sys.kernel),
+                uptime
             ));
         }
 
@@ -315,7 +327,11 @@ impl FullSystemState {
         if let Some(ref cpu) = self.cpu {
             ctx.push_str(&format!(
                 "CPU: {} ({})\n  Utilization: {:.1}%",
-                cpu.name,
+                if cpu.name.is_empty() {
+                    "unknown"
+                } else {
+                    cpu.name.as_str()
+                },
                 // Physical and logical named separately, and the physical count
                 // left out rather than guessed when the platform gave none.
                 match cpu.cores {
@@ -410,55 +426,63 @@ impl FullSystemState {
         }
 
         // Disks
-        if !self.disks.is_empty() {
-            ctx.push_str("Disks:\n");
-            for disk in &self.disks {
-                const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-                // Shown only where it is a measurement. This was
-                // `disk.used_bytes as f64 / GIB` over a fabricated zero.
-                let used_gb = disk.used_bytes.map_or("unknown".to_string(), |b| {
-                    format!("{:.1}GB", b as f64 / GIB)
-                });
-                match (disk.total_bytes, disk.usage_percent) {
-                    (Some(total), Some(pct)) => ctx.push_str(&format!(
-                        "  {}: {} / {:.1}GB ({:.1}%) at {}\n",
-                        disk.name,
-                        used_gb,
-                        total as f64 / GIB,
-                        pct,
-                        disk.mount_point
-                    )),
-                    // Capacity unread: the used figure is still a measurement
-                    // and is shown; the total is named unknown rather than
-                    // rendered as 0.0GB at 0.0%.
-                    _ => ctx.push_str(&format!(
-                        "  {}: {} / capacity unknown at {}\n",
-                        disk.name, used_gb, disk.mount_point
-                    )),
+        match &self.disks {
+            None => ctx.push_str("Disks: not read\n\n"),
+            Some(disks) if disks.is_empty() => ctx.push_str("Disks: none enumerated\n\n"),
+            Some(disks) => {
+                ctx.push_str("Disks:\n");
+                for disk in disks {
+                    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+                    // Shown only where it is a measurement. This was
+                    // `disk.used_bytes as f64 / GIB` over a fabricated zero.
+                    let used_gb = disk.used_bytes.map_or("unknown".to_string(), |b| {
+                        format!("{:.1}GB", b as f64 / GIB)
+                    });
+                    match (disk.total_bytes, disk.usage_percent) {
+                        (Some(total), Some(pct)) => ctx.push_str(&format!(
+                            "  {}: {} / {:.1}GB ({:.1}%) at {}\n",
+                            disk.name,
+                            used_gb,
+                            total as f64 / GIB,
+                            pct,
+                            disk.mount_point
+                        )),
+                        // Capacity unread: the used figure is still a measurement
+                        // and is shown; the total is named unknown rather than
+                        // rendered as 0.0GB at 0.0%.
+                        _ => ctx.push_str(&format!(
+                            "  {}: {} / capacity unknown at {}\n",
+                            disk.name, used_gb, disk.mount_point
+                        )),
+                    }
                 }
+                ctx.push('\n');
             }
-            ctx.push('\n');
         }
 
         // Top processes
-        if !self.top_processes.is_empty() {
-            ctx.push_str("Top Processes (by CPU):\n");
-            for proc in self.top_processes.iter().take(5) {
-                ctx.push_str(&format!(
-                    "  {} (PID {}): CPU {}, Memory {:.0}MB",
-                    proc.name,
-                    proc.pid,
-                    proc.cpu_percent
-                        .map_or_else(|| "not yet known".to_string(), |c| format!("{c:.1}%")),
-                    proc.memory_bytes as f64 / 1024.0 / 1024.0
-                ));
-                if let Some(bytes) = proc.gpu_memory_bytes.filter(|b| *b > 0) {
+        match &self.top_processes {
+            None => ctx.push_str("Top Processes: not read\n\n"),
+            Some(procs) if procs.is_empty() => {}
+            Some(procs) => {
+                ctx.push_str("Top Processes (by CPU):\n");
+                for proc in procs.iter().take(5) {
                     ctx.push_str(&format!(
-                        ", GPU Mem {:.0}MB",
-                        bytes as f64 / 1024.0 / 1024.0
+                        "  {} (PID {}): CPU {}, Memory {:.0}MB",
+                        proc.name,
+                        proc.pid,
+                        proc.cpu_percent
+                            .map_or_else(|| "not yet known".to_string(), |c| format!("{c:.1}%")),
+                        proc.memory_bytes as f64 / 1024.0 / 1024.0
                     ));
+                    if let Some(bytes) = proc.gpu_memory_bytes.filter(|b| *b > 0) {
+                        ctx.push_str(&format!(
+                            ", GPU Mem {:.0}MB",
+                            bytes as f64 / 1024.0 / 1024.0
+                        ));
+                    }
+                    ctx.push('\n');
                 }
-                ctx.push('\n');
             }
         }
 
@@ -563,11 +587,13 @@ pub struct MonitoringBackend {
     /// Connection monitor (netstat-like)
     connection_monitor: Option<ConnectionMonitor>,
 
-    /// Disk devices
-    disks: Vec<Box<dyn DiskDevice>>,
+    /// Disk devices, or `None` where enumeration failed. Every list field in
+    /// this struct is `None` when it was not read, and `Some(vec![])` only when
+    /// the read succeeded and found nothing.
+    disks: Option<Vec<Box<dyn DiskDevice>>>,
 
-    /// Motherboard sensors
-    motherboard_sensors: Vec<Box<dyn MotherboardDevice>>,
+    /// Motherboard sensors, or `None` where enumeration failed.
+    motherboard_sensors: Option<Vec<Box<dyn MotherboardDevice>>>,
 
     // === Cached data ===
     /// Cached CPU stats
@@ -576,17 +602,20 @@ pub struct MonitoringBackend {
     /// Cached memory stats
     memory_stats: Option<MemoryStats>,
 
-    /// Cached GPU static info
-    gpu_static_info: Vec<GpuStaticInfo>,
+    /// Cached GPU static info, one slot per enumerated device in collection
+    /// order. A slot is `None` where that device's static query failed; the
+    /// other slots keep their positions.
+    gpu_static_info: Vec<Option<GpuStaticInfo>>,
 
-    /// Cached GPU dynamic info
-    gpu_dynamic_info: Vec<GpuDynamicInfo>,
+    /// Cached GPU dynamic info, one slot per enumerated device, with the same
+    /// positions as `gpu_static_info`. `None` where that device's sample failed.
+    gpu_dynamic_info: Vec<Option<GpuDynamicInfo>>,
 
-    /// Cached process list
-    processes: Vec<ProcessMonitorInfo>,
+    /// Cached process list, or `None` where it was not read.
+    processes: Option<Vec<ProcessMonitorInfo>>,
 
-    /// Cached connection list
-    connections: Vec<ConnectionInfo>,
+    /// Cached connection list, or `None` where it was not read.
+    connections: Option<Vec<ConnectionInfo>>,
 
     /// System info
     system_info: Option<MBSystemInfo>,
@@ -600,7 +629,7 @@ pub struct MonitoringBackend {
     /// measured 7.1s on this host — more than half the cost of constructing a backend,
     /// paid by every `ironmon cli` invocation for a getter no caller in the tree ever
     /// invokes.
-    driver_info: std::cell::OnceCell<Vec<DriverInfo>>,
+    driver_info: std::cell::OnceCell<Option<Vec<DriverInfo>>>,
 
     // === History buffers ===
     /// CPU utilization history
@@ -677,12 +706,13 @@ impl MonitoringBackend {
             // Static descriptors come from the static query alone. `snapshot_all`
             // also needs every device's dynamic sample, and Apple silicon's comes
             // from `powermetrics`, which needs root, so a non-root run listed no GPU.
-            let static_info: Vec<GpuStaticInfo> = gpus
+            // One slot per device. A device whose static query failed keeps its
+            // slot as `None`; the readable devices are not dropped with it.
+            let static_info: Vec<Option<GpuStaticInfo>> = gpus
                 .gpus()
                 .iter()
-                .map(|gpu| gpu.static_info())
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .unwrap_or_default();
+                .map(|gpu| gpu.static_info().ok())
+                .collect();
             let dynamic_info = Self::dynamic_slots(gpus, static_info.len());
             (static_info, dynamic_info)
         } else {
@@ -701,10 +731,11 @@ impl MonitoringBackend {
         let connection_monitor = ConnectionMonitor::new().ok();
 
         // Initialize disk devices
-        let disks = disk::enumerate_disks().unwrap_or_default();
+        // A failed enumeration is `None` ("not read"), not an empty list ("none exist").
+        let disks = disk::enumerate_disks().ok();
 
         // Initialize motherboard sensors
-        let motherboard_sensors = motherboard::enumerate_sensors().unwrap_or_default();
+        let motherboard_sensors = motherboard::enumerate_sensors().ok();
 
         // Get system info
         let system_info = motherboard::get_system_info().ok();
@@ -716,12 +747,14 @@ impl MonitoringBackend {
         let system_stats = SystemStats::new().ok();
 
         // Get hostname and OS info
+        // Empty when unread, which callers render as unknown. This was the
+        // literal "unknown", indistinguishable from a machine so named.
         #[cfg(any(feature = "cli", feature = "gui"))]
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+            .unwrap_or_default();
         #[cfg(not(any(feature = "cli", feature = "gui")))]
-        let hostname = "unknown".to_string();
+        let hostname = String::new();
 
         let os_info = std::env::consts::OS.to_string();
 
@@ -750,8 +783,8 @@ impl MonitoringBackend {
             memory_stats: None,
             gpu_static_info,
             gpu_dynamic_info,
-            processes: Vec::new(),
-            connections: Vec::new(),
+            processes: None,
+            connections: None,
             system_info,
             system_stats,
             driver_info,
@@ -944,7 +977,7 @@ impl MonitoringBackend {
     /// One dynamic sample per static descriptor, in collection order. A device
     /// whose sample failed keeps its slot with every field unknown, rather than
     /// blanking every other device or shifting their indices.
-    fn dynamic_slots(gpus: &GpuCollection, len: usize) -> Vec<GpuDynamicInfo> {
+    fn dynamic_slots(gpus: &GpuCollection, len: usize) -> Vec<Option<GpuDynamicInfo>> {
         let mut samples = gpus.snapshot_all_partial().into_iter();
         (0..len)
             .map(|_| {
@@ -952,7 +985,6 @@ impl MonitoringBackend {
                     .next()
                     .and_then(|sample| sample.ok())
                     .map(|info| info.dynamic_info)
-                    .unwrap_or_default()
             })
             .collect()
     }
@@ -963,7 +995,9 @@ impl MonitoringBackend {
                 self.gpu_dynamic_info = Self::dynamic_slots(gpus, self.gpu_static_info.len());
 
                 // Update histories
-                for (i, info) in self.gpu_dynamic_info.iter().enumerate() {
+                for (i, slot) in self.gpu_dynamic_info.iter().enumerate() {
+                    // A failed sample contributes nothing to the series.
+                    let Some(info) = slot else { continue };
                     if i < self.accelerator_histories.len() {
                         if let Some(util) = info.utilization {
                             self.accelerator_histories[i].push(util as f32);
@@ -989,11 +1023,15 @@ impl MonitoringBackend {
         self.gpu_collection.as_ref()
     }
 
-    pub fn gpu_static_info(&self) -> &[GpuStaticInfo] {
+    /// Static info per enumerated device. A `None` slot is a device whose
+    /// static query failed; its position is still its index.
+    pub fn gpu_static_info(&self) -> &[Option<GpuStaticInfo>] {
         &self.gpu_static_info
     }
 
-    pub fn gpu_dynamic_info(&self) -> &[GpuDynamicInfo] {
+    /// Dynamic sample per enumerated device, positions matching
+    /// [`Self::gpu_static_info`]. A `None` slot is a failed sample.
+    pub fn gpu_dynamic_info(&self) -> &[Option<GpuDynamicInfo>] {
         &self.gpu_dynamic_info
     }
 
@@ -1017,34 +1055,40 @@ impl MonitoringBackend {
 
     fn update_processes(&mut self) -> Result<()> {
         if let Some(ref mut monitor) = self.process_monitor {
-            self.processes = monitor.processes().unwrap_or_default();
+            // A failed enumeration leaves the list unread rather than empty.
+            self.processes = monitor.processes().ok();
         }
         Ok(())
     }
 
-    pub fn processes(&self) -> &[ProcessMonitorInfo] {
-        &self.processes
+    /// The process list, or `None` where it was not read.
+    pub fn processes(&self) -> Option<&[ProcessMonitorInfo]> {
+        self.processes.as_deref()
     }
 
-    pub fn processes_by_cpu(&self) -> Vec<&ProcessMonitorInfo> {
-        let mut procs: Vec<_> = self.processes.iter().collect();
+    /// Processes by CPU, or `None` where the list was not read.
+    pub fn processes_by_cpu(&self) -> Option<Vec<&ProcessMonitorInfo>> {
+        let mut procs: Vec<_> = self.processes.as_ref()?.iter().collect();
         procs.sort_by(|a, b| {
             b.cpu_percent
                 .partial_cmp(&a.cpu_percent)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        procs
+        Some(procs)
     }
 
-    pub fn processes_by_memory(&self) -> Vec<&ProcessMonitorInfo> {
-        let mut procs: Vec<_> = self.processes.iter().collect();
+    /// Processes by memory, or `None` where the list was not read.
+    pub fn processes_by_memory(&self) -> Option<Vec<&ProcessMonitorInfo>> {
+        let mut procs: Vec<_> = self.processes.as_ref()?.iter().collect();
         procs.sort_by_key(|p| std::cmp::Reverse(p.memory_bytes));
-        procs
+        Some(procs)
     }
 
-    pub fn processes_by_gpu(&self, gpu_index: usize) -> Vec<&ProcessMonitorInfo> {
+    /// Processes using the given GPU, or `None` where the list was not read.
+    pub fn processes_by_gpu(&self, gpu_index: usize) -> Option<Vec<&ProcessMonitorInfo>> {
         let mut procs: Vec<_> = self
             .processes
+            .as_ref()?
             .iter()
             .filter(|p| p.gpu_indices.contains(&gpu_index))
             .collect();
@@ -1053,7 +1097,7 @@ impl MonitoringBackend {
             let b_mem = b.gpu_memory_per_device.get(&gpu_index).unwrap_or(&0);
             b_mem.cmp(a_mem)
         });
-        procs
+        Some(procs)
     }
 
     // === Network ===
@@ -1075,25 +1119,31 @@ impl MonitoringBackend {
 
     fn update_connections(&mut self) -> Result<()> {
         if let Some(ref mut monitor) = self.connection_monitor {
-            self.connections = monitor.all_connections().unwrap_or_default();
+            // A failed enumeration leaves the list unread rather than empty.
+            self.connections = monitor.all_connections().ok();
         }
         Ok(())
     }
 
-    pub fn connections(&self) -> &[ConnectionInfo] {
-        &self.connections
+    /// The connection list, or `None` where it was not read.
+    pub fn connections(&self) -> Option<&[ConnectionInfo]> {
+        self.connections.as_deref()
     }
 
+    /// Filtered connections, or `None` where the list was not read.
     pub fn connections_filtered(
         &self,
         protocol: Option<Protocol>,
         state: Option<ConnectionState>,
-    ) -> Vec<&ConnectionInfo> {
-        self.connections
-            .iter()
-            .filter(|c| protocol.is_none_or(|p| c.protocol == p))
-            .filter(|c| state.is_none_or(|s| c.state == s))
-            .collect()
+    ) -> Option<Vec<&ConnectionInfo>> {
+        Some(
+            self.connections
+                .as_ref()?
+                .iter()
+                .filter(|c| protocol.is_none_or(|p| c.protocol == p))
+                .filter(|c| state.is_none_or(|s| c.state == s))
+                .collect(),
+        )
     }
 
     // === Disks ===
@@ -1107,12 +1157,13 @@ impl MonitoringBackend {
         Ok(())
     }
 
-    pub fn disks(&self) -> &[Box<dyn DiskDevice>] {
-        &self.disks
+    /// Disk devices, or `None` where enumeration failed.
+    pub fn disks(&self) -> Option<&[Box<dyn DiskDevice>]> {
+        self.disks.as_deref()
     }
 
     pub fn refresh_disks(&mut self) {
-        self.disks = disk::enumerate_disks().unwrap_or_default();
+        self.disks = disk::enumerate_disks().ok();
     }
 
     // === System Stats ===
@@ -1139,13 +1190,16 @@ impl MonitoringBackend {
     }
 
     /// Driver inventory. Enumerated on the first call, then cached.
-    pub fn driver_info(&self) -> &[DriverInfo] {
+    /// Driver inventory, or `None` where it could not be read.
+    pub fn driver_info(&self) -> Option<&[DriverInfo]> {
         self.driver_info
-            .get_or_init(|| motherboard::get_driver_versions().unwrap_or_default())
+            .get_or_init(|| motherboard::get_driver_versions().ok())
+            .as_deref()
     }
 
-    pub fn motherboard_sensors(&self) -> &[Box<dyn MotherboardDevice>] {
-        &self.motherboard_sensors
+    /// Motherboard sensors, or `None` where enumeration failed.
+    pub fn motherboard_sensors(&self) -> Option<&[Box<dyn MotherboardDevice>]> {
+        self.motherboard_sensors.as_deref()
     }
 
     // === System Identification ===
@@ -1158,8 +1212,15 @@ impl MonitoringBackend {
         &self.os_info
     }
 
+    /// How long this monitor has been running. This is not how long the machine
+    /// has been up; for that see [`Self::system_uptime`].
     pub fn uptime(&self) -> Duration {
         self.start_time.elapsed()
+    }
+
+    /// Time since the operating system booted, or `None` where it was not read.
+    pub fn system_uptime() -> Option<Duration> {
+        crate::stats::uptime().ok()
     }
 
     // === AI Agent ===
@@ -1289,11 +1350,13 @@ impl MonitoringBackend {
         // CPU state
         if let Some(ref cpu) = self.cpu_stats {
             state.cpu = Some(CpuState {
+                // Empty when the model string was not read. This was the
+                // literal "CPU", a name no processor has.
                 name: cpu
                     .cores
                     .first()
                     .map(|c| c.model.clone())
-                    .unwrap_or_else(|| "CPU".to_string()),
+                    .unwrap_or_default(),
                 cores: crate::cpu_microarch::physical_cores(),
                 threads: cpu.cores.len(),
                 utilization: 100.0 - cpu.total.idle,
@@ -1336,92 +1399,113 @@ impl MonitoringBackend {
         }
 
         // Accelerator states
-        for (i, (static_info, dynamic_info)) in self
-            .gpu_static_info
-            .iter()
-            .zip(self.gpu_dynamic_info.iter())
-            .enumerate()
-        {
+        // Slots are walked by position, so a device whose static query failed
+        // leaves a gap at its own index and the others keep theirs. It has no
+        // name or vendor to report, so it is not given a summary entry here;
+        // `ironmon gpu` lists it through the slot.
+        for (i, static_slot) in self.gpu_static_info.iter().enumerate() {
+            let Some(static_info) = static_slot else {
+                continue;
+            };
+            // A failed dynamic sample leaves every reading unknown, not zero.
+            let dynamic = self.gpu_dynamic_info.get(i).and_then(|slot| slot.as_ref());
             state.accelerators.push(AcceleratorState {
                 index: i,
                 accel_type: "GPU".to_string(), // Could be extended for NPU/FPGA
                 name: static_info.name.clone(),
                 vendor: format!("{:?}", static_info.vendor),
-                utilization: dynamic_info.utilization.map(f32::from),
-                memory_used_bytes: dynamic_info.memory.used,
-                memory_total_bytes: dynamic_info.memory.total,
+                utilization: dynamic.and_then(|d| d.utilization).map(f32::from),
+                memory_used_bytes: dynamic.and_then(|d| d.memory.used),
+                memory_total_bytes: dynamic.and_then(|d| d.memory.total),
                 // Derived once, on `GpuMemory`, rather than recomputed here
                 // against a total that might be zero.
-                memory_usage_percent: dynamic_info.memory.utilization.map(|u| u as f32),
-                temperature: dynamic_info.thermal.temperature.map(|t| t as f32),
-                power_watts: dynamic_info.power.draw.map(|p| p as f32 / 1000.0),
-                power_limit_watts: dynamic_info.power.limit.map(|p| p as f32 / 1000.0),
-                clock_mhz: dynamic_info.clocks.graphics,
-                memory_clock_mhz: dynamic_info.clocks.memory,
-                process_count: dynamic_info.processes.len(),
+                memory_usage_percent: dynamic.and_then(|d| d.memory.utilization).map(|u| u as f32),
+                temperature: dynamic
+                    .and_then(|d| d.thermal.temperature)
+                    .map(|t| t as f32),
+                power_watts: dynamic
+                    .and_then(|d| d.power.draw)
+                    .map(|p| p as f32 / 1000.0),
+                power_limit_watts: dynamic
+                    .and_then(|d| d.power.limit)
+                    .map(|p| p as f32 / 1000.0),
+                clock_mhz: dynamic.and_then(|d| d.clocks.graphics),
+                memory_clock_mhz: dynamic.and_then(|d| d.clocks.memory),
+                process_count: dynamic.map(|d| d.processes.len()),
             });
         }
 
         // Disk states
-        for disk in &self.disks {
-            if let Ok(disk_info) = disk.info() {
-                // Try to get filesystem info for mount point
-                let (mount_point, fs_type, used) = if let Ok(fs_info) = disk.filesystem_info() {
-                    if let Some(first_fs) = fs_info.first() {
-                        (
-                            first_fs.mount_point.to_string_lossy().to_string(),
-                            first_fs.fs_type.clone(),
-                            first_fs.used_size,
-                        )
+        // `None` when enumeration failed; `Some(vec![])` only for a machine with
+        // no disks. A disk whose info query fails is left out of the list.
+        state.disks = self.disks.as_ref().map(|disks| {
+            disks
+                .iter()
+                .filter_map(|disk| {
+                    let disk_info = disk.info().ok()?;
+                    // Try to get filesystem info for mount point
+                    let (mount_point, fs_type, used) = if let Ok(fs_info) = disk.filesystem_info() {
+                        if let Some(first_fs) = fs_info.first() {
+                            (
+                                first_fs.mount_point.to_string_lossy().to_string(),
+                                first_fs.fs_type.clone(),
+                                first_fs.used_size,
+                            )
+                        } else {
+                            (String::new(), String::new(), None)
+                        }
                     } else {
                         (String::new(), String::new(), None)
-                    }
-                } else {
-                    (String::new(), String::new(), None)
-                };
+                    };
 
-                // `capacity > 0` was a sentinel for "not read", and the `0.0`
-                // it produced was a usage percentage of a disk nobody measured.
-                // Both sides must be readings for there to be a percentage.
-                let usage = match (used, disk_info.capacity.filter(|c| *c > 0)) {
-                    (Some(used), Some(capacity)) => Some((used as f32 / capacity as f32) * 100.0),
-                    _ => None,
-                };
+                    // `capacity > 0` was a sentinel for "not read", and the `0.0`
+                    // it produced was a usage percentage of a disk nobody measured.
+                    // Both sides must be readings for there to be a percentage.
+                    let usage = match (used, disk_info.capacity.filter(|c| *c > 0)) {
+                        (Some(used), Some(capacity)) => {
+                            Some((used as f32 / capacity as f32) * 100.0)
+                        }
+                        _ => None,
+                    };
 
-                state.disks.push(DiskState {
-                    name: disk.name().to_string(),
-                    mount_point,
-                    filesystem: fs_type,
-                    total_bytes: disk_info.capacity,
-                    used_bytes: used,
-                    usage_percent: usage,
-                });
-            }
-        }
+                    Some(DiskState {
+                        name: disk.name().to_string(),
+                        mount_point,
+                        filesystem: fs_type,
+                        total_bytes: disk_info.capacity,
+                        used_bytes: used,
+                        usage_percent: usage,
+                    })
+                })
+                .collect()
+        });
 
-        // Top processes
-        let top_procs = self.processes_by_cpu();
-        for proc in top_procs.iter().take(10) {
-            state.top_processes.push(ProcessState {
-                pid: proc.pid,
-                name: proc.name.clone(),
-                cpu_percent: proc.cpu_percent,
-                memory_bytes: proc.memory_bytes,
-                gpu_memory_bytes: proc.total_gpu_memory_bytes,
-                gpu_indices: proc.gpu_indices.clone(),
-            });
-        }
+        // Top processes, or `None` where the list was not read.
+        state.top_processes = self.processes_by_cpu().map(|procs| {
+            procs
+                .iter()
+                .take(10)
+                .map(|proc| ProcessState {
+                    pid: proc.pid,
+                    name: proc.name.clone(),
+                    cpu_percent: proc.cpu_percent,
+                    memory_bytes: proc.memory_bytes,
+                    gpu_memory_bytes: proc.total_gpu_memory_bytes,
+                    gpu_indices: proc.gpu_indices.clone(),
+                })
+                .collect()
+        });
 
         // System info
         if let Some(ref sys) = self.system_info {
             state.system = Some(SystemInfoState {
                 hostname: self.hostname.clone(),
-                os: sys
-                    .os_version
-                    .clone()
-                    .unwrap_or_else(|| self.os_info.clone()),
-                kernel: sys.kernel_version.clone().unwrap_or_else(String::new),
-                uptime_secs: self.uptime().as_secs(),
+                // Empty when unread. The compile-target family (`os_info`) is a
+                // different fact from the OS version, so it is not substituted.
+                os: sys.os_version.clone().unwrap_or_default(),
+                kernel: sys.kernel_version.clone().unwrap_or_default(),
+                // The OS's own boot clock, not the monitor's age.
+                uptime_secs: Self::system_uptime().map(|d| d.as_secs()),
             });
         }
 
@@ -1636,9 +1720,9 @@ mod tests {
         assert!(state.cpu.is_none());
         assert!(state.memory.is_none());
         assert!(state.accelerators.is_empty());
-        assert!(state.disks.is_empty());
+        assert!(state.disks.is_none());
         assert!(state.network.is_empty());
-        assert!(state.top_processes.is_empty());
+        assert!(state.top_processes.is_none());
         assert!(state.system.is_none());
         assert!(state.timestamp > 0);
     }
@@ -1648,6 +1732,47 @@ mod tests {
         let state = FullSystemState::empty();
         let ctx = state.to_context_string();
         assert!(ctx.contains("Current System State"));
+    }
+
+    fn system_state(uptime_secs: Option<u64>) -> SystemInfoState {
+        SystemInfoState {
+            hostname: "host".into(),
+            os: String::new(),
+            kernel: String::new(),
+            uptime_secs,
+        }
+    }
+
+    /// Uptime is the OS's boot clock. An unread one is named as unknown rather
+    /// than shown as the monitor's age, and an empty OS or kernel string is
+    /// named as unknown rather than printed as a blank.
+    #[test]
+    fn the_context_reports_system_uptime_or_unknown() {
+        let mut state = FullSystemState::empty();
+        state.system = Some(system_state(Some(2 * 3600 + 5 * 60)));
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("Uptime: 2h 5m"), "{ctx}");
+        assert!(ctx.contains("OS: unknown"), "{ctx}");
+
+        state.system = Some(system_state(None));
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("Uptime: unknown"), "{ctx}");
+        assert!(!ctx.contains("Uptime: 0h 0m"), "{ctx}");
+    }
+
+    /// A list that was not read is not the same as an empty one.
+    #[test]
+    fn the_context_separates_unread_disks_and_processes_from_none() {
+        let mut state = FullSystemState::empty();
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("Disks: not read"), "{ctx}");
+        assert!(ctx.contains("Top Processes: not read"), "{ctx}");
+
+        state.disks = Some(Vec::new());
+        state.top_processes = Some(Vec::new());
+        let ctx = state.to_context_string();
+        assert!(ctx.contains("Disks: none enumerated"), "{ctx}");
+        assert!(!ctx.contains("Top Processes"), "{ctx}");
     }
 
     /// The context handed to the model must not call logical processors cores.
