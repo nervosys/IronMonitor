@@ -6,18 +6,21 @@ use crate::platform::common::*;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 /// Read CPU statistics
 pub fn read_cpu_stats() -> Result<CpuStats> {
     let mut stats = CpuStats::empty();
 
-    // Read CPU times from /proc/stat
-    let proc_stat = fs::read_to_string("/proc/stat")?;
-    let cpu_times = parse_proc_stat(&proc_stat)?;
+    // Tick deltas over the sampling interval, which is what every percentage is
+    // a share of. `latest` is the raw reading, used to count the CPUs.
+    let (latest, cpu_times) = sample_cpu_ticks()?;
 
     // Get number of CPUs. `/proc/stat` is passed as the last resort because it
     // is already in hand and lists one line per online CPU.
-    let cpu_count = get_cpu_count(&cpu_times);
+    let cpu_count = get_cpu_count(&latest);
 
     // Read per-core information
     for cpu_id in 0..cpu_count {
@@ -35,6 +38,105 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     })?;
 
     Ok(stats)
+}
+
+/// How long the first call waits between its two `/proc/stat` reads.
+///
+/// The kernel counts ticks at `USER_HZ`, 100 a second (10 ms) on the builds that
+/// matter, so a 200 ms gap is about twenty ticks per CPU. That is enough for the
+/// split to be a real share rather than rounding noise, and short enough that a
+/// one-shot command does not feel the wait.
+const PRIME_INTERVAL: Duration = Duration::from_millis(200);
+
+/// The `cpu` aggregate and each `cpuN` line of one `/proc/stat` reading, as
+/// `(name, cumulative ticks)`.
+type CpuTicks = Vec<(String, Vec<u64>)>;
+
+/// The most recent `/proc/stat` reading in this process, which the next call
+/// differences against.
+static PREVIOUS_TICKS: Mutex<Option<CpuTicks>> = Mutex::new(None);
+
+/// Read `/proc/stat` and return it with the tick deltas since the previous
+/// reading, as `(latest reading, deltas)`.
+///
+/// Percentages come from the deltas. The cumulative counters are the average
+/// since boot, not the current load. This reader used to compute percentages
+/// from them directly, so every one-shot `ironmon get` or `snapshot`, which is
+/// always the first read in its process, reported the uptime average as the
+/// current load.
+///
+/// The first read in a process has nothing to difference against, so it reads,
+/// waits `PRIME_INTERVAL`, and reads again.
+fn sample_cpu_ticks() -> Result<(CpuTicks, CpuTicks)> {
+    let before = match previous_ticks() {
+        Some(previous) => previous,
+        None => {
+            let first = read_ticks()?;
+            thread::sleep(PRIME_INTERVAL);
+            first
+        }
+    };
+    let mut latest = read_ticks()?;
+    let mut deltas = tick_deltas(&before, &latest);
+
+    // Two reads inside one tick difference to zero. Wait once more and difference
+    // again from the same base. If that is still zero, the deltas pass through
+    // unchanged, and the callers then report no reading rather than an idle
+    // machine.
+    if deltas
+        .iter()
+        .all(|(_, ticks)| ticks.iter().all(|&t| t == 0))
+    {
+        thread::sleep(PRIME_INTERVAL);
+        latest = read_ticks()?;
+        deltas = tick_deltas(&before, &latest);
+    }
+
+    store_previous_ticks(latest.clone());
+    Ok((latest, deltas))
+}
+
+fn read_ticks() -> Result<CpuTicks> {
+    let content = fs::read_to_string("/proc/stat")?;
+    parse_proc_stat(&content)
+}
+
+fn previous_ticks() -> Option<CpuTicks> {
+    PREVIOUS_TICKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn store_previous_ticks(ticks: CpuTicks) {
+    *PREVIOUS_TICKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ticks);
+}
+
+/// The ticks each line gained between two readings.
+///
+/// A line is kept only if it appears in both readings with the same number of
+/// fields and no field went backwards. A line missing from either reading (a CPU
+/// that came or went between them) and a counter that fell (a reset, not a
+/// measurement) give no information, so the line is dropped and its CPU reads as
+/// unmeasured.
+fn tick_deltas(before: &[(String, Vec<u64>)], after: &[(String, Vec<u64>)]) -> CpuTicks {
+    after
+        .iter()
+        .filter_map(|(name, now)| {
+            let (_, then) = before.iter().find(|(prev, _)| prev == name)?;
+            if then.len() != now.len() || now.iter().zip(then).any(|(n, t)| n < t) {
+                return None;
+            }
+            let deltas = now
+                .iter()
+                .zip(then)
+                .map(|(n, t)| n - t)
+                .collect::<Vec<u64>>();
+            Some((name.clone(), deltas))
+        })
+        .collect()
 }
 
 /// The number of CPUs to enumerate, or 0 when none of the three sources could be
@@ -126,9 +228,10 @@ fn read_cpu_core(cpu_id: usize, cpu_times: &[(String, Vec<u64>)]) -> Result<CpuC
         None
     };
 
-    // Get CPU times for this core
+    // This core's tick deltas over the sampling interval.
     let cpu_name = format!("cpu{}", cpu_id);
-    // A core with no `/proc/stat` line was not measured. It used to fall back to
+    // A core with no tick delta (no `/proc/stat` line in one of the two readings)
+    // was not measured. It used to fall back to
     // `Some(100.0)` — a *measured, fully idle* core — which is the same expression
     // this crate has now removed from eight consumer surfaces, here at its source.
     // `/proc/stat` lists only online CPUs while `get_cpu_count` counts from the
@@ -394,6 +497,10 @@ fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Optio
 mod tests {
     use super::*;
 
+    fn ticks(text: &str) -> CpuTicks {
+        parse_proc_stat(text).unwrap()
+    }
+
     #[test]
     fn a_core_label_names_exactly_one_core() {
         // Captured coretemp labels: "Core 1" and "Core 10" are distinct cores.
@@ -443,10 +550,12 @@ mod tests {
 
     #[test]
     fn a_core_absent_from_proc_stat_is_unread_not_idle() {
-        // cpu1 is offline, so `/proc/stat` has no line for it while the sysfs
+        // cpu1 is offline, so neither reading has a line for it while the sysfs
         // `online` range still reports 2 CPUs.
-        let times = parse_proc_stat("cpu  100 0 50 900\ncpu0 50 0 25 450\n").unwrap();
-        let core = read_cpu_core(1, &times).unwrap();
+        let before = ticks("cpu  100 0 50 900\ncpu0 50 0 25 450\n");
+        let after = ticks("cpu  200 0 100 1800\ncpu0 100 0 50 900\n");
+        let deltas = tick_deltas(&before, &after);
+        let core = read_cpu_core(1, &deltas).unwrap();
         assert_eq!(
             core.idle, None,
             "an unmeasured core must not report as 100% idle"
@@ -456,40 +565,83 @@ mod tests {
     }
 
     #[test]
-    fn a_core_present_in_proc_stat_reports_its_measurement() {
-        let times = parse_proc_stat("cpu  100 0 50 900\ncpu0 50 0 25 425\n").unwrap();
-        let core = read_cpu_core(0, &times).unwrap();
-        assert!(core.idle.is_some(), "cpu0 has a line and must be measured");
-        // 425 idle of 500 total.
+    fn a_core_present_in_both_readings_reports_its_share_of_the_interval() {
+        let before = ticks("cpu0 50 0 25 425\n");
+        let after = ticks("cpu0 100 0 50 850\n");
+        let core = read_cpu_core(0, &tick_deltas(&before, &after)).unwrap();
+        // Deltas are 50 user, 0 nice, 25 system, 425 idle: 85% idle of 500.
         assert!((core.idle.unwrap() - 85.0).abs() < 0.01, "{:?}", core.idle);
+        assert!((core.user.unwrap() - 10.0).abs() < 0.01, "{:?}", core.user);
     }
 
     #[test]
-    fn the_total_comes_from_the_kernel_aggregate() {
-        let times = parse_proc_stat("cpu  100 0 50 850\ncpu0 50 0 25 425\n").unwrap();
-        let total = calculate_total(&times, &[]).expect("the aggregate line was read");
-        // 850 idle of 1000 ticks.
-        assert!((total.idle - 85.0).abs() < 0.01, "{total:?}");
+    fn the_per_line_delta_is_the_difference_of_the_two_readings() {
+        let before = ticks("cpu  100 0 50 850\ncpu0 50 0 25 425\n");
+        let after = ticks("cpu  150 0 100 1750\ncpu0 100 0 50 850\n");
+        assert_eq!(
+            tick_deltas(&before, &after),
+            vec![
+                ("cpu".to_string(), vec![50, 0, 50, 900]),
+                ("cpu0".to_string(), vec![50, 0, 25, 425]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_total_comes_from_the_kernel_aggregate_over_the_interval() {
+        let before = ticks("cpu  100 0 50 850\ncpu0 50 0 25 425\n");
+        let after = ticks("cpu  150 0 100 1750\ncpu0 100 0 50 850\n");
+        let total = calculate_total(&tick_deltas(&before, &after), &[])
+            .expect("the aggregate line was read");
+        // 900 idle of 1000 ticks in the interval.
+        assert!((total.idle - 90.0).abs() < 0.01, "{total:?}");
     }
 
     #[test]
     fn an_unread_core_does_not_dilute_the_mean() {
         // No aggregate line: the fallback averages only the cores it read.
-        let times = parse_proc_stat("cpu0 50 0 25 425\n").unwrap();
-        let read = read_cpu_core(0, &times).unwrap();
-        let unread = read_cpu_core(1, &times).unwrap();
-        let total = calculate_total(&times, &[read, unread]).expect("cpu0 was read");
+        let before = ticks("cpu0 50 0 25 425\n");
+        let after = ticks("cpu0 100 0 50 850\n");
+        let deltas = tick_deltas(&before, &after);
+        let read = read_cpu_core(0, &deltas).unwrap();
+        let unread = read_cpu_core(1, &deltas).unwrap();
+        let total = calculate_total(&deltas, &[read, unread]).expect("cpu0 was read");
         assert!((total.idle - 85.0).abs() < 0.01, "{total:?}");
     }
 
     #[test]
-    fn no_reading_is_no_total_rather_than_an_idle_machine() {
-        let times = parse_proc_stat("cpu  0 0 0 0\n").unwrap();
-        assert!(calculate_total(&times, &[]).is_none());
+    fn a_zero_delta_pair_is_no_reading_rather_than_an_idle_machine() {
+        // Two reads inside one tick: every delta is zero.
+        let times = ticks("cpu  0 0 0 0\ncpu0 0 0 0 0\n");
+        let deltas = tick_deltas(&times, &times);
+        assert!(deltas.iter().all(|(_, t)| t.iter().all(|&x| x == 0)));
+        assert!(calculate_total(&deltas, &[]).is_none());
+        assert_eq!(read_cpu_core(0, &deltas).unwrap().idle, None);
         assert_eq!(
             calculate_cpu_percentages(&[0, 0, 0, 0]),
             (None, None, None, None)
         );
+    }
+
+    #[test]
+    fn a_counter_that_went_backwards_is_no_information() {
+        // cpu0's user and idle counters fell between the reads: a reset, not a
+        // measurement. The line is dropped, so cpu0 reads as unmeasured.
+        let before = ticks("cpu0 100 0 50 900\n");
+        let after = ticks("cpu0 90 0 60 1000\n");
+        let deltas = tick_deltas(&before, &after);
+        assert!(deltas.is_empty());
+        assert_eq!(read_cpu_core(0, &deltas).unwrap().idle, None);
+    }
+
+    #[test]
+    fn a_cpu_that_appeared_between_the_readings_is_no_information() {
+        // cpu1 has no line in the first reading, so it has no delta.
+        let before = ticks("cpu0 50 0 25 425\n");
+        let after = ticks("cpu0 100 0 50 850\ncpu1 10 0 5 85\n");
+        let deltas = tick_deltas(&before, &after);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(read_cpu_core(1, &deltas).unwrap().idle, None);
     }
 
     #[test]
