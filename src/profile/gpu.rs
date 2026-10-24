@@ -123,6 +123,16 @@ impl ProfileProvider for GpuProfileProvider {
     }
 }
 
+/// Render an NVML string query. A failed query becomes `Unreadable` with its
+/// reason, never a placeholder string.
+#[cfg(feature = "nvidia")]
+fn nvml_text(v: &std::result::Result<String, String>) -> SettingValue {
+    match v {
+        Ok(s) => SettingValue::Text(s.clone()),
+        Err(reason) => SettingValue::Unreadable(reason.clone()),
+    }
+}
+
 #[cfg(feature = "nvidia")]
 fn nvidia_groups() -> Vec<ProfileGroup> {
     use nvml_wrapper::enum_wrappers::device::{Clock, ClockId};
@@ -131,39 +141,79 @@ fn nvidia_groups() -> Vec<ProfileGroup> {
     let Ok(nvml) = Nvml::init() else {
         return Vec::new();
     };
-    let count = nvml.device_count().unwrap_or(0);
+    // This used to be `unwrap_or(0)`, which reported "no NVIDIA devices" when
+    // the count itself could not be read.
+    let count = match nvml.device_count() {
+        Ok(c) => c,
+        Err(e) => {
+            let mut g = ProfileGroup::new(
+                Subsystem::Gpu,
+                "(NVIDIA device count unreadable)",
+                "Global driver profile",
+                "NVML device_count",
+            );
+            g.note(format!(
+                "NVML device_count failed: {}. No NVIDIA devices were enumerated; this is not a count of zero.",
+                e
+            ));
+            return vec![g];
+        }
+    };
     let mut groups = Vec::new();
 
-    let driver_version = nvml.sys_driver_version().unwrap_or_else(|_| "?".into());
-    let nvml_version = nvml.sys_nvml_version().unwrap_or_else(|_| "?".into());
+    // Errors are kept as reasons and rendered as `Unreadable`. This used to be
+    // the placeholder text "?" as if it were the driver's answer.
+    let driver_version = nvml.sys_driver_version().map_err(|e| e.to_string());
+    let nvml_version = nvml.sys_nvml_version().map_err(|e| e.to_string());
 
     for i in 0..count {
-        let Ok(dev) = nvml.device_by_index(i) else {
-            continue;
+        let dev = match nvml.device_by_index(i) {
+            Ok(dev) => dev,
+            Err(e) => {
+                // This used to be `continue`, which dropped the adapter without a
+                // trace. Report it as an unread device so indices stay visible.
+                let mut g = ProfileGroup::new(
+                    Subsystem::Gpu,
+                    "(NVIDIA device unreadable)",
+                    "Global driver profile",
+                    format!("NVML index {}", i),
+                );
+                g.note(format!(
+                    "NVML device_by_index({}) failed: {}. The adapter exists but was not read.",
+                    i, e
+                ));
+                groups.push(g);
+                continue;
+            }
         };
-        let name = dev.name().unwrap_or_else(|_| format!("NVIDIA GPU {}", i));
+        // The name is not synthesised when it cannot be read. This used to be
+        // "NVIDIA GPU <index>", a name nobody reported.
+        let name_result = dev.name();
+        let name = match &name_result {
+            Ok(n) => n.clone(),
+            Err(_) => "(name unreadable)".to_string(),
+        };
         let mut g = ProfileGroup::new(
             Subsystem::Gpu,
             &name,
             "Global driver profile",
             format!("NVML index {}", i),
         );
+        if let Err(e) = &name_result {
+            g.note(format!("NVML name query failed: {}", e));
+        }
 
         g.push(
             Setting::info(
                 "driver_version",
                 "Driver Version",
-                SettingValue::Text(driver_version.clone()),
+                nvml_text(&driver_version),
             )
             .with_source("NVML"),
         );
         g.push(
-            Setting::info(
-                "nvml_version",
-                "NVML Version",
-                SettingValue::Text(nvml_version.clone()),
-            )
-            .with_source("NVML"),
+            Setting::info("nvml_version", "NVML Version", nvml_text(&nvml_version))
+                .with_source("NVML"),
         );
 
         if let Ok(mode) = dev.is_ecc_enabled() {
@@ -295,13 +345,13 @@ fn nvidia_kmod_params_group() -> Option<ProfileGroup> {
     if let Ok(rd) = std::fs::read_dir(path) {
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            let val = std::fs::read_to_string(entry.path())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|e| format!("<err: {}>", e));
-            g.push(
-                Setting::info(&name, &name, SettingValue::Text(val))
-                    .with_source("/sys/module/nvidia/parameters"),
-            );
+            // A failed read is `Unreadable`. This used to put the text
+            // "<err: ...>" in the value, where it read as a parameter value.
+            let val = match std::fs::read_to_string(entry.path()) {
+                Ok(s) => SettingValue::Text(s.trim().to_string()),
+                Err(e) => SettingValue::Unreadable(e.to_string()),
+            };
+            g.push(Setting::info(&name, &name, val).with_source("/sys/module/nvidia/parameters"));
         }
     }
     Some(g)
@@ -485,6 +535,18 @@ fn intel_linux_groups() -> Vec<ProfileGroup> {
     groups
 }
 
+/// A driver-class registry string. A missing or empty value is `Unreadable`.
+/// This used to be `unwrap_or_default()` published as an empty `Text`, which
+/// read as a driver that reported a blank provider or version.
+#[cfg(windows)]
+fn registry_text(key: &winreg::RegKey, name: &str) -> SettingValue {
+    match key.get_value::<String, _>(name) {
+        Ok(s) if !s.is_empty() => SettingValue::Text(s),
+        Ok(_) => SettingValue::Unreadable(format!("{} is empty", name)),
+        Err(e) => SettingValue::Unreadable(format!("{} not readable: {}", name, e)),
+    }
+}
+
 #[cfg(windows)]
 fn windows_display_class_groups() -> Vec<ProfileGroup> {
     use winreg::enums::*;
@@ -511,10 +573,6 @@ fn windows_display_class_groups() -> Vec<ProfileGroup> {
         if desc.is_empty() {
             continue;
         }
-        let provider: String = inst.get_value("ProviderName").unwrap_or_default();
-        let driver_ver: String = inst.get_value("DriverVersion").unwrap_or_default();
-        let driver_date: String = inst.get_value("DriverDate").unwrap_or_default();
-
         let mut g = ProfileGroup::new(
             Subsystem::Gpu,
             &desc,
@@ -524,17 +582,17 @@ fn windows_display_class_groups() -> Vec<ProfileGroup> {
         g.push(Setting::info(
             "provider",
             "Provider",
-            SettingValue::Text(provider),
+            registry_text(&inst, "ProviderName"),
         ));
         g.push(Setting::info(
             "driver_version",
             "Driver Version",
-            SettingValue::Text(driver_ver),
+            registry_text(&inst, "DriverVersion"),
         ));
         g.push(Setting::info(
             "driver_date",
             "Driver Date",
-            SettingValue::Text(driver_date),
+            registry_text(&inst, "DriverDate"),
         ));
 
         // Enumerate string/dword values under the instance key — these are

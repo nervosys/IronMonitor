@@ -2843,14 +2843,18 @@ impl AiDataApi {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let entries = if matched_only {
-            crate::profile::active::matched_active_profiles()
+            crate::profile::active::matched_active_profiles()?
         } else {
-            crate::profile::active::active_profiles_for_processes()
+            crate::profile::active::active_profiles_for_processes()?
         };
         let total = entries.len();
-        let matched = entries.iter().filter(|e| e.has_any_profile()).count();
+        // The DRS database is either checked for every entry or for none. When
+        // it was not checked, `matched_count` is null, not zero.
+        let drs_checked = entries.iter().any(|e| e.has_nvidia_drs_profile.is_some());
+        let matched = drs_checked.then(|| entries.iter().filter(|e| e.has_any_profile()).count());
         Ok(json!({
             "total_processes": total,
+            "nvidia_drs_checked": drs_checked,
             "matched_count": matched,
             "entries": entries,
         }))

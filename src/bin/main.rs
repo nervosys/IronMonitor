@@ -5199,31 +5199,42 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         }
         ProfileSubcommand::Active { matched, json } => {
             let entries = if *matched {
-                ironmonitor::profile::active::matched_active_profiles()
+                ironmonitor::profile::active::matched_active_profiles()?
             } else {
-                ironmonitor::profile::active::active_profiles_for_processes()
+                ironmonitor::profile::active::active_profiles_for_processes()?
             };
+            // An entry's `has_nvidia_drs_profile` is `None` when the DRS database
+            // was not checked. That is reported as "not checked", never as zero
+            // matches. JSON carries that as `null`.
+            let drs_checked = entries.iter().any(|e| e.has_nvidia_drs_profile.is_some());
             if *json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
                 let total = entries.len();
-                let matched_count = entries.iter().filter(|e| e.has_any_profile()).count();
-                println!(
-                    "{} of {} processes have a known NVIDIA driver profile\n",
-                    matched_count.to_string().bold(),
-                    total.to_string().bold()
-                );
+                if drs_checked {
+                    let matched_count = entries.iter().filter(|e| e.has_any_profile()).count();
+                    println!(
+                        "{} of {} processes have a name referenced in the NVIDIA DRS database\n",
+                        matched_count.to_string().bold(),
+                        total.to_string().bold()
+                    );
+                } else {
+                    println!(
+                        "NVIDIA driver profiles not checked (DRS database unavailable here); {} processes listed\n",
+                        total.to_string().bold()
+                    );
+                }
                 for e in entries {
-                    let marker = if e.has_nvidia_drs_profile {
-                        "✓".green().to_string()
-                    } else {
-                        "·".dimmed().to_string()
+                    let marker = match e.has_nvidia_drs_profile {
+                        Some(true) => "✓".green().to_string(),
+                        Some(false) => "·".dimmed().to_string(),
+                        None => "?".dimmed().to_string(),
                     };
                     println!(
                         "  {} {:>6}  {}",
                         marker,
                         e.pid.to_string().dimmed(),
-                        if e.has_nvidia_drs_profile {
+                        if e.has_any_profile() {
                             e.name.bold().to_string()
                         } else {
                             e.name.dimmed().to_string()

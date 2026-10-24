@@ -300,7 +300,13 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
     let policies = hklm
         .open_subkey(r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes")
         .ok()?;
-    let active: String = policies.get_value("ActivePowerScheme").unwrap_or_default();
+    // `None` when the value is missing or empty. This used to be
+    // `unwrap_or_default()`, which published an empty writable `active_scheme_guid`.
+    // A writable setting with no current value is not offered at all.
+    let active: Option<String> = policies
+        .get_value::<String, _>("ActivePowerScheme")
+        .ok()
+        .filter(|v| !v.is_empty());
     let mut g = ProfileGroup::new(
         Subsystem::Cpu,
         "Windows Processor Power Policy",
@@ -311,25 +317,32 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
     // Enumerate all available schemes via PowerEnumerate so the user can pick
     // a GUID without an external powercfg /list invocation.
     let schemes = enumerate_power_schemes();
-    let mut s = Setting::info(
-        "active_scheme_guid",
-        "Active Power Scheme",
-        SettingValue::Text(active),
-    )
-    .with_description(
-        "GUID of the active Windows power scheme. Set via PowerSetActiveScheme — writable without admin elevation.",
-    )
-    .with_risk(SettingRisk::Safe)
-    .with_writable(true);
-    if !schemes.is_empty() {
-        s.choices = Some(
-            schemes
-                .iter()
-                .map(|(guid, name)| (name.clone(), SettingValue::Text(guid.clone())))
-                .collect(),
-        );
+    match active {
+        Some(active) => {
+            let mut s = Setting::info(
+                "active_scheme_guid",
+                "Active Power Scheme",
+                SettingValue::Text(active),
+            )
+            .with_description(
+                "GUID of the active Windows power scheme. Set via PowerSetActiveScheme — writable without admin elevation.",
+            )
+            .with_risk(SettingRisk::Safe)
+            .with_writable(true);
+            if !schemes.is_empty() {
+                s.choices = Some(
+                    schemes
+                        .iter()
+                        .map(|(guid, name)| (name.clone(), SettingValue::Text(guid.clone())))
+                        .collect(),
+                );
+            }
+            g.push(s);
+        }
+        None => g.note(
+            "ActivePowerScheme could not be read from HKLM; the active scheme is not reported and no scheme can be set from this group.",
+        ),
     }
-    g.push(s);
 
     // Also surface each scheme as its own informational setting.
     for (guid, name) in &schemes {

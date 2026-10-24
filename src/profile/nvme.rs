@@ -61,6 +61,17 @@ impl ProfileProvider for NvmeProfileProvider {
     }
 }
 
+/// Read one sysfs attribute. A read error or an empty file is `Unreadable` with
+/// the reason. This used to be `unwrap_or_default()` pushed as an empty `Text`.
+#[cfg(target_os = "linux")]
+fn sysfs_value(path: &std::path::Path) -> SettingValue {
+    match std::fs::read_to_string(path) {
+        Ok(s) if !s.trim().is_empty() => SettingValue::Text(s.trim().to_string()),
+        Ok(_) => SettingValue::Unreadable(format!("{} is empty", path.display())),
+        Err(e) => SettingValue::Unreadable(format!("{}: {}", path.display(), e)),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_groups() -> Vec<ProfileGroup> {
     use std::fs;
@@ -73,22 +84,17 @@ fn linux_groups() -> Vec<ProfileGroup> {
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let ctrl_dir = entry.path();
-        let model = fs::read_to_string(ctrl_dir.join("model"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let serial = fs::read_to_string(ctrl_dir.join("serial"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let firmware = fs::read_to_string(ctrl_dir.join("firmware_rev"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let model = sysfs_value(&ctrl_dir.join("model"));
+        let serial = sysfs_value(&ctrl_dir.join("serial"));
+        let firmware = sysfs_value(&ctrl_dir.join("firmware_rev"));
+        let model_label = match &model {
+            SettingValue::Text(t) => t.clone(),
+            _ => "(model unreadable)".to_string(),
+        };
 
         let mut g = ProfileGroup::new(
             Subsystem::Nvme,
-            format!("{} — {}", name, model),
+            format!("{} — {}", name, model_label),
             "Controller features",
             ctrl_dir.display().to_string(),
         );
@@ -103,17 +109,9 @@ fn linux_groups() -> Vec<ProfileGroup> {
                 }
             }
         };
-        g.push(Setting::info("model", "Model", SettingValue::Text(model)));
-        g.push(Setting::info(
-            "serial",
-            "Serial",
-            SettingValue::Text(serial),
-        ));
-        g.push(Setting::info(
-            "firmware_rev",
-            "Firmware",
-            SettingValue::Text(firmware),
-        ));
+        g.push(Setting::info("model", "Model", model));
+        g.push(Setting::info("serial", "Serial", serial));
+        g.push(Setting::info("firmware_rev", "Firmware", firmware));
         push_str(&mut g, "transport", "transport", "Transport");
         push_str(&mut g, "state", "state", "Controller State");
         push_str(&mut g, "subsysnqn", "subsysnqn", "Subsystem NQN");
@@ -200,6 +198,17 @@ fn linux_groups() -> Vec<ProfileGroup> {
     groups
 }
 
+/// A controller string the driver did not report. This used to be an empty
+/// `Text`, which read as a blank firmware or serial.
+#[cfg(windows)]
+fn text_or_unreadable(value: &str, what: &str) -> SettingValue {
+    if value.trim().is_empty() {
+        SettingValue::Unreadable(format!("{} not reported by the controller", what))
+    } else {
+        SettingValue::Text(value.to_string())
+    }
+}
+
 #[cfg(windows)]
 fn windows_groups() -> Vec<ProfileGroup> {
     use crate::storage_controller::StorageControllerMonitor;
@@ -247,12 +256,12 @@ fn windows_groups() -> Vec<ProfileGroup> {
             g.push(Setting::info(
                 "firmware",
                 "Firmware",
-                SettingValue::Text(nvme.firmware.clone()),
+                text_or_unreadable(&nvme.firmware, "firmware revision"),
             ));
             g.push(Setting::info(
                 "serial",
                 "Serial",
-                SettingValue::Text(nvme.serial.clone()),
+                text_or_unreadable(&nvme.serial, "serial number"),
             ));
         }
         g.push(Setting::info(

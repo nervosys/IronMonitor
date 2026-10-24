@@ -195,20 +195,33 @@ fn decode_feature(q: &FeatureQuery, raw: u32) -> Vec<Setting> {
             ]
         }
         0x0B => {
-            // Async Event Configuration (Figure 320 + spec-defined event bits)
-            // bit 0 = SMART health critical warnings, bit 8 = namespace attribute notices,
-            // bit 9 = firmware activation notices, bit 11 = telemetry log notice.
-            let smart = (raw & 0x1) != 0;
+            // Async Event Configuration (NVMe base spec, Feature 0Bh). Bits 7:0 are
+            // the SMART/Health critical warning enables, bit 8 Namespace Attribute
+            // Notices, bit 9 Firmware Activation Notices, bit 10 Telemetry Log
+            // Notices, bit 11 Asymmetric Namespace Access Change Notices, bit 12
+            // Predictable Latency Event Aggregate Log Change Notices, bit 13 LBA
+            // Status Information Notices, bit 14 Endurance Group Event Aggregate
+            // Log Change Notices. This used to label bit 11 as telemetry and omit
+            // bits 11 to 14, and tested only bit 0 for the SMART bits.
+            let smart = (raw & 0xFF) != 0;
             let ns_attr = ((raw >> 8) & 0x1) != 0;
             let fw_act = ((raw >> 9) & 0x1) != 0;
-            let telemetry = ((raw >> 11) & 0x1) != 0;
+            let telemetry = ((raw >> 10) & 0x1) != 0;
+            let asym_ns = ((raw >> 11) & 0x1) != 0;
+            let predictable_latency = ((raw >> 12) & 0x1) != 0;
+            let lba_status = ((raw >> 13) & 0x1) != 0;
+            let endurance_group = ((raw >> 14) & 0x1) != 0;
             vec![
                 Setting::info("feat.aec.raw_mask", "Async Event Mask", SettingValue::Uint(raw as u64))
                     .with_description("Raw 32-bit async event enable mask."),
-                Setting::info("feat.aec.smart_critical", "  → SMART Critical Warnings", SettingValue::Bool(smart)),
+                Setting::info("feat.aec.smart_critical", "  → SMART/Health Critical Warnings (bits 7:0)", SettingValue::Bool(smart)),
                 Setting::info("feat.aec.namespace_attr", "  → Namespace Attribute Notices", SettingValue::Bool(ns_attr)),
                 Setting::info("feat.aec.firmware_activation", "  → Firmware Activation Notices", SettingValue::Bool(fw_act)),
                 Setting::info("feat.aec.telemetry", "  → Telemetry Log Notices", SettingValue::Bool(telemetry)),
+                Setting::info("feat.aec.asym_ns_access", "  → Asymmetric Namespace Access Change Notices", SettingValue::Bool(asym_ns)),
+                Setting::info("feat.aec.predictable_latency", "  → Predictable Latency Event Aggregate Log Change Notices", SettingValue::Bool(predictable_latency)),
+                Setting::info("feat.aec.lba_status", "  → LBA Status Information Notices", SettingValue::Bool(lba_status)),
+                Setting::info("feat.aec.endurance_group", "  → Endurance Group Event Aggregate Log Change Notices", SettingValue::Bool(endurance_group)),
             ]
         }
         0x0C => {
@@ -320,6 +333,46 @@ mod tests {
         } else {
             panic!("expected Text workload hint");
         }
+    }
+
+    #[test]
+    fn decode_async_event_bits() {
+        let q = FeatureQuery {
+            fid: 0x0B,
+            primary_id: "x",
+            label: "y",
+        };
+        let bool_at = |settings: &[Setting], id: &str| -> bool {
+            let s = settings
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"));
+            match s.value {
+                SettingValue::Bool(b) => b,
+                _ => panic!("{id} is not a Bool"),
+            }
+        };
+        // Bit 0 alone: SMART warnings only.
+        let s = decode_feature(&q, 1);
+        assert!(bool_at(&s, "feat.aec.smart_critical"));
+        assert!(!bool_at(&s, "feat.aec.telemetry"));
+        // Bit 10 is telemetry, bit 11 is asymmetric namespace access.
+        let s = decode_feature(&q, 1 << 10);
+        assert!(bool_at(&s, "feat.aec.telemetry"));
+        assert!(!bool_at(&s, "feat.aec.asym_ns_access"));
+        let s = decode_feature(&q, 1 << 11);
+        assert!(!bool_at(&s, "feat.aec.telemetry"));
+        assert!(bool_at(&s, "feat.aec.asym_ns_access"));
+        // Bits 12 to 14 map to their own notices.
+        let s = decode_feature(&q, (1 << 12) | (1 << 13) | (1 << 14));
+        assert!(bool_at(&s, "feat.aec.predictable_latency"));
+        assert!(bool_at(&s, "feat.aec.lba_status"));
+        assert!(bool_at(&s, "feat.aec.endurance_group"));
+        // SMART bits are 7:0, so bit 7 counts.
+        assert!(bool_at(
+            &decode_feature(&q, 1 << 7),
+            "feat.aec.smart_critical"
+        ));
     }
 
     #[test]

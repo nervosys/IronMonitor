@@ -32,14 +32,16 @@ const MIN_STRING_LEN: usize = 4;
 /// Return the set of all `.exe` references found across both
 /// `nvdrsdb0.bin` and `nvdrsdb1.bin`. Case-folded for cheap lookups.
 ///
-/// Empty on platforms without an NVIDIA DRS database. Result is **not**
-/// cached — call once per check (~50 ms on a 2.5 MB DB).
-pub fn drs_exe_set() -> std::collections::BTreeSet<String> {
+/// `None` when the DRS database was not checked: the directory is missing or
+/// cannot be listed, or a database file cannot be read. A partial read would
+/// miss executables and report them as having no profile, so any read failure
+/// makes the whole set `None`. `Some(empty)` means the database was read and
+/// names no executables. Result is **not** cached — call once per check
+/// (~50 ms on a 2.5 MB DB).
+pub fn drs_exe_set() -> Option<std::collections::BTreeSet<String>> {
     let mut set = std::collections::BTreeSet::new();
-    let Some(dir) = drs_dir() else { return set };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return set;
-    };
+    let dir = drs_dir()?;
+    let entries = std::fs::read_dir(&dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(stem) = path.file_name().and_then(|n| n.to_str()) else {
@@ -49,9 +51,7 @@ pub fn drs_exe_set() -> std::collections::BTreeSet<String> {
         {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
+        let bytes = std::fs::read(&path).ok()?;
         for s in extract_utf16_strings(&bytes) {
             let lower = s.trim().to_ascii_lowercase();
             if lower.ends_with(".exe") && lower.len() > 4 {
@@ -59,7 +59,7 @@ pub fn drs_exe_set() -> std::collections::BTreeSet<String> {
             }
         }
     }
-    set
+    Some(set)
 }
 
 /// Scan all `nvdrsdb*.bin` files in `%PROGRAMDATA%\NVIDIA Corporation\Drs\`
@@ -139,27 +139,30 @@ fn scan_file(path: &Path) -> Option<ProfileGroup> {
         .with_unit("bytes")
         .with_source(path.display().to_string()),
     );
+    // The count is of executable names that the binary mentions. A mention is
+    // not proof of a per-application profile, so the label says only that.
     group.push(
         Setting::info(
             "app_profile_count",
-            "Application Profiles Detected",
+            "Executable Names Referenced",
             SettingValue::Uint(exes.len() as u64),
         )
         .with_description(
-            "Number of .exe references in the DRS database. Each typically \
-            corresponds to a per-application driver profile (NVIDIA-shipped \
-            or user-customized via NVIDIA Control Panel / NVPI).",
+            "Number of distinct .exe names referenced in the DRS database. A \
+            reference is not confirmed as a per-application profile: it is \
+            found by string scan, and the settings attached to it are not decoded.",
         )
         .with_source(path.display().to_string()),
     );
 
-    // Surface up to MAX_PROFILES_PER_FILE per-app entries as individual settings.
+    // Surface up to MAX_PROFILES_PER_FILE referenced executable names. Each one
+    // is a string match only, not a confirmed profile.
     for (i, exe) in exes.iter().take(MAX_PROFILES_PER_FILE).enumerate() {
         group.push(
             Setting::info(
                 format!("app_{:04}", i),
                 exe.clone(),
-                SettingValue::Text("(profile present)".to_string()),
+                SettingValue::Text("(executable referenced in DRS database)".to_string()),
             )
             .with_source("DRS binary scan"),
         );

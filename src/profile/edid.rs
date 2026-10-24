@@ -163,11 +163,11 @@ pub fn decode_block(bytes: &[u8], source: String, locator: String) -> Option<Pro
             SettingValue::Text(name),
         ));
     }
-    if week > 0 || year > 1990 {
+    if let Some(text) = manufactured_text(week, year) {
         group.push(Setting::info(
             "edid.manufactured",
             "Manufactured",
-            SettingValue::Text(format!("week {} of {}", week, year)),
+            SettingValue::Text(text),
         ));
     }
     group.push(Setting::info(
@@ -346,9 +346,41 @@ fn read_preferred_timing(bytes: &[u8]) -> Option<(u32, u32, f64, bool)> {
     Some((h_active, v_frame, refresh, interlaced))
 }
 
+/// Text for the EDID manufacture date. Byte 16 is the week of manufacture
+/// (1-54), 0 when the week is unspecified, or 0xFF when byte 17 is a model
+/// year rather than a manufacture year. This used to print 0xFF as
+/// "week 255 of <year>".
+fn manufactured_text(week: u8, year: u16) -> Option<String> {
+    match week {
+        0xFF => Some(format!("model year {}", year)),
+        0 if year > 1990 => Some(format!("year {} (week unspecified)", year)),
+        0 => None,
+        w => Some(format!("week {} of {}", w, year)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manufactured_week_model_year_and_unspecified() {
+        assert_eq!(
+            manufactured_text(10, 2024).as_deref(),
+            Some("week 10 of 2024")
+        );
+        // 0xFF is the model-year flag, not a week.
+        assert_eq!(
+            manufactured_text(0xFF, 2024).as_deref(),
+            Some("model year 2024")
+        );
+        // Week 0 means unspecified: the year is still reported, the week is not.
+        assert_eq!(
+            manufactured_text(0, 2024).as_deref(),
+            Some("year 2024 (week unspecified)")
+        );
+        assert_eq!(manufactured_text(0, 1990), None);
+    }
 
     fn synth_edid(name: &str, h: u32, v: u32, pclk_khz: u32) -> Vec<u8> {
         let mut b = vec![0u8; 128];
