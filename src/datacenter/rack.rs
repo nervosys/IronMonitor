@@ -61,12 +61,20 @@ pub struct CoolingZone {
 pub struct RackInfo {
     pub rack_id: String,
     pub location: String,
-    pub total_units: u32,
-    pub used_units: u32,
+    /// Rack height in units, or `None` when `IRONMON_RACK_UNITS` was not set.
+    /// Used to report 42U, the standard full rack, which nobody configured.
+    pub total_units: Option<u32>,
+    /// Occupied units, or `None` when `IRONMON_RACK_USED_UNITS` was not set.
+    /// Used to report 0, which reads as an empty rack.
+    pub used_units: Option<u32>,
     pub pdus: Vec<PduInfo>,
     pub cooling_zones: Vec<CoolingZone>,
-    pub total_power_watts: f64,
-    pub max_power_watts: f64,
+    /// Sum of the PDUs' power, or `None` when no PDU is listed. Used to report
+    /// 0 W, which reads as a rack drawing nothing.
+    pub total_power_watts: Option<f64>,
+    /// Power budget, or `None` when `IRONMON_RACK_MAX_POWER` was not set. Used
+    /// to report 0 W, which made every unconfigured budget look like one.
+    pub max_power_watts: Option<f64>,
     pub tags: std::collections::HashMap<String, String>,
 }
 
@@ -75,41 +83,29 @@ impl RackInfo {
         RackInfoBuilder {
             rack_id: rack_id.into(),
             location: String::new(),
-            total_units: 42,
-            used_units: 0,
+            total_units: None,
+            used_units: None,
             pdus: Vec::new(),
             cooling_zones: Vec::new(),
-            max_power_watts: 0.0,
+            max_power_watts: None,
             tags: std::collections::HashMap::new(),
         }
     }
 
-    /// Draw as a percentage of the rack's power budget, or `None` when no
-    /// budget has been configured.
-    ///
-    /// Both of these returned `0.0` for the unconfigured case, which reads as
-    /// "this rack is drawing nothing" — the most reassuring possible answer to
-    /// a question nobody supplied the inputs for. `max_power_watts` defaults to
-    /// `0.0` in the builder precisely because it is not knowable without being
-    /// told, so the unconfigured case is the common one.
+    /// Draw as a percentage of the rack's power budget, or `None` when either
+    /// the budget or the draw was not read.
     pub fn power_utilization(&self) -> Option<f64> {
-        if self.max_power_watts <= 0.0 {
-            return None;
-        }
-        Some((self.total_power_watts / self.max_power_watts) * 100.0)
+        let max = self.max_power_watts.filter(|w| *w > 0.0)?;
+        let total = self.total_power_watts?;
+        Some((total / max) * 100.0)
     }
 
-    /// Occupied units as a percentage of the rack's height, or `None` when the
-    /// height is zero. See [`Self::power_utilization`].
-    ///
-    /// Note that the builder's default height is 42U, the standard full rack,
-    /// so a caller who never set one gets a percentage against an assumed size
-    /// rather than `None`.
+    /// Occupied units as a percentage of the rack's height, or `None` when
+    /// either the height or the occupancy was not configured.
     pub fn space_utilization(&self) -> Option<f64> {
-        if self.total_units == 0 {
-            return None;
-        }
-        Some((self.used_units as f64 / self.total_units as f64) * 100.0)
+        let total = self.total_units.filter(|&t| t > 0)?;
+        let used = self.used_units?;
+        Some((used as f64 / total as f64) * 100.0)
     }
 
     /// Detect from environment variables
@@ -142,11 +138,11 @@ impl RackInfo {
 pub struct RackInfoBuilder {
     rack_id: String,
     location: String,
-    total_units: u32,
-    used_units: u32,
+    total_units: Option<u32>,
+    used_units: Option<u32>,
     pdus: Vec<PduInfo>,
     cooling_zones: Vec<CoolingZone>,
-    max_power_watts: f64,
+    max_power_watts: Option<f64>,
     tags: std::collections::HashMap<String, String>,
 }
 
@@ -157,17 +153,17 @@ impl RackInfoBuilder {
     }
 
     pub fn total_units(mut self, u: u32) -> Self {
-        self.total_units = u;
+        self.total_units = Some(u);
         self
     }
 
     pub fn used_units(mut self, u: u32) -> Self {
-        self.used_units = u;
+        self.used_units = Some(u);
         self
     }
 
     pub fn max_power_watts(mut self, w: f64) -> Self {
-        self.max_power_watts = w;
+        self.max_power_watts = Some(w);
         self
     }
 
@@ -187,17 +183,74 @@ impl RackInfoBuilder {
     }
 
     pub fn build(self) -> RackInfo {
-        let total_power: f64 = self.pdus.iter().map(|p| p.total_power_watts).sum();
+        // No PDU means no draw reading, not a draw of zero.
+        let total_power_watts =
+            (!self.pdus.is_empty()).then(|| self.pdus.iter().map(|p| p.total_power_watts).sum());
         RackInfo {
             rack_id: self.rack_id,
             location: self.location,
             total_units: self.total_units,
             used_units: self.used_units,
-            total_power_watts: total_power,
+            total_power_watts,
             max_power_watts: self.max_power_watts,
             pdus: self.pdus,
             cooling_zones: self.cooling_zones,
             tags: self.tags,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pdu(watts: f64) -> PduInfo {
+        PduInfo {
+            name: "pdu0".into(),
+            model: None,
+            total_power_watts: watts,
+            max_power_watts: 0.0,
+            phases: Vec::new(),
+            outlets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_rack_has_no_units_or_power() {
+        let rack = RackInfo::builder("r1").build();
+        assert_eq!(rack.total_units, None);
+        assert_eq!(rack.used_units, None);
+        assert_eq!(rack.total_power_watts, None);
+        assert_eq!(rack.max_power_watts, None);
+        assert_eq!(rack.space_utilization(), None);
+        assert_eq!(rack.power_utilization(), None);
+    }
+
+    #[test]
+    fn a_height_without_occupancy_is_not_an_empty_rack() {
+        let rack = RackInfo::builder("r1").total_units(42).build();
+        assert_eq!(rack.space_utilization(), None);
+    }
+
+    #[test]
+    fn a_budget_without_a_pdu_reading_is_not_a_zero_draw() {
+        let rack = RackInfo::builder("r1").max_power_watts(10_000.0).build();
+        assert_eq!(rack.total_power_watts, None);
+        assert_eq!(rack.power_utilization(), None);
+
+        let rack = RackInfo::builder("r1")
+            .max_power_watts(10_000.0)
+            .add_pdu(pdu(2_500.0))
+            .build();
+        assert_eq!(rack.power_utilization(), Some(25.0));
+    }
+
+    #[test]
+    fn configured_units_give_a_percentage() {
+        let rack = RackInfo::builder("r1")
+            .total_units(42)
+            .used_units(21)
+            .build();
+        assert_eq!(rack.space_utilization(), Some(50.0));
     }
 }

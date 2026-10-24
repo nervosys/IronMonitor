@@ -75,7 +75,9 @@ pub struct ServerLocation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChassisInfo {
     pub chassis_type: ChassisType,
-    pub form_factor: FormFactor,
+    /// `None` where the form factor was not read. Used to report Desktop for
+    /// every Mac, and Unknown where no source named one.
+    pub form_factor: Option<FormFactor>,
     pub manufacturer: String,
     pub product_name: String,
     pub serial_number: Option<String>,
@@ -130,7 +132,9 @@ impl ChassisInfo {
             .unwrap_or(2);
 
         let chassis_type = Self::from_smbios_byte(chassis_type_byte);
-        let form_factor = Self::infer_form_factor(chassis_type, &read("product_name"));
+        // Unknown means no source named a form factor, so it is not reported.
+        let form_factor = Some(Self::infer_form_factor(chassis_type, &read("product_name")))
+            .filter(|f| *f != FormFactor::Unknown);
 
         Ok(ChassisInfo {
             chassis_type,
@@ -169,7 +173,8 @@ impl ChassisInfo {
 
         Ok(ChassisInfo {
             chassis_type: ChassisType::Unknown,
-            form_factor: FormFactor::Unknown,
+            // The registry does not carry a form factor. Used to report Unknown.
+            form_factor: None,
             manufacturer: smbios("SystemManufacturer"),
             product_name: smbios("SystemProductName"),
             serial_number: wmi_info
@@ -207,7 +212,8 @@ impl ChassisInfo {
 
         Ok(ChassisInfo {
             chassis_type: ChassisType::Unknown,
-            form_factor: FormFactor::Desktop,
+            // Not read. Used to report Desktop for every Mac, laptops included.
+            form_factor: None,
             manufacturer: "Apple".into(),
             product_name: get("Model Name"),
             serial_number: Some(get("Serial Number")).filter(|s| !s.is_empty()),

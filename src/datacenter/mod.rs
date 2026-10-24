@@ -58,7 +58,9 @@ pub enum SensorStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatacenterSnapshot {
     pub chassis: Option<ChassisInfo>,
-    pub ipmi_sensors: Vec<IpmiSensor>,
+    /// `None` when the IPMI read failed, which is not the same as `Some` of an
+    /// empty list: that means the read succeeded and found no sensors.
+    pub ipmi_sensors: Option<Vec<IpmiSensor>>,
     pub bmc: Option<BmcInfo>,
     pub power: Option<PowerReading>,
     pub rack: Option<RackInfo>,
@@ -95,7 +97,8 @@ impl DatacenterMonitor {
     pub fn snapshot(&self) -> DatacenterSnapshot {
         DatacenterSnapshot {
             chassis: self.chassis_info().ok(),
-            ipmi_sensors: self.ipmi_sensors().unwrap_or_default(),
+            // A failed read is unreadable, not an empty sensor list.
+            ipmi_sensors: self.ipmi_sensors().ok(),
             bmc: self.bmc_info().ok(),
             power: self.power_reading().ok(),
             rack: RackInfo::from_env(),

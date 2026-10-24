@@ -99,21 +99,26 @@ pub struct InterconnectLink {
     /// Destination endpoint description.
     pub destination: String,
     /// Unidirectional bandwidth in GB/s, or `None` where no figure is tabled
-    /// for the link (the on-die link of every generation).
+    /// for the link (the on-die link of every generation). A **specification**
+    /// figure looked up by model name, never measured on this machine.
     pub bandwidth_gbs: Option<f64>,
-    /// Bidirectional bandwidth in GB/s, or `None` as for `bandwidth_gbs`.
+    /// Bidirectional bandwidth in GB/s, or `None` as for `bandwidth_gbs`. A
+    /// specification figure, as for `bandwidth_gbs`.
     pub bidirectional_bandwidth_gbs: Option<f64>,
-    /// Link width (number of lanes/links), or `None` where none is tabled.
+    /// Link width (number of lanes/links), or `None` where none is tabled. A
+    /// specification figure, as for `bandwidth_gbs`.
     pub width: Option<u32>,
     /// Speed per lane in GT/s (gigatransfers/second), or `None` where none is
-    /// tabled.
+    /// tabled. A specification figure, as for `bandwidth_gbs`.
     pub speed_gts: Option<f64>,
     /// Latency in nanoseconds: a **specification estimate** for the link type,
     /// a constant per kind of link, never measured on this machine. `None`
     /// where the link type has no tabled figure (Apple UMA).
     pub estimated_latency_ns: Option<f64>,
-    /// Whether this link is active/detected.
-    pub active: bool,
+    /// Whether this link is active. Always `None`: no reader observes link
+    /// state, and a model-name table cannot say whether a link is up. Used to
+    /// report `true` for every link the table described.
+    pub active: Option<bool>,
 }
 
 /// Chiplet/die topology for multi-die packages.
@@ -152,10 +157,12 @@ pub struct InterconnectTopology {
     pub links: Vec<InterconnectLink>,
     /// Chiplet topology (if applicable).
     pub chiplet_topology: Option<ChipletTopology>,
-    /// Coherence protocol in use.
-    pub coherence_protocol: CoherenceProtocol,
+    /// Coherence protocol in use, or `None` for a model the table does not list.
+    /// Used to report MOESI, MESIF or Directory for every model.
+    pub coherence_protocol: Option<CoherenceProtocol>,
     /// Total system interconnect bandwidth in GB/s: the bidirectional
     /// bandwidth of the links that carry a figure, or `None` where none does.
+    /// A sum of specification figures, not a measurement.
     pub total_bandwidth_gbs: Option<f64>,
     /// Whether the system is NUMA, or `None` where the socket count is unknown
     /// and no die count settles it.
@@ -193,9 +200,14 @@ impl InterconnectMonitor {
         &self.topology
     }
 
-    /// Get inter-socket links only.
+    /// Get inter-socket links only. Links are identified by their endpoints,
+    /// since none has an observed active state.
     pub fn inter_socket_links(&self) -> Vec<&InterconnectLink> {
-        self.topology.links.iter().filter(|l| l.active).collect()
+        self.topology
+            .links
+            .iter()
+            .filter(|l| l.source.starts_with("Socket "))
+            .collect()
     }
 
     /// Infer full topology from CPU model and socket count.
@@ -240,13 +252,14 @@ impl InterconnectMonitor {
         } else if is_intel {
             Self::infer_intel(&upper, sockets)
         } else if is_apple {
-            Self::infer_apple(&upper)
+            Self::infer_apple(&upper, sockets)
         } else {
             InterconnectTopology {
                 sockets,
                 links: Vec::new(),
                 chiplet_topology: None,
-                coherence_protocol: CoherenceProtocol::Unknown,
+                // The vendor is not listed, so no protocol is claimed.
+                coherence_protocol: None,
                 total_bandwidth_gbs: None,
                 is_numa: sockets.map(|s| s > 1),
                 generation: "Unknown".into(),
@@ -264,7 +277,7 @@ impl InterconnectMonitor {
             Option<u32>,
             &str,
             InterconnectType,
-            CoherenceProtocol,
+            Option<CoherenceProtocol>,
         ) = if name.contains("GRANITE") || name.contains("EMERALD") || name.contains("SIERRA") {
             (
                 InterconnectType::UPI,
@@ -272,7 +285,7 @@ impl InterconnectMonitor {
                 Some(3),
                 "UPI 2.0",
                 InterconnectType::MeshInterconnect,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else if name.contains("SAPPHIRE") || name.contains("W9-3") || name.contains("W7-3") {
             (
@@ -281,7 +294,7 @@ impl InterconnectMonitor {
                 Some(3),
                 "UPI 1.1",
                 InterconnectType::MeshInterconnect,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else if name.contains("ICE LAKE") && name.contains("XEON") {
             (
@@ -290,7 +303,7 @@ impl InterconnectMonitor {
                 Some(3),
                 "UPI 1.0",
                 InterconnectType::MeshInterconnect,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else if name.contains("XEON") && (name.contains("PLATINUM") || name.contains("GOLD")) {
             (
@@ -299,7 +312,7 @@ impl InterconnectMonitor {
                 Some(3),
                 "UPI 1.0",
                 InterconnectType::MeshInterconnect,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else if name.contains("12TH")
             || name.contains("13TH")
@@ -313,7 +326,7 @@ impl InterconnectMonitor {
                 None,
                 "Ring Bus",
                 InterconnectType::RingBus,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else if name.contains("ARROW") || name.contains("LUNAR") || name.contains("ULTRA") {
             (
@@ -322,16 +335,18 @@ impl InterconnectMonitor {
                 None,
                 "Ring/Foveros",
                 InterconnectType::RingBus,
-                CoherenceProtocol::MESIF,
+                Some(CoherenceProtocol::MESIF),
             )
         } else {
+            // An unlisted model gets no protocol. MESIF is Intel's, but the
+            // table does not say which Intel parts use it.
             (
                 InterconnectType::Unknown,
                 None,
                 None,
                 "Unknown",
                 InterconnectType::RingBus,
-                CoherenceProtocol::MESIF,
+                None,
             )
         };
 
@@ -353,7 +368,7 @@ impl InterconnectMonitor {
                         width,
                         speed_gts: Some(speed),
                         estimated_latency_ns: Some(if speed >= 16.0 { 60.0 } else { 80.0 }),
-                        active: true,
+                        active: None,
                     });
                 }
             }
@@ -373,7 +388,7 @@ impl InterconnectMonitor {
             } else {
                 10.0
             }),
-            active: true,
+            active: None,
         });
 
         let total_bw = sum_bidirectional(&links);
@@ -396,9 +411,11 @@ impl InterconnectMonitor {
             sockets,
             links: Vec::new(),
             chiplet_topology: None,
-            coherence_protocol: CoherenceProtocol::MOESI,
             // Nothing is described for this model, so there is no total.
             total_bandwidth_gbs: None,
+            // The table does not describe this model, so no protocol is claimed
+            // for it. Used to report MOESI, which is AMD's for the listed parts.
+            coherence_protocol: None,
             is_numa: sockets.map(|s| s > 1),
             generation: "Unknown".into(),
         }
@@ -470,7 +487,7 @@ impl InterconnectMonitor {
                         width: Some(16),
                         speed_gts: Some(if_speed_gts),
                         estimated_latency_ns: Some(120.0),
-                        active: true,
+                        active: None,
                     });
                 }
             }
@@ -488,7 +505,7 @@ impl InterconnectMonitor {
                     width: Some(32),
                     speed_gts: Some(if_speed_gts),
                     estimated_latency_ns: Some(40.0),
-                    active: true,
+                    active: None,
                 });
             }
         }
@@ -516,7 +533,7 @@ impl InterconnectMonitor {
             sockets,
             links,
             chiplet_topology: chiplet,
-            coherence_protocol: CoherenceProtocol::MOESI,
+            coherence_protocol: Some(CoherenceProtocol::MOESI),
             total_bandwidth_gbs: total_bw,
             // Two compute dies are NUMA whatever the socket count; otherwise the
             // socket count decides, and is unknown where it was not read.
@@ -529,7 +546,7 @@ impl InterconnectMonitor {
         }
     }
 
-    fn infer_apple(name: &str) -> InterconnectTopology {
+    fn infer_apple(name: &str, sockets: Option<u32>) -> InterconnectTopology {
         // Apple's published unified-memory bandwidth, GB/s. Variants are
         // matched before base chips, because "M2 ULTRA" also contains "M2".
         // The table read 200 GB/s for a base M1 (68.25) and M2 (100), and
@@ -554,13 +571,11 @@ impl InterconnectMonitor {
         let variant = ["ULTRA", "MAX", "PRO"]
             .into_iter()
             .find(|v| name.contains(v));
-        let bw: Option<f64> = TABLE
-            .iter()
-            .find(|(chip, _)| {
-                // A base-chip entry only matches a name with no variant.
-                name.contains(chip) && (chip.contains(' ') || variant.is_none())
-            })
-            .map(|&(_, bw)| bw);
+        let entry = TABLE.iter().find(|(chip, _)| {
+            // A base-chip entry only matches a name with no variant.
+            name.contains(chip) && (chip.contains(' ') || variant.is_none())
+        });
+        let bw: Option<f64> = entry.map(|&(_, bw)| bw);
 
         // Without a bandwidth there is no link to describe, so none is built
         // rather than one carrying a guessed figure.
@@ -576,15 +591,15 @@ impl InterconnectMonitor {
                 speed_gts: None,
                 // No latency is tabled for Apple UMA, so none is given.
                 estimated_latency_ns: None,
-                active: true,
+                active: None,
             }],
             None => Vec::new(),
         };
         let total_bw = sum_bidirectional(&links);
 
         InterconnectTopology {
-            // Apple silicon is a single package.
-            sockets: Some(1),
+            // The package count is the one read from the platform, not assumed.
+            sockets,
             links,
             chiplet_topology: if name.contains("ULTRA") {
                 Some(ChipletTopology {
@@ -601,9 +616,11 @@ impl InterconnectMonitor {
             } else {
                 None
             },
-            coherence_protocol: CoherenceProtocol::Directory,
+            // Directory coherence is stated for the listed chips only. An
+            // unlisted chip gets no protocol, as an unlisted AMD part does.
+            coherence_protocol: entry.map(|_| CoherenceProtocol::Directory),
             total_bandwidth_gbs: total_bw,
-            is_numa: Some(false),
+            is_numa: sockets.map(|s| s > 1),
             generation: "UMA".into(),
         }
     }
@@ -793,7 +810,7 @@ impl Default for InterconnectMonitor {
                 sockets: None,
                 links: Vec::new(),
                 chiplet_topology: None,
-                coherence_protocol: CoherenceProtocol::Unknown,
+                coherence_protocol: None,
                 total_bandwidth_gbs: None,
                 is_numa: None,
                 generation: "Unknown".into(),
@@ -898,7 +915,7 @@ mod tests {
             let topo = InterconnectMonitor::infer_topology(model, Some(1), Some(12));
             assert_eq!(
                 topo.coherence_protocol,
-                CoherenceProtocol::MOESI,
+                Some(CoherenceProtocol::MOESI),
                 "{model} was classified as Intel"
             );
         }
@@ -912,7 +929,7 @@ mod tests {
             let topo = InterconnectMonitor::infer_topology(model, Some(1), Some(8));
             assert_ne!(
                 topo.coherence_protocol,
-                CoherenceProtocol::MOESI,
+                Some(CoherenceProtocol::MOESI),
                 "{model} should not resolve as AMD"
             );
         }
@@ -920,9 +937,9 @@ mod tests {
 
     #[test]
     fn test_apple_uma() {
-        let topo = InterconnectMonitor::infer_apple("APPLE M4 PRO");
+        let topo = InterconnectMonitor::infer_apple("APPLE M4 PRO", Some(1));
         assert_eq!(topo.is_numa, Some(false));
-        assert_eq!(topo.coherence_protocol, CoherenceProtocol::Directory);
+        assert_eq!(topo.coherence_protocol, Some(CoherenceProtocol::Directory));
         assert_eq!(topo.total_bandwidth_gbs, Some(273.0));
     }
 
@@ -931,12 +948,12 @@ mod tests {
     /// entry, and a base chip's entry matches only a name with no variant.
     #[test]
     fn an_apple_variant_does_not_take_its_base_chips_bandwidth() {
-        let topo = InterconnectMonitor::infer_apple("APPLE M2 ULTRA");
+        let topo = InterconnectMonitor::infer_apple("APPLE M2 ULTRA", Some(1));
         let chiplet = topo.chiplet_topology.expect("an Ultra is two dies");
         assert_eq!(chiplet.compute_dies, 2);
         assert_eq!(chiplet.on_package_bandwidth_gbs, Some(800.0));
         let bw = |name| {
-            InterconnectMonitor::infer_apple(name)
+            InterconnectMonitor::infer_apple(name, Some(1))
                 .links
                 .first()
                 .and_then(|l| l.bandwidth_gbs)
@@ -953,9 +970,42 @@ mod tests {
     /// than the 100 GB/s the fallback used to report.
     #[test]
     fn an_unlisted_apple_model_has_no_bandwidth() {
-        let topo = InterconnectMonitor::infer_apple("APPLE M9");
+        let topo = InterconnectMonitor::infer_apple("APPLE M9", Some(1));
         assert!(topo.links.is_empty());
         assert!(topo.chiplet_topology.is_none());
+        assert_eq!(topo.coherence_protocol, None);
+    }
+
+    /// The socket count is the one that was read. None stays None, rather than
+    /// the single package Apple silicon is assumed to have.
+    #[test]
+    fn an_apple_socket_count_is_read_not_assumed() {
+        let unread = InterconnectMonitor::infer_apple("APPLE M4 PRO", None);
+        assert_eq!(unread.sockets, None);
+        assert_eq!(unread.is_numa, None);
+        let read = InterconnectMonitor::infer_apple("APPLE M4 PRO", Some(1));
+        assert_eq!(read.sockets, Some(1));
+    }
+
+    /// No reader observes link state, so no link claims to be active.
+    #[test]
+    fn no_link_claims_to_be_active() {
+        let topo =
+            InterconnectMonitor::infer_intel("INTEL XEON GOLD 6348 SAPPHIRE RAPIDS", Some(2));
+        assert!(!topo.links.is_empty());
+        assert!(topo.links.iter().all(|l| l.active.is_none()));
+        let monitor = InterconnectMonitor { topology: topo };
+        // The inter-socket link is found by its endpoints, not by an active flag.
+        assert_eq!(monitor.inter_socket_links().len(), 1);
+    }
+
+    /// An unlisted AMD model has no protocol to report.
+    #[test]
+    fn an_unlisted_amd_model_has_no_coherence_protocol() {
+        let topo = InterconnectMonitor::infer_amd("AMD RYZEN 5 8600G", Some(1), Some(6));
+        assert_eq!(topo.coherence_protocol, None);
+        let listed = InterconnectMonitor::infer_amd("AMD RYZEN 9 7950X", Some(1), Some(16));
+        assert_eq!(listed.coherence_protocol, Some(CoherenceProtocol::MOESI));
     }
 
     /// A part with no link figures has no total, rather than a total of zero.
@@ -1034,7 +1084,7 @@ mod tests {
             width: Some(3),
             speed_gts: Some(16.0),
             estimated_latency_ns: Some(60.0),
-            active: true,
+            active: None,
         };
         let json = serde_json::to_string(&link).unwrap();
         assert!(json.contains("Socket 0"));
