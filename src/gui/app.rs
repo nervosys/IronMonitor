@@ -1251,11 +1251,12 @@ impl IronMonitorApp {
 
             for (i, core) in stats.cores.iter().enumerate() {
                 if i < self.per_core_history.len() {
-                    // A core with neither figure read contributes no sample
-                    // rather than a zero.
+                    // A core contributes a sample only when both user and
+                    // system were read. Summing whichever one was present
+                    // would chart a partial figure as the core's whole load.
                     let util = match (core.user, core.system) {
-                        (None, None) => continue,
-                        (user, system) => user.unwrap_or(0.0) + system.unwrap_or(0.0),
+                        (Some(user), Some(system)) => user + system,
+                        _ => continue,
                     };
                     push_sample(&mut self.per_core_history[i], util);
                 }
@@ -2201,10 +2202,12 @@ impl eframe::App for IronMonitorApp {
                             Some(u) => format!("GPU{i}: {u}%"),
                             None => format!("GPU{i}: -"),
                         })
-                        .color(theme::color(
-                            ui.ctx(),
-                            theme::utilization_color(gpu.utilization.unwrap_or(0) as f32),
-                        )),
+                        // No reading, no threshold colour: a neutral colour
+                        // rather than the "idle" colour for 0%.
+                        .color(match gpu.utilization {
+                            Some(u) => theme::color(ui.ctx(), theme::utilization_color(u as f32)),
+                            None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                        }),
                     );
                     if let Some(temp) = gpu.thermal.temperature {
                         ui.label(RichText::new(format!("{}°C", temp)).color(theme::color(
@@ -2980,10 +2983,12 @@ impl IronMonitorApp {
                                 .map_or_else(|| "-".to_string(), |u| u.to_string()),
                         )
                         .unit("%")
-                        .color(theme::color(
-                            ui.ctx(),
-                            theme::accel_color(dynamic_info.utilization.unwrap_or(0) as f32),
-                        )),
+                        // No reading, no threshold colour (see the GPU memory
+                        // card below): neutral rather than the 0% colour.
+                        .color(match dynamic_info.utilization {
+                            Some(u) => theme::color(ui.ctx(), theme::accel_color(u as f32)),
+                            None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                        }),
                     );
 
                     if let Some(temp) = dynamic_info.thermal.temperature {
@@ -3015,12 +3020,10 @@ impl IronMonitorApp {
                             // No reading, no threshold colour: 0% would paint
                             // the card the "plenty free" colour for a device
                             // whose memory nobody could read.
-                            .color(theme::color(
-                                ui.ctx(),
-                                theme::memory_color(
-                                    dynamic_info.memory.utilization.unwrap_or(0) as f32
-                                ),
-                            )),
+                            .color(match dynamic_info.memory.utilization {
+                                Some(p) => theme::color(ui.ctx(), theme::memory_color(p as f32)),
+                                None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                            }),
                     );
                 }
             });
@@ -3968,38 +3971,60 @@ impl IronMonitorApp {
                     );
                     // Show proportional bar
                     if total_mb > 0.0 {
-                        // The bar segments an unreported quantity at zero
-                        // width, which is what "not shown" looks like in a
-                        // stacked bar -- it is not a claim about the value.
-                        let buffers_bar = buffers_mb.unwrap_or(0.0);
-                        let cached_bar = cached_mb.unwrap_or(0.0);
-                        let used_pct = (used_mb - buffers_bar - cached_bar).max(0.0) / total_mb;
-                        let buffers_pct = buffers_bar / total_mb;
-                        let cached_pct = cached_bar / total_mb;
-                        let free_pct = free_mb.unwrap_or(0.0) / total_mb;
+                        // A segment is drawn only from a figure that was read.
+                        // An unread quantity gets no segment, rather than a
+                        // "0%" that reads as none. Used is net of each of
+                        // buffers and cache that was read; one that was not
+                        // read is still inside used, and the label names it.
+                        let mut used_net = used_mb;
+                        let mut unsplit: Vec<&str> = Vec::new();
+                        match buffers_mb {
+                            Some(b) => used_net -= b,
+                            None => unsplit.push("buffers"),
+                        }
+                        match cached_mb {
+                            Some(c) => used_net -= c,
+                            None => unsplit.push("cache"),
+                        }
+                        let used_pct = used_net.max(0.0) / total_mb;
 
                         let _bar_width = ui.available_width() - 100.0;
 
+                        let used_text = if unsplit.is_empty() {
+                            format!("█{:.0}%", used_pct * 100.0)
+                        } else {
+                            format!(
+                                "█{:.0}% (incl. unread {})",
+                                used_pct * 100.0,
+                                unsplit.join("/")
+                            )
+                        };
                         ui.label(
-                            RichText::new(format!("█{:.0}%", used_pct * 100.0))
+                            RichText::new(used_text)
                                 .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
                                 .small(),
                         );
-                        ui.label(
-                            RichText::new(format!("█{:.0}%", buffers_pct * 100.0))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                .small(),
-                        );
-                        ui.label(
-                            RichText::new(format!("█{:.0}%", cached_pct * 100.0))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                .small(),
-                        );
-                        ui.label(
-                            RichText::new(format!("█{:.0}%", free_pct * 100.0))
-                                .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK))
-                                .small(),
-                        );
+                        if let Some(b) = buffers_mb {
+                            ui.label(
+                                RichText::new(format!("█{:.0}%", b / total_mb * 100.0))
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
+                                    .small(),
+                            );
+                        }
+                        if let Some(c) = cached_mb {
+                            ui.label(
+                                RichText::new(format!("█{:.0}%", c / total_mb * 100.0))
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
+                                    .small(),
+                            );
+                        }
+                        if let Some(f) = free_mb {
+                            ui.label(
+                                RichText::new(format!("█{:.0}%", f / total_mb * 100.0))
+                                    .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK))
+                                    .small(),
+                            );
+                        }
 
                         // Legend, right-aligned by measuring. See the note on
                         // the accelerator metrics: the 117 px overrun this was
@@ -4056,16 +4081,20 @@ impl IronMonitorApp {
                 let mb = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.0}"));
 
                 if swap_total_mb.is_some_and(|t| t > 0.0) {
-                    ui.add(
-                        CyberProgressBar::new(swap_usage.unwrap_or(0.0) / 100.0)
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
-                            .label(format!(
-                                "Swap: {} MB / {} MB",
-                                mb(swap_used_mb),
-                                mb(swap_total_mb)
-                            ))
-                            .height(24.0),
-                    );
+                    // No bar for an unread usage: an empty bar would read as
+                    // zero swap in use. The MB figures below still show.
+                    if let Some(usage) = swap_usage {
+                        ui.add(
+                            CyberProgressBar::new(usage / 100.0)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
+                                .label(format!(
+                                    "Swap: {} MB / {} MB",
+                                    mb(swap_used_mb),
+                                    mb(swap_total_mb)
+                                ))
+                                .height(24.0),
+                        );
+                    }
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -5569,7 +5598,9 @@ impl IronMonitorApp {
                     );
 
                     // Remote Address
-                    let remote = conn.remote_address.as_deref().unwrap_or("*");
+                    // `*` is netstat's wildcard for a listener. An unread
+                    // address is unknown, not a wildcard.
+                    let remote = conn.remote_address.as_deref().unwrap_or("—");
                     ui.add_sized(
                         Vec2::new(200.0, 18.0),
                         egui::Label::new(

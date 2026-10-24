@@ -1516,15 +1516,23 @@ fn print_cpu_info(cpu: &ironmonitor::core::cpu::CpuStats) {
         print!("    ");
         for core in chunk {
             if core.online {
-                let usage = 100.0 - core.idle.unwrap_or(0.0);
-                let bar = create_usage_bar(usage, 10);
-                let usage_str = format!("{:>5.1}%", usage);
-                let usage_colored = if usage > 90.0 {
-                    usage_str.red()
-                } else if usage > 70.0 {
-                    usage_str.yellow()
-                } else {
-                    usage_str.green()
+                // An unread core renders as unknown ("--%", no bar), never as
+                // 100% busy: `idle` is None when the source gave no figure.
+                let (bar, usage_colored) = match core.idle {
+                    Some(idle) => {
+                        let usage = 100.0 - idle;
+                        let bar = create_usage_bar(usage, 10);
+                        let usage_str = format!("{:>5.1}%", usage);
+                        let colored = if usage > 90.0 {
+                            usage_str.red()
+                        } else if usage > 70.0 {
+                            usage_str.yellow()
+                        } else {
+                            usage_str.green()
+                        };
+                        (bar, colored)
+                    }
+                    None => (" ".repeat(10), format!("{:>5}%", "--").dimmed()),
                 };
                 print!(
                     "{}{:>2}{} {} {} ",
@@ -1990,9 +1998,13 @@ fn print_gpu_info_backend(backend: &ironmonitor::backend::MonitoringBackend) {
         // Clocks
         if let Some(graphics) = di.clocks.graphics {
             if graphics > 0 {
-                let memory = di.clocks.memory.unwrap_or(0);
+                // An unread memory clock prints as unknown, not 0 MHz.
+                let memory = match di.clocks.memory {
+                    Some(mhz) => format!("{mhz} MHz"),
+                    None => "—".to_string(),
+                };
                 println!(
-                    "    {} {} MHz (mem: {} MHz)",
+                    "    {} {} MHz (mem: {})",
                     "Clocks:".white(),
                     graphics.to_string().cyan(),
                     memory
@@ -2045,15 +2057,23 @@ fn print_cpu_info_backend(backend: &ironmonitor::backend::MonitoringBackend) {
             print!("    ");
             for core in chunk {
                 if core.online {
-                    let usage = 100.0 - core.idle.unwrap_or(0.0);
-                    let bar = create_usage_bar(usage, 10);
-                    let usage_str = format!("{:>5.1}%", usage);
-                    let usage_colored = if usage > 90.0 {
-                        usage_str.red()
-                    } else if usage > 70.0 {
-                        usage_str.yellow()
-                    } else {
-                        usage_str.green()
+                    // An unread core renders as unknown ("--%", no bar), never as
+                    // 100% busy: `idle` is None when the source gave no figure.
+                    let (bar, usage_colored) = match core.idle {
+                        Some(idle) => {
+                            let usage = 100.0 - idle;
+                            let bar = create_usage_bar(usage, 10);
+                            let usage_str = format!("{:>5.1}%", usage);
+                            let colored = if usage > 90.0 {
+                                usage_str.red()
+                            } else if usage > 70.0 {
+                                usage_str.yellow()
+                            } else {
+                                usage_str.green()
+                            };
+                            (bar, colored)
+                        }
+                        None => (" ".repeat(10), format!("{:>5}%", "--").dimmed()),
                     };
                     print!(
                         "{}{:>2}{} {} {} ",
@@ -5518,7 +5538,9 @@ fn handle_ids_command(
     if record_needed {
         let fresh = Baselines {
             network: if matches!(net, ScanStatus::NoBaseline { .. }) {
-                network::record().unwrap_or_default()
+                // A failed recording is an error, not an empty baseline saved
+                // as if it were the machine's listeners.
+                network::record()?
             } else {
                 existing.network.clone()
             },
