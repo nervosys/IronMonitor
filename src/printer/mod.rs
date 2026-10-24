@@ -107,8 +107,9 @@ pub struct PrinterInfo {
     /// queue may still accept jobs and hold them, which is the difference
     /// between a delayed print and a rejected one".
     pub accepting_jobs: Option<bool>,
-    /// Whether the printer is shared over the network
-    pub shared: bool,
+    /// Whether the printer is shared over the network. `None` where it was not
+    /// read: the CUPS path used to write a literal `false` for every queue.
+    pub shared: Option<bool>,
     /// Whether the printer supports colour. `None` when the platform said
     /// nothing about it, which is not the same as a monochrome printer.
     ///
@@ -118,8 +119,10 @@ pub struct PrinterInfo {
     /// measurement on every Windows machine. Three of the four printers on the
     /// machine that found it do support colour.
     pub color: Option<bool>,
-    /// Whether the printer supports duplex (double-sided)
-    pub duplex: bool,
+    /// Whether the printer supports duplex (double-sided). `None` on every
+    /// path: no reader queries it. This was a literal `false` for every
+    /// printer, which read as a simplex-only device.
+    pub duplex: Option<bool>,
     /// Number of jobs in queue. `None` on both platforms: no live count is
     /// read here. This was a literal `0` on every printer, which read as an
     /// empty queue. On Windows the query selected `JobCountSinceLastReset`, a
@@ -350,10 +353,10 @@ impl PrinterMonitor {
                         printer_type: PrinterType::Unknown,
                         is_default: current_name == default_name,
                         accepting_jobs: accepting,
-                        shared: false,
+                        shared: None,
                         // Not read on this path.
                         color: None,
-                        duplex: false,
+                        duplex: None,
                         jobs_in_queue: None,
                         location: String::new(),
                     });
@@ -403,10 +406,10 @@ impl PrinterMonitor {
                 printer_type: PrinterType::Unknown,
                 is_default: current_name == default_name,
                 accepting_jobs: accepting,
-                shared: false,
+                shared: None,
                 // Not read on this path.
                 color: None,
-                duplex: false,
+                duplex: None,
                 jobs_in_queue: None,
                 location: String::new(),
             });
@@ -510,9 +513,9 @@ impl PrinterMonitor {
                     status,
                     printer_type,
                     is_default,
-                    shared,
+                    shared: Some(shared),
                     color,
-                    duplex: false,
+                    duplex: None,
                     jobs_in_queue: None,
                     location,
                 });
@@ -631,9 +634,9 @@ mod tests {
             printer_type: PrinterType::Laser,
             is_default: true,
             accepting_jobs: Some(true),
-            shared: false,
+            shared: Some(false),
             color: Some(true),
-            duplex: true,
+            duplex: Some(true),
             jobs_in_queue: None,
             location: "Office".into(),
         };

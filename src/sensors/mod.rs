@@ -409,20 +409,18 @@ impl SensorMonitor {
             .trim()
             .parse()
             .ok()?;
-        let scale: f64 =
+        let scale = iio_attr_or(
             std::fs::read_to_string(base.join(format!("in_{}_{}_scale", prefix, axis)))
                 .or_else(|_| std::fs::read_to_string(base.join(format!("in_{}_scale", prefix))))
-                .unwrap_or_else(|_| "1.0".to_string())
-                .trim()
-                .parse()
-                .unwrap_or(1.0);
-        let offset: f64 =
+                .ok(),
+            1.0,
+        )?;
+        let offset = iio_attr_or(
             std::fs::read_to_string(base.join(format!("in_{}_{}_offset", prefix, axis)))
                 .or_else(|_| std::fs::read_to_string(base.join(format!("in_{}_offset", prefix))))
-                .unwrap_or_else(|_| "0.0".to_string())
-                .trim()
-                .parse()
-                .unwrap_or(0.0);
+                .ok(),
+            0.0,
+        )?;
 
         let unit = match prefix {
             "accel" => "m/s²",
@@ -448,17 +446,9 @@ impl SensorMonitor {
             .parse()
             .ok()?;
         let scale_file = filename.replace("_raw", "_scale");
-        let scale: f64 = std::fs::read_to_string(base.join(&scale_file))
-            .unwrap_or_else(|_| "1.0".to_string())
-            .trim()
-            .parse()
-            .unwrap_or(1.0);
+        let scale = iio_attr_or(std::fs::read_to_string(base.join(&scale_file)).ok(), 1.0)?;
         let offset_file = filename.replace("_raw", "_offset");
-        let offset: f64 = std::fs::read_to_string(base.join(&offset_file))
-            .unwrap_or_else(|_| "0.0".to_string())
-            .trim()
-            .parse()
-            .unwrap_or(0.0);
+        let offset = iio_attr_or(std::fs::read_to_string(base.join(&offset_file)).ok(), 0.0)?;
         Some(SensorValue {
             channel: filename.replace("in_", "").replace("_raw", ""),
             raw,
@@ -662,9 +652,29 @@ impl std::fmt::Display for SensorType {
     }
 }
 
+/// An IIO scale or offset attribute. The IIO ABI makes a missing attribute mean
+/// identity (scale 1, offset 0), so absence takes `default`. A file that exists
+/// but does not parse is a failed read, and the channel is dropped rather than
+/// published unscaled: this used to fall back to `default` in that case too.
+#[cfg(any(target_os = "linux", test))]
+fn iio_attr_or(text: Option<String>, default: f64) -> Option<f64> {
+    match text {
+        None => Some(default),
+        Some(t) => t.trim().parse().ok(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unparseable_iio_scale_is_not_identity() {
+        assert_eq!(iio_attr_or(None, 1.0), Some(1.0));
+        assert_eq!(iio_attr_or(Some("0.000598\n".into()), 1.0), Some(0.000598));
+        assert_eq!(iio_attr_or(Some("".into()), 1.0), None);
+        assert_eq!(iio_attr_or(Some("garbage".into()), 0.0), None);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
