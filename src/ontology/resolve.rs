@@ -3700,17 +3700,41 @@ fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicr
         "SMT is judged by comparing logical to physical cores, and one of the two was not read",
     );
 
-    // Supported only. An extension the processor does not implement is not a
+    // Present only. An extension the processor does not implement is not a
     // property of this machine, and listing it with a false flag invites a
-    // consumer that forgets to read the flag to conclude the opposite.
-    let supported: Vec<_> = report.extensions.iter().filter(|x| x.supported).collect();
-    if supported.is_empty() {
+    // consumer that forgets to read the flag to conclude the opposite. An
+    // extension nobody checked is not absent either, so those are counted in
+    // one unavailable row rather than dropped.
+    let supported: Vec<_> = report
+        .extensions
+        .iter()
+        .filter(|x| x.supported == Some(true))
+        .collect();
+    let unread = report
+        .extensions
+        .iter()
+        .filter(|x| x.supported.is_none())
+        .count();
+    if unread > 0 {
         out.push(Reading::unavailable(
-            "cpu.microarch.extension.<none>",
+            "cpu.microarch.extension.<unread>",
             None,
-            "the processor was identified and reported no instruction set extensions, \
-             which means the extension probe failed rather than that the CPU has none",
+            format!(
+                "{unread} instruction set extensions were not checked: this platform \
+                 offers neither CPUID for them nor a complete feature list, so their \
+                 absence is unknown rather than established"
+            ),
         ));
+    }
+    if supported.is_empty() {
+        if unread == 0 {
+            out.push(Reading::unavailable(
+                "cpu.microarch.extension.<none>",
+                None,
+                "the processor was identified and reported no instruction set extensions, \
+                 which means the extension probe failed rather than that the CPU has none",
+            ));
+        }
         return;
     }
     for (i, x) in supported.iter().enumerate() {

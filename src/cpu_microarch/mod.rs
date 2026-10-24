@@ -107,8 +107,10 @@ pub struct IsaExtension {
     pub name: String,
     /// Category.
     pub category: IsaCategory,
-    /// Whether this extension is present.
-    pub supported: bool,
+    /// Whether this extension is present. `None` when no reader checked this
+    /// feature on this platform. Absence from a list is not `false` unless the
+    /// list was read in full.
+    pub supported: Option<bool>,
     /// Brief description.
     pub description: String,
 }
@@ -212,7 +214,12 @@ impl CpuMicroarchMonitor {
     pub fn new() -> Result<Self, IronError> {
         let (model_name, family, model, stepping, flags, cores, threads) = Self::read_cpu_info()?;
         let microarch = Self::identify_microarch(&model_name, family, model, stepping);
-        let extensions = Self::detect_extensions(&flags, &microarch);
+        // Only a list the platform enumerates in full can say a feature is absent.
+        // Linux `/proc/cpuinfo` is one. The other readers return none or a partial
+        // list, so their absent flags stay `None`.
+        let flag_list =
+            (cfg!(target_os = "linux") && !flags.is_empty()).then_some(flags.as_slice());
+        let extensions = Self::detect_extensions(flag_list, &microarch);
         // An unknown count takes the smallest scaling bucket, as 0 always did;
         // the estimate is inferred either way, and is labelled so.
         let performance = Self::infer_performance(&model_name, &microarch, cores.unwrap_or(0));
@@ -244,7 +251,7 @@ impl CpuMicroarchMonitor {
         self.report
             .extensions
             .iter()
-            .filter(|e| e.supported)
+            .filter(|e| e.supported == Some(true))
             .collect()
     }
 
@@ -254,7 +261,7 @@ impl CpuMicroarchMonitor {
         self.report
             .extensions
             .iter()
-            .any(|e| e.supported && e.name.to_uppercase().contains(&upper))
+            .any(|e| e.supported == Some(true) && e.name.to_uppercase().contains(&upper))
     }
 
     /// Identify microarchitecture from CPUID family/model and model name.
@@ -580,9 +587,23 @@ impl CpuMicroarchMonitor {
     }
 
     /// Detect ISA extensions from CPU flags.
-    fn detect_extensions(flags: &[String], microarch: &Microarchitecture) -> Vec<IsaExtension> {
-        let flag_set: std::collections::HashSet<String> =
-            flags.iter().map(|f| f.to_lowercase()).collect();
+    fn detect_extensions(
+        flags: Option<&[String]>,
+        microarch: &Microarchitecture,
+    ) -> Vec<IsaExtension> {
+        Self::detect_extensions_with(flags, microarch, &x86_cpuid_feature)
+    }
+
+    /// `cpuid` answers for the features it can query directly, and `flags` is the
+    /// platform's feature list when that list is complete. Both are injectable so
+    /// the table can be tested without the host's CPU.
+    fn detect_extensions_with(
+        flags: Option<&[String]>,
+        microarch: &Microarchitecture,
+        cpuid: &dyn Fn(&str) -> Option<bool>,
+    ) -> Vec<IsaExtension> {
+        let flag_set: Option<std::collections::HashSet<String>> =
+            flags.map(|list| list.iter().map(|f| f.to_lowercase()).collect());
 
         let mut extensions = Vec::new();
 
@@ -810,7 +831,7 @@ impl CpuMicroarchMonitor {
                 extensions.push(IsaExtension {
                     name: name.into(),
                     category: cat,
-                    supported: flag_set.contains(flag),
+                    supported: supported_flag(flag, flag_set.as_ref(), cpuid),
                     description: desc.into(),
                 });
             }
@@ -893,7 +914,7 @@ impl CpuMicroarchMonitor {
                 extensions.push(IsaExtension {
                     name: name.into(),
                     category: cat,
-                    supported: flag_set.contains(flag),
+                    supported: supported_flag(flag, flag_set.as_ref(), cpuid),
                     description: desc.into(),
                 });
             }
@@ -1014,7 +1035,6 @@ impl CpuMicroarchMonitor {
         let mut family: Option<u32> = None;
         let mut model: Option<u32> = None;
         let mut stepping: Option<u32> = None;
-        let mut flags = Vec::new();
         // ARM kernels commonly omit both lines.
         let mut siblings: Option<u32> = None;
         let mut cores: Option<u32> = None;
@@ -1034,9 +1054,6 @@ impl CpuMicroarchMonitor {
                     "stepping" if stepping.is_none() => {
                         stepping = val.parse().ok();
                     }
-                    "flags" if flags.is_empty() => {
-                        flags = val.split_whitespace().map(String::from).collect();
-                    }
                     "siblings" if siblings.is_none() => {
                         siblings = val.parse().ok().filter(|&n| n > 0);
                     }
@@ -1050,6 +1067,8 @@ impl CpuMicroarchMonitor {
 
         // No `siblings` line is no logical count. It used to become the
         // physical count, which made SMT "off" on any kernel that omits it.
+        // The feature list is `flags` on x86 and `Features` on AArch64.
+        let flags = parse_cpuinfo_flags(&cpuinfo);
         Ok((model_name, family, model, stepping, flags, cores, siblings))
     }
 
@@ -1103,38 +1122,12 @@ impl CpuMicroarchMonitor {
             })
             .map_or((None, None, None), |(f, m, s)| (Some(f), Some(m), Some(s)));
 
-        let flags = Self::read_windows_cpu_features();
+        // No feature list. The old reader asserted a fixed set of x86 flags from
+        // the vendor name in `PROCESSOR_IDENTIFIER`, which is not a read. x86
+        // features are now queried with CPUID in `detect_extensions`.
+        let flags = Vec::new();
 
         Ok((model_name, family, model, stepping, flags, cores, threads))
-    }
-
-    #[cfg(target_os = "windows")]
-    fn read_windows_cpu_features() -> Vec<String> {
-        // NOTE: the flags below are asserted from the architecture rather than
-        // read from CPUID, which is why the ontology publishes them with
-        // `specification` provenance rather than `measured`. Every x86_64 part
-        // has them; that is a fact about the instruction set, not about this
-        // chip.
-        // Detect features from environment or registry
-        // This is a simplified version - real implementation would use CPUID
-        let mut flags = Vec::new();
-
-        // Try PROCESSOR_IDENTIFIER env var
-        if let Ok(id) = std::env::var("PROCESSOR_IDENTIFIER") {
-            let upper = id.to_uppercase();
-            if upper.contains("INTEL") || upper.contains("AMD") {
-                // Modern x86_64 CPUs all have these
-                flags.extend(
-                    [
-                        "sse", "sse2", "sse3", "ssse3", "sse4_1", "sse4_2", "popcnt", "cx16",
-                    ]
-                    .iter()
-                    .map(|s| s.to_string()),
-                );
-            }
-        }
-
-        flags
     }
 
     #[cfg(target_os = "macos")]
@@ -1164,17 +1157,10 @@ impl CpuMicroarchMonitor {
             .ok()
             .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
 
-        let features_str = std::process::Command::new("sysctl")
-            .args(["-n", "machdep.cpu.features"])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-
-        let flags: Vec<String> = features_str
-            .split_whitespace()
-            .map(|s| s.to_lowercase())
-            .collect();
+        // No feature list. `machdep.cpu.features` covers only the leaf-1 bits, and
+        // Apple silicon has no such key. Absent flags therefore cannot be read as
+        // `false`, and x86 features are queried with CPUID instead.
+        let flags: Vec<String> = Vec::new();
 
         // `None` when unread, for the same reason as the Windows arm above.
         let count = |key: &str| {
@@ -1201,6 +1187,83 @@ impl CpuMicroarchMonitor {
     fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
         Ok((String::new(), None, None, None, Vec::new(), None, None))
     }
+}
+
+/// Whether the processor implements an x86 feature, from CPUID through
+/// `std::arch`. `None` for names the standard library cannot query, and on
+/// targets that are not x86.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn x86_cpuid_feature(flag: &str) -> Option<bool> {
+    macro_rules! query {
+        // `tt`, not `literal`: the standard library's macro only accepts its
+        // feature name as a bare token.
+        ($($table:literal => $feature:tt),* $(,)?) => {
+            match flag {
+                $($table => Some(std::arch::is_x86_feature_detected!($feature)),)*
+                _ => None,
+            }
+        };
+    }
+    // `tsx` is the table's name for RTM, which is what CPUID reports for it.
+    query! {
+        "sse" => "sse",
+        "sse2" => "sse2",
+        "sse3" => "sse3",
+        "ssse3" => "ssse3",
+        "sse4_1" => "sse4.1",
+        "sse4_2" => "sse4.2",
+        "avx" => "avx",
+        "avx2" => "avx2",
+        "avx512f" => "avx512f",
+        "avx512bw" => "avx512bw",
+        "avx512vl" => "avx512vl",
+        "avx512cd" => "avx512cd",
+        "avx512vnni" => "avx512vnni",
+        "avx512_bf16" => "avx512bf16",
+        "aes" => "aes",
+        "vaes" => "vaes",
+        "sha_ni" => "sha",
+        "pclmulqdq" => "pclmulqdq",
+        "rdrand" => "rdrand",
+        "rdseed" => "rdseed",
+        "fma" => "fma",
+        "f16c" => "f16c",
+        "bmi1" => "bmi1",
+        "bmi2" => "bmi2",
+        "popcnt" => "popcnt",
+        "lzcnt" => "lzcnt",
+        "cx16" => "cmpxchg16b",
+        "tsx" => "rtm",
+    }
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn x86_cpuid_feature(_flag: &str) -> Option<bool> {
+    None
+}
+
+/// One table entry's state: the CPUID answer if there is one, else the
+/// platform's complete feature list if it was read, else unknown.
+fn supported_flag(
+    flag: &str,
+    flag_set: Option<&std::collections::HashSet<String>>,
+    cpuid: &dyn Fn(&str) -> Option<bool>,
+) -> Option<bool> {
+    cpuid(flag).or_else(|| flag_set.map(|set| set.contains(flag)))
+}
+
+/// The feature list from `/proc/cpuinfo`: `flags` on x86, `Features` on ARM.
+/// Empty when neither line is present.
+#[cfg(any(target_os = "linux", test))]
+fn parse_cpuinfo_flags(cpuinfo: &str) -> Vec<String> {
+    for line in cpuinfo.lines() {
+        if let Some((key, val)) = line.split_once(':') {
+            if matches!(key.trim(), "flags" | "Features") {
+                return val.split_whitespace().map(String::from).collect();
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// The CPU's identity -- its model name and physical core count -- probed
@@ -1470,11 +1533,71 @@ mod tests {
             p_core_uarch: None,
             e_core_uarch: None,
         };
-        let exts = CpuMicroarchMonitor::detect_extensions(&flags, &uarch);
+        // A complete list, with CPUID unable to answer: listed names are present,
+        // and an unlisted name is absent.
+        let exts =
+            CpuMicroarchMonitor::detect_extensions_with(Some(&flags), &uarch, &|_: &str| None);
         let avx2 = exts.iter().find(|e| e.name == "AVX2").unwrap();
-        assert!(avx2.supported);
+        assert_eq!(avx2.supported, Some(true));
         let avx512 = exts.iter().find(|e| e.name == "AVX-512F").unwrap();
-        assert!(avx512.supported);
+        assert_eq!(avx512.supported, Some(true));
+        let avx = exts.iter().find(|e| e.name == "AVX").unwrap();
+        assert_eq!(avx.supported, Some(false));
+    }
+
+    #[test]
+    fn an_unread_feature_is_unknown_not_absent() {
+        let uarch = Microarchitecture {
+            name: "Zen 4".into(),
+            codename: "".into(),
+            process_nm: 5,
+            year: 2022,
+            vendor: CpuVendor::AMD,
+            arch: "x86_64".into(),
+            hybrid: false,
+            p_core_uarch: None,
+            e_core_uarch: None,
+        };
+        // Neither a feature list nor CPUID: every entry is unknown.
+        let exts = CpuMicroarchMonitor::detect_extensions_with(None, &uarch, &|_: &str| None);
+        assert!(!exts.is_empty());
+        assert!(exts.iter().all(|e| e.supported.is_none()));
+
+        // CPUID answers for the features it can query, and with no list the rest
+        // stay unknown.
+        let exts = CpuMicroarchMonitor::detect_extensions_with(None, &uarch, &|f: &str| {
+            (f == "avx2").then_some(true)
+        });
+        assert_eq!(
+            exts.iter().find(|e| e.name == "AVX2").unwrap().supported,
+            Some(true)
+        );
+        // Not in the list, and CPUID has no answer for it: unknown, not false.
+        assert_eq!(
+            exts.iter()
+                .find(|e| e.name == "AVX-512F")
+                .unwrap()
+                .supported,
+            None
+        );
+    }
+
+    #[test]
+    fn linux_cpuinfo_feature_lines_are_read_on_x86_and_arm() {
+        let x86 = "processor\t: 0\nvendor_id\t: GenuineIntel\nflags\t\t: fpu sse2 avx2\n";
+        assert_eq!(
+            parse_cpuinfo_flags(x86),
+            vec!["fpu".to_string(), "sse2".into(), "avx2".into()]
+        );
+
+        // ARM kernels name the list `Features`, and the table's AArch64 names
+        // are read from it.
+        let arm = "processor\t: 0\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 atomics\n";
+        let flags = parse_cpuinfo_flags(arm);
+        assert!(flags.contains(&"asimd".to_string()));
+        assert!(flags.contains(&"atomics".to_string()));
+
+        assert!(parse_cpuinfo_flags("processor\t: 0\n").is_empty());
     }
 
     #[test]

@@ -96,8 +96,23 @@ pub struct OsInfo {
     pub locale: String,
     /// Whether this is a 64-bit OS
     pub is_64bit: bool,
-    /// Whether Secure Boot is enabled
-    pub secure_boot: bool,
+    /// Whether Secure Boot is enabled. `None` when the state could not be read
+    /// (no `mokutil` on Linux, an unreadable firmware variable on Windows, or
+    /// no firmware query on macOS). It is never defaulted to `false`.
+    pub secure_boot: Option<bool>,
+}
+
+/// Parse the output of `mokutil --sb-state`. Only the two explicit states are
+/// readings; any other output is `None`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_mokutil_sb_state(text: &str) -> Option<bool> {
+    if text.contains("SecureBoot enabled") {
+        Some(true)
+    } else if text.contains("SecureBoot disabled") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Monitor for OS and kernel information
@@ -128,7 +143,9 @@ impl OsInfoMonitor {
                 timezone: String::new(),
                 locale: String::new(),
                 is_64bit: cfg!(target_pointer_width = "64"),
-                secure_boot: false,
+                // Unread until a platform reader sets it. Defaulting to `false`
+                // reported Secure Boot as off on any run where the read failed.
+                secure_boot: None,
             },
         };
         monitor.refresh()?;
@@ -268,13 +285,17 @@ impl OsInfoMonitor {
             BootMode::BIOS
         };
 
-        // Secure Boot
+        // Secure Boot. `mokutil --sb-state` prints "SecureBoot enabled" or
+        // "SecureBoot disabled". Anything else (tool missing, or a firmware
+        // that reports no Secure Boot support) leaves the state unknown. The
+        // old code mapped every such case to `false`.
+        self.info.secure_boot = None;
         if let Ok(output) = std::process::Command::new("mokutil")
             .arg("--sb-state")
             .output()
         {
             let text = String::from_utf8(output.stdout).unwrap_or_default();
-            self.info.secure_boot = text.contains("SecureBoot enabled");
+            self.info.secure_boot = parse_mokutil_sb_state(&text);
         }
 
         // Kernel command line
@@ -420,10 +441,10 @@ impl OsInfoMonitor {
             _ => BootMode::Unknown,
         };
 
-        // Secure Boot. `Confirm-SecureBootUEFI` needs an elevated session and throws
-        // otherwise, and the old code mapped that throw to `false` — reporting Secure
-        // Boot as off for every unelevated run, whatever the firmware was doing.
-        self.info.secure_boot = plat::secure_boot_enabled().unwrap_or(false);
+        // Secure Boot, from the `UEFISecureBootEnabled` value. An unreadable value is
+        // `None`. The old code used `unwrap_or(false)`, which reported Secure Boot as
+        // off whenever the read failed.
+        self.info.secure_boot = plat::secure_boot_enabled();
 
         if let Some(tz) = windows_timezone_key() {
             self.info.timezone = tz;
@@ -518,14 +539,11 @@ impl OsInfoMonitor {
         // Boot mode - always UEFI on modern Mac
         self.info.boot_mode = BootMode::UEFI;
 
-        // Secure Boot (Apple silicon always has it)
-        if let Ok(output) = std::process::Command::new("system_profiler")
-            .args(["SPHardwareDataType"])
-            .output()
-        {
-            let text = String::from_utf8(output.stdout).unwrap_or_default();
-            self.info.secure_boot = text.contains("Apple M") || text.contains("Apple T2");
-        }
+        // Secure Boot. The old code inferred it from the chip name ("Apple M" or
+        // "Apple T2"). That is a guess from a product name, not a reading of the
+        // firmware, so it is now `None`. Intel Macs without a T2 chip have no
+        // Secure Boot at all, and the name cannot distinguish them.
+        self.info.secure_boot = None;
 
         // Timezone
         if let Ok(tz) = std::fs::read_link("/etc/localtime") {
@@ -588,7 +606,7 @@ impl Default for OsInfoMonitor {
                 timezone: String::new(),
                 locale: String::new(),
                 is_64bit: cfg!(target_pointer_width = "64"),
-                secure_boot: false,
+                secure_boot: None,
             },
         })
     }
@@ -821,11 +839,23 @@ mod tests {
             timezone: "America/New_York".into(),
             locale: "en_US.UTF-8".into(),
             is_64bit: true,
-            secure_boot: true,
+            secure_boot: Some(true),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("Ubuntu"));
         let _: OsInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn mokutil_output_is_read_only_when_it_states_the_mode() {
+        assert_eq!(parse_mokutil_sb_state("SecureBoot enabled\n"), Some(true));
+        assert_eq!(parse_mokutil_sb_state("SecureBoot disabled\n"), Some(false));
+        // Unsupported firmware, or any other output, is not a disabled state.
+        assert_eq!(
+            parse_mokutil_sb_state("This system doesn't support Secure Boot\n"),
+            None
+        );
+        assert_eq!(parse_mokutil_sb_state(""), None);
     }
 
     #[test]

@@ -448,19 +448,17 @@ impl FirmwareInventory {
                 {
                     let text = String::from_utf8(output.stdout).unwrap_or_default();
                     let mut version = String::new();
-                    let mut driver = String::new();
                     for line in text.lines() {
                         if let Some(v) = line.strip_prefix("firmware-version: ") {
                             version = v.trim().to_string();
-                        }
-                        if let Some(d) = line.strip_prefix("driver: ") {
-                            driver = d.trim().to_string();
                         }
                     }
                     if !version.is_empty() {
                         self.entries.push(FirmwareEntry {
                             component: FirmwareComponent::Nic,
-                            vendor: non_empty(&driver),
+                            // `None`: `driver` is the kernel driver's name (e.g. "e1000e"),
+                            // not the NIC vendor. The old code stored it in `vendor`.
+                            vendor: None,
                             version: Some(version),
                             date: None,
                             device: iface,
@@ -684,15 +682,11 @@ impl FirmwareInventory {
 
     #[cfg(target_os = "macos")]
     fn refresh_macos(&mut self) {
-        // Every Intel Mac boots EFI and none boots legacy BIOS, so the answer
-        // to "UEFI or legacy BIOS" is settled there by the architecture. Apple
-        // silicon boots iBoot, which is neither, and this used to answer UEFI
-        // for those too.
-        self.boot_mode = if cfg!(target_arch = "x86_64") {
-            BootMode::UEFI
-        } else {
-            BootMode::Unknown
-        };
+        // Boot mode is `Unknown`, not a value inferred here. The old code set UEFI
+        // from `cfg!(target_arch = "x86_64")`, which is a compile-time property of
+        // the binary, not a read of this machine's firmware. No macOS source
+        // queried below reports the boot mode.
+        self.boot_mode = BootMode::Unknown;
 
         if let Ok(output) = std::process::Command::new("system_profiler")
             .args(["SPHardwareDataType"])

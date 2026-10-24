@@ -235,7 +235,10 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
             release_date: None,
             revision: None,
             firmware_type: FirmwareType::Uefi,
-            secure_boot: Some(true), // Apple Silicon always has Secure Boot
+            // `None`: the old `Some(true)` was asserted for every Mac. Intel Macs
+            // without a T2 chip have no Secure Boot, and the chip family says nothing
+            // about the firmware's own setting, so nothing here reads it.
+            secure_boot: None,
         },
         manufacturer: Some("Apple Inc.".to_string()),
         product_name,
@@ -338,7 +341,10 @@ pub fn get_driver_versions() -> Result<Vec<DriverInfo>, Error> {
                             version: Some(current_version.clone()),
                             driver_type: dt,
                             description: None,
-                            vendor: Some("Apple".to_string()),
+                            // `None`: system_profiler lists third-party extensions
+                            // here too, so "Apple" was asserted for drivers it never
+                            // identified as Apple's.
+                            vendor: None,
                             date: None,
                         });
                     }

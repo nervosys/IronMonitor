@@ -935,6 +935,17 @@ impl Ontology {
              failed rather than that the CPU is bare.",
         ));
         add(Entity::new(
+            "cpu.microarch.extension.<unread>",
+            D::Cpu,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when some instruction set extensions were not checked on this \
+             platform, carrying how many. Their absence is unknown, so they are never \
+             listed as unsupported.",
+        ));
+        add(Entity::new(
             "cpu.microarch.extension.{n}.name",
             D::Cpu,
             K::Identity,
