@@ -1410,31 +1410,29 @@ fn resolve_os_detail(out: &mut Vec<Reading>) {
         "the platform reported no locale name",
     );
 
-    if info.boot_timestamp == 0 {
-        out.push(Reading::unavailable(
+    match info.boot_timestamp {
+        None => out.push(Reading::unavailable(
             "system.boot.timestamp",
             Some(U::Seconds),
             "the platform reported no boot time",
-        ));
-    } else if on_windows {
-        out.push(Reading::derived(
+        )),
+        Some(ts) if on_windows => out.push(Reading::derived(
             "system.boot.timestamp",
-            serde_json::json!(info.boot_timestamp),
+            serde_json::json!(ts),
             Some(U::Seconds),
-        ));
-    } else {
-        out.push(Reading::measured(
+        )),
+        Some(ts) => out.push(Reading::measured(
             "system.boot.timestamp",
-            serde_json::json!(info.boot_timestamp),
+            serde_json::json!(ts),
             Some(U::Seconds),
-        ));
+        )),
     }
 
     if on_macos {
         out.push(Reading::unavailable(
             "system.boot.mode",
             Some(U::Identifier),
-            "the macOS reader assigns UEFI without checking the firmware, so the boot mode is not read",
+            "the macOS reader does not read the boot mode: Apple silicon boots through iBoot rather than UEFI, and Intel Macs use EFI",
         ));
     } else {
         match &info.boot_mode {
@@ -1448,24 +1446,22 @@ fn resolve_os_detail(out: &mut Vec<Reading>) {
         }
     }
 
-    if on_linux && info.user_count > 0 {
-        out.push(Reading::measured(
+    match info.user_count {
+        Some(n) => out.push(Reading::measured(
             "system.users.count",
-            serde_json::json!(info.user_count),
+            serde_json::json!(n),
             Some(U::Count),
-        ));
-    } else if on_linux {
-        out.push(Reading::unavailable(
+        )),
+        None if on_linux => out.push(Reading::unavailable(
             "system.users.count",
             Some(U::Count),
-            "zero sessions cannot be told apart from who not running, so no count is published",
-        ));
-    } else {
-        out.push(Reading::unavailable(
+            "the who command could not be run, so no session count was read",
+        )),
+        None => out.push(Reading::unavailable(
             "system.users.count",
             Some(U::Count),
             "user counting is implemented on Linux only, and this platform's reader leaves the count unset",
-        ));
+        )),
     }
 }
 

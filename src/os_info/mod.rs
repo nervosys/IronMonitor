@@ -34,7 +34,7 @@ pub enum OsFamily {
     Unknown,
 }
 
-/// Boot mode
+/// Boot mode. `Unknown` is used when the firmware type was not read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BootMode {
     UEFI,
@@ -66,7 +66,7 @@ pub struct OsInfo {
     pub os_name: String,
     /// OS version string
     pub os_version: String,
-    /// OS build number
+    /// OS build number. Empty when the platform did not report one.
     pub os_build: String,
     /// Kernel version string (e.g., "6.8.0-51-generic")
     pub kernel_version: String,
@@ -78,16 +78,19 @@ pub struct OsInfo {
     pub hostname: String,
     /// Domain name (if configured)
     pub domain: String,
-    /// System uptime in seconds
-    pub uptime_seconds: u64,
-    /// Boot time as Unix timestamp
-    pub boot_timestamp: u64,
-    /// Boot mode (UEFI or BIOS)
+    /// System uptime in seconds; `None` when the platform source could not be read
+    pub uptime_seconds: Option<u64>,
+    /// Boot time as Unix timestamp; `None` whenever `uptime_seconds` is `None`,
+    /// because it is derived from the same source
+    pub boot_timestamp: Option<u64>,
+    /// Boot mode (UEFI or BIOS). `Unknown` when the platform did not report it.
     pub boot_mode: BootMode,
     /// Kernel command line (Linux)
     pub kernel_cmdline: String,
-    /// Number of logged-in users
-    pub user_count: u32,
+    /// Number of logged-in users; `None` when the count was not read (for
+    /// example a failed `who` on Linux, or any platform without a reader).
+    /// A real zero is `Some(0)`.
+    pub user_count: Option<u32>,
     /// Loaded kernel modules
     pub loaded_modules: Vec<KernelModule>,
     /// Timezone string (e.g., "America/New_York")
@@ -115,6 +118,27 @@ fn parse_mokutil_sb_state(text: &str) -> Option<bool> {
     }
 }
 
+/// Parse the first field of `/proc/uptime` (seconds since boot, as a decimal).
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_uptime(text: &str) -> Option<u64> {
+    let secs: f64 = text.split_whitespace().next()?.parse().ok()?;
+    Some(secs as u64)
+}
+
+/// Parse the `btime` line of `/proc/stat` (boot time as a Unix timestamp).
+#[cfg(any(target_os = "linux", test))]
+fn parse_btime(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .and_then(|rest| rest.trim().parse().ok())
+}
+
+/// Count the sessions in `who` output, one per line.
+#[cfg(any(target_os = "linux", test))]
+fn parse_who_count(text: &str) -> u32 {
+    text.lines().count() as u32
+}
+
 /// Monitor for OS and kernel information
 pub struct OsInfoMonitor {
     info: OsInfo,
@@ -134,11 +158,11 @@ impl OsInfoMonitor {
                 architecture: String::new(),
                 hostname: String::new(),
                 domain: String::new(),
-                uptime_seconds: 0,
-                boot_timestamp: 0,
+                uptime_seconds: None,
+                boot_timestamp: None,
                 boot_mode: BootMode::Unknown,
                 kernel_cmdline: String::new(),
-                user_count: 0,
+                user_count: None,
                 loaded_modules: Vec::new(),
                 timezone: String::new(),
                 locale: String::new(),
@@ -258,24 +282,19 @@ impl OsInfoMonitor {
             }
         }
 
-        // Uptime
-        if let Ok(content) = std::fs::read_to_string("/proc/uptime") {
-            if let Some(secs_str) = content.split_whitespace().next() {
-                if let Ok(secs) = secs_str.parse::<f64>() {
-                    self.info.uptime_seconds = secs as u64;
-                }
-            }
-        }
+        // Uptime. Left `None` when /proc/uptime is unreadable or unparsable; a
+        // zero here would claim the machine booted this instant.
+        self.info.uptime_seconds = std::fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|content| parse_proc_uptime(&content));
 
-        // Boot timestamp from /proc/stat
-        if let Ok(content) = std::fs::read_to_string("/proc/stat") {
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("btime ") {
-                    if let Ok(ts) = rest.trim().parse() {
-                        self.info.boot_timestamp = ts;
-                    }
-                }
-            }
+        // Boot timestamp from /proc/stat. Only meaningful alongside an uptime
+        // reading, so it is cleared when the uptime was not read.
+        self.info.boot_timestamp = None;
+        if self.info.uptime_seconds.is_some() {
+            self.info.boot_timestamp = std::fs::read_to_string("/proc/stat")
+                .ok()
+                .and_then(|content| parse_btime(&content));
         }
 
         // Boot mode
@@ -303,11 +322,13 @@ impl OsInfoMonitor {
             self.info.kernel_cmdline = content.trim().to_string();
         }
 
-        // Logged-in users (who)
-        if let Ok(output) = std::process::Command::new("who").output() {
-            let text = String::from_utf8(output.stdout).unwrap_or_default();
-            self.info.user_count = text.lines().count() as u32;
-        }
+        // Logged-in users (who). One line per session. A failed `who` leaves the
+        // count `None`; a successful run with no sessions is a real `Some(0)`.
+        self.info.user_count = std::process::Command::new("who")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_who_count(&String::from_utf8_lossy(&output.stdout)));
 
         // Loaded modules from /proc/modules
         if let Ok(content) = std::fs::read_to_string("/proc/modules") {
@@ -375,16 +396,18 @@ impl OsInfoMonitor {
         // wrong; see the boot-mode and Secure Boot notes below.
         const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
-        let build: u32 = plat::read_registry_string(CURRENT_VERSION, "CurrentBuildNumber")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        // `None` when the build number was not read. Nothing below substitutes
+        // 0 for it: "10.0.0" would be a made-up version string.
+        let build: Option<u32> = plat::read_registry_string(CURRENT_VERSION, "CurrentBuildNumber")
+            .and_then(|s| s.parse().ok());
 
         if let Some(product) = plat::read_registry_string(CURRENT_VERSION, "ProductName") {
             // `ProductName` still reads "Windows 10 ..." on Windows 11; Microsoft
             // never updated it, and the build number is the documented way to tell
             // the two apart. This is a correction from an authoritative field, not a
-            // guess: 22000 is the first Windows 11 build.
-            self.info.os_name = if build >= 22000 {
+            // guess: 22000 is the first Windows 11 build. Without a build number the
+            // product name is kept as the registry reports it.
+            self.info.os_name = if build.is_some_and(|b| b >= 22000) {
                 product.replace("Windows 10", "Windows 11")
             } else {
                 product
@@ -392,12 +415,13 @@ impl OsInfoMonitor {
         }
 
         // Major/minor come from the registry as DWORDs on Windows 10 and later.
+        // The version string needs the build too, so it is left empty without one.
         let major = plat::read_registry_u32(CURRENT_VERSION, "CurrentMajorVersionNumber");
         let minor = plat::read_registry_u32(CURRENT_VERSION, "CurrentMinorVersionNumber");
-        if let (Some(major), Some(minor)) = (major, minor) {
+        if let (Some(major), Some(minor), Some(build)) = (major, minor, build) {
             self.info.os_version = format!("{major}.{minor}.{build}");
         }
-        if build > 0 {
+        if let Some(build) = build {
             self.info.os_build = build.to_string();
         }
 
@@ -424,12 +448,13 @@ impl OsInfoMonitor {
         // `GetTickCount64` is milliseconds since boot and does not advance across
         // sleep, matching what `LastBootUpTime` reported.
         let uptime_ms = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() };
-        self.info.uptime_seconds = uptime_ms / 1000;
+        let uptime = uptime_ms / 1000;
+        self.info.uptime_seconds = Some(uptime);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.info.boot_timestamp = now.saturating_sub(self.info.uptime_seconds);
+        self.info.boot_timestamp = Some(now.saturating_sub(uptime));
 
         // Boot mode. The old reading spawned PowerShell to test `$env:firmware_type`,
         // which Windows does not set for a non-interactive child process — so it was
@@ -455,10 +480,11 @@ impl OsInfoMonitor {
 
         self.info.loaded_modules = windows_running_drivers();
 
-        // `user_count` is deliberately left alone: the only source was
-        // `Win32_OperatingSystem.NumberOfUsers`, and counting sessions properly needs
-        // a WTS enumeration this monitor does not otherwise do. Reporting a fabricated
-        // 0 would be worse than leaving the field at its default.
+        // `user_count` stays `None`. The candidate source was
+        // `Win32_OperatingSystem.NumberOfUsers`, whose meaning as a logged-in count
+        // was not verified here; counting sessions properly needs a WTS enumeration
+        // this monitor does not otherwise do. Reporting a 0 would be a fabrication.
+        self.info.user_count = None;
         Ok(())
     }
 
@@ -526,18 +552,21 @@ impl OsInfoMonitor {
                 .and_then(|s| s.split(',').next())
             {
                 if let Ok(boot_sec) = sec_str.trim().parse::<u64>() {
-                    self.info.boot_timestamp = boot_sec;
+                    self.info.boot_timestamp = Some(boot_sec);
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    self.info.uptime_seconds = now.saturating_sub(boot_sec);
+                    self.info.uptime_seconds = Some(now.saturating_sub(boot_sec));
                 }
             }
         }
 
-        // Boot mode - always UEFI on modern Mac
-        self.info.boot_mode = BootMode::UEFI;
+        // Boot mode. Not read here. The old code assigned UEFI to every Mac, but
+        // Apple silicon Macs boot through iBoot rather than UEFI, and Intel Macs
+        // use EFI, so no single value is true of the platform. Nothing cheap
+        // distinguishes them, so the mode stays `Unknown`.
+        self.info.boot_mode = BootMode::Unknown;
 
         // Secure Boot. The old code inferred it from the chip name ("Apple M" or
         // "Apple T2"). That is a guess from a product name, not a reading of the
@@ -597,11 +626,11 @@ impl Default for OsInfoMonitor {
                 architecture: String::new(),
                 hostname: String::new(),
                 domain: String::new(),
-                uptime_seconds: 0,
-                boot_timestamp: 0,
+                uptime_seconds: None,
+                boot_timestamp: None,
                 boot_mode: BootMode::Unknown,
                 kernel_cmdline: String::new(),
-                user_count: 0,
+                user_count: None,
                 loaded_modules: Vec::new(),
                 timezone: String::new(),
                 locale: String::new(),
@@ -812,6 +841,30 @@ mod tests {
     }
 
     #[test]
+    fn proc_uptime_is_the_first_field_and_absent_when_malformed() {
+        assert_eq!(parse_proc_uptime("123456.78 987654.32\n"), Some(123456));
+        assert_eq!(parse_proc_uptime(""), None);
+        assert_eq!(parse_proc_uptime("garbage"), None);
+    }
+
+    #[test]
+    fn btime_is_read_from_proc_stat_and_absent_without_the_line() {
+        let stat = "cpu  100 0 200 300 0 0 0 0 0 0\nbtime 1700000000\nprocesses 42\n";
+        assert_eq!(parse_btime(stat), Some(1_700_000_000));
+        assert_eq!(parse_btime("cpu  1 2 3\nprocesses 42\n"), None);
+    }
+
+    #[test]
+    fn who_counts_sessions_and_an_empty_listing_is_zero() {
+        let who = concat!(
+            "alice tty2 2026-10-24 08:01 (:0)\n",
+            "bob pts/0 2026-10-24 09:14 (10.0.0.5)\n"
+        );
+        assert_eq!(parse_who_count(who), 2);
+        assert_eq!(parse_who_count(""), 0);
+    }
+
+    #[test]
     fn test_os_family_display() {
         assert_eq!(OsFamily::Linux.to_string(), "Linux");
         assert_eq!(OsFamily::Windows.to_string(), "Windows");
@@ -830,11 +883,11 @@ mod tests {
             architecture: "x86_64".into(),
             hostname: "myhost".into(),
             domain: "".into(),
-            uptime_seconds: 3600,
-            boot_timestamp: 1700000000,
+            uptime_seconds: Some(3600),
+            boot_timestamp: Some(1700000000),
             boot_mode: BootMode::UEFI,
             kernel_cmdline: "root=/dev/sda1".into(),
-            user_count: 1,
+            user_count: Some(1),
             loaded_modules: Vec::new(),
             timezone: "America/New_York".into(),
             locale: "en_US.UTF-8".into(),

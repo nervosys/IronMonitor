@@ -626,19 +626,17 @@ fn resolve_system(out: &mut Vec<Reading>) {
             push_text(out, "system.os.version", &info.os_version);
             push_text(out, "system.kernel.version", &info.kernel_version);
             push_id(out, "system.architecture", &info.architecture);
-            if info.uptime_seconds > 0 {
-                out.push(Reading::measured(
+            match info.uptime_seconds {
+                Some(secs) => out.push(Reading::measured(
                     "system.uptime",
-                    serde_json::json!(info.uptime_seconds),
+                    serde_json::json!(secs),
                     Some(Unit::Seconds),
-                ));
-            } else {
-                out.push(Reading::unavailable(
+                )),
+                None => out.push(Reading::unavailable(
                     "system.uptime",
                     Some(Unit::Seconds),
-                    "uptime read as zero, which would mean the machine booted this \
-                     instant",
-                ));
+                    "the platform's uptime source could not be read",
+                )),
             }
         }
         Err(e) => {

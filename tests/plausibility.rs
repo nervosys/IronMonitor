@@ -734,7 +734,7 @@ fn windows_os_info_reports_a_real_build() {
         );
     }
     assert!(
-        info.uptime_seconds > 0,
-        "uptime reads zero, which would mean the machine booted this instant"
+        info.uptime_seconds.is_some_and(|s| s > 0),
+        "uptime is unread or zero; a read zero would mean the machine booted this instant"
     );
 }
