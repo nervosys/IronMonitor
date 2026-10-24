@@ -249,6 +249,29 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/core/cpu.rs",
+        "CpuTotal",
+        "user system idle",
+        concat!(
+            "Every platform reader errors rather than return these unread: Linux ",
+            "without the aggregate cpu line of /proc/stat, Windows when ",
+            "GetSystemTimes reports no time, macOS when host_processor_info gives ",
+            "no ticks or they sum to zero. nice is Option because Windows has no ",
+            "nice time at all, not because it can fail to be read."
+        ),
+    ),
+    (
+        "src/virtualization/guest.rs",
+        "VirtCpuTopology",
+        "vcpus",
+        concat!(
+            "Counted from the processor lines of /proc/cpuinfo, and the topology is ",
+            "None when the file is unreadable or the count is zero, so it is never ",
+            "built with vcpus unread. The other fields come from separate sysfs ",
+            "files that can be missing."
+        ),
+    ),
+    (
         "src/core/memory.rs",
         "RamInfo",
         "total used",

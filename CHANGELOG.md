@@ -88,6 +88,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passed sysfs `queue/rotational` (0 or 1) through as the RPM, so every hard
   disk spun at 1 RPM, and macOS reported 0 RPM for anything it classified as an
   SSD.
+- A further audit of the readers removed values that were never read:
+  - CPU: Linux package power on its first sample was half the power limit, and
+    P- and E-cluster power a fixed 60/40 split; Windows copied one ACPI thermal
+    zone to every core, and Linux the package temperature; Windows and macOS
+    reported since-boot utilisation as current, and Windows a fully idle core
+    when no time had elapsed; the registry's nominal clock stood in for the
+    current one, and CPU 0's clock was copied to every core. All are now
+    unread. CPU feature flags come from CPUID where they were reported
+    unsupported because the reader never checked them.
+  - PCIe: a 2.5 GT/s link was classified Gen2 (the "5" test ran first), and
+    the current link speed and width stood in for the maximum.
+  - Disks: a failed Windows WMI query read as a machine with no disks; it is
+    now reported as a failed enumeration. The drive's own SMART verdict is
+    published beside the collector's inferred grade.
+  - Network: Linux `is_running` tested the word "running" against a hex flags
+    file and was always false; IPv4 address lists that were never filled are
+    unread rather than empty; Bluetooth addresses are not
+    `00:00:00:00:00:00` and a missing power state is not "off".
+  - Security and boot: ASLR level, ptrace scope and module locking were
+    literals on Windows and macOS and scored as hardening; a macOS
+    `sandbox-exec` probe marked every Mac sandboxed, which refused consent;
+    unreadable Secure Boot was `false`; Linux boot time with no uptime was
+    "now"; the macOS boot mode was a compile-time constant.
+  - USB: unreadable vendor and product ids were `0000`, failed Windows
+    enumerations read as no devices, and 10 and 20 Gb/s were plain SuperSpeed.
+  - TPM `pcr_banks` counted PCR registers, not hash banks; `lpstat`'s "not
+    accepting requests" read as accepting; unparseable hwmon voltages and
+    currents were 0; VA-API maximum resolution was 4K for every profile.
+  - GPU `integrated` is no longer guessed from product names, process CPU on
+    a first sample is not the lifetime average, ECC is not "off" when no
+    controller was read, and VM guest resources are no longer reported on
+    bare metal.
+  - `ironmon tune` no longer classifies a machine idle when a utilisation
+    reading is missing; it reports the use case as unknown and recommends
+    nothing. A machine with no GPU at all can still be idle.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a

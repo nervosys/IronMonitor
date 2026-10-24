@@ -13,7 +13,12 @@
 //!
 //! let monitor = StorageControllerMonitor::new().unwrap();
 //! for ctrl in monitor.controllers() {
-//!     println!("{}: {} ({:?})", ctrl.name, ctrl.driver, ctrl.interface);
+//!     println!(
+//!         "{}: {} ({:?})",
+//!         ctrl.name,
+//!         ctrl.driver.as_deref().unwrap_or("unknown driver"),
+//!         ctrl.interface
+//!     );
 //! }
 //! for array in monitor.raid_arrays() {
 //!     println!("RAID {}: {} - {:?}", array.level, array.name, array.status);

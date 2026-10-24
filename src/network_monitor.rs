@@ -44,8 +44,16 @@
 //! for iface in active {
 //!     println!("{}: {} ({})",
 //!         iface.name,
-//!         if iface.is_up { "UP" } else { "DOWN" },
-//!         if iface.is_running { "RUNNING" } else { "STOPPED" }
+//!         match iface.is_up {
+//!             Some(true) => "UP",
+//!             Some(false) => "DOWN",
+//!             None => "unknown",
+//!         },
+//!         match iface.is_running {
+//!             Some(true) => "RUNNING",
+//!             Some(false) => "STOPPED",
+//!             None => "unknown",
+//!         }
 //!     );
 //! }
 //! # Ok(())
@@ -96,8 +104,16 @@
 //! if let Some(eth0) = monitor.interface_by_name("eth0")? {
 //!     println!("Interface: {}", eth0.name);
 //!     println!("State: {} / {}",
-//!         if eth0.is_up { "UP" } else { "DOWN" },
-//!         if eth0.is_running { "RUNNING" } else { "STOPPED" }
+//!         match eth0.is_up {
+//!             Some(true) => "UP",
+//!             Some(false) => "DOWN",
+//!             None => "unknown",
+//!         },
+//!         match eth0.is_running {
+//!             Some(true) => "RUNNING",
+//!             Some(false) => "STOPPED",
+//!             None => "unknown",
+//!         }
 //!     );
 //!     println!("RX: {} bytes ({} packets, {} errors)",
 //!         eth0.rx_bytes, eth0.rx_packets, eth0.rx_errors);

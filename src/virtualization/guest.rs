@@ -207,7 +207,12 @@ fn detect_vcpu_topology() -> Option<VirtCpuTopology> {
     use std::fs;
     let cpuinfo = fs::read_to_string("/proc/cpuinfo").ok()?;
 
-    let vcpus = cpuinfo.matches("processor").count() as u32;
+    // Lines whose key is `processor`, not every occurrence of the word: a model
+    // name or a flag description containing it used to count as a vCPU.
+    let vcpus = cpuinfo
+        .lines()
+        .filter(|l| l.split(':').next().map(str::trim) == Some("processor"))
+        .count() as u32;
     if vcpus == 0 {
         return None;
     }
