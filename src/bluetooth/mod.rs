@@ -165,7 +165,8 @@ fn radio_address(instance_id: &str) -> Option<String> {
 /// Windows reports it as a 48-bit integer whose hex digits are the address in
 /// order: `145815598978622` is `84:9e:56:fa:d6:3e`. A missing or out-of-range
 /// value is `None`.
-#[cfg(any(target_os = "windows", test))]
+// Windows only, as are the tests that exercise it.
+#[cfg(target_os = "windows")]
 fn radio_address_from_value(value: Option<&serde_json::Value>) -> Option<String> {
     let n = value?.as_u64()?;
     if n >= 1 << 48 {

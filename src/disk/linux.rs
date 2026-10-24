@@ -425,24 +425,6 @@ impl DiskDevice for LinuxDisk {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::nvme_controller;
-
-    #[test]
-    fn a_namespace_is_on_its_controller() {
-        assert_eq!(nvme_controller("nvme0n1"), Some("nvme0"));
-        assert_eq!(nvme_controller("nvme12n3"), Some("nvme12"));
-    }
-
-    #[test]
-    fn names_that_are_not_nvme_namespaces_have_no_controller() {
-        assert_eq!(nvme_controller("sda"), None);
-        assert_eq!(nvme_controller("nvme"), None);
-        assert_eq!(nvme_controller("nvmeXn1"), None);
-    }
-}
-
 /// Enumerate all block devices
 pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
     let mut devices = Vec::new();
@@ -521,4 +503,22 @@ pub fn get_process_io(pid: u32) -> Result<ProcessDiskIo, Error> {
         write_syscalls,
         cancelled_write_bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nvme_controller;
+
+    #[test]
+    fn a_namespace_is_on_its_controller() {
+        assert_eq!(nvme_controller("nvme0n1"), Some("nvme0"));
+        assert_eq!(nvme_controller("nvme12n3"), Some("nvme12"));
+    }
+
+    #[test]
+    fn names_that_are_not_nvme_namespaces_have_no_controller() {
+        assert_eq!(nvme_controller("sda"), None);
+        assert_eq!(nvme_controller("nvme"), None);
+        assert_eq!(nvme_controller("nvmeXn1"), None);
+    }
 }
