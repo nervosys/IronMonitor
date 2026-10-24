@@ -13,16 +13,35 @@ use crate::core::{
 use crate::error::{IronError, Result};
 use std::collections::HashMap;
 use std::mem;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 use windows::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows::Win32::System::SystemInformation::{
     GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };
 
-/// Previous CPU times for utilization calculation
-static PREV_IDLE_TIME: AtomicU64 = AtomicU64::new(0);
-static PREV_KERNEL_TIME: AtomicU64 = AtomicU64::new(0);
-static PREV_USER_TIME: AtomicU64 = AtomicU64::new(0);
+/// The previous `GetSystemTimes` reading, kept whole.
+///
+/// The three counters are stored together under one lock. Stored as three separate
+/// atomics, two threads could interleave their loads and stores and pair one call's
+/// idle with another's kernel, producing a split that no single reading ever showed.
+static PREV_SYSTEM_TIMES: Mutex<Option<SystemTimesSample>> = Mutex::new(None);
+
+/// How long a first call waits between its two readings.
+///
+/// Long enough that `GetSystemTimes` (which advances in scheduler ticks of roughly
+/// 10-16 ms) has moved on, so the difference is a real interval, and short enough
+/// that the one-shot `ironmon get` and `ironmon snapshot` commands stay responsive.
+const PRIME_INTERVAL: Duration = Duration::from_millis(200);
+
+/// One `GetSystemTimes` reading, in 100 ns ticks summed across all processors.
+/// `kernel` includes `idle`, as the API reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SystemTimesSample {
+    idle: u64,
+    kernel: u64,
+    user: u64,
+}
 
 /// Read CPU statistics on Windows
 pub fn read_cpu_stats() -> Result<CpuStats> {
@@ -437,6 +456,41 @@ fn read_per_core_utilization(cpu_count: usize) -> Option<Vec<Option<(f32, f32, f
 
 /// Get CPU utilization using kernel32 GetSystemTimes via FFI
 fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
+    let now = read_system_times()?;
+
+    // Store this reading and take the previous one. Only a difference between two
+    // readings is a rate, so a call with no usable previous reading primes one.
+    if let Some(split) =
+        replace_previous_sample(now).and_then(|before| split_system_times(before, now))
+    {
+        return Ok(split);
+    }
+
+    // Priming. This used to fall back to the totals accumulated since boot whenever
+    // there was no previous sample, and reported that as the current split. It is an
+    // average over the whole uptime, so every one-shot command showed it as current
+    // load. Take a second reading after a short interval instead, and retry once if
+    // the interval was too short for the counters to move.
+    let mut earlier = now;
+    for _ in 0..2 {
+        std::thread::sleep(PRIME_INTERVAL);
+        let later = read_system_times()?;
+        replace_previous_sample(later);
+        if let Some(split) = split_system_times(earlier, later) {
+            return Ok(split);
+        }
+        earlier = later;
+    }
+
+    // Still no movement after two intervals: report no reading rather than the
+    // since-boot split.
+    Err(IronError::Parse(
+        "GetSystemTimes reported no CPU time over the sampling interval".to_string(),
+    ))
+}
+
+/// Reads `GetSystemTimes` once.
+fn read_system_times() -> Result<SystemTimesSample> {
     use windows::Win32::Foundation::FILETIME;
 
     // GetSystemTimes is in kernel32.dll - use raw FFI call
@@ -459,61 +513,44 @@ fn get_system_cpu_utilization() -> Result<(f32, f32, f32)> {
         return Err(IronError::System("GetSystemTimes failed".to_string()));
     }
 
-    // Convert FILETIME to u64
-    let idle = filetime_to_u64(&idle_time);
-    let kernel = filetime_to_u64(&kernel_time);
-    let user = filetime_to_u64(&user_time);
+    Ok(SystemTimesSample {
+        idle: filetime_to_u64(&idle_time),
+        kernel: filetime_to_u64(&kernel_time),
+        user: filetime_to_u64(&user_time),
+    })
+}
 
-    // Get previous values
-    let prev_idle = PREV_IDLE_TIME.load(Ordering::Relaxed);
-    let prev_kernel = PREV_KERNEL_TIME.load(Ordering::Relaxed);
-    let prev_user = PREV_USER_TIME.load(Ordering::Relaxed);
+/// Stores `now` as the previous sample and returns the one it replaces.
+fn replace_previous_sample(now: SystemTimesSample) -> Option<SystemTimesSample> {
+    let mut previous = PREV_SYSTEM_TIMES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    previous.replace(now)
+}
 
-    // Store current values for next calculation
-    PREV_IDLE_TIME.store(idle, Ordering::Relaxed);
-    PREV_KERNEL_TIME.store(kernel, Ordering::Relaxed);
-    PREV_USER_TIME.store(user, Ordering::Relaxed);
+/// The `(user, system, idle)` percentages of the interval between two readings.
+///
+/// `None` when no interval can be read from them: a counter that went backwards, or
+/// no ticks elapsed between the readings. Neither is a split, and neither is replaced
+/// by a since-boot figure.
+fn split_system_times(
+    before: SystemTimesSample,
+    now: SystemTimesSample,
+) -> Option<(f32, f32, f32)> {
+    let idle = now.idle.checked_sub(before.idle)?;
+    let kernel = now.kernel.checked_sub(before.kernel)?;
+    let user = now.user.checked_sub(before.user)?;
 
-    // Calculate deltas
-    let idle_delta = idle.saturating_sub(prev_idle);
-    let kernel_delta = kernel.saturating_sub(prev_kernel);
-    let user_delta = user.saturating_sub(prev_user);
-
-    // Kernel time includes idle time
-    let system_delta = kernel_delta.saturating_sub(idle_delta);
-    let total = idle_delta + system_delta + user_delta;
-
-    // On the first call there is no previous sample to difference against, so fall
-    // back to the totals accumulated since boot. That is a real measurement — the
-    // machine's average over its uptime — rather than a guess.
-    //
-    // This previously returned a hardcoded (0.0, 0.0, 100.0), asserting the system
-    // was completely idle. Every one-shot invocation is a first call, so
-    // `ironmon cli cpu` always reported 0% usage regardless of actual load, printed
-    // directly above per-core figures that contradicted it.
-    let (idle_basis, system_basis, user_basis, total_basis) = if prev_idle == 0 || total == 0 {
-        let system_since_boot = kernel.saturating_sub(idle);
-        let total_since_boot = idle + system_since_boot + user;
-        (idle, system_since_boot, user, total_since_boot)
-    } else {
-        (idle_delta, system_delta, user_delta, total)
-    };
-
-    if total_basis == 0 {
-        // No elapsed CPU time to apportion: only reachable if the kernel reports
-        // all-zero counters. That is no reading, and this answered 100% idle,
-        // which every caller turned into 0% busy.
-        return Err(IronError::Parse(
-            "GetSystemTimes reported no CPU time to apportion".to_string(),
-        ));
+    // Kernel time includes idle time, so system time is the remainder.
+    let system = kernel.checked_sub(idle)?;
+    let total = idle + system + user;
+    if total == 0 {
+        return None;
     }
 
-    let basis = total_basis as f64;
-    let idle_percent = (idle_basis as f64 / basis * 100.0) as f32;
-    let system_percent = (system_basis as f64 / basis * 100.0) as f32;
-    let user_percent = (user_basis as f64 / basis * 100.0) as f32;
-
-    Ok((user_percent, system_percent, idle_percent))
+    let basis = total as f64;
+    let percent = |ticks: u64| (ticks as f64 / basis * 100.0) as f32;
+    Some((percent(user), percent(system), percent(idle)))
 }
 
 fn filetime_to_u64(ft: &windows::Win32::Foundation::FILETIME) -> u64 {
@@ -1599,6 +1636,63 @@ pub fn logical_drives() -> Result<Vec<LogicalDrive>> {
 #[cfg(test)]
 mod tests {
 
+    /// Counters of a 4-processor machine, in 100 ns ticks. One second of wall time
+    /// is 10_000_000 ticks per processor, so 40_000_000 across all four.
+    fn system_sample(idle: u64, kernel: u64, user: u64) -> super::SystemTimesSample {
+        super::SystemTimesSample { idle, kernel, user }
+    }
+
+    #[test]
+    fn system_times_split_is_the_interval_between_two_readings() {
+        // Since boot the machine is mostly idle, so the cumulative figures would say
+        // 90%+ idle. The second reading is one second later, with the machine 75%
+        // idle over that second: the split must follow the interval, not the totals.
+        let before = system_sample(900_000_000_000, 960_000_000_000, 40_000_000_000);
+        let now = system_sample(
+            before.idle + 30_000_000,   // 75% of the 40M ticks
+            before.kernel + 35_000_000, // kernel includes idle: 5M system ticks
+            before.user + 5_000_000,
+        );
+
+        let (user, system, idle) = super::split_system_times(before, now).expect("split");
+        assert!((user - 12.5).abs() < 0.01, "user {user}");
+        assert!((system - 12.5).abs() < 0.01, "system {system}");
+        assert!((idle - 75.0).abs() < 0.01, "idle {idle}");
+    }
+
+    #[test]
+    fn system_times_zero_delta_is_no_reading() {
+        // Two reads inside one scheduler tick: nothing moved, so there is no split.
+        // The old code answered the since-boot split here instead.
+        let sample = system_sample(900_000_000_000, 960_000_000_000, 40_000_000_000);
+        assert_eq!(super::split_system_times(sample, sample), None);
+    }
+
+    #[test]
+    fn system_times_counter_going_backwards_is_no_reading() {
+        // A counter that decreases cannot be differenced. Treating it as zero would
+        // skew the split, so it yields no reading.
+        let before = system_sample(900_000_000_000, 960_000_000_000, 40_000_000_000);
+        let now = system_sample(
+            before.idle - 1,
+            before.kernel + 35_000_000,
+            before.user + 5_000_000,
+        );
+        assert_eq!(super::split_system_times(before, now), None);
+    }
+
+    #[test]
+    fn system_times_kernel_below_idle_is_no_reading() {
+        // Kernel time includes idle, so it cannot have grown by less than idle did.
+        let before = system_sample(900_000_000_000, 960_000_000_000, 40_000_000_000);
+        let now = system_sample(
+            before.idle + 30_000_000,
+            before.kernel + 20_000_000,
+            before.user + 5_000_000,
+        );
+        assert_eq!(super::split_system_times(before, now), None);
+    }
+
     /// The process table's reserved-field offsets are checked, not trusted:
     /// for this process, which can be opened, the table must agree with
     /// `GetProcessTimes` and `GetProcessMemoryInfo`.
@@ -1762,8 +1856,9 @@ mod tests {
     ///
     /// `get_system_cpu_utilization` used to return a hardcoded (0, 0, 100) on its
     /// first call, so any one-shot invocation reported the machine as completely idle
-    /// while the per-core rows directly beneath it showed real load. Both now fall
-    /// back to since-boot totals when there is no previous sample, so they agree.
+    /// while the per-core rows directly beneath it showed real load. The aggregate now
+    /// takes a two-reading sample on its first call, so both describe the same
+    /// interval and agree.
     #[test]
     fn aggregate_cpu_agrees_with_per_core() {
         let stats = read_cpu_stats().expect("cpu stats");
