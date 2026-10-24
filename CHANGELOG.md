@@ -156,6 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the average since boot as current load; it now takes a second reading
     200 ms later. Linux per-core figures had the same fault and are fixed with
     it. The macOS `top` fallback takes its second sample for the same reason.
+    Windows and macOS per-core figures, which were unread on a first call,
+    are measured over the same interval.
   - A systemd unit shown `active (exited)` is reported exited rather than
     stopped, and an active sub-state the reader does not know is unknown
     rather than running.
