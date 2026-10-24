@@ -66,6 +66,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NVMe spare capacity, its threshold, controller busy time and unsafe
   shutdowns, parsed from the health log and then dropped, are published as
   `disk.{n}.nvme.*`.
+- Linux NVMe drives get their SMART data. The controller was derived from
+  `nvme0n1` by splitting on every `n`, which gives an empty string, and the
+  drive was matched on its namespace while the collector keys on the
+  controller, so no NVMe drive ever matched. Spare, threshold, busy time,
+  unsafe shutdowns, critical warnings and host command counts now come from
+  the `nvme smart-log` run the collector already makes.
+- Windows reports whether each display supports HDR and has it on, and its
+  bits per colour channel (`board.display.{n}.hdr_supported`, `hdr_enabled`,
+  `bits_per_color_channel`), from the DisplayConfig advanced-colour query.
+- The Windows Bluetooth radio's address is its MAC
+  (`DEVPKEY_Bluetooth_RadioAddress`), not its PnP id; a peripheral with no
+  address is unread rather than `00:00:00:00:00:00`.
+- Windows batteries carry design and full-charge capacity, remaining energy,
+  voltage, charge rate, cycle count, manufacturer, serial and chemistry from
+  the `root\wmi` battery classes.
+- `pci.{addr}.kernel_module` is read on Linux from the device's
+  `driver/module` link, and `memory.topology.max_capacity_bytes` from SMBIOS
+  type 16 (`Win32_PhysicalMemoryArray`, `dmidecode -t 16`).
 - `disk.{n}.rotation_rate` is no longer a flag or a classification. Linux
   passed sysfs `queue/rotational` (0 or 1) through as the RPM, so every hard
   disk spun at 1 RPM, and macOS reported 0 RPM for anything it classified as an

@@ -587,5 +587,8 @@ fn bd_address(raw: &str) -> Option<&str> {
         && octets
             .iter()
             .all(|o| o.len() == 2 && o.chars().all(|c| c.is_ascii_hexdigit()));
-    is_address.then_some(v)
+    // All zeros is no device's address: the Windows reader writes it for a
+    // peripheral whose PnP id carries none, and it was published as measured.
+    let is_placeholder = octets.iter().all(|o| *o == "00");
+    (is_address && !is_placeholder).then_some(v)
 }
