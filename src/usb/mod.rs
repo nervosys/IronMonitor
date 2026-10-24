@@ -520,6 +520,11 @@ impl UsbMonitor {
             )));
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
+        // `ConvertTo-Json` given no objects prints nothing, and the command
+        // succeeded: that is a query that found no devices, not a failed one.
+        if stdout.trim().is_empty() {
+            return Ok(devices);
+        }
         let json = serde_json::from_str::<serde_json::Value>(stdout.trim()).map_err(|e| {
             crate::error::IronError::System(format!("WMI USB query output did not parse: {e}"))
         })?;
@@ -654,6 +659,11 @@ impl UsbMonitor {
             )));
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
+        // `ConvertTo-Json` given no objects prints nothing, and the command
+        // succeeded: that is a query that found no devices, not a failed one.
+        if stdout.trim().is_empty() {
+            return Ok(devices);
+        }
         let json = serde_json::from_str::<serde_json::Value>(stdout.trim()).map_err(|e| {
             crate::error::IronError::System(format!("registry USB query output did not parse: {e}"))
         })?;

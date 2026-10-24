@@ -559,11 +559,10 @@ mod macos_stats {
     pub(super) fn read_cpu_stats() -> Result<CpuStats> {
         use crate::platform::macos;
 
-        let model = macos::sysctl_string("machdep.cpu.brand_string")
-            // Apple Silicon does not publish machdep.cpu.brand_string; the machine
-            // identifier is the closest thing it does publish.
-            .or_else(|| macos::sysctl_string("hw.model"))
-            .unwrap_or_default();
+        // Only the CPU brand string. This fell back to `hw.model`, the machine
+        // identifier ("Mac14,2"), which is not a CPU model; the platform reader
+        // dropped that fallback for the same reason. Empty is unread.
+        let model = macos::sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
         // `host_processor_info` is preferred over parsing `top`: it is the only
         // source of per-core figures and of nice time, and it reports cumulative
@@ -574,20 +573,20 @@ mod macos_stats {
                 let cores = ticks
                     .iter()
                     .enumerate()
-                    .map(|(id, core)| {
-                        let split = core.percentages();
-                        CpuCore {
-                            id,
-                            online: true,
-                            // macOS exposes no governor.
-                            governor: None,
-                            frequency: None,
-                            user: split.map(|s| s.user),
-                            nice: split.map(|s| s.nice),
-                            system: split.map(|s| s.system),
-                            idle: split.map(|s| s.idle),
-                            model: model.clone(),
-                        }
+                    .map(|(id, _core)| CpuCore {
+                        id,
+                        online: true,
+                        // macOS exposes no governor.
+                        governor: None,
+                        frequency: None,
+                        // One sample of cumulative ticks is an average since boot,
+                        // not a current split, and this reader keeps no previous
+                        // sample to difference against. These were that average.
+                        user: None,
+                        nice: None,
+                        system: None,
+                        idle: None,
+                        model: model.clone(),
                     })
                     .collect();
 
