@@ -400,27 +400,26 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     // one this crate's ontology asks for.
     let model = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
-    let cores = ticks
-        .iter()
-        .enumerate()
-        .map(|(id, t)| {
-            let pct = t.percentages();
-            CpuCore {
-                id,
-                online: true,
-                // macOS exposes no governor. Empty rather than invented; the
-                // resolver reports an empty string as unavailable.
-                governor: String::new(),
-                // No unelevated source of live per-core frequency on macOS.
-                // `None` says that; a nominal figure would repeat the mistake
-                // Windows makes with `CurrentMhz`.
-                frequency: None,
-                user: pct.map(|p| p.user),
-                nice: pct.map(|p| p.nice),
-                system: pct.map(|p| p.system),
-                idle: pct.map(|p| p.idle),
-                model: model.clone(),
-            }
+    // Per-core utilization is not reported. The ticks are cumulative since boot, and
+    // a percentage of that is an average over uptime, which the caller reads as the
+    // current load. A current figure needs two samples and this reader keeps none, so
+    // each core is `None` rather than its since-boot share. This used to fill the
+    // four fields from `CoreTicks::percentages`.
+    let cores = (0..ticks.len())
+        .map(|id| CpuCore {
+            id,
+            online: true,
+            // macOS exposes no governor. `None`, not a placeholder.
+            governor: None,
+            // No unelevated source of live per-core frequency on macOS.
+            // `None` says that; a nominal figure would repeat the mistake
+            // Windows makes with `CurrentMhz`.
+            frequency: None,
+            user: None,
+            nice: None,
+            system: None,
+            idle: None,
+            model: model.clone(),
         })
         .collect();
 
@@ -428,7 +427,9 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
         cores,
         total: CpuTotal {
             user: total_usage.user,
-            nice: total_usage.nice,
+            // The kernel counts nice time; this is the since-boot share, as the
+            // total's other fields are.
+            nice: Some(total_usage.nice),
             system: total_usage.system,
             idle: total_usage.idle,
         },

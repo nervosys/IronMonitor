@@ -1406,12 +1406,8 @@ fn print_gpu_info(gpus: &std::collections::HashMap<String, ironmonitor::core::gp
             );
         }
         // Only Linux DVFS drivers expose a governor.
-        if !gpu.frequency.governor.is_empty() {
-            println!(
-                "    {} {}",
-                "Governor:".white(),
-                gpu.frequency.governor.blue()
-            );
+        if let Some(governor) = &gpu.frequency.governor {
+            println!("    {} {}", "Governor:".white(), governor.blue());
         }
 
         if let (Some(used), Some(total)) = (gpu.status.memory_used, gpu.status.memory_total) {
@@ -2577,7 +2573,7 @@ fn print_process_info(processes: &ironmonitor::core::process::ProcessStats) {
                 proc.pid,
                 proc.user,
                 proc.gpu,
-                proc.process_type,
+                proc.process_type.as_deref().unwrap_or("-"),
                 proc.state,
                 proc.cpu_percent,
                 format_size(proc.gpu_memory_kb),

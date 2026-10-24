@@ -80,13 +80,17 @@ fn the_cpu_split_accounts_for_the_whole_processor() {
         .cpu()
         .expect("CPU statistics must be readable on macOS");
 
-    let total = cpu.total.user + cpu.total.nice + cpu.total.system + cpu.total.idle;
+    let nice = cpu
+        .total
+        .nice
+        .expect("macOS total nice time is read from the ticks");
+    let total = cpu.total.user + nice + cpu.total.system + cpu.total.idle;
     assert!(
         (95.0..=105.0).contains(&total),
         "user {} + nice {} + system {} + idle {} = {total}, which does not account \
          for the processor — the `top` line was probably misparsed",
         cpu.total.user,
-        cpu.total.nice,
+        nice,
         cpu.total.system,
         cpu.total.idle
     );
@@ -119,26 +123,19 @@ fn every_logical_core_is_enumerated() {
     );
 }
 
-/// Per-core figures come from `host_processor_info`. Each core's own split must
-/// account for that core — a core reporting a share of the *machine* rather than
-/// of itself is the mistake this catches.
+/// Per-core figures come from `host_processor_info`, which returns cumulative ticks.
+/// One sample yields an average since boot, not a current split, so no core reports
+/// one: the four fields are absent together until a reader keeps a previous sample.
 #[test]
-fn every_core_reports_its_own_complete_split() {
+fn a_single_sample_reports_no_per_core_split() {
     let ironmon = IronMonitor::new().expect("construct");
     let cpu = ironmon.cpu().expect("CPU statistics");
 
     for core in &cpu.cores {
-        let (user, nice, system, idle) = (
-            core.user.expect("per-core user"),
-            core.nice.expect("per-core nice"),
-            core.system.expect("per-core system"),
-            core.idle.expect("per-core idle"),
-        );
-
-        let total = user + nice + system + idle;
+        let split = [core.user, core.nice, core.system, core.idle];
         assert!(
-            (99.0..=101.0).contains(&total),
-            "core {} splits to {total}%, so its ticks were not read as one core's",
+            split.iter().all(Option::is_none),
+            "core {} reports a split from one sample of cumulative ticks",
             core.id
         );
     }
@@ -179,10 +176,10 @@ fn nice_time_is_a_reading_rather_than_a_placeholder() {
     let ironmon = IronMonitor::new().expect("construct");
     let cpu = ironmon.cpu().expect("CPU statistics");
 
+    let nice = cpu.total.nice.expect("macOS reports nice time");
     assert!(
-        (0.0..=100.0).contains(&cpu.total.nice),
-        "nice is {}%, which is not a percentage",
-        cpu.total.nice
+        (0.0..=100.0).contains(&nice),
+        "nice is {nice}%, which is not a percentage"
     );
 }
 

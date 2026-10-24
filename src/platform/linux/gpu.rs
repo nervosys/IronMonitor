@@ -109,7 +109,9 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
             // saying so.
             min: None,
             max: max_sm_clock,
-            governor: "nvml".to_string(),
+            // NVML reports no governor. This was the literal "nvml", the driver
+            // name, which is a source and not a governor.
+            governor: None,
             gpc: None,
         };
 
@@ -121,7 +123,8 @@ fn read_nvml_gpus() -> Result<HashMap<String, GpuInfo>> {
             gpu_type: GpuType::Discrete,
             status,
             frequency,
-            power_control: "nvml".to_string(),
+            // No power-control method is read here. This was the driver name.
+            power_control: None,
         };
 
         gpus.insert(name, info);
@@ -149,7 +152,9 @@ fn read_jetson_gpus() -> Result<HashMap<String, GpuInfo>> {
             gpu_type: GpuType::Integrated,
             status,
             frequency,
-            power_control: "sysfs".to_string(),
+            // No power-control method is read here. This was the source label
+            // "sysfs", which names where the file was found and not a method.
+            power_control: None,
         };
 
         gpus.insert(name, info);
@@ -167,10 +172,10 @@ fn read_igpu_status(device_path: &Path) -> Result<GpuStatus> {
         None
     };
 
+    // The raw mask, not a bool. `== 1` used to be stored here, which reported
+    // "masked" for any mask whose value was not 1 and discarded the rest.
     let tpc_pg_mask = if path_exists(device_path.join("tpc_pg_mask")) {
-        read_file_u32(device_path.join("tpc_pg_mask"))
-            .ok()
-            .map(|v| v == 1)
+        read_file_u32(device_path.join("tpc_pg_mask")).ok()
     } else {
         None
     };
@@ -210,8 +215,9 @@ fn read_igpu_status(device_path: &Path) -> Result<GpuStatus> {
 }
 
 fn read_igpu_frequency(frq_path: &str) -> Result<GpuFrequency> {
-    let governor = read_file_string(format!("{}/governor", frq_path))
-        .unwrap_or_else(|_| "unknown".to_string());
+    // Absent when the file cannot be read. This used to be the placeholder
+    // "unknown", which a caller could not tell from a governor of that name.
+    let governor = read_file_string(format!("{}/governor", frq_path)).ok();
 
     // devfreq reports kHz. Each read is `Option` because `read_file_u32`
     // returns one; this discarded it three times in three lines.

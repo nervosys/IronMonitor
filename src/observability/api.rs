@@ -794,12 +794,22 @@ impl ObservabilityApi {
                 let first_core = stats.cores.first();
                 let model = first_core.map(|c| c.model.clone()).unwrap_or_default();
                 let freq = first_core.and_then(|c| c.frequency.as_ref());
+                // The base (nominal) clock is cpufreq's `base_frequency`, in kHz, where
+                // the driver exposes it. This used to be the current clock, so the
+                // base figure moved with load.
+                let base_frequency_mhz = crate::platform::common::read_file_u32(
+                    "/sys/devices/system/cpu/cpu0/cpufreq/base_frequency",
+                )
+                .ok()
+                .map(|khz| khz / 1000);
                 return Some(CpuContext {
                     model,
                     vendor: String::new(), // parsed from model
-                    core_count: stats.cores.len(),
+                    // Physical cores, from the CPU identity probe. `cores.len()`
+                    // is the logical count, which the field used to hold.
+                    core_count: crate::cpu_microarch::physical_cores(),
                     thread_count: stats.cores.len(), // /proc doesn't distinguish easily
-                    base_frequency_mhz: freq.and_then(|f| f.current),
+                    base_frequency_mhz,
                     max_frequency_mhz: freq.and_then(|f| f.max),
                     l1_cache_kb: None,
                     l2_cache_kb: None,
@@ -818,9 +828,12 @@ impl ObservabilityApi {
                 return Some(CpuContext {
                     model,
                     vendor: String::new(),
-                    core_count: stats.cores.len(),
+                    core_count: crate::cpu_microarch::physical_cores(),
                     thread_count: stats.cores.len(),
-                    base_frequency_mhz: freq.and_then(|f| f.current),
+                    // Not read here. The Windows figure is `CurrentMhz`, whose meaning
+                    // the frequency reader itself disputes, so it is not published as a
+                    // base clock. This used to be that figure.
+                    base_frequency_mhz: None,
                     max_frequency_mhz: freq.and_then(|f| f.max),
                     l1_cache_kb: None,
                     l2_cache_kb: None,

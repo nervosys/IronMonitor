@@ -34,8 +34,9 @@ pub struct GpuFrequency {
     pub min: Option<u32>,
     /// Maximum frequency in MHz, or `None` where not read.
     pub max: Option<u32>,
-    /// Frequency governor
-    pub governor: String,
+    /// Frequency governor, or `None` where none was read. NVML and Windows
+    /// adapters have no governor; the field used to hold the driver name.
+    pub governor: Option<String>,
     /// GPC frequencies for Orin/Thor series (optional)
     pub gpc: Option<Vec<u32>>,
 }
@@ -53,8 +54,8 @@ pub struct GpuStatus {
     pub load: Option<f32>,
     /// Railgate status (Jetson only)
     pub railgate: Option<bool>,
-    /// TPC PG mask status (Jetson only)
-    pub tpc_pg_mask: Option<bool>,
+    /// Raw TPC power-gating mask (Jetson only), as the driver exposes it.
+    pub tpc_pg_mask: Option<u32>,
     /// 3D scaling enabled (Jetson only)
     pub scaling_3d: Option<bool>,
     /// Memory used in bytes
@@ -80,8 +81,9 @@ pub struct GpuInfo {
     pub status: GpuStatus,
     /// Frequency information
     pub frequency: GpuFrequency,
-    /// Power control method
-    pub power_control: String,
+    /// Power control method, or `None` where none was read. The value used to be
+    /// the driver name ("nvml", "sysfs"), which names a source, not a method.
+    pub power_control: Option<String>,
 }
 
 /// GPU statistics container

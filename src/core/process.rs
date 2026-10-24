@@ -11,8 +11,8 @@ pub struct ProcessInfo {
     pub user: String,
     /// GPU used (I = Integrated, dX = Discrete)
     pub gpu: String,
-    /// Process type (Graphic, System, etc.)
-    pub process_type: String,
+    /// Process type (Graphic, System, etc.), or `None` where it was not read.
+    pub process_type: Option<String>,
     /// Priority
     pub priority: i32,
     /// Process state (R, S, D, Z, T, etc.)
@@ -275,7 +275,9 @@ pub(crate) mod linux {
             pid,
             user: user.to_string(),
             gpu: "I".to_string(), // Integrated GPU
-            process_type: "Graphic".to_string(),
+            // Not read. This was "Graphic" on every process, the same constant
+            // the Windows reader used to report as "System".
+            process_type: None,
             priority,
             state,
             cpu_percent,

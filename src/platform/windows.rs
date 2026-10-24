@@ -55,21 +55,25 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     let per_core = read_per_core_utilization(cpu_count);
 
     for cpu_id in 0..cpu_count {
-        let (core_user, core_system, core_idle) = match per_core {
-            Some(ref cores) => match cores.get(cpu_id) {
-                Some(&(u, s, i)) => (Some(u), Some(s), Some(i)),
-                None => (None, None, None),
-            },
+        let (core_user, core_system, core_idle) = match per_core
+            .as_ref()
+            .and_then(|cores| cores.get(cpu_id))
+            .copied()
+            .flatten()
+        {
+            Some((u, s, i)) => (Some(u), Some(s), Some(i)),
             None => (None, None, None),
         };
 
         let core = CpuCore {
             id: cpu_id,
             online: true,
-            governor: "windows".to_string(),
+            // Windows has no cpufreq governor. This was the literal "windows".
+            governor: None,
             frequency: get_cpu_frequency(power.as_ref(), cpu_id, delivered.as_ref()),
             user: core_user,
-            nice: Some(0.0), // Windows doesn't have nice
+            // Windows has no nice time. This was `Some(0.0)`.
+            nice: None,
             system: core_system,
             idle: core_idle,
             model: model.clone(),
@@ -80,7 +84,8 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
     // Set totals
     stats.total = CpuTotal {
         user: user_percent,
-        nice: 0.0,
+        // Windows has no nice time. This was a literal 0.0.
+        nice: None,
         system: system_percent,
         idle: idle_percent,
     };
@@ -381,53 +386,50 @@ pub(crate) fn is_elevated() -> Option<bool> {
     Some(elevation.TokenIsElevated != 0)
 }
 
-/// Per-core `(user, system, idle)` percentages.
+/// Per-core `(user, system, idle)` percentages, one entry per core. An entry is
+/// `None` where no figure was read.
 ///
-/// The first call has no previous sample to difference against, so it reports each
-/// core's average since boot — genuinely per-core, just averaged over uptime. Every
-/// later call reports the delta since the previous call, which is the instantaneous
-/// figure callers expect.
-fn read_per_core_utilization(cpu_count: usize) -> Option<Vec<(f32, f32, f32)>> {
+/// A percentage is the share of the interval between two samples, so the first call
+/// has no interval and reports nothing: it stores its sample and returns `None` for
+/// every core. This used to report each core's average since boot under the name of
+/// the current figure. A core whose counters did not move has no interval to share
+/// out either, and is `None` rather than the fully idle `(0, 0, 100)` it used to be.
+fn read_per_core_utilization(cpu_count: usize) -> Option<Vec<Option<(f32, f32, f32)>>> {
     let current = query_per_core_times(cpu_count)?;
 
     let lock = PREV_PER_CORE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
     let mut previous = lock.lock().ok()?;
 
-    let use_deltas = previous.len() == current.len();
-
-    let result = current
-        .iter()
-        .enumerate()
-        .map(|(i, now)| {
-            let (idle, kernel, user) = if use_deltas {
+    // Only a sample of the same length can be differenced against.
+    let result = if previous.len() == current.len() {
+        current
+            .iter()
+            .enumerate()
+            .map(|(i, now)| {
                 let before = &previous[i];
-                (
-                    now.idle_time.saturating_sub(before.idle_time),
-                    now.kernel_time.saturating_sub(before.kernel_time),
-                    now.user_time.saturating_sub(before.user_time),
-                )
-            } else {
-                (now.idle_time, now.kernel_time, now.user_time)
-            };
+                let idle = now.idle_time.saturating_sub(before.idle_time);
+                let kernel = now.kernel_time.saturating_sub(before.kernel_time);
+                let user = now.user_time.saturating_sub(before.user_time);
 
-            // kernel_time includes idle_time, so system time is the remainder.
-            let system = kernel.saturating_sub(idle);
-            let total = idle + system + user;
+                // kernel_time includes idle_time, so system time is the remainder.
+                let system = kernel.saturating_sub(idle);
+                let total = idle + system + user;
 
-            if total <= 0 {
-                // No elapsed time between samples — report fully idle rather than
-                // dividing by zero.
-                return (0.0, 0.0, 100.0);
-            }
+                if total <= 0 {
+                    return None;
+                }
 
-            let total = total as f32;
-            (
-                (user as f32 / total) * 100.0,
-                (system as f32 / total) * 100.0,
-                (idle as f32 / total) * 100.0,
-            )
-        })
-        .collect();
+                let total = total as f32;
+                Some((
+                    (user as f32 / total) * 100.0,
+                    (system as f32 / total) * 100.0,
+                    (idle as f32 / total) * 100.0,
+                ))
+            })
+            .collect()
+    } else {
+        vec![None; current.len()]
+    };
 
     *previous = current;
     Some(result)
@@ -981,7 +983,7 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
             max: di.clocks.graphics_max,
             // `governor` is a Linux DVFS concept; Windows has no equivalent, and
             // naming the vendor here would present it as one.
-            governor: String::new(),
+            governor: None,
             gpc: None,
         };
 
@@ -993,7 +995,9 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
             },
             status,
             frequency,
-            power_control: si.vendor.to_string(),
+            // Not read. This was the vendor name, which identifies the adapter and
+            // does not name a power-control method.
+            power_control: None,
         };
 
         // `GpuStats` is keyed by name, and identical cards are common (two
@@ -1445,7 +1449,9 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
                         pid,
                         user: String::new(), // Would need additional API calls
                         gpu: String::new(),
-                        process_type: "System".to_string(),
+                        // Not read. This was "System" on every process, which
+                        // is not a classification the process table carries.
+                        process_type: None,
                         priority: entry.pcPriClassBase as i32,
                         state,
                         cpu_percent,
@@ -1825,16 +1831,24 @@ mod tests {
             );
         }
 
-        // Percentages must still be well-formed, whatever the load happens to be.
+        // A percentage is a share of the interval between two samples. The first call
+        // stores its sample and reports nothing, so take a second one after an
+        // interval, and check the figures it yields are well-formed.
+        let _ = read_per_core_utilization(cpu_count);
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let cores = read_per_core_utilization(cpu_count).expect("per-core utilization");
-        for (i, (user, system, idle)) in cores.iter().enumerate() {
+        for (i, entry) in cores.iter().enumerate() {
+            // An entry is `None` where no time elapsed on that core; nothing to check.
+            let Some((user, system, idle)) = *entry else {
+                continue;
+            };
             let total = user + system + idle;
             assert!(
                 (total - 100.0).abs() < 1.0,
                 "core {i} percentages sum to {total}, expected ~100"
             );
             assert!(
-                (0.0..=100.0).contains(idle),
+                (0.0..=100.0).contains(&idle),
                 "core {i} idle {idle} out of range"
             );
         }

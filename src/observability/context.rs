@@ -61,7 +61,9 @@ impl SystemContext {
             timestamp: self.timestamp,
             hostname: self.system.hostname.clone(),
             os: self.system.os_name.clone(),
-            cpu_count: self.hardware.cpu.as_ref().map(|c| c.core_count),
+            // `cpu_count` has always been the logical count, which `thread_count`
+            // holds. It is left logical rather than changed to the physical count.
+            cpu_count: self.hardware.cpu.as_ref().map(|c| c.thread_count),
             gpu_count: self.hardware.gpus.len(),
             memory_total_gb: self.hardware.memory.as_ref().map(|m| m.total_gb),
             alert_count: self.alerts.len(),
@@ -135,11 +137,13 @@ pub struct CpuContext {
     pub model: String,
     /// Vendor (Intel, AMD, Apple, etc.)
     pub vendor: String,
-    /// Number of physical cores
-    pub core_count: usize,
+    /// Number of physical cores, or `None` where no count was read. This was the
+    /// logical count, which `thread_count` already holds.
+    pub core_count: Option<usize>,
     /// Number of logical processors (with hyperthreading)
     pub thread_count: usize,
-    /// Base frequency in MHz
+    /// Base (nominal) frequency in MHz, or `None` where it was not read. This is
+    /// never the current clock.
     pub base_frequency_mhz: Option<u32>,
     /// Max boost frequency in MHz
     pub max_frequency_mhz: Option<u32>,

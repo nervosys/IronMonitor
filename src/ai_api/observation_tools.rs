@@ -1097,7 +1097,7 @@ mod tests {
                 cores: Vec::new(),
                 total: CpuTotal {
                     user: 100.0 - idle,
-                    nice: 0.0,
+                    nice: None,
                     system: 0.0,
                     idle,
                 },

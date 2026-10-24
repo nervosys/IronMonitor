@@ -579,7 +579,8 @@ mod macos_stats {
                         CpuCore {
                             id,
                             online: true,
-                            governor: String::new(),
+                            // macOS exposes no governor.
+                            governor: None,
                             frequency: None,
                             user: split.map(|s| s.user),
                             nice: split.map(|s| s.nice),
@@ -594,7 +595,7 @@ mod macos_stats {
                     cores,
                     total: CpuTotal {
                         user: total.user,
-                        nice: total.nice,
+                        nice: Some(total.nice),
                         system: total.system,
                         idle: total.idle,
                     },
@@ -616,7 +617,7 @@ mod macos_stats {
             .map(|id| CpuCore {
                 id,
                 online: true,
-                governor: String::new(),
+                governor: None,
                 frequency: None,
                 // One aggregate copied into every core would present an average as
                 // a per-core measurement.
@@ -632,9 +633,9 @@ mod macos_stats {
             cores,
             total: CpuTotal {
                 user: usage.user,
-                // `top` does not separate nice time. Only reachable on the
-                // fallback path; the primary one reports it properly.
-                nice: 0.0,
+                // `top` does not separate nice time, so none is reported. This was
+                // a literal 0.0. Only reachable on the fallback path.
+                nice: None,
                 system: usage.system,
                 idle: usage.idle,
             },

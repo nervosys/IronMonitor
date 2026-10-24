@@ -42,8 +42,9 @@ pub struct CpuCore {
     pub id: usize,
     /// Online status
     pub online: bool,
-    /// Governor type
-    pub governor: String,
+    /// Governor type, or `None` where the kernel's governor was not read. A driver
+    /// name is not a governor, so no reader fills this with one.
+    pub governor: Option<String>,
     /// Frequency information
     pub frequency: Option<CpuFrequency>,
     /// User mode utilization percentage
@@ -63,8 +64,9 @@ pub struct CpuCore {
 pub struct CpuTotal {
     /// Total user mode percentage
     pub user: f32,
-    /// Total nice mode percentage
-    pub nice: f32,
+    /// Total nice mode percentage, or `None` where the source has no nice time.
+    /// Windows has no nice concept, and `top` does not separate it.
+    pub nice: Option<f32>,
     /// Total system mode percentage
     pub system: f32,
     /// Total idle percentage
@@ -96,7 +98,7 @@ impl CpuStats {
             cores: Vec::new(),
             total: CpuTotal {
                 user: 0.0,
-                nice: 0.0,
+                nice: None,
                 system: 0.0,
                 idle: 100.0,
             },

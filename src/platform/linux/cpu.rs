@@ -116,7 +116,8 @@ fn read_cpu_core(cpu_id: usize, cpu_times: &[(String, Vec<u64>)]) -> Result<CpuC
 
     // Read governor
     let governor_path = format!("{}/cpufreq/scaling_governor", cpu_path);
-    let governor = read_file_string(&governor_path).unwrap_or_else(|_| "unknown".to_string());
+    // Absent when unreadable. This used to be the placeholder "unknown".
+    let governor = read_file_string(&governor_path).ok();
 
     // Read frequency
     let frequency = if online {
@@ -168,12 +169,20 @@ pub fn read_cpu_temperature(cpu_id: usize) -> Option<i32> {
         return Some(temp);
     }
 
-    // Try coretemp
-    if let Some(temp) = read_coretemp_temperature(cpu_id) {
-        return Some(temp);
-    }
-
+    // There is no further fallback. The old coretemp step read the package
+    // temperature (hwmon0/temp1_input or thermal_zone0) and reported it for
+    // every core, so a per-core reading was the package value. An unmatched
+    // core is now None.
     None
+}
+
+/// Whether a hwmon `temp*_label` names exactly this core.
+///
+/// The comparison is exact after trimming. A substring match is wrong:
+/// "Core 1" is contained in "Core 10", and the label of the package sensor,
+/// "Package id 0", names no core at all.
+fn is_core_label(label: &str, cpu_id: usize) -> bool {
+    label.trim() == format!("Core {}", cpu_id)
 }
 
 fn read_hwmon_temperature(cpu_id: usize) -> Option<i32> {
@@ -197,8 +206,7 @@ fn read_hwmon_temperature(cpu_id: usize) -> Option<i32> {
                         let input_path = hwmon_path.join(format!("temp{}_input", i));
 
                         if let Ok(label) = fs::read_to_string(&label_path) {
-                            let label = label.trim();
-                            if label.contains(&format!("Core {}", cpu_id)) {
+                            if is_core_label(&label, cpu_id) {
                                 if let Ok(temp_str) = fs::read_to_string(&input_path) {
                                     if let Ok(temp_millic) = temp_str.trim().parse::<i32>() {
                                         return Some(temp_millic / 1000); // Convert to Celsius
@@ -223,10 +231,10 @@ fn read_thermal_zone_temperature(cpu_id: usize) -> Option<i32> {
 
             if let Ok(zone_type) = fs::read_to_string(zone_path.join("type")) {
                 let zone_type = zone_type.trim();
-                if zone_type.contains(&format!("cpu{}", cpu_id))
-                    || zone_type.contains(&format!("core{}", cpu_id))
-                    || zone_type.contains(&"x86_pkg_temp".to_string())
-                {
+                // `x86_pkg_temp` is the package zone. It used to match here, so
+                // every core reported the package temperature. It is no longer a
+                // per-core match.
+                if zone_type == format!("cpu{}", cpu_id) || zone_type == format!("core{}", cpu_id) {
                     if let Ok(temp_str) = fs::read_to_string(zone_path.join("temp")) {
                         if let Ok(temp_millic) = temp_str.trim().parse::<i32>() {
                             return Some(temp_millic / 1000); // Convert to Celsius
@@ -236,25 +244,6 @@ fn read_thermal_zone_temperature(cpu_id: usize) -> Option<i32> {
             }
         }
     }
-    None
-}
-
-fn read_coretemp_temperature(_cpu_id: usize) -> Option<i32> {
-    // Fallback: try the package temperature as an approximation
-    let paths = [
-        "/sys/class/hwmon/hwmon0/temp1_input",
-        "/sys/class/hwmon/hwmon1/temp1_input",
-        "/sys/class/thermal/thermal_zone0/temp",
-    ];
-
-    for path in &paths {
-        if let Ok(temp_str) = fs::read_to_string(path) {
-            if let Ok(temp_millic) = temp_str.trim().parse::<i32>() {
-                return Some(temp_millic / 1000);
-            }
-        }
-    }
-
     None
 }
 
@@ -376,7 +365,7 @@ fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Optio
         {
             return Some(CpuTotal {
                 user,
-                nice,
+                nice: Some(nice),
                 system,
                 idle,
             });
@@ -395,7 +384,7 @@ fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Optio
     let mean = |pick: fn(&(f32, f32, f32, f32)) -> f32| read.iter().map(pick).sum::<f32>() / count;
     Some(CpuTotal {
         user: mean(|r| r.0),
-        nice: mean(|r| r.1),
+        nice: Some(mean(|r| r.1)),
         system: mean(|r| r.2),
         idle: mean(|r| r.3),
     })
@@ -404,6 +393,18 @@ fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_core_label_names_exactly_one_core() {
+        // Captured coretemp labels: "Core 1" and "Core 10" are distinct cores.
+        assert!(is_core_label("Core 1", 1));
+        assert!(is_core_label("Core 10\n", 10));
+        assert!(!is_core_label("Core 10", 1));
+        assert!(!is_core_label("Core 1", 10));
+        // The package sensor names no core.
+        assert!(!is_core_label("Package id 0", 0));
+        assert!(!is_core_label("Core 0", 1));
+    }
 
     #[test]
     fn cpu_n_directories_are_told_from_the_other_cpu_entries() {
