@@ -133,10 +133,13 @@ pub struct HardwareContext {
 /// CPU context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuContext {
-    /// CPU model name
-    pub model: String,
-    /// Vendor (Intel, AMD, Apple, etc.)
-    pub vendor: String,
+    /// CPU model name, or `None` where the platform reported none. This used to
+    /// be an empty string, which read as a name.
+    pub model: Option<String>,
+    /// CPU vendor string as CPUID reports it (e.g. "GenuineIntel", "AuthenticAMD"),
+    /// or `None` where it was not read. Not parsed from the model name, which
+    /// used to fill this field with an empty string.
+    pub vendor: Option<String>,
     /// Number of physical cores, or `None` where no count was read. This was the
     /// logical count, which `thread_count` already holds.
     pub core_count: Option<usize>,
@@ -182,10 +185,12 @@ pub struct GpuContext {
 /// PCIe context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcieContext {
-    /// PCIe generation (1-6)
-    pub generation: u8,
-    /// Link width (lanes)
-    pub width: u8,
+    /// PCIe generation (1-6), or `None` where the link was not read. This used
+    /// to be a literal `0`, which is not a generation.
+    pub generation: Option<u8>,
+    /// Link width in lanes, or `None` where the link was not read. This used
+    /// to be a literal `0`, which is not a width.
+    pub width: Option<u8>,
     /// Bus ID
     pub bus_id: Option<String>,
 }
@@ -230,8 +235,9 @@ pub struct DiskContext {
 pub struct NetworkInterfaceContext {
     /// Interface name
     pub name: String,
-    /// Interface type (ethernet, wifi, loopback, etc.)
-    pub interface_type: String,
+    /// Interface type (ethernet, wifi, loopback), or `None` where the platform
+    /// did not report it. Previously guessed from name prefixes such as "wl".
+    pub interface_type: Option<String>,
     /// MAC address
     pub mac_address: Option<String>,
     /// IPv4 addresses, or `None` where the platform did not enumerate them.
@@ -250,10 +256,12 @@ pub struct NetworkInterfaceContext {
 /// Motherboard context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MotherboardContext {
-    /// Manufacturer
-    pub manufacturer: String,
-    /// Product name
-    pub product: String,
+    /// Manufacturer, or `None` where the platform reported none. This used to be
+    /// an empty string.
+    pub manufacturer: Option<String>,
+    /// Product name, or `None` where the platform reported none. This used to be
+    /// an empty string.
+    pub product: Option<String>,
     /// BIOS vendor
     pub bios_vendor: Option<String>,
     /// BIOS version

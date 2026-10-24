@@ -792,7 +792,9 @@ impl ObservabilityApi {
             use crate::platform::linux::cpu;
             if let Ok(stats) = cpu::read_cpu_stats() {
                 let first_core = stats.cores.first();
-                let model = first_core.map(|c| c.model.clone()).unwrap_or_default();
+                let model = first_core
+                    .map(|c| c.model.clone())
+                    .filter(|m| !m.trim().is_empty());
                 let freq = first_core.and_then(|c| c.frequency.as_ref());
                 // The base (nominal) clock is cpufreq's `base_frequency`, in kHz, where
                 // the driver exposes it. This used to be the current clock, so the
@@ -804,7 +806,7 @@ impl ObservabilityApi {
                 .map(|khz| khz / 1000);
                 return Some(CpuContext {
                     model,
-                    vendor: String::new(), // parsed from model
+                    vendor: cpu_vendor_id(),
                     // Physical cores, from the CPU identity probe. `cores.len()`
                     // is the logical count, which the field used to hold.
                     core_count: crate::cpu_microarch::physical_cores(),
@@ -823,11 +825,13 @@ impl ObservabilityApi {
             use crate::platform::windows;
             if let Ok(stats) = windows::read_cpu_stats() {
                 let first_core = stats.cores.first();
-                let model = first_core.map(|c| c.model.clone()).unwrap_or_default();
+                let model = first_core
+                    .map(|c| c.model.clone())
+                    .filter(|m| !m.trim().is_empty());
                 let freq = first_core.and_then(|c| c.frequency.as_ref());
                 return Some(CpuContext {
                     model,
-                    vendor: String::new(),
+                    vendor: cpu_vendor_id(),
                     core_count: crate::cpu_microarch::physical_cores(),
                     thread_count: stats.cores.len(),
                     // Not read here. The Windows figure is `CurrentMhz`, whose meaning
@@ -861,15 +865,14 @@ impl ObservabilityApi {
                             .static_info
                             .compute_capability
                             .map(|(major, minor)| format!("{}.{}", major, minor)),
-                        pcie: snap
-                            .static_info
-                            .pci_bus_id
-                            .as_ref()
-                            .map(|bus_id| PcieContext {
-                                generation: 0,
-                                width: 0,
+                        pcie: snap.static_info.pci_bus_id.as_ref().map(|bus_id| {
+                            let (generation, width) = pcie_link_of(bus_id);
+                            PcieContext {
+                                generation,
+                                width,
                                 bus_id: Some(bus_id.clone()),
-                            }),
+                            }
+                        }),
                         capabilities: Vec::new(),
                     });
                 }
@@ -952,18 +955,7 @@ impl ObservabilityApi {
                 for iface in &ifaces {
                     result.push(NetworkInterfaceContext {
                         name: iface.name.clone(),
-                        interface_type: if iface.name.starts_with("lo")
-                            || iface.name == "Loopback Pseudo-Interface 1"
-                        {
-                            "loopback".to_string()
-                        } else if iface.name.starts_with("wl")
-                            || iface.name.contains("Wi-Fi")
-                            || iface.name.contains("Wireless")
-                        {
-                            "wifi".to_string()
-                        } else {
-                            "ethernet".to_string()
-                        },
+                        interface_type: interface_type_of(&iface.name),
                         mac_address: iface.mac_address.clone(),
                         ipv4_addresses: iface.ipv4_addresses.clone(),
                         ipv6_addresses: iface.ipv6_addresses.clone(),
@@ -981,8 +973,8 @@ impl ObservabilityApi {
         use crate::motherboard;
         if let Ok(sys_info) = motherboard::get_system_info() {
             return Some(MotherboardContext {
-                manufacturer: sys_info.manufacturer.unwrap_or_default(),
-                product: sys_info.product_name.unwrap_or_default(),
+                manufacturer: sys_info.manufacturer.filter(|s| !s.trim().is_empty()),
+                product: sys_info.product_name.filter(|s| !s.trim().is_empty()),
                 bios_vendor: sys_info.bios.vendor.clone(),
                 bios_version: sys_info.bios.version.clone(),
                 bios_date: sys_info.bios.release_date.clone(),
@@ -1349,9 +1341,134 @@ impl ObservabilityApi {
     }
 }
 
+/// CPU vendor string from CPUID leaf 0, as the CPU reports it ("GenuineIntel",
+/// "AuthenticAMD"). The model name is not parsed for it.
+#[cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    target_arch = "x86_64"
+))]
+fn cpu_vendor_id() -> Option<String> {
+    // Leaf 0 returns the 12-byte vendor string in EBX, EDX, ECX, in that order.
+    let leaf = std::arch::x86_64::__cpuid(0);
+    let bytes: Vec<u8> = [leaf.ebx, leaf.edx, leaf.ecx]
+        .iter()
+        .flat_map(|r| r.to_le_bytes())
+        .collect();
+    String::from_utf8(bytes).ok().filter(|s| !s.is_empty())
+}
+
+/// No CPUID on this architecture, so no vendor string is read here.
+#[cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    not(target_arch = "x86_64")
+))]
+fn cpu_vendor_id() -> Option<String> {
+    None
+}
+
+/// Negotiated PCIe `(generation, lane width)` for the device at `bus_id`, each
+/// `None` where it was not read. Only the Linux sysfs link is read: the Windows
+/// and macOS readers enumerate the whole bus on every refresh, which a per-GPU
+/// lookup should not repeat.
+fn pcie_link_of(bus_id: &str) -> (Option<u8>, Option<u8>) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(monitor) = crate::pci_devices::PciDeviceMonitor::new() {
+            let link = monitor
+                .devices()
+                .iter()
+                .find(|d| same_pci_address(&d.address, bus_id))
+                .and_then(|d| d.link_info.as_ref());
+            if let Some(link) = link {
+                // Width is rendered "x16"; the number after the x is the lane count.
+                let width = link
+                    .width
+                    .strip_prefix('x')
+                    .and_then(|w| w.parse::<u8>().ok());
+                return (link.generation, width);
+            }
+        }
+        (None, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bus_id;
+        (None, None)
+    }
+}
+
+/// Whether two PCI addresses name the same function. NVML writes the domain as
+/// eight hex digits ("00000000:01:00.0") and sysfs as four ("0000:01:00.0").
+#[cfg(any(target_os = "linux", test))]
+fn same_pci_address(a: &str, b: &str) -> bool {
+    fn key(s: &str) -> Option<[u32; 4]> {
+        let mut parts = s.trim().split([':', '.']);
+        let mut key = [0u32; 4];
+        for slot in key.iter_mut() {
+            *slot = u32::from_str_radix(parts.next()?, 16).ok()?;
+        }
+        parts.next().is_none().then_some(key)
+    }
+    matches!((key(a), key(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Interface type for a network interface, or `None` where the platform does
+/// not report one. Linux reads sysfs; Windows reports none here, since its
+/// adapter type needs a WMI query this path does not make.
+fn interface_type_of(name: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::path::Path::new("/sys/class/net").join(name);
+        // A wireless device has a `wireless` or `phy80211` link in sysfs whatever
+        // its ARP type says.
+        if base.join("wireless").exists() || base.join("phy80211").exists() {
+            return Some("wifi".to_string());
+        }
+        std::fs::read_to_string(base.join("type"))
+            .ok()
+            .and_then(|t| arphrd_interface_type(t.trim()).map(str::to_string))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = name;
+        None
+    }
+}
+
+/// Maps a Linux ARPHRD code from `/sys/class/net/<if>/type`. Codes not listed
+/// here are not classed, rather than guessed.
+#[cfg(any(target_os = "linux", test))]
+fn arphrd_interface_type(code: &str) -> Option<&'static str> {
+    match code {
+        "1" => Some("ethernet"),       // ARPHRD_ETHER
+        "772" => Some("loopback"),     // ARPHRD_LOOPBACK
+        "801" | "803" => Some("wifi"), // ARPHRD_IEEE80211, ARPHRD_IEEE80211_RADIOTAP
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pci_address_matches_across_domain_width() {
+        assert!(same_pci_address("00000000:01:00.0", "0000:01:00.0"));
+        assert!(same_pci_address("0000:01:00.0", "0000:01:00.0"));
+        assert!(!same_pci_address("0000:01:00.0", "0000:02:00.0"));
+        assert!(!same_pci_address("0000:01:00.0", "0000:01:00.1"));
+        assert!(!same_pci_address("garbage", "0000:01:00.0"));
+    }
+
+    #[test]
+    fn arp_type_codes_map_to_interface_types() {
+        assert_eq!(arphrd_interface_type("1"), Some("ethernet"));
+        assert_eq!(arphrd_interface_type("772"), Some("loopback"));
+        assert_eq!(arphrd_interface_type("801"), Some("wifi"));
+        // A type the table does not class is not guessed.
+        assert_eq!(arphrd_interface_type("65534"), None);
+        assert_eq!(arphrd_interface_type(""), None);
+    }
 
     #[test]
     fn test_rate_limit_info_serialization() {
