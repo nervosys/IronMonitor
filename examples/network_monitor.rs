@@ -71,10 +71,12 @@ fn main() -> Result<()> {
         for iface in &interfaces {
             let state = if iface.is_active() {
                 "  UP  "
-            } else if iface.is_up {
-                " UP-X "
             } else {
-                " DOWN "
+                match iface.is_up {
+                    Some(true) => " UP-X ",
+                    Some(false) => " DOWN ",
+                    None => "UNKNWN",
+                }
             };
 
             let errors = iface.total_errors();
@@ -151,9 +153,16 @@ fn main() -> Result<()> {
                 );
 
                 // Show IP addresses if available
-                if !iface.ipv4_addresses.is_empty() || !iface.ipv6_addresses.is_empty() {
+                let ipv4 = iface.ipv4_addresses.as_deref().unwrap_or(&[]);
+                if iface.ipv4_addresses.is_none()
+                    || !ipv4.is_empty()
+                    || !iface.ipv6_addresses.is_empty()
+                {
                     let mut ip_display = Vec::new();
-                    for ip in &iface.ipv4_addresses {
+                    if iface.ipv4_addresses.is_none() {
+                        ip_display.push("IPv4: unknown".to_string());
+                    }
+                    for ip in ipv4 {
                         ip_display.push(format!("IPv4: {}", ip));
                     }
                     for ip in &iface.ipv6_addresses {

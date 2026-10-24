@@ -23,7 +23,10 @@ pub enum BluetoothState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BluetoothDevice {
-    pub address: String,
+    /// The device's address, or `None` where it was not read. A peripheral
+    /// whose PnP id carries no address used to be given `00:00:00:00:00:00`,
+    /// which is a real (if reserved) address and not a missing one.
+    pub address: Option<String>,
     pub name: Option<String>,
     pub device_type: BluetoothDeviceType,
     pub state: BluetoothState,
@@ -336,8 +339,7 @@ impl BluetoothMonitor {
                 }
                 BtEntry::Peripheral => {
                     self.devices.push(BluetoothDevice {
-                        address: address_from_pnp_id(id)
-                            .unwrap_or_else(|| "00:00:00:00:00:00".to_string()),
+                        address: address_from_pnp_id(id),
                         name: (!name.is_empty()).then(|| name.to_string()),
                         device_type: device_type_from_name(name),
                         // A peripheral's PnP node exists, with status OK, once it
@@ -461,7 +463,7 @@ impl BluetoothMonitor {
                         let dtype = classify_bt_device(&name);
 
                         self.devices.push(BluetoothDevice {
-                            address,
+                            address: Some(address),
                             name: Some(name),
                             device_type: dtype,
                             state,
@@ -502,15 +504,23 @@ impl BluetoothMonitor {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("Bluetooth")
                                     .to_string();
-                                let powered =
-                                    ctrl.get("controller_powerState").and_then(|v| v.as_str())
-                                        == Some("attrib_on");
+                                // A missing or unrecognised state is `None`. It used to
+                                // compare equal to "attrib_on" or not, so a missing
+                                // field read as the radio being off.
+                                let powered = match ctrl
+                                    .get("controller_powerState")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    Some("attrib_on") => Some(true),
+                                    Some("attrib_off") => Some(false),
+                                    _ => None,
+                                };
 
                                 self.adapters.push(BluetoothAdapter {
                                     id: "bt0".to_string(),
                                     name,
                                     address,
-                                    powered: Some(powered),
+                                    powered,
                                 });
                             }
 
@@ -522,8 +532,7 @@ impl BluetoothMonitor {
                                     let address = dev_info
                                         .get("device_address")
                                         .and_then(|v| v.as_str())
-                                        .unwrap_or("00:00:00:00:00:00")
-                                        .to_string();
+                                        .and_then(normalise_bd_address);
                                     let dtype = classify_bt_device(dev_name);
 
                                     self.devices.push(BluetoothDevice {
@@ -589,7 +598,11 @@ impl BluetoothMonitor {
                 address
             )));
         }
-        if let Some(device) = self.devices.iter_mut().find(|d| d.address == address) {
+        if let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.address.as_deref() == Some(address))
+        {
             device.state = BluetoothState::Connected;
         }
         Ok(())
@@ -603,7 +616,11 @@ impl BluetoothMonitor {
                 address
             )));
         }
-        if let Some(device) = self.devices.iter_mut().find(|d| d.address == address) {
+        if let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.address.as_deref() == Some(address))
+        {
             device.state = BluetoothState::Disconnected;
         }
         Ok(())
@@ -789,7 +806,7 @@ mod tests {
     #[test]
     fn test_bluetooth_device_serialization() {
         let device = BluetoothDevice {
-            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            address: Some("AA:BB:CC:DD:EE:FF".to_string()),
             name: Some("Test Device".to_string()),
             device_type: BluetoothDeviceType::Headset,
             state: BluetoothState::Connected,

@@ -216,8 +216,8 @@ pub struct NetworkState {
     /// Interface name
     pub name: String,
 
-    /// Is interface up
-    pub is_up: bool,
+    /// Is interface up, or `None` where the state was not read
+    pub is_up: Option<bool>,
 
     /// Bytes received
     pub rx_bytes: u64,

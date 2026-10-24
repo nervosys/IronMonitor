@@ -64,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let name = device.name.as_deref().unwrap_or("Unknown Device");
         println!("  {} {}", type_emoji, name);
-        println!("    Address: {}", device.address);
+        println!(
+            "    Address: {}",
+            device.address.as_deref().unwrap_or("not read")
+        );
         println!("    Type: {:?}", device.device_type);
         println!("    State: {}", state_str);
         if let Some(battery) = device.battery_percent {

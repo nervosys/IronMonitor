@@ -58,6 +58,14 @@ pub enum UseCase {
     /// idle machine is not the right profile for a busy one, and "no evidence of
     /// load" is a finding rather than a failure to classify.
     Idle,
+    /// The readings needed to tell the cases apart were not obtained. Not a
+    /// use case the machine is in, so no setting has a policy for it and
+    /// `ironmon tune` recommends nothing. Not offered as a model choice, and
+    /// not accepted by [`UseCase::parse`].
+    ///
+    /// Classifying with a missing reading used to substitute 0% for it, and
+    /// an absent GPU or CPU then read as an idle machine at 0.8 confidence.
+    Unknown,
 }
 
 impl UseCase {
@@ -68,6 +76,7 @@ impl UseCase {
             Self::Gaming => "gaming",
             Self::Interactive => "interactive",
             Self::Idle => "idle",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -273,29 +282,46 @@ pub fn classify_from_signals(signals: &Signals) -> Classification {
         };
     }
 
-    let gpu = signals.gpu_utilization.unwrap_or(0.0);
-    let cpu = signals.cpu_utilization.unwrap_or(0.0);
-
-    if gpu <= IDLE_GPU_PERCENT && cpu <= IDLE_CPU_PERCENT {
-        evidence.push("neither processor is meaningfully busy".to_string());
-        return Classification {
-            use_case: UseCase::Idle,
-            confidence: 0.8,
-            method: Method::Signals,
-            evidence,
-        };
+    // A reading that was not obtained is not 0%. Idle needs both processors to be
+    // measured and quiet; the heavy-GPU case needs the GPU measured; anything
+    // else needs both measured to say "some load". Otherwise the answer is unknown.
+    if let (Some(gpu), Some(cpu)) = (signals.gpu_utilization, signals.cpu_utilization) {
+        if gpu <= IDLE_GPU_PERCENT && cpu <= IDLE_CPU_PERCENT {
+            evidence.push("neither processor is meaningfully busy".to_string());
+            return Classification {
+                use_case: UseCase::Idle,
+                confidence: 0.8,
+                method: Method::Signals,
+                evidence,
+            };
+        }
     }
 
-    if gpu >= HEAVY_GPU_PERCENT {
-        // Sustained GPU load with nothing identifying it. Worth reporting as
-        // *something* graphical, at low confidence, rather than as idle.
-        evidence.push(format!(
-            "sustained GPU load with no identified workload; {gpu:.0}% is consistent \
-             with graphics or compute this classifier cannot name"
-        ));
+    if let Some(gpu) = signals.gpu_utilization {
+        if gpu >= HEAVY_GPU_PERCENT {
+            // Sustained GPU load with nothing identifying it. Worth reporting as
+            // *something* graphical, at low confidence, rather than as idle.
+            evidence.push(format!(
+                "sustained GPU load with no identified workload; {gpu:.0}% is consistent \
+                 with graphics or compute this classifier cannot name"
+            ));
+            return Classification {
+                use_case: UseCase::Gaming,
+                confidence: 0.4,
+                method: Method::Signals,
+                evidence,
+            };
+        }
+    }
+
+    if signals.gpu_utilization.is_none() || signals.cpu_utilization.is_none() {
+        evidence.push(
+            "a utilisation reading needed to classify was not obtained; no use case is inferred"
+                .to_string(),
+        );
         return Classification {
-            use_case: UseCase::Gaming,
-            confidence: 0.4,
+            use_case: UseCase::Unknown,
+            confidence: 0.0,
             method: Method::Signals,
             evidence,
         };
@@ -335,6 +361,12 @@ No explanation, no punctuation, no formatting.";
 /// the answer does not name a use case.
 pub fn classify(signals: &Signals) -> Classification {
     let baseline = classify_from_signals(signals);
+
+    // A model sees the same readings, and with one missing it has nothing better
+    // to choose from than the signal path does, so it is not asked.
+    if baseline.use_case == UseCase::Unknown {
+        return baseline;
+    }
 
     #[cfg(feature = "remote-backends")]
     {
@@ -863,22 +895,62 @@ mod tests {
         assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
     }
 
-    /// An absent GPU reading is not 0% — but for the idle test it has to be
-    /// treated as "no evidence of GPU load", which is different from asserting
-    /// the GPU is idle. The evidence string has to say which.
+    /// An absent GPU reading is not 0%, and an idle verdict needs it measured.
+    /// With the GPU missing and the CPU quiet, the answer is unknown, and the
+    /// evidence says the GPU was not reported.
     #[test]
-    fn a_missing_gpu_reading_is_described_as_missing() {
+    fn a_missing_gpu_reading_is_unknown_not_idle() {
         let signals = Signals {
             gpu_utilization: None,
             cpu_utilization: Some(2.0),
             ..Default::default()
         };
         let c = classify_from_signals(&signals);
+        assert_eq!(c.use_case, UseCase::Unknown);
         assert!(
             c.evidence.iter().any(|e| e.contains("no GPU reported")),
             "evidence must distinguish an absent reading from a zero: {:?}",
             c.evidence
         );
+    }
+
+    /// The idle verdict used to come from `unwrap_or(0.0)` on both readings, so
+    /// an unreadable CPU was an idle CPU at 0.8 confidence.
+    #[test]
+    fn a_missing_cpu_reading_is_unknown_not_idle() {
+        let signals = Signals {
+            gpu_utilization: Some(1.0),
+            cpu_utilization: None,
+            ..Default::default()
+        };
+        let c = classify_from_signals(&signals);
+        assert_eq!(c.use_case, UseCase::Unknown);
+        assert_eq!(c.confidence, 0.0);
+        assert_eq!(classify(&signals).use_case, UseCase::Unknown);
+    }
+
+    /// Both readings measured and quiet is still idle.
+    #[test]
+    fn measured_quiet_readings_are_still_idle() {
+        let signals = Signals {
+            gpu_utilization: Some(1.0),
+            cpu_utilization: Some(2.0),
+            ..Default::default()
+        };
+        assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
+    }
+
+    /// Unknown names no setting: `ironmon tune` must recommend nothing for it.
+    #[test]
+    fn unknown_has_no_policy_for_any_setting() {
+        for id in [
+            "active_scheme_guid",
+            "scaling_governor",
+            "power_dpm_force_performance_level",
+            "persistence_mode",
+        ] {
+            assert!(policy_for(id, UseCase::Unknown).is_none(), "{id}");
+        }
     }
 
     #[test]
@@ -922,6 +994,8 @@ mod tests {
             assert_eq!(UseCase::parse(uc.as_str()), Some(uc));
         }
         assert_eq!(UseCase::parse("nonsense"), None);
+        // Not a choice the classifier or a model may force.
+        assert_eq!(UseCase::parse("unknown"), None);
     }
 
     /// Classification is a judgement and always carries its evidence; a verdict

@@ -4577,31 +4577,52 @@ impl IronMonitorApp {
                                     .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                             );
                             ui.label(
-                                RichText::new(if iface.is_up { "UP" } else { "DOWN" }).color(
-                                    theme::color(
-                                        ui.ctx(),
-                                        if iface.is_up {
+                                RichText::new(match iface.is_up {
+                                    Some(true) => "UP",
+                                    Some(false) => "DOWN",
+                                    None => "unknown",
+                                })
+                                .color(theme::color(
+                                    ui.ctx(),
+                                    match iface.is_up {
+                                        Some(true) => {
                                             theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                        } else {
+                                        }
+                                        Some(false) => {
                                             theme::color(&palette_ctx, CyberColors::ERROR)
-                                        },
-                                    ),
-                                ),
+                                        }
+                                        None => {
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
+                                        }
+                                    },
+                                )),
                             );
 
-                            if !iface.ipv4_addresses.is_empty() {
-                                ui.separator();
-                                ui.label(RichText::new("IPv4:").color(theme::color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )));
-                                for ip in &iface.ipv4_addresses {
-                                    ui.label(
-                                        RichText::new(ip)
-                                            .color(theme::color(&palette_ctx, iface_color))
-                                            .monospace(),
-                                    );
+                            // `None` means the platform did not enumerate addresses,
+                            // which is not the same as having none.
+                            match &iface.ipv4_addresses {
+                                None => {
+                                    ui.separator();
+                                    ui.label(RichText::new("IPv4: unknown").color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
                                 }
+                                Some(ips) if !ips.is_empty() => {
+                                    ui.separator();
+                                    ui.label(RichText::new("IPv4:").color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
+                                    for ip in ips {
+                                        ui.label(
+                                            RichText::new(ip)
+                                                .color(theme::color(&palette_ctx, iface_color))
+                                                .monospace(),
+                                        );
+                                    }
+                                }
+                                Some(_) => {}
                             }
                         });
 

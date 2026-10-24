@@ -230,14 +230,17 @@ pub struct NetworkInterfaceContext {
     pub interface_type: String,
     /// MAC address
     pub mac_address: Option<String>,
-    /// IP addresses
-    pub ip_addresses: Vec<String>,
+    /// IPv4 addresses, or `None` where the platform did not enumerate them.
+    /// `Some(empty)` is enumerated and none present.
+    pub ipv4_addresses: Option<Vec<String>>,
+    /// IPv6 addresses
+    pub ipv6_addresses: Vec<String>,
     /// Link speed in Mbps
     pub speed_mbps: Option<u32>,
     /// MTU
     pub mtu: Option<u32>,
-    /// Whether interface is up
-    pub is_up: bool,
+    /// Whether interface is up, or `None` where the state was not read
+    pub is_up: Option<bool>,
 }
 
 /// Motherboard context

@@ -138,8 +138,8 @@ pub struct NetworkSummary {
     pub rx_total_mb: u64,
     /// Total transmitted in MB
     pub tx_total_mb: u64,
-    /// Whether interface is up
-    pub is_up: bool,
+    /// Whether interface is up, or `None` where the state was not read
+    pub is_up: Option<bool>,
 }
 
 /// Disk summary information

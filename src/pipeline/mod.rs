@@ -150,8 +150,8 @@ pub struct DiskIoSnapshot {
 pub struct NetSnapshot {
     /// Interface name.
     pub name: String,
-    /// Interface is up.
-    pub is_up: bool,
+    /// Interface is up, or `None` where the state was not read.
+    pub is_up: Option<bool>,
     /// Cumulative bytes received.
     pub rx_bytes: u64,
     /// Cumulative bytes transmitted.

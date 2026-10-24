@@ -807,20 +807,18 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
                 .speed_mbps
                 .map(|s| format!(" {}Mbps", s))
                 .unwrap_or_default();
-            let status = if iface.is_up { "UP" } else { "DOWN" };
+            // `None` is a state that was not read, not a link that is down.
+            let (status, status_color) = match iface.is_up {
+                Some(true) => ("UP", glances_colors::OK),
+                Some(false) => ("DOWN", glances_colors::CRITICAL),
+                None => ("unknown", glances_colors::INACTIVE),
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{}: ", iface.name),
                     Style::default().fg(glances_colors::NETWORK_TITLE),
                 ),
-                Span::styled(
-                    status,
-                    Style::default().fg(if iface.is_up {
-                        glances_colors::OK
-                    } else {
-                        glances_colors::CRITICAL
-                    }),
-                ),
+                Span::styled(status, Style::default().fg(status_color)),
                 Span::raw(format!(
                     "{} │ ↓{} ↑{} │ Total: ↓{} ↑{}",
                     speed,
@@ -1395,7 +1393,8 @@ fn draw_network_bar(f: &mut Frame, app: &App, area: Rect) {
         .filter(|i| {
             // An interface with no established rate is not known to be idle,
             // so it is not filtered out for being idle.
-            i.is_up && (i.rx_rate.unwrap_or(0.0) > 0.0 || i.tx_rate.unwrap_or(0.0) > 0.0)
+            i.is_up == Some(true)
+                && (i.rx_rate.unwrap_or(0.0) > 0.0 || i.tx_rate.unwrap_or(0.0) > 0.0)
         })
         .collect();
     active_ifaces.sort_by(|a, b| {

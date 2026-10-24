@@ -344,18 +344,31 @@ pub fn apply_verified(
 
     let spec = source.spec();
 
-    if spec.requires_load && !machine_is_loaded() {
-        let outcome = crate::profile::apply::apply_setting_reversible(setting_id, value, confirm);
-        return VerifiedOutcome {
-            outcome,
-            verdict: Verdict::Unverifiable {
-                reason: format!(
-                    "{} is only meaningful under load and the machine is idle",
-                    spec.id
+    if spec.requires_load {
+        let reason = match machine_is_loaded() {
+            Some(true) => None,
+            Some(false) => Some(format!(
+                "{} is only meaningful under load and the machine is idle",
+                spec.id
+            )),
+            // Not read is not idle: the load question stays open, and says so.
+            None => Some(format!(
+                concat!(
+                    "{} is only meaningful under load, and CPU utilisation could not ",
+                    "be read to tell whether the machine is loaded"
                 ),
-            },
-            reverted: None,
+                spec.id
+            )),
         };
+        if let Some(reason) = reason {
+            let outcome =
+                crate::profile::apply::apply_setting_reversible(setting_id, value, confirm);
+            return VerifiedOutcome {
+                outcome,
+                verdict: Verdict::Unverifiable { reason },
+                reverted: None,
+            };
+        }
     }
 
     verify_around(
@@ -443,7 +456,10 @@ where
 /// Threshold rather than any-activity: an otherwise idle machine still shows a
 /// few percent from the monitor itself, and treating that as load is how an
 /// idle box produces confident numbers.
-fn machine_is_loaded() -> bool {
+///
+/// `None` when the CPU reading was not obtained. That used to be `false` (not
+/// loaded), which sent every unreadable CPU down the idle path.
+fn machine_is_loaded() -> Option<bool> {
     const BUSY_PERCENT: f32 = 20.0;
     // The CPU reader directly, not `collect_signals`. That function also builds
     // an AI-workload monitor, snapshots every GPU through NVML and enumerates
@@ -455,9 +471,7 @@ fn machine_is_loaded() -> bool {
     // not go through `ontology::resolve::snapshot()` because resolving every
     // domain to obtain one number took tens of seconds per cycle. This made the
     // same mistake three functions below that warning.
-    crate::tuning::serve::read_cpu_utilization()
-        .map(|u| u >= BUSY_PERCENT)
-        .unwrap_or(false)
+    crate::tuning::serve::read_cpu_utilization().map(|u| u >= BUSY_PERCENT)
 }
 
 #[cfg(test)]

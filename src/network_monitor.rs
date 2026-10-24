@@ -167,10 +167,16 @@ use std::collections::HashMap;
 pub struct NetworkInterfaceInfo {
     /// Interface name (e.g., "eth0", "wlan0", "Ethernet0")
     pub name: String,
-    /// Interface is up/active
-    pub is_up: bool,
-    /// Interface is running
-    pub is_running: bool,
+    /// Interface is up/active, or `None` where the platform state was not read.
+    ///
+    /// This used to be `false` when the Linux `operstate` file was unreadable,
+    /// which is a claim that the link is down.
+    pub is_up: Option<bool>,
+    /// Interface is running, or `None` where it was not read.
+    ///
+    /// Linux used to test the word "running" in `flags`, which the kernel never
+    /// writes: the file holds hex, so this was `false` on every interface.
+    pub is_running: Option<bool>,
     /// Bytes received
     pub rx_bytes: u64,
     /// Packets received
@@ -195,8 +201,11 @@ pub struct NetworkInterfaceInfo {
     pub mtu: Option<u32>,
     /// MAC address
     pub mac_address: Option<String>,
-    /// IPv4 addresses
-    pub ipv4_addresses: Vec<String>,
+    /// IPv4 addresses, or `None` where the platform did not enumerate them.
+    /// `Some(empty)` means enumerated and none present. Linux and Windows
+    /// return `None`: the field used to be an always-empty `Vec`, which read as
+    /// "no addresses" on every machine.
+    pub ipv4_addresses: Option<Vec<String>>,
     /// IPv6 addresses
     pub ipv6_addresses: Vec<String>,
 }
@@ -238,8 +247,10 @@ impl NetworkInterfaceInfo {
     }
 
     /// Check if interface is active (up and running)
+    ///
+    /// An interface whose state was not read is not reported as active.
     pub fn is_active(&self) -> bool {
-        self.is_up && self.is_running
+        self.is_up == Some(true) && self.is_running == Some(true)
     }
 }
 
@@ -371,6 +382,21 @@ impl Default for NetworkMonitor {
     }
 }
 
+/// `IFF_RUNNING` from `<linux/if.h>`.
+#[cfg(any(target_os = "linux", test))]
+const IFF_RUNNING: u32 = 0x40;
+
+/// Whether `IFF_RUNNING` is set, from the text of sysfs `flags`.
+///
+/// The kernel writes this file as hex, for example `0x1003\n`. `None` if the
+/// text is not that.
+#[cfg(any(target_os = "linux", test))]
+fn parse_iff_running(flags: &str) -> Option<bool> {
+    let hex = flags.trim().strip_prefix("0x")?;
+    let bits = u32::from_str_radix(hex, 16).ok()?;
+    Some(bits & IFF_RUNNING != 0)
+}
+
 // Linux-specific network interface enumeration
 #[cfg(target_os = "linux")]
 mod linux {
@@ -405,8 +431,8 @@ mod linux {
         let base_path = format!("/sys/class/net/{}", name);
 
         // Read interface state
-        let is_up = read_operstate(&base_path)?.contains("up");
-        let is_running = read_flags(&base_path)?.contains("running");
+        let is_up = read_operstate(&base_path);
+        let is_running = read_flags(&base_path);
 
         // Read statistics from /sys/class/net/[iface]/statistics
         let stats_path = format!("{}/statistics", base_path);
@@ -429,7 +455,7 @@ mod linux {
         let mac_address = read_file_string(&format!("{}/address", base_path));
 
         // Read IP addresses using ip command or /proc/net
-        let (ipv4_addresses, ipv6_addresses) = read_ip_addresses(name)?;
+        let (ipv4_addresses, ipv6_addresses) = read_ip_addresses(name);
 
         Ok(NetworkInterfaceInfo {
             name: name.to_string(),
@@ -451,18 +477,24 @@ mod linux {
         })
     }
 
-    fn read_operstate(base_path: &str) -> Result<String> {
+    /// `None` when the file cannot be read. An `operstate` of `unknown` is a
+    /// real reading (the kernel reports it for loopback) and is `Some(false)`.
+    /// An unreadable file used to become `"unknown"` here, so it was reported
+    /// as the link being down.
+    fn read_operstate(base_path: &str) -> Option<bool> {
         let path = format!("{}/operstate", base_path);
         fs::read_to_string(&path)
-            .map(|s| s.trim().to_lowercase())
-            .or(Ok("unknown".to_string()))
+            .ok()
+            .map(|s| s.trim().to_lowercase().contains("up"))
     }
 
-    fn read_flags(base_path: &str) -> Result<String> {
+    /// `None` when the file cannot be read or is not hex. An unreadable file
+    /// used to become `"0x0"` here, which is a claim that nothing is running.
+    fn read_flags(base_path: &str) -> Option<bool> {
         let path = format!("{}/flags", base_path);
         fs::read_to_string(&path)
-            .map(|s| s.trim().to_lowercase())
-            .or(Ok("0x0".to_string()))
+            .ok()
+            .and_then(|s| parse_iff_running(&s))
     }
 
     fn read_stat(stats_path: &str, stat_name: &str) -> Result<u64> {
@@ -487,53 +519,13 @@ mod linux {
             .filter(|s| !s.is_empty())
     }
 
-    fn read_ip_addresses(iface_name: &str) -> Result<(Vec<String>, Vec<String>)> {
-        let ipv4_addrs = Vec::new();
+    /// IPv4 is `None`: nothing sysfs or procfs names per interface.
+    /// `/proc/net/fib_trie` lists local addresses without their interface, and
+    /// `/proc/net/route` carries gateways, not the host's own addresses. The
+    /// reader used to return an always-empty list here, which read as "no
+    /// addresses"; it did not look.
+    fn read_ip_addresses(iface_name: &str) -> (Option<Vec<String>>, Vec<String>) {
         let mut ipv6_addrs = Vec::new();
-
-        // Read IPv4 addresses from /proc/net/fib_trie
-        // Parse entries that match our interface
-        if let Ok(content) = fs::read_to_string("/proc/net/fib_trie") {
-            let mut current_prefix = String::new();
-            let mut is_local = false;
-
-            for line in content.lines() {
-                let trimmed = line.trim();
-
-                // Look for IP prefix entries
-                if trimmed.starts_with("+--") || trimmed.starts_with("|--") {
-                    if let Some(prefix) = trimmed
-                        .strip_prefix("+-- ")
-                        .or_else(|| trimmed.strip_prefix("|-- "))
-                    {
-                        current_prefix = prefix.split('/').next().unwrap_or("").to_string();
-                        is_local = false;
-                    }
-                }
-
-                // Check if this is a LOCAL entry (indicates it's our IP)
-                if trimmed.contains("/32 host LOCAL") {
-                    is_local = true;
-                }
-
-                // When we find a LOCAL entry, the previous prefix is an IP on this host
-                if is_local && !current_prefix.is_empty() && current_prefix != "0.0.0.0" {
-                    // Verify this IP belongs to our interface by checking sysfs
-                    let sysfs_path = format!("/sys/class/net/{}/address", iface_name);
-                    if fs::metadata(&sysfs_path).is_ok() {
-                        // Simple heuristic: add the IP (fib_trie doesn't tell us which iface owns it)
-                        // This is a simplified approach
-                        if !ipv4_addrs.contains(&current_prefix) {
-                            // Don't add yet - we need to use another method
-                        }
-                    }
-                    is_local = false;
-                }
-            }
-        }
-
-        // More reliable method: parse output of /proc/net/route to find interface IPs
-        // For now, use sysfs operstate + route table to infer
 
         // Read IPv6 addresses from /proc/net/if_inet6
         if let Ok(content) = fs::read_to_string("/proc/net/if_inet6") {
@@ -560,36 +552,7 @@ mod linux {
             }
         }
 
-        // Try to get IPv4 from /proc/net/route (interfaces with routes have IPs)
-        // This is still incomplete but better than nothing
-        if let Ok(content) = fs::read_to_string("/proc/net/route") {
-            for line in content.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 8 && parts[0] == iface_name {
-                    // Gateway and destination are in hex format
-                    let dest = parts[1];
-                    let gateway = parts[2];
-
-                    // Default route (0.0.0.0) - interface has an IP
-                    if dest == "00000000" && gateway != "00000000" {
-                        // Parse gateway hex to IP (little-endian on x86)
-                        if let Ok(gw) = u32::from_str_radix(gateway, 16) {
-                            let gw_ip = format!(
-                                "{}.{}.{}.{}",
-                                gw & 0xFF,
-                                (gw >> 8) & 0xFF,
-                                (gw >> 16) & 0xFF,
-                                (gw >> 24) & 0xFF
-                            );
-                            // Gateway IP, not our IP, but indicates interface is active
-                            let _ = gw_ip;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok((ipv4_addrs, ipv6_addrs))
+        (None, ipv6_addrs)
     }
 }
 
@@ -755,11 +718,15 @@ mod windows {
                 };
 
                 // Determine operational status
-                let is_up = row.oper_status == IF_OPER_STATUS_UP
-                    || (row.oper_status == IF_OPER_STATUS_DORMANT
-                        && row.media_connect_state == MEDIA_CONNECT_STATE_CONNECTED);
-                let is_running = row.admin_status == 1
-                    && row.media_connect_state == MEDIA_CONNECT_STATE_CONNECTED;
+                let is_up = Some(
+                    row.oper_status == IF_OPER_STATUS_UP
+                        || (row.oper_status == IF_OPER_STATUS_DORMANT
+                            && row.media_connect_state == MEDIA_CONNECT_STATE_CONNECTED),
+                );
+                let is_running = Some(
+                    row.admin_status == 1
+                        && row.media_connect_state == MEDIA_CONNECT_STATE_CONNECTED,
+                );
 
                 interfaces.push(NetworkInterfaceInfo {
                     name,
@@ -776,7 +743,10 @@ mod windows {
                     speed_mbps,
                     mtu: Some(row.mtu),
                     mac_address,
-                    ipv4_addresses: Vec::new(), // Would need GetIpAddrTable
+                    // Not read: the addresses would come from GetIpAddrTable, which
+                    // this reader does not call. This was `Vec::new()`, which
+                    // reported "no addresses" on every Windows machine.
+                    ipv4_addresses: None,
                     ipv6_addresses: Vec::new(),
                 });
             }
@@ -899,10 +869,12 @@ mod macos {
                         .or_insert_with(|| NetworkInterfaceInfo {
                             name: name.clone(),
                             mac_address: None,
-                            ipv4_addresses: Vec::new(),
+                            // getifaddrs enumerates every address, so an empty list
+                            // here is a true "none", unlike the Linux and Windows readers.
+                            ipv4_addresses: Some(Vec::new()),
                             ipv6_addresses: Vec::new(),
-                            is_up: (ifa.ifa_flags as i32 & libc::IFF_UP) != 0,
-                            is_running: (ifa.ifa_flags as i32 & libc::IFF_RUNNING) != 0,
+                            is_up: Some((ifa.ifa_flags as i32 & libc::IFF_UP) != 0),
+                            is_running: Some((ifa.ifa_flags as i32 & libc::IFF_RUNNING) != 0),
                             speed_mbps: None,
                             mtu: None,
                             rx_bytes: 0,
@@ -925,7 +897,10 @@ mod macos {
                             // The field is `ipv4_addresses: Vec<String>`; an
                             // interface can hold several, and the old singular
                             // assignment would have kept only the last.
-                            entry.ipv4_addresses.push(ip.to_string());
+                            entry
+                                .ipv4_addresses
+                                .get_or_insert_with(Vec::new)
+                                .push(ip.to_string());
                         }
                         AF_INET6 => {
                             // IPv6 address
@@ -1016,8 +991,8 @@ mod tests {
     fn make_test_iface() -> NetworkInterfaceInfo {
         NetworkInterfaceInfo {
             name: "eth0".to_string(),
-            is_up: true,
-            is_running: true,
+            is_up: Some(true),
+            is_running: Some(true),
             rx_bytes: 1024 * 1024 * 100,
             rx_packets: 5000,
             rx_errors: 2,
@@ -1029,7 +1004,7 @@ mod tests {
             speed_mbps: Some(1000),
             mtu: Some(1500),
             mac_address: Some("aa:bb:cc:dd:ee:ff".to_string()),
-            ipv4_addresses: vec!["192.168.1.10".to_string()],
+            ipv4_addresses: Some(vec!["192.168.1.10".to_string()]),
             ipv6_addresses: vec![],
         }
     }
@@ -1080,19 +1055,34 @@ mod tests {
     fn test_is_active() {
         let mut iface = make_test_iface();
         assert!(iface.is_active());
-        iface.is_up = false;
+        iface.is_up = Some(false);
         assert!(!iface.is_active());
-        iface.is_up = true;
-        iface.is_running = false;
+        iface.is_up = Some(true);
+        iface.is_running = Some(false);
         assert!(!iface.is_active());
+        // Unread state is not reported as active.
+        iface.is_running = None;
+        assert!(!iface.is_active());
+    }
+
+    #[test]
+    fn iff_running_is_read_from_the_hex_flags_file() {
+        // Captured shapes of /sys/class/net/*/flags. 0x1003 has the 0x40 bit
+        // (IFF_RUNNING) clear; 0x11043 has it set.
+        assert_eq!(parse_iff_running("0x1003\n"), Some(false));
+        assert_eq!(parse_iff_running("0x11043\n"), Some(true));
+        assert_eq!(parse_iff_running("0x1003"), Some(false));
+        // Not the hex the kernel writes: no reading.
+        assert_eq!(parse_iff_running("running\n"), None);
+        assert_eq!(parse_iff_running(""), None);
     }
 
     #[test]
     fn test_zero_stats_interface() {
         let iface = NetworkInterfaceInfo {
             name: "lo".to_string(),
-            is_up: true,
-            is_running: true,
+            is_up: Some(true),
+            is_running: Some(true),
             rx_bytes: 0,
             rx_packets: 0,
             rx_errors: 0,
@@ -1104,7 +1094,7 @@ mod tests {
             speed_mbps: None,
             mtu: None,
             mac_address: None,
-            ipv4_addresses: vec![],
+            ipv4_addresses: Some(vec![]),
             ipv6_addresses: vec![],
         };
         assert_eq!(iface.total_bytes(), 0);

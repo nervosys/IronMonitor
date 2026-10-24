@@ -940,8 +940,6 @@ impl ObservabilityApi {
         if let Ok(mut monitor) = NetworkMonitor::new() {
             if let Ok(ifaces) = monitor.interfaces() {
                 for iface in &ifaces {
-                    let mut ips = iface.ipv4_addresses.clone();
-                    ips.extend(iface.ipv6_addresses.clone());
                     result.push(NetworkInterfaceContext {
                         name: iface.name.clone(),
                         interface_type: if iface.name.starts_with("lo")
@@ -957,7 +955,8 @@ impl ObservabilityApi {
                             "ethernet".to_string()
                         },
                         mac_address: iface.mac_address.clone(),
-                        ip_addresses: ips,
+                        ipv4_addresses: iface.ipv4_addresses.clone(),
+                        ipv6_addresses: iface.ipv6_addresses.clone(),
                         speed_mbps: iface.speed_mbps,
                         mtu: iface.mtu,
                         is_up: iface.is_up,

@@ -543,7 +543,7 @@ fn resolve_bluetooth_detail(out: &mut Vec<Reading>) {
         text_reading(
             out,
             format!("{base}.address"),
-            bd_address(&d.address),
+            d.address.as_deref().and_then(bd_address),
             U::Identifier,
             "the device record carries no Bluetooth address",
             P::Measured,

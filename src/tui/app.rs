@@ -923,8 +923,8 @@ pub struct DiskInfo {
 pub struct NetworkInterfaceInfo {
     /// Interface name (e.g., "eth0", "Ethernet")
     pub name: String,
-    /// Is interface up
-    pub is_up: bool,
+    /// Is interface up, or `None` where the state was not read
+    pub is_up: Option<bool>,
     /// Total bytes received
     pub rx_bytes: u64,
     /// Total bytes transmitted
