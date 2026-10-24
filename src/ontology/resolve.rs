@@ -2473,11 +2473,18 @@ fn resolve_process(out: &mut Vec<Reading>) {
     for p in procs.iter().take(PROCESS_LIMIT) {
         let base = format!("process.{}", p.pid);
         push_text(out, format!("{base}.name"), &p.name);
-        out.push(Reading::measured(
+        // `None` for a process with no earlier sample to difference against,
+        // which this pushed as a measured null.
+        push_opt(
+            out,
             format!("{base}.cpu"),
-            serde_json::json!(p.cpu_percent),
+            p.cpu_percent.map(|c| serde_json::json!(c)),
             Some(Unit::Percent),
-        ));
+            concat!(
+                "the process started within the sampling interval, so there is no ",
+                "earlier sample to measure its CPU share against"
+            ),
+        );
         out.push(Reading::measured(
             format!("{base}.memory"),
             serde_json::json!(p.memory_bytes),
