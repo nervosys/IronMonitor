@@ -133,7 +133,7 @@ impl Gpu for NvidiaGpu {
             shader_cores,
             l2_cache,
             num_engines: None,
-            integrated,
+            integrated: Some(integrated),
         })
     }
 

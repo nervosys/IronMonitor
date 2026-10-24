@@ -988,10 +988,10 @@ pub fn read_gpu_stats() -> Result<GpuStats> {
         };
 
         let gpu = GpuInfo {
-            gpu_type: if si.integrated {
-                GpuType::Integrated
-            } else {
-                GpuType::Discrete
+            gpu_type: match si.integrated {
+                Some(true) => GpuType::Integrated,
+                Some(false) => GpuType::Discrete,
+                None => GpuType::Unknown,
             },
             status,
             frequency,

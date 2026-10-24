@@ -185,7 +185,7 @@ impl Gpu for AppleGpu {
             shader_cores: self.cores,
             l2_cache: None,
             num_engines: None,
-            integrated: true, // Apple Silicon GPUs are always integrated
+            integrated: Some(true), // Apple Silicon GPUs are always integrated
         })
     }
 

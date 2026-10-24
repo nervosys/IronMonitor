@@ -157,11 +157,9 @@ impl Gpu for AmdGpu {
                 shader_cores: None,
                 l2_cache: None,
                 num_engines: None,
-                integrated: self.name.to_lowercase().contains("vega")
-                    || self.name.to_lowercase().contains("integrated")
-                    || self.name.to_lowercase().contains("renoir")
-                    || self.name.to_lowercase().contains("cezanne")
-                    || self.name.to_lowercase().contains("phoenix"),
+                // Not read. This used to guess from the product name ("vega",
+                // "renoir", ...), which is not a reading of the part.
+                integrated: None,
             })
         }
 
@@ -178,7 +176,7 @@ impl Gpu for AmdGpu {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            integrated: false,
+            integrated: None,
         })
     }
 
@@ -771,13 +769,9 @@ fn query_gpu_perf_counters_wmi(
 #[cfg(windows)]
 impl Gpu for WmiAmdGpu {
     fn static_info(&self) -> Result<GpuStaticInfo, Error> {
-        let is_integrated = self.inner.name.to_lowercase().contains("vega")
-            || self.inner.name.to_lowercase().contains("integrated")
-            || self.inner.name.to_lowercase().contains("renoir")
-            || self.inner.name.to_lowercase().contains("cezanne")
-            || self.inner.name.to_lowercase().contains("phoenix")
-            || self.dedicated_video_memory == 0;
-
+        // Not read. This used to guess from the product name, and from zero dedicated
+        // VRAM. WMI's AdapterRAM is a 32-bit field that overflows for cards of 4 GB
+        // and more, so zero there did not mean integrated.
         Ok(GpuStaticInfo {
             index: self.inner.index,
             vendor: GpuVendor::Amd,
@@ -790,7 +784,7 @@ impl Gpu for WmiAmdGpu {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            integrated: is_integrated,
+            integrated: None,
         })
     }
 

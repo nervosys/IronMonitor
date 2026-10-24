@@ -351,7 +351,8 @@ pub struct GpuStaticInfo {
     pub index: usize,
     /// GPU vendor
     pub vendor: GpuVendor,
-    /// GPU name/model
+    /// GPU name/model. Empty where the driver did not report one, which the
+    /// resolver publishes as unavailable.
     pub name: String,
     /// PCI bus ID (e.g., "0000:01:00.0")
     pub pci_bus_id: Option<String>,
@@ -369,8 +370,10 @@ pub struct GpuStaticInfo {
     pub l2_cache: Option<u64>,
     /// Number of execution engines
     pub num_engines: Option<u32>,
-    /// Is integrated GPU (shares system memory)
-    pub integrated: bool,
+    /// Is integrated GPU (shares system memory). `None` where no reader obtained
+    /// it. Readers used to guess from the product name ("vega", "arc") or assume a
+    /// value per vendor, and those guesses are not stored here.
+    pub integrated: Option<bool>,
 }
 
 /// Dynamic GPU information (updated each snapshot)
@@ -544,7 +547,9 @@ impl TraitGpuAdapter {
 
 impl Gpu for TraitGpuAdapter {
     fn static_info(&self) -> Result<GpuStaticInfo, crate::Error> {
-        let name = self.device.name().unwrap_or_else(|_| "Unknown".to_string());
+        // A failed name read is empty, not the literal "Unknown" that used to stand
+        // in for it and render as a model name.
+        let name = self.device.name().unwrap_or_default();
         let pci = self.device.pci_info().ok();
         let uuid = self.device.uuid().ok();
         let driver = self.device.driver_version().ok();
@@ -561,7 +566,9 @@ impl Gpu for TraitGpuAdapter {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            integrated: false,
+            // The trait adapter does not read whether the part is integrated. This
+            // used to be `false` for every adapter, including iGPUs.
+            integrated: None,
         })
     }
 

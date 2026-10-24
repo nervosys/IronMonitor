@@ -198,7 +198,7 @@ pub(crate) mod fixtures {
             compute_capability: None,
             shader_cores: None,
             num_engines: None,
-            integrated: false,
+            integrated: Some(false),
             l2_cache: None,
         }
     }

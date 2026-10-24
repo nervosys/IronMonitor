@@ -11,6 +11,9 @@ pub enum GpuType {
     Integrated,
     /// Discrete GPU (e.g., desktop)
     Discrete,
+    /// Not read. The Windows path used to make every GPU it could not
+    /// classify `Discrete`.
+    Unknown,
 }
 
 /// GPU frequency information

@@ -3743,7 +3743,7 @@ impl IronMonitorApp {
                             // An Apple GPU has no VRAM. It uses the SoC's
                             // unified memory and has no total of its own, so
                             // "VRAM 404/-MB" misdescribed it twice over.
-                            let unified = static_info.integrated
+                            let unified = static_info.integrated == Some(true)
                                 && static_info.vendor == crate::gpu::GpuVendor::Apple;
                             ui.label(
                                 RichText::new(if unified {

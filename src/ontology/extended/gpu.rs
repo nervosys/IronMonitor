@@ -787,8 +787,9 @@ fn resolve_adapter(out: &mut Vec<Reading>, index: usize, gpu: &GpuInfo) {
         Some(U::Count),
         ENGINES_WHY,
     );
-    // The NVIDIA, AMD and Intel readers set `integrated` from substrings of
-    // the product name ("vega", "arc"), which calls a Radeon 780M discrete.
+    // The AMD and Intel readers used to set `integrated` from substrings of
+    // the product name ("vega", "arc"), which called a Radeon 780M discrete;
+    // they now leave it unread. NVIDIA's still comes from a Jetson name check.
     // Only Apple's is known rather than guessed.
     if s.vendor == crate::gpu::GpuVendor::Apple {
         out.push(Reading::derived(

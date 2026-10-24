@@ -26,7 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("GPU: {}", s.name);
         println!("  Vendor:       {:?}", s.vendor);
-        println!("  Integrated:   {}", s.integrated);
+        println!(
+            "  Integrated:   {}",
+            s.integrated
+                .map_or("unknown".to_string(), |v| v.to_string())
+        );
         if let Some(cores) = s.shader_cores {
             println!("  GPU Cores:    {}", cores);
         }

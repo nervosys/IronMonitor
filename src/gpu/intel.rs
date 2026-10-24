@@ -165,10 +165,6 @@ impl Gpu for IntelGpu {
                 .ok()
                 .map(|s| s.trim().to_string());
 
-            // Intel GPUs are almost always integrated (except Arc)
-            let is_discrete = self.name.to_lowercase().contains("arc")
-                || self.name.to_lowercase().contains("data center");
-
             Ok(GpuStaticInfo {
                 index: self.index,
                 vendor: GpuVendor::Intel,
@@ -181,7 +177,8 @@ impl Gpu for IntelGpu {
                 shader_cores: None,
                 l2_cache: None,
                 num_engines: None,
-                integrated: !is_discrete,
+                // Not read. This used to be `!is_discrete`, a guess from the name ("arc").
+                integrated: None,
             })
         }
 
@@ -198,7 +195,8 @@ impl Gpu for IntelGpu {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            integrated: true,
+            // Not read. This used to be a constant `true` for every Intel part, Arc included.
+            integrated: None,
         })
     }
 
@@ -759,7 +757,8 @@ impl Gpu for WmiIntelGpu {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            integrated: !self.is_discrete,
+            // Not read. This used to be `!is_discrete`, a guess from the name.
+            integrated: None,
         })
     }
 
