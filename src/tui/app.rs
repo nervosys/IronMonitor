@@ -1711,14 +1711,14 @@ impl App {
         #[cfg(target_os = "macos")]
         let uptime = crate::platform::macos::sysctl_string("kern.boottime")
             .and_then(|raw| parse_boottime_secs(&raw))
-            .map(|boot_secs| {
+            .and_then(|boot_secs| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                // A boot time in the future means the clocks disagree; saturate
-                // rather than wrap.
-                Duration::from_secs(now.saturating_sub(boot_secs))
+                    .ok()?
+                    .as_secs();
+                // A boot time in the future means the clocks disagree, which is
+                // no uptime reading rather than an uptime of zero.
+                now.checked_sub(boot_secs).map(Duration::from_secs)
             });
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
