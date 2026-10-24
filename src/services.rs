@@ -43,6 +43,10 @@ pub enum ServiceStatus {
     Unknown,
     /// Service is not found
     NotFound,
+    /// Service ran to completion and is held active with no process left
+    /// running: systemd's `active (exited)`, a oneshot unit with
+    /// `RemainAfterExit`. Neither running nor stopped.
+    Exited,
 }
 
 impl std::fmt::Display for ServiceStatus {
@@ -55,6 +59,7 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Failed => write!(f, "failed"),
             ServiceStatus::Unknown => write!(f, "unknown"),
             ServiceStatus::NotFound => write!(f, "not-found"),
+            ServiceStatus::Exited => write!(f, "exited"),
         }
     }
 }
@@ -474,9 +479,12 @@ impl ServiceMonitor {
         let status = match active_state.as_str() {
             "active" => match sub_state.as_str() {
                 "running" => ServiceStatus::Running,
-                "exited" => ServiceStatus::Stopped,
+                // `active (exited)` was reported stopped, which a unit systemd
+                // holds active is not.
+                "exited" => ServiceStatus::Exited,
                 "waiting" => ServiceStatus::Starting,
-                _ => ServiceStatus::Running,
+                // A sub-state not listed here used to read as running.
+                _ => ServiceStatus::Unknown,
             },
             "inactive" => ServiceStatus::Stopped,
             "failed" => ServiceStatus::Failed,
@@ -1079,5 +1087,28 @@ mod tests {
         assert_eq!(normalise_service_name("sshd.service"), "sshd");
         assert_eq!(normalise_service_name("sshd"), "sshd");
         assert_eq!(normalise_service_name("com.apple.dock"), "com.apple.dock");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_systemd_exited_is_neither_running_nor_stopped() {
+        let monitor = ServiceMonitor {
+            services: Vec::new(),
+            service_map: HashMap::new(),
+            last_update: Instant::now(),
+            filter: None,
+        };
+        // Captured `systemctl list-units --type=service --no-legend` lines.
+        let exited = monitor
+            .linux_parse_service_line(concat!(
+                "systemd-remount-fs.service loaded active exited ",
+                "Remount Root and Kernel File Systems"
+            ))
+            .unwrap();
+        assert_eq!(exited.status, ServiceStatus::Exited);
+        let odd = monitor
+            .linux_parse_service_line("foo.service loaded active reloading Foo")
+            .unwrap();
+        assert_eq!(odd.status, ServiceStatus::Unknown);
     }
 }

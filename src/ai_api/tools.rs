@@ -1805,7 +1805,6 @@ impl AiDataApi {
             "model": info.model,
             "serial": info.serial,
             "firmware": info.firmware,
-            "size_bytes": info.capacity,
             // See `tool_get_disk_list`: the exact byte count alongside a
             // figure that would otherwise truncate small media to zero.
             "size_bytes": info.capacity,
