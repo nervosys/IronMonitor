@@ -454,14 +454,17 @@ pub struct HardwareAnalysisReport {
 /// Normalized hardware features used by the inference engine.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct HardwareFeatures {
-    // CPU features
-    cpu_cores_physical: u32,
-    cpu_cores_logical: u32,
-    cpu_max_freq_mhz: u32,
+    // CPU features. `None` is unread; a reader that failed used to leave `0`,
+    // which scored as a machine with no cores or no clock.
+    cpu_cores_physical: Option<u32>,
+    cpu_cores_logical: Option<u32>,
+    cpu_max_freq_mhz: Option<u32>,
     cpu_model: String,
     cpu_vendor: String,
     is_server_cpu: bool,
-    has_ecc: bool,
+    /// ECC state. No reader sets it yet, so it is `None` everywhere. It used to be
+    /// a `bool` that defaulted to `false`, which read as "no ECC".
+    has_ecc: Option<bool>,
     cpu_tdp_watts: Option<f32>,
     /// Whether `cpu_tdp_watts` is the package power limit the platform enforces
     /// or the model-name table's stand-in for it. False on Windows and macOS,
@@ -499,14 +502,26 @@ struct HardwareFeatures {
 
     // Platform features
     has_battery: bool,
-    chassis_type: String,
+    /// SMBIOS chassis class as read, or `None` when the enclosure was not read or
+    /// its code is not one the reader maps. Used to be a `"Unknown"` string, and
+    /// a Windows fallback guessed "Desktop" or "Laptop" from the battery.
+    chassis_type: Option<String>,
     is_virtual: bool,
-    numa_nodes: u32,
+    /// NUMA node count, or `None` when not read. Windows used to store a constant 1.
+    numa_nodes: Option<u32>,
     pcie_gen: u32,
 
     // Network
     max_nic_speed_gbps: f32,
     nic_count: u32,
+}
+
+impl HardwareFeatures {
+    /// The chassis class for matching, where unread is the empty string. Matches
+    /// nothing, so an unread chassis never satisfies a "Server" or "Laptop" test.
+    fn chassis(&self) -> &str {
+        self.chassis_type.as_deref().unwrap_or("")
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -545,15 +560,14 @@ fn wmi_enum(value: Option<&serde_json::Value>, names: &[(&str, u64)]) -> Option<
 /// non-empty string, a count above zero, a measured figure above zero, or a `true`
 /// flag that the reader sets only once it has detected the thing.
 ///
-/// Not counted: `numa_nodes`, because the Windows reader stores a constant 1 without
-/// reading anything; `is_server_cpu`, derived from `cpu_model`; the TDP figures, which
-/// are the name table where no reading exists; and `has_ecc`, `ram_channels`,
-/// `ram_speed_mhz` and `pcie_gen`, which no reader sets. A `chassis_type` of
-/// `"Unknown"` is the Linux reader's label for a DMI value it does not map.
+/// Not counted: `numa_nodes`, `has_ecc`, `ram_channels`, `ram_speed_mhz` and `pcie_gen`,
+/// which no reader sets; `is_server_cpu`, derived from `cpu_model`; and the TDP figures,
+/// which are the name table where no reading exists. A chassis that is `None` is one
+/// the reader did not map, so it is not counted.
 fn anything_read(f: &HardwareFeatures) -> bool {
-    f.cpu_cores_physical > 0
-        || f.cpu_cores_logical > 0
-        || f.cpu_max_freq_mhz > 0
+    f.cpu_cores_physical.is_some_and(|c| c > 0)
+        || f.cpu_cores_logical.is_some_and(|c| c > 0)
+        || f.cpu_max_freq_mhz.is_some_and(|c| c > 0)
         || !f.cpu_model.is_empty()
         || !f.cpu_vendor.is_empty()
         || f.ram_total_gb > 0.0
@@ -562,9 +576,39 @@ fn anything_read(f: &HardwareFeatures) -> bool {
         || !f.gpu_model.is_empty()
         || f.has_battery
         || f.is_virtual
-        || (!f.chassis_type.is_empty() && f.chassis_type != "Unknown")
+        || f.chassis_type.is_some()
         || f.nic_count > 0
         || f.max_nic_speed_gbps > 0.0
+}
+
+/// The label for an SMBIOS chassis code read from `/sys/class/dmi/id/chassis_type`.
+/// A code this does not map is `None`: unread, not a label.
+#[cfg(target_os = "linux")]
+fn dmi_chassis_label(code: &str) -> Option<&'static str> {
+    match code {
+        "3" | "4" | "5" | "6" | "7" => Some("Desktop"),
+        "8" | "9" | "10" | "14" => Some("Laptop"),
+        "11" | "12" => Some("Handheld"),
+        "13" => Some("All-in-One"),
+        "17" | "23" => Some("Server"),
+        "35" | "36" => Some("Mini PC"),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod dmi_chassis_tests {
+    use super::*;
+
+    #[test]
+    fn dmi_codes_map_to_labels_and_unmapped_codes_stay_unread() {
+        assert_eq!(dmi_chassis_label("3"), Some("Desktop"));
+        assert_eq!(dmi_chassis_label("10"), Some("Laptop"));
+        assert_eq!(dmi_chassis_label("17"), Some("Server"));
+        // SMBIOS 2 and 40+ codes the reader does not map. Previously "Unknown".
+        assert_eq!(dmi_chassis_label("2"), None);
+        assert_eq!(dmi_chassis_label(""), None);
+    }
 }
 
 /// The hardware inference engine.
@@ -673,13 +717,15 @@ impl HardwareInferenceEngine {
 
                 self.features.cpu_model = model;
                 self.features.cpu_vendor = vendor;
-                self.features.cpu_cores_physical = if cores.is_empty() {
+                let physical = if cores.is_empty() {
                     logical
                 } else {
                     cores.len() as u32
                 };
-                self.features.cpu_cores_logical = logical;
-                self.features.cpu_max_freq_mhz = max_freq;
+                // Zero means no line was found, which is unread, not a 0-core machine.
+                self.features.cpu_cores_physical = (physical > 0).then_some(physical);
+                self.features.cpu_cores_logical = (logical > 0).then_some(logical);
+                self.features.cpu_max_freq_mhz = (max_freq > 0).then_some(max_freq);
             }
         }
 
@@ -704,9 +750,19 @@ impl HardwareInferenceEngine {
                         .trim()
                         .to_string();
                     self.features.cpu_vendor = json.get("Manufacturer").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    self.features.cpu_cores_physical = json.get("NumberOfCores").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    self.features.cpu_cores_logical = json.get("NumberOfLogicalProcessors").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    self.features.cpu_max_freq_mhz = json.get("MaxClockSpeed").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    // Absent from the JSON is unread, not 0 cores or 0 MHz.
+                    self.features.cpu_cores_physical = json
+                        .get("NumberOfCores")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
+                    self.features.cpu_cores_logical = json
+                        .get("NumberOfLogicalProcessors")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
+                    self.features.cpu_max_freq_mhz = json
+                        .get("MaxClockSpeed")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
                 }
             }
         }
@@ -730,7 +786,7 @@ impl HardwareInferenceEngine {
                     .unwrap_or_default()
                     .trim()
                     .parse()
-                    .unwrap_or(0);
+                    .ok();
             }
             if let Ok(output) = std::process::Command::new("sysctl")
                 .args(["-n", "hw.logicalcpu"])
@@ -740,7 +796,7 @@ impl HardwareInferenceEngine {
                     .unwrap_or_default()
                     .trim()
                     .parse()
-                    .unwrap_or(0);
+                    .ok();
             }
         }
 
@@ -1097,15 +1153,7 @@ impl HardwareInferenceEngine {
 
             // Chassis type from DMI
             if let Ok(chassis) = std::fs::read_to_string("/sys/class/dmi/id/chassis_type") {
-                self.features.chassis_type = match chassis.trim() {
-                    "3" | "4" | "5" | "6" | "7" => "Desktop".into(),
-                    "8" | "9" | "10" | "14" => "Laptop".into(),
-                    "11" | "12" => "Handheld".into(),
-                    "13" => "All-in-One".into(),
-                    "17" | "23" => "Server".into(),
-                    "35" | "36" => "Mini PC".into(),
-                    _ => "Unknown".into(),
-                };
+                self.features.chassis_type = dmi_chassis_label(chassis.trim()).map(Into::into);
             }
 
             // VM detection
@@ -1121,10 +1169,12 @@ impl HardwareInferenceEngine {
 
             // NUMA nodes
             if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node") {
-                self.features.numa_nodes = entries
-                    .flatten()
-                    .filter(|e| e.file_name().to_string_lossy().starts_with("node"))
-                    .count() as u32;
+                self.features.numa_nodes = Some(
+                    entries
+                        .flatten()
+                        .filter(|e| e.file_name().to_string_lossy().starts_with("node"))
+                        .count() as u32,
+                );
             }
         }
 
@@ -1200,23 +1250,17 @@ impl HardwareInferenceEngine {
                     _ => None,
                 };
 
+                // A code this does not map is unread. The battery used to decide
+                // "Laptop" or "Desktop" here, a guess that scored as a reading.
                 self.features.chassis_type = if self.features.is_virtual {
-                    "Virtual".into()
-                } else if let Some(kind) = read {
-                    kind.into()
+                    Some("Virtual".into())
                 } else {
-                    // The enclosure did not name a chassis this understands. The
-                    // battery guess is kept only here, where there is nothing
-                    // better, rather than in front of a reading that works.
-                    if self.features.has_battery {
-                        "Laptop".into()
-                    } else {
-                        "Desktop".into()
-                    }
+                    read.map(Into::into)
                 };
             }
 
-            self.features.numa_nodes = 1;
+            // NUMA node count is not read on Windows. This used to store a constant 1,
+            // which scored every Windows machine as single-node.
         }
     }
 
@@ -1319,19 +1363,19 @@ impl HardwareInferenceEngine {
             if f.is_server_cpu {
                 s += CLASSIFICATION_WEIGHT_SERVER_CPU;
             }
-            if f.has_ecc {
+            if f.has_ecc == Some(true) {
                 s += CLASSIFICATION_WEIGHT_SERVER_ECC;
             }
-            if f.cpu_cores_physical >= 16 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 16) {
                 s += CLASSIFICATION_WEIGHT_SERVER_PHYSICAL_CORES;
             }
             if f.ram_total_gb >= 64.0 {
                 s += CLASSIFICATION_WEIGHT_SERVER_RAM;
             }
-            if f.numa_nodes >= 2 {
+            if f.numa_nodes.is_some_and(|n| n >= 2) {
                 s += CLASSIFICATION_WEIGHT_SERVER_NUMA;
             }
-            if f.chassis_type.contains("Server") {
+            if f.chassis().contains("Server") {
                 s += CLASSIFICATION_WEIGHT_SERVER_CHASSIS;
             }
             if !f.has_battery {
@@ -1357,12 +1401,11 @@ impl HardwareInferenceEngine {
         // The chassis is now what decides, and the battery only speaks where the
         // enclosure did not. Both are still combined, because a read chassis can
         // be wrong on a whitebox whose vendor left the field at its default.
-        let chassis_is_mobile =
-            f.chassis_type.contains("Laptop") || f.chassis_type.contains("Handheld");
-        let chassis_is_stationary = f.chassis_type.contains("Desktop")
-            || f.chassis_type.contains("Server")
-            || f.chassis_type.contains("Mini PC")
-            || f.chassis_type.contains("All-in-One");
+        let chassis_is_mobile = f.chassis().contains("Laptop") || f.chassis().contains("Handheld");
+        let chassis_is_stationary = f.chassis().contains("Desktop")
+            || f.chassis().contains("Server")
+            || f.chassis().contains("Mini PC")
+            || f.chassis().contains("All-in-One");
 
         let laptop_score = {
             let mut s = 0.0f32;
@@ -1374,7 +1417,7 @@ impl HardwareInferenceEngine {
             if f.has_battery && !chassis_is_stationary {
                 s += CLASSIFICATION_WEIGHT_LAPTOP_BATTERY;
             }
-            if f.cpu_cores_physical <= 8 {
+            if f.cpu_cores_physical.is_some_and(|v| v <= 8) {
                 s += CLASSIFICATION_WEIGHT_LAPTOP_LOW_CORES;
             }
             if f.ram_total_gb <= 32.0 {
@@ -1389,7 +1432,7 @@ impl HardwareInferenceEngine {
                     SystemClass::GamingLaptop,
                     laptop_score * CLASSIFICATION_SCALE_GAMING_LAPTOP,
                 ));
-            } else if f.ram_total_gb <= 16.0 && f.cpu_cores_physical <= 4 {
+            } else if f.ram_total_gb <= 16.0 && f.cpu_cores_physical.is_some_and(|v| v <= 4) {
                 scores.push((
                     SystemClass::Ultrabook,
                     laptop_score * CLASSIFICATION_SCALE_ULTRABOOK,
@@ -1404,7 +1447,7 @@ impl HardwareInferenceEngine {
         // This was gated on `!f.has_battery`, so a desktop with a UPS was never
         // scored as a desktop at all --- not merely outvoted, but absent from the
         // ballot. The gate is now the chassis.
-        if !f.is_virtual && !chassis_is_mobile && !f.chassis_type.contains("Server") {
+        if !f.is_virtual && !chassis_is_mobile && !f.chassis().contains("Server") {
             let gpu_lower = f.gpu_model.to_lowercase();
             let is_gaming_gpu = gpu_lower.contains("rtx")
                 || gpu_lower.contains("gtx")
@@ -1427,7 +1470,7 @@ impl HardwareInferenceEngine {
         }
 
         // Embedded
-        if f.cpu_cores_physical <= 4 && f.ram_total_gb <= 4.0 {
+        if f.cpu_cores_physical.is_some_and(|v| v <= 4) && f.ram_total_gb <= 4.0 {
             let model = f.cpu_model.to_lowercase();
             if model.contains("arm") || model.contains("cortex") || model.contains("tegra") {
                 scores.push((SystemClass::Embedded, CLASSIFICATION_CONFIDENCE_EMBEDDED));
@@ -1435,7 +1478,7 @@ impl HardwareInferenceEngine {
         }
 
         // Mini PC
-        if f.chassis_type.contains("Mini") {
+        if f.chassis().contains("Mini") {
             scores.push((SystemClass::MiniPc, CLASSIFICATION_CONFIDENCE_MINI_PC));
         }
 
@@ -1457,7 +1500,8 @@ impl HardwareInferenceEngine {
         let mut score = 0u32; // 0-1000 internal scale
 
         // CPU scoring (up to 350 points)
-        score += match f.cpu_cores_physical {
+        // An unread core count or clock earns no points. It used to score as 0.
+        score += f.cpu_cores_physical.map_or(0, |cores| match cores {
             0..=1 => 10,
             2 => 30,
             4 => 80,
@@ -1468,16 +1512,16 @@ impl HardwareInferenceEngine {
             24 => 280,
             32 => 300,
             _ => 350, // 64+ cores
-        };
+        });
 
         // Frequency bonus
-        score += match f.cpu_max_freq_mhz {
+        score += f.cpu_max_freq_mhz.map_or(0, |mhz| match mhz {
             0..=1500 => 0,
             1501..=2500 => 10,
             2501..=3500 => 25,
             3501..=4500 => 40,
             _ => 50, // 4.5+ GHz
-        };
+        });
 
         // RAM scoring (up to 200 points)
         score += match f.ram_total_gb as u32 {
@@ -1559,14 +1603,18 @@ impl HardwareInferenceEngine {
         let mut bottlenecks = Vec::new();
 
         // CPU vs GPU imbalance
-        if f.has_discrete_gpu && f.cpu_cores_physical <= 4 && f.gpu_vram_gb >= 8.0 {
+        if f.has_discrete_gpu
+            && f.cpu_cores_physical.is_some_and(|v| v <= 4)
+            && f.gpu_vram_gb >= 8.0
+        {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::CpuBound,
                 component: "CPU".into(),
                 severity: 70,
                 reason: format!(
                     "Only {} CPU cores paired with {}GB GPU — CPU will bottleneck GPU-intensive tasks",
-                    f.cpu_cores_physical, f.gpu_vram_gb as u32
+                    // Guarded by `is_some_and` above, so the value is present.
+                    f.cpu_cores_physical.unwrap_or_default(), f.gpu_vram_gb as u32
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_CPU_GPU_IMBALANCE,
             });
@@ -1587,14 +1635,15 @@ impl HardwareInferenceEngine {
         }
 
         // RAM too low for core count
-        if f.cpu_cores_physical >= 8 && f.ram_total_gb < 16.0 {
+        if f.cpu_cores_physical.is_some_and(|v| v >= 8) && f.ram_total_gb < 16.0 {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::MemoryBound,
                 component: "System RAM".into(),
                 severity: 55,
                 reason: format!(
                     "{:.0}GB RAM for {} cores — should have at least 2GB/core",
-                    f.ram_total_gb, f.cpu_cores_physical
+                    f.ram_total_gb,
+                    f.cpu_cores_physical.unwrap_or_default()
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_RAM_PER_CORE,
             });
@@ -1612,7 +1661,7 @@ impl HardwareInferenceEngine {
         }
 
         // High core count with SATA (not NVMe)
-        if f.cpu_cores_physical >= 16 && f.has_ssd && !f.has_nvme {
+        if f.cpu_cores_physical.is_some_and(|v| v >= 16) && f.has_ssd && !f.has_nvme {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::StorageBound,
                 component: "Storage bus".into(),
@@ -1679,7 +1728,7 @@ impl HardwareInferenceEngine {
             if f.has_nvme {
                 score += 10;
             }
-            if f.cpu_cores_physical >= 8 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 10;
             }
             if f.gpu_count > 1 {
@@ -1712,7 +1761,7 @@ impl HardwareInferenceEngine {
             if f.has_tensor_cores {
                 score += 15;
             }
-            if f.cpu_cores_physical >= 4 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
             if f.ram_total_gb >= 16.0 {
@@ -1752,10 +1801,10 @@ impl HardwareInferenceEngine {
                 score += 10;
                 strengths.push("Ray tracing support".into());
             }
-            if f.cpu_max_freq_mhz >= 4000 {
+            if f.cpu_max_freq_mhz.is_some_and(|v| v >= 4000) {
                 score += 15;
                 strengths.push("High CPU clock speed".into());
-            } else if f.cpu_max_freq_mhz >= 3000 {
+            } else if f.cpu_max_freq_mhz.is_some_and(|v| v >= 3000) {
                 score += 10;
             }
             if f.ram_total_gb >= 16.0 {
@@ -1766,7 +1815,7 @@ impl HardwareInferenceEngine {
             if f.has_nvme {
                 score += 10;
             }
-            if f.cpu_cores_physical >= 6 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 6) {
                 score += 10;
             }
             if f.has_ssd {
@@ -1791,10 +1840,10 @@ impl HardwareInferenceEngine {
             if f.has_discrete_gpu {
                 score += 20;
             }
-            if f.cpu_cores_physical >= 8 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 20;
                 strengths.push("Multi-core for rendering".into());
-            } else if f.cpu_cores_physical >= 6 {
+            } else if f.cpu_cores_physical.is_some_and(|v| v >= 6) {
                 score += 15;
             }
             if f.ram_total_gb >= 32.0 {
@@ -1833,12 +1882,12 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.cpu_cores_physical >= 16 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 16) {
                 score += 35;
                 strengths.push("Many cores for parallel builds".into());
-            } else if f.cpu_cores_physical >= 8 {
+            } else if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 25;
-            } else if f.cpu_cores_physical >= 4 {
+            } else if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             } else {
                 limiting.push("Few cores — slow parallel builds".into());
@@ -1854,7 +1903,7 @@ impl HardwareInferenceEngine {
             } else if f.has_ssd {
                 score += 10;
             }
-            if f.cpu_max_freq_mhz >= 4000 {
+            if f.cpu_max_freq_mhz.is_some_and(|v| v >= 4000) {
                 score += 10;
             }
             if f.total_storage_gb >= 512.0 {
@@ -1876,9 +1925,9 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.cpu_cores_physical >= 8 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 25;
-            } else if f.cpu_cores_physical >= 4 {
+            } else if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
             if f.ram_total_gb >= 16.0 {
@@ -1934,13 +1983,13 @@ impl HardwareInferenceEngine {
             } else {
                 limiting.push("HDD severely limits database IOPS".into());
             }
-            if f.cpu_cores_physical >= 8 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 20;
             }
             if f.total_storage_gb >= 2000.0 {
                 score += 15;
             }
-            if f.has_ecc {
+            if f.has_ecc == Some(true) {
                 score += 10;
                 strengths.push("ECC memory for data integrity".into());
             }
@@ -1960,10 +2009,10 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.cpu_cores_physical >= 16 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 16) {
                 score += 30;
                 strengths.push("Many cores for VMs".into());
-            } else if f.cpu_cores_physical >= 8 {
+            } else if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 15;
             } else {
                 limiting.push("Few cores limits VM density".into());
@@ -1981,7 +2030,7 @@ impl HardwareInferenceEngine {
             if f.has_nvme {
                 score += 15;
             }
-            if f.numa_nodes >= 2 {
+            if f.numa_nodes.is_some_and(|n| n >= 2) {
                 score += 10;
                 strengths.push("NUMA for VM pinning".into());
             }
@@ -2007,7 +2056,7 @@ impl HardwareInferenceEngine {
             let strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.cpu_cores_physical >= 4 {
+            if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
             if f.ram_total_gb >= 8.0 {
@@ -2020,7 +2069,7 @@ impl HardwareInferenceEngine {
             } else {
                 limiting.push("HDD makes boot and app launch slow".into());
             }
-            if f.cpu_cores_physical < 2 || f.ram_total_gb < 4.0 {
+            if f.cpu_cores_physical.is_some_and(|v| v < 2) || f.ram_total_gb < 4.0 {
                 score = score.saturating_sub(30);
             }
 
@@ -2332,8 +2381,7 @@ impl HardwareInferenceEngine {
         // desktop workstation take the laptop cooling curve, which reported
         // headroom "Insufficient" and a cooling score of 15 for a tower with
         // room for a 500W envelope. The chassis is read now, so use it.
-        let is_mobile_chassis =
-            f.chassis_type.contains("Laptop") || f.chassis_type.contains("Handheld");
+        let is_mobile_chassis = f.chassis().contains("Laptop") || f.chassis().contains("Handheld");
 
         let headroom = if is_mobile_chassis {
             // Laptop — limited cooling
@@ -2344,7 +2392,7 @@ impl HardwareInferenceEngine {
                 Some(t) if t > 60.0 => ThermalHeadroom::Adequate,
                 Some(_) => ThermalHeadroom::Ample,
             }
-        } else if f.chassis_type.contains("Mini") {
+        } else if f.chassis().contains("Mini") {
             // Mini PC — moderate cooling
             match total_tdp {
                 Some(t) if t > 120.0 => ThermalHeadroom::Marginal,
@@ -2601,7 +2649,7 @@ impl HardwareInferenceEngine {
                 priority: 10,
                 cost_tier: 2,
             });
-        } else if f.has_ssd && !f.has_nvme && f.cpu_cores_physical >= 8 {
+        } else if f.has_ssd && !f.has_nvme && f.cpu_cores_physical.is_some_and(|v| v >= 8) {
             recs.push(UpgradeRecommendation {
                 component: "Boot Drive".into(),
                 current: "SATA SSD".into(),
@@ -2682,9 +2730,7 @@ impl HardwareInferenceEngine {
 
         // Server CPU in laptop. Gated on the chassis rather than on a battery:
         // a server with a UPS is the ordinary case, not an anomaly.
-        if f.is_server_cpu
-            && (f.chassis_type.contains("Laptop") || f.chassis_type.contains("Handheld"))
-        {
+        if f.is_server_cpu && (f.chassis().contains("Laptop") || f.chassis().contains("Handheld")) {
             anomalies.push(HardwareAnomaly {
                 description: "Server-class CPU detected in a battery-powered system".into(),
                 severity: AnomalySeverity::Info,
@@ -2707,11 +2753,14 @@ impl HardwareInferenceEngine {
         }
 
         // Many cores + low frequency
-        if f.cpu_cores_physical >= 32 && f.cpu_max_freq_mhz < 2500 {
+        if f.cpu_cores_physical.is_some_and(|v| v >= 32)
+            && f.cpu_max_freq_mhz.is_some_and(|v| v < 2500)
+        {
             anomalies.push(HardwareAnomaly {
                 description: format!(
                     "{} cores at only {} MHz",
-                    f.cpu_cores_physical, f.cpu_max_freq_mhz
+                    f.cpu_cores_physical.unwrap_or_default(),
+                    f.cpu_max_freq_mhz.unwrap_or_default()
                 ),
                 severity: AnomalySeverity::Info,
                 explanation: "Many-core + low clock = throughput-optimized (server/HPC), not latency-sensitive".into(),
@@ -2719,7 +2768,10 @@ impl HardwareInferenceEngine {
         }
 
         // No discrete GPU with tensor expectations
-        if !f.has_discrete_gpu && f.ram_total_gb >= 64.0 && f.cpu_cores_physical >= 16 {
+        if !f.has_discrete_gpu
+            && f.ram_total_gb >= 64.0
+            && f.cpu_cores_physical.is_some_and(|v| v >= 16)
+        {
             anomalies.push(HardwareAnomaly {
                 description: "Powerful CPU and RAM but no discrete GPU".into(),
                 severity: AnomalySeverity::Info,
@@ -2835,13 +2887,13 @@ mod tests {
     fn test_gaming_desktop_classification() {
         let engine = HardwareInferenceEngine {
             features: HardwareFeatures {
-                cpu_cores_physical: 8,
-                cpu_cores_logical: 16,
-                cpu_max_freq_mhz: 5000,
+                cpu_cores_physical: Some(8),
+                cpu_cores_logical: Some(16),
+                cpu_max_freq_mhz: Some(5000),
                 cpu_model: "Intel Core i7-14700K".into(),
                 cpu_vendor: "Intel".into(),
                 is_server_cpu: false,
-                has_ecc: false,
+                has_ecc: Some(false),
                 cpu_tdp_watts: Some(125.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 32.0,
@@ -2863,9 +2915,9 @@ mod tests {
                 total_storage_gb: 2000.0,
                 boot_drive_type: "NVMe".into(),
                 has_battery: false,
-                chassis_type: "Desktop".into(),
+                chassis_type: Some("Desktop".into()),
                 is_virtual: false,
-                numa_nodes: 1,
+                numa_nodes: Some(1),
                 pcie_gen: 4,
                 max_nic_speed_gbps: 2.5,
                 nic_count: 1,
@@ -2886,13 +2938,13 @@ mod tests {
     fn test_server_classification() {
         let engine = HardwareInferenceEngine {
             features: HardwareFeatures {
-                cpu_cores_physical: 64,
-                cpu_cores_logical: 128,
-                cpu_max_freq_mhz: 2800,
+                cpu_cores_physical: Some(64),
+                cpu_cores_logical: Some(128),
+                cpu_max_freq_mhz: Some(2800),
                 cpu_model: "AMD EPYC 9554".into(),
                 cpu_vendor: "AMD".into(),
                 is_server_cpu: true,
-                has_ecc: true,
+                has_ecc: Some(true),
                 cpu_tdp_watts: Some(225.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 512.0,
@@ -2914,9 +2966,9 @@ mod tests {
                 total_storage_gb: 15000.0,
                 boot_drive_type: "NVMe".into(),
                 has_battery: false,
-                chassis_type: "Server".into(),
+                chassis_type: Some("Server".into()),
                 is_virtual: false,
-                numa_nodes: 2,
+                numa_nodes: Some(2),
                 pcie_gen: 5,
                 max_nic_speed_gbps: 25.0,
                 nic_count: 4,
@@ -2939,13 +2991,13 @@ mod tests {
     fn test_laptop_bottleneck() {
         let engine = HardwareInferenceEngine {
             features: HardwareFeatures {
-                cpu_cores_physical: 4,
-                cpu_cores_logical: 8,
-                cpu_max_freq_mhz: 2800,
+                cpu_cores_physical: Some(4),
+                cpu_cores_logical: Some(8),
+                cpu_max_freq_mhz: Some(2800),
                 cpu_model: "Intel Core i5".into(),
                 cpu_vendor: "Intel".into(),
                 is_server_cpu: false,
-                has_ecc: false,
+                has_ecc: Some(false),
                 cpu_tdp_watts: Some(15.0),
                 cpu_tdp_measured: false,
                 ram_total_gb: 8.0,
@@ -2967,9 +3019,9 @@ mod tests {
                 total_storage_gb: 512.0,
                 boot_drive_type: "NVMe".into(),
                 has_battery: true,
-                chassis_type: "Laptop".into(),
+                chassis_type: Some("Laptop".into()),
                 is_virtual: false,
-                numa_nodes: 1,
+                numa_nodes: Some(1),
                 pcie_gen: 4,
                 max_nic_speed_gbps: 1.0,
                 nic_count: 1,
@@ -3102,9 +3154,9 @@ mod tests {
     fn test_performance_tier_scoring() {
         let engine = HardwareInferenceEngine {
             features: HardwareFeatures {
-                cpu_cores_physical: 2,
-                cpu_cores_logical: 4,
-                cpu_max_freq_mhz: 1800,
+                cpu_cores_physical: Some(2),
+                cpu_cores_logical: Some(4),
+                cpu_max_freq_mhz: Some(1800),
                 ram_total_gb: 4.0,
                 has_discrete_gpu: false,
                 has_ssd: false,
@@ -3121,9 +3173,9 @@ mod tests {
     fn test_workload_suitability() {
         let engine = HardwareInferenceEngine {
             features: HardwareFeatures {
-                cpu_cores_physical: 16,
-                cpu_cores_logical: 32,
-                cpu_max_freq_mhz: 4500,
+                cpu_cores_physical: Some(16),
+                cpu_cores_logical: Some(32),
+                cpu_max_freq_mhz: Some(4500),
                 ram_total_gb: 128.0,
                 has_discrete_gpu: true,
                 gpu_vram_gb: 24.0,

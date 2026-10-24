@@ -121,8 +121,11 @@ pub struct EdacOverview {
     /// Total uncorrectable errors across all controllers. `None` on the same
     /// terms as [`Self::total_ce`].
     pub total_ue: Option<u64>,
-    /// Whether ECC is active.
-    pub ecc_active: bool,
+    /// Whether ECC is active: `Some(true)` when at least one memory controller
+    /// is registered. `None` when none was found, because an empty controller
+    /// list does not say whether ECC is off or unreported. This used to be
+    /// `false` in that case, which read as "ECC is off".
+    pub ecc_active: Option<bool>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -311,7 +314,7 @@ impl EdacMonitor {
             .iter()
             .map(|mc| mc.ue_count)
             .try_fold(0u64, |acc, c| c.map(|c| acc + c));
-        let ecc_active = total > 0;
+        let ecc_active = (total > 0).then_some(true);
 
         let mut recs = Vec::new();
 
@@ -350,7 +353,7 @@ impl EdacMonitor {
                 .into(),
             ),
         }
-        if !ecc_active {
+        if ecc_active.is_none() {
             recs.push(
                 "No EDAC memory controllers found — ECC may be disabled or not supported".into(),
             );
@@ -440,7 +443,9 @@ impl EdacMonitor {
             // bill of health for a machine nobody examined.
             total_ce: None,
             total_ue: None,
-            ecc_active: false,
+            // Nothing was read, so ECC state is unknown. `false` here said ECC
+            // was off.
+            ecc_active: None,
             recommendations: Vec::new(),
         }
     }
@@ -502,7 +507,7 @@ mod tests {
             total_controllers: 1,
             total_ce: Some(5),
             total_ue: Some(0),
-            ecc_active: true,
+            ecc_active: Some(true),
             recommendations: Vec::new(),
         };
         let monitor = EdacMonitor { overview };

@@ -830,11 +830,11 @@ pub struct ProcessMonitorInfo {
     pub user: Option<String>,
     /// Process category (smart classification)
     pub category: ProcessCategory,
-    /// CPU usage percentage: the delta between samples, or on the first sample
-    /// the lifetime average. `None` on a first sample when the process's age
-    /// was not known or not yet positive -- there is no lifetime to average
-    /// over. Every reader used to divide by an assumed one second instead, or
-    /// report 0%.
+    /// CPU usage percentage: the delta between two samples of this process.
+    /// `None` until a previous sample exists (see
+    /// [`ProcessMonitor::sample_cpu_times`]), since a lifetime average is not
+    /// current usage. This used to report the lifetime average on the first
+    /// sample, and before that it divided by an assumed one second or reported 0%.
     pub cpu_percent: Option<f32>,
     /// Memory usage in bytes (Working Set / RSS)
     pub memory_bytes: u64,
@@ -1103,6 +1103,12 @@ impl ProcessMonitor {
         // Compute delta-based CPU% from stored previous samples
         let mut new_cpu_times = HashMap::with_capacity(system_processes.len());
         for proc in &mut system_processes {
+            // The platform readers fill `cpu_percent` with the process's lifetime
+            // average. That is not current usage, so it is cleared here and only a
+            // delta against a previous sample sets it. Without one the field is
+            // unknown, not the lifetime figure presented as now. This used to keep
+            // the lifetime average on the first sample.
+            proc.cpu_percent = None;
             if proc.cpu_time_us > 0 {
                 if let Some(&(prev_time_us, prev_instant)) = self.prev_cpu_times.get(&proc.pid) {
                     let elapsed = now.duration_since(prev_instant);
@@ -1120,9 +1126,6 @@ impl ProcessMonitor {
                             None => share as f32,
                         });
                     }
-                } else if let Some(cpus) = self.num_logical_cpus {
-                    // First sample: normalize the lifetime-average from platform code
-                    proc.cpu_percent = proc.cpu_percent.map(|p| p / cpus);
                 }
                 new_cpu_times.insert(proc.pid, (proc.cpu_time_us, now));
             }

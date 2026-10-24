@@ -1033,11 +1033,19 @@ fn resolve_ecc(out: &mut Vec<Reading>) {
         return;
     }
 
-    out.push(Reading::measured(
-        "memory.ecc.active",
-        serde_json::json!(overview.ecc_active),
-        None,
-    ));
+    // `ecc_active` is `None` when no controller was read; that is unknown, not off.
+    match overview.ecc_active {
+        Some(active) => out.push(Reading::measured(
+            "memory.ecc.active",
+            serde_json::json!(active),
+            None,
+        )),
+        None => out.push(Reading::unavailable(
+            "memory.ecc.active",
+            None,
+            "no memory controller was read, so ECC state is unknown",
+        )),
+    }
     // `measured` only when there is something measured.
     //
     // **The compiler cannot catch this one.** `serde_json::json!` accepts an

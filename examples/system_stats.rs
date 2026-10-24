@@ -113,17 +113,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // VMstat-style info
     println!("━━━━━━━━━━━━━━━━━━━ VMSTAT ━━━━━━━━━━━━━━━━━━━━━━");
     if let Some(ref vm) = stats.vm_stats {
-        println!("🔀 Context Switches: {}", vm.context_switches);
-        println!("⚡ Interrupts:       {}", vm.interrupts);
-        println!("📥 Pages In:         {}", vm.pages_in);
-        println!("📤 Pages Out:        {}", vm.pages_out);
-        println!("💾 Swap In:          {}", vm.swap_in);
-        println!("💾 Swap Out:         {}", vm.swap_out);
-        println!("🔄 Procs Running:    {}", vm.processes_running);
-        println!("⏸  Procs Blocked:    {}", vm.processes_blocked);
+        // Counters are totals since boot; `--` marks a counter that was not read.
+        println!("🔀 Context Switches: {}", opt(vm.context_switches));
+        println!("⚡ Interrupts:       {}", opt(vm.interrupts));
+        println!("📥 Pages In:         {}", opt(vm.pages_in));
+        println!("📤 Pages Out:        {}", opt(vm.pages_out));
+        println!("💾 Swap In:          {}", opt(vm.swap_in));
+        println!("💾 Swap Out:         {}", opt(vm.swap_out));
+        println!("🔄 Procs Running:    {}", opt(vm.processes_running));
+        println!("⏸  Procs Blocked:    {}", opt(vm.processes_blocked));
         println!(
             "🆕 Procs Created:    {} (forks since boot)",
-            vm.processes_created
+            opt(vm.processes_created)
         );
     } else {
         println!("   VMstat info not available");
@@ -134,24 +135,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("━━━━━━━━━━━━━━━ LIVE MONITORING (5s) ━━━━━━━━━━━━━");
     println!("Monitoring context switches and interrupts per second...\n");
 
-    let mut prev_ctx = stats
-        .vm_stats
-        .as_ref()
-        .map(|v| v.context_switches)
-        .unwrap_or(0);
-    let mut prev_int = stats.vm_stats.as_ref().map(|v| v.interrupts).unwrap_or(0);
+    let mut prev_ctx = stats.vm_stats.as_ref().and_then(|v| v.context_switches);
+    let mut prev_int = stats.vm_stats.as_ref().and_then(|v| v.interrupts);
 
     for i in 1..=5 {
         thread::sleep(Duration::from_secs(1));
 
         if let Ok(new_stats) = SystemStats::new() {
             if let Some(ref vm) = new_stats.vm_stats {
-                let ctx_rate = vm.context_switches.saturating_sub(prev_ctx);
-                let int_rate = vm.interrupts.saturating_sub(prev_int);
+                // A rate needs this sample and the previous one; otherwise it is unknown.
+                let ctx_rate = vm
+                    .context_switches
+                    .zip(prev_ctx)
+                    .map(|(now, prev)| now.saturating_sub(prev));
+                let int_rate = vm
+                    .interrupts
+                    .zip(prev_int)
+                    .map(|(now, prev)| now.saturating_sub(prev));
 
                 println!(
                     "[{}/5] ctx/s: {:>8}  |  int/s: {:>8}  |  running: {}  |  blocked: {}",
-                    i, ctx_rate, int_rate, vm.processes_running, vm.processes_blocked
+                    i,
+                    opt(ctx_rate),
+                    opt(int_rate),
+                    opt(vm.processes_running),
+                    opt(vm.processes_blocked)
                 );
 
                 prev_ctx = vm.context_switches;
@@ -170,4 +178,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n✅ System stats demo complete!");
     Ok(())
+}
+
+/// A counter for display, or `--` where it was not read.
+fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
+    v.map_or_else(|| "--".to_string(), |x| x.to_string())
 }

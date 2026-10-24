@@ -89,27 +89,51 @@ impl CpuTime {
     }
 }
 
-/// Virtual memory statistics (like vmstat)
+/// Virtual memory statistics (like vmstat).
+///
+/// The counters are cumulative totals since boot, not per-second rates. A rate
+/// needs two samples and is computed by the caller from the difference. Each
+/// field is `None` when its source line was not read or did not parse, rather
+/// than zero. This used to fill unread fields with 0, which read as "no paging"
+/// or "no interrupts".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VmStats {
-    /// Pages paged in
-    pub pages_in: u64,
-    /// Pages paged out
-    pub pages_out: u64,
-    /// Pages swapped in
-    pub swap_in: u64,
-    /// Pages swapped out
-    pub swap_out: u64,
-    /// Interrupts per second
-    pub interrupts: u64,
-    /// Context switches per second
-    pub context_switches: u64,
-    /// Processes created (forks)
-    pub processes_created: u64,
-    /// Processes currently running
-    pub processes_running: u32,
-    /// Processes currently blocked
-    pub processes_blocked: u32,
+    /// Pages paged in since boot (`pgpgin` in /proc/vmstat)
+    pub pages_in: Option<u64>,
+    /// Pages paged out since boot (`pgpgout` in /proc/vmstat)
+    pub pages_out: Option<u64>,
+    /// Pages swapped in since boot (`pswpin` in /proc/vmstat)
+    pub swap_in: Option<u64>,
+    /// Pages swapped out since boot (`pswpout` in /proc/vmstat)
+    pub swap_out: Option<u64>,
+    /// Interrupts since boot (`intr` in /proc/stat)
+    pub interrupts: Option<u64>,
+    /// Context switches since boot (`ctxt` in /proc/stat)
+    pub context_switches: Option<u64>,
+    /// Processes created (forks) since boot (`processes` in /proc/stat)
+    pub processes_created: Option<u64>,
+    /// Processes currently running (`procs_running` in /proc/stat)
+    pub processes_running: Option<u32>,
+    /// Processes currently blocked (`procs_blocked` in /proc/stat)
+    pub processes_blocked: Option<u32>,
+}
+
+impl VmStats {
+    /// A record with every field unread.
+    #[cfg(target_os = "linux")]
+    fn unread() -> Self {
+        Self {
+            pages_in: None,
+            pages_out: None,
+            swap_in: None,
+            swap_out: None,
+            interrupts: None,
+            context_switches: None,
+            processes_created: None,
+            processes_running: None,
+            processes_blocked: None,
+        }
+    }
 }
 
 /// System-wide statistics
@@ -291,57 +315,29 @@ mod linux {
                 } else if line.starts_with("btime ") {
                     stats.boot_time = line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                 } else if line.starts_with("ctxt ") {
-                    if stats.vm_stats.is_none() {
-                        stats.vm_stats = Some(VmStats {
-                            pages_in: 0,
-                            pages_out: 0,
-                            swap_in: 0,
-                            swap_out: 0,
-                            interrupts: 0,
-                            context_switches: 0,
-                            processes_created: 0,
-                            processes_running: 0,
-                            processes_blocked: 0,
-                        });
-                    }
-                    if let Some(ref mut vm) = stats.vm_stats {
-                        vm.context_switches = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                    }
+                    stats
+                        .vm_stats
+                        .get_or_insert_with(VmStats::unread)
+                        .context_switches =
+                        line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                 } else if line.starts_with("intr ") {
                     if let Some(ref mut vm) = stats.vm_stats {
-                        vm.interrupts = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
+                        vm.interrupts = line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                     }
                 } else if line.starts_with("processes ") {
                     if let Some(ref mut vm) = stats.vm_stats {
-                        vm.processes_created = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
+                        vm.processes_created =
+                            line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                     }
                 } else if line.starts_with("procs_running ") {
                     if let Some(ref mut vm) = stats.vm_stats {
-                        vm.processes_running = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
+                        vm.processes_running =
+                            line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                     }
                 } else if line.starts_with("procs_blocked ") {
                     if let Some(ref mut vm) = stats.vm_stats {
-                        vm.processes_blocked = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
+                        vm.processes_blocked =
+                            line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                     }
                 }
             }
@@ -349,33 +345,8 @@ mod linux {
 
         // Read vmstat for page in/out
         if let Ok(content) = fs::read_to_string("/proc/vmstat") {
-            if stats.vm_stats.is_none() {
-                stats.vm_stats = Some(VmStats {
-                    pages_in: 0,
-                    pages_out: 0,
-                    swap_in: 0,
-                    swap_out: 0,
-                    interrupts: 0,
-                    context_switches: 0,
-                    processes_created: 0,
-                    processes_running: 0,
-                    processes_blocked: 0,
-                });
-            }
-            for line in content.lines() {
-                if let Some(ref mut vm) = stats.vm_stats {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        match parts[0] {
-                            "pgpgin" => vm.pages_in = parts[1].parse().unwrap_or(0),
-                            "pgpgout" => vm.pages_out = parts[1].parse().unwrap_or(0),
-                            "pswpin" => vm.swap_in = parts[1].parse().unwrap_or(0),
-                            "pswpout" => vm.swap_out = parts[1].parse().unwrap_or(0),
-                            _ => {}
-                        }
-                    }
-                }
-            }
+            let vm = stats.vm_stats.get_or_insert_with(VmStats::unread);
+            apply_vmstat(vm, &content);
         }
 
         // Read hostname
@@ -392,6 +363,24 @@ mod linux {
         }
 
         Ok(stats)
+    }
+}
+
+/// Fill the `/proc/vmstat` paging counters. A line that is absent or does not parse
+/// leaves its field `None`.
+#[cfg(target_os = "linux")]
+fn apply_vmstat(vm: &mut VmStats, content: &str) {
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            match parts[0] {
+                "pgpgin" => vm.pages_in = parts[1].parse().ok(),
+                "pgpgout" => vm.pages_out = parts[1].parse().ok(),
+                "pswpin" => vm.swap_in = parts[1].parse().ok(),
+                "pswpout" => vm.swap_out = parts[1].parse().ok(),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -532,6 +521,18 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vmstat_fields_absent_or_unparsed_stay_unread() {
+        let mut vm = VmStats::unread();
+        apply_vmstat(&mut vm, "nr_free 100\npgpgin 1234\npgpgout x\npswpin 7\n");
+        assert_eq!(vm.pages_in, Some(1234));
+        assert_eq!(vm.pages_out, None, "an unparsable counter is unread, not 0");
+        assert_eq!(vm.swap_in, Some(7));
+        assert_eq!(vm.swap_out, None, "an absent counter is unread, not 0");
+        assert_eq!(vm.context_switches, None, "not a vmstat counter");
+    }
 
     #[test]
     fn test_cpu_time_total() {

@@ -141,8 +141,8 @@ pub struct IronMonitorApp {
     system_stats: Option<SystemStats>,
     context_switches_history: VecDeque<f32>,
     interrupts_history: VecDeque<f32>,
-    prev_context_switches: u64,
-    prev_interrupts: u64,
+    prev_context_switches: Option<u64>,
+    prev_interrupts: Option<u64>,
 
     // Historical data for graphs
     cpu_history: VecDeque<f32>,
@@ -1039,8 +1039,8 @@ impl IronMonitorApp {
             system_stats: SystemStats::new().ok(),
             context_switches_history: VecDeque::with_capacity(HISTORY_SIZE),
             interrupts_history: VecDeque::with_capacity(HISTORY_SIZE),
-            prev_context_switches: 0,
-            prev_interrupts: 0,
+            prev_context_switches: None,
+            prev_interrupts: None,
             cpu_history: VecDeque::with_capacity(HISTORY_SIZE),
             per_core_history: (0..cpu_core_count)
                 .map(|_| VecDeque::with_capacity(HISTORY_SIZE))
@@ -1372,17 +1372,28 @@ impl IronMonitorApp {
         // System Stats (load avg, vmstat, etc.)
         if let Some(stats) = self.snapshot.system_stats.clone() {
             // Track context switches and interrupts per interval.
+            // A rate needs a known counter now and a known counter last interval.
+            // An unread counter adds no sample, so the chart keeps its last value
+            // instead of charting a zero.
             if let Some(ref vm) = stats.vm_stats {
-                let ctx_delta = vm
-                    .context_switches
-                    .saturating_sub(self.prev_context_switches);
-                let int_delta = vm.interrupts.saturating_sub(self.prev_interrupts);
-
-                push_sample(&mut self.context_switches_history, ctx_delta as f32);
-                push_sample(&mut self.interrupts_history, int_delta as f32);
-
-                self.prev_context_switches = vm.context_switches;
-                self.prev_interrupts = vm.interrupts;
+                if let Some(ctx) = vm.context_switches {
+                    if let Some(prev) = self.prev_context_switches {
+                        push_sample(
+                            &mut self.context_switches_history,
+                            ctx.saturating_sub(prev) as f32,
+                        );
+                    }
+                    self.prev_context_switches = Some(ctx);
+                }
+                if let Some(int) = vm.interrupts {
+                    if let Some(prev) = self.prev_interrupts {
+                        push_sample(
+                            &mut self.interrupts_history,
+                            int.saturating_sub(prev) as f32,
+                        );
+                    }
+                    self.prev_interrupts = Some(int);
+                }
             }
 
             self.system_stats = Some(stats);
@@ -3276,27 +3287,36 @@ impl IronMonitorApp {
                             RichText::new(format!("int/s:{}", rate(&self.interrupts_history)))
                                 .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
-                        if vm.processes_blocked > 0 {
+                        // Unread counters show "--", never 0.
+                        let count =
+                            |v: Option<u64>| v.map_or_else(|| "--".to_string(), |n| n.to_string());
+                        // Shown only when known to be nonzero; unknown is not a reason to show it.
+                        if vm.processes_blocked.is_some_and(|n| n > 0) {
                             ui.label(
-                                RichText::new(format!("blocked:{}", vm.processes_blocked))
-                                    .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
+                                RichText::new(format!(
+                                    "blocked:{}",
+                                    vm.processes_blocked
+                                        .map_or_else(|| "--".to_string(), |n| n.to_string())
+                                ))
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
                             );
                         }
                         ui.label(
-                            RichText::new(format!("pgpgin:{}", vm.pages_in))
+                            RichText::new(format!("pgpgin:{}", count(vm.pages_in)))
                                 .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
                         );
                         ui.label(
-                            RichText::new(format!("pgpgout:{}", vm.pages_out))
+                            RichText::new(format!("pgpgout:{}", count(vm.pages_out)))
                                 .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
-                        if vm.swap_in > 0 || vm.swap_out > 0 {
+                        if vm.swap_in.is_some_and(|n| n > 0) || vm.swap_out.is_some_and(|n| n > 0) {
                             ui.label(
-                                RichText::new(format!("swin:{} swout:{}", vm.swap_in, vm.swap_out))
-                                    .color(theme::text_color(
-                                        &palette_ctx,
-                                        CyberColors::NEON_YELLOW,
-                                    )),
+                                RichText::new(format!(
+                                    "swin:{} swout:{}",
+                                    count(vm.swap_in),
+                                    count(vm.swap_out)
+                                ))
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
                         }
                     });
