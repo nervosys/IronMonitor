@@ -263,7 +263,9 @@ pub struct Snapshot {
     pub collect_us: u64,
     /// Per-collector breakdown of this tick.
     pub timings: StageTimings,
-    /// Whether the process stage ran this tick rather than reusing its table.
+    /// Whether the process stage read the process table this tick. False on cached
+    /// ticks, and also when no monitor exists or the enumeration failed; in those cases
+    /// `processes` holds the last successful table, if any.
     #[serde(default)]
     pub process_sampled: bool,
     /// Whether the connection stage ran this tick rather than reusing its table.
@@ -751,7 +753,9 @@ fn collect_once(
             let sys_h = scope.spawn(timed(collect_system_stats));
             let gpu_h = scope.spawn(timed(move || collect_gpu(gpu.as_ref())));
             let proc_h = scope.spawn(timed(move || {
-                refresh_processes.then(|| collect_processes(processes.as_mut()))
+                refresh_processes
+                    .then(|| collect_processes(processes.as_mut()))
+                    .flatten()
             }));
             let net_h = scope.spawn(timed(move || collect_network(network.as_mut())));
             let conn_h = scope.spawn(timed(move || {
@@ -972,8 +976,11 @@ fn collect_gpu(gpu: Option<&GpuCollection>) -> Vec<Option<GpuDynamicInfo>> {
         .collect()
 }
 
-fn collect_processes(monitor: Option<&mut ProcessMonitor>) -> Vec<ProcessMonitorInfo> {
-    monitor.and_then(|m| m.processes().ok()).unwrap_or_default()
+/// `None` when there is no monitor or the enumeration failed. Both used to produce an
+/// empty table, which was then cached and reported as a sampled process list with
+/// zero processes. Callers keep the previous table on `None`.
+fn collect_processes(monitor: Option<&mut ProcessMonitor>) -> Option<Vec<ProcessMonitorInfo>> {
+    monitor?.processes().ok()
 }
 
 fn collect_connections(
@@ -1153,6 +1160,13 @@ fn collect_disks() -> Vec<DiskSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without a monitor there is no table, so the stage must report no reading, not an
+    /// empty one. An empty `Some` would be cached and flagged as sampled.
+    #[test]
+    fn collect_processes_without_a_monitor_reports_no_table() {
+        assert!(collect_processes(None).is_none());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

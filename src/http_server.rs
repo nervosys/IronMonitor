@@ -557,7 +557,11 @@ impl HttpServer {
                 collector.record_with_labels("ironmon_network_tx_bytes_per_sec", rate, interface);
             }
         }
-        collector.record("ironmon_process_count", snap.processes.len() as f64);
+        // Only when this cycle read the table. On a cached or failed cycle the
+        // table is the last good one, and its length is not a current count.
+        if snap.process_sampled {
+            collector.record("ironmon_process_count", snap.processes.len() as f64);
+        }
 
         if let Some(ref stats) = snap.system_stats {
             if let Some(ref load) = stats.load_average {
@@ -790,6 +794,7 @@ mod dashboard_coverage_tests {
         use std::collections::BTreeSet;
 
         let snap = Snapshot {
+            process_sampled: true,
             disks: vec![DiskSnapshot {
                 name: "PhysicalDrive0".into(),
                 total: Some(1_000),
