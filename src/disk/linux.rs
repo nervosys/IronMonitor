@@ -356,11 +356,11 @@ impl DiskDevice for LinuxDisk {
                 .as_ref()
                 .and_then(|d| d.total_bytes_written)
                 .map(|b| b / 512),
-            host_read_commands: None,
-            host_write_commands: None,
-            critical_warnings: None,
             // The same `nvme smart-log` run as the wear and temperature fields
             // above, parsed by the SMART collector. Absent keys stay None.
+            host_read_commands: smart.as_ref().and_then(|d| d.nvme_host_read_commands),
+            host_write_commands: smart.as_ref().and_then(|d| d.nvme_host_write_commands),
+            critical_warnings: smart.as_ref().and_then(|d| d.nvme_critical_warning),
             available_spare: smart.as_ref().and_then(|d| d.nvme_available_spare),
             available_spare_threshold: smart
                 .as_ref()

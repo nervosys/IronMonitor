@@ -173,6 +173,15 @@ pub struct SmartDiskInfo {
     /// NVMe unsafe shutdown count (`unsafe_shutdowns`).
     #[serde(default)]
     pub nvme_unsafe_shutdowns: Option<u64>,
+    /// NVMe critical warning bit flags (`critical_warning`).
+    #[serde(default)]
+    pub nvme_critical_warning: Option<u8>,
+    /// NVMe host read commands issued (`host_read_commands`).
+    #[serde(default)]
+    pub nvme_host_read_commands: Option<u64>,
+    /// NVMe host write commands issued (`host_write_commands`).
+    #[serde(default)]
+    pub nvme_host_write_commands: Option<u64>,
     /// All raw S.M.A.R.T. attributes
     pub attributes: Vec<SmartAttribute>,
     /// Estimated remaining life percentage (0-100)
@@ -477,6 +486,9 @@ impl SmartMonitor {
                         nvme_available_spare_threshold: None,
                         nvme_controller_busy_time_minutes: None,
                         nvme_unsafe_shutdowns: None,
+                        nvme_critical_warning: None,
+                        nvme_host_read_commands: None,
+                        nvme_host_write_commands: None,
                         attributes: Vec::new(),
                         estimated_life_remaining: None,
                         estimated_days_remaining: None,
@@ -555,6 +567,9 @@ impl SmartMonitor {
                     nvme_available_spare_threshold: None,
                     nvme_controller_busy_time_minutes: None,
                     nvme_unsafe_shutdowns: None,
+                    nvme_critical_warning: None,
+                    nvme_host_read_commands: None,
+                    nvme_host_write_commands: None,
                     attributes: Vec::new(),
                     estimated_life_remaining: None,
                     estimated_days_remaining: None,
@@ -600,6 +615,11 @@ impl SmartMonitor {
             .and_then(|v| u8::try_from(v).ok());
         disk.nvme_controller_busy_time_minutes = val["controller_busy_time"].as_u64();
         disk.nvme_unsafe_shutdowns = val["unsafe_shutdowns"].as_u64();
+        disk.nvme_critical_warning = val["critical_warning"]
+            .as_u64()
+            .and_then(|v| u8::try_from(v).ok());
+        disk.nvme_host_read_commands = val["host_read_commands"].as_u64();
+        disk.nvme_host_write_commands = val["host_write_commands"].as_u64();
         disk.uncorrectable_errors = val["media_errors"].as_u64();
         // NVMe reports data units of 512 bytes, in
         // thousands.
@@ -816,6 +836,9 @@ Get-PhysicalDisk | ForEach-Object {
                             nvme_available_spare_threshold: None,
                             nvme_controller_busy_time_minutes: None,
                             nvme_unsafe_shutdowns: None,
+                            nvme_critical_warning: None,
+                            nvme_host_read_commands: None,
+                            nvme_host_write_commands: None,
                             attributes: Vec::new(),
                             estimated_life_remaining: None,
                             estimated_days_remaining: None,
@@ -950,6 +973,9 @@ Get-PhysicalDisk | ForEach-Object {
                                 nvme_available_spare_threshold: None,
                                 nvme_controller_busy_time_minutes: None,
                                 nvme_unsafe_shutdowns: None,
+                                nvme_critical_warning: None,
+                                nvme_host_read_commands: None,
+                                nvme_host_write_commands: None,
                                 attributes: Vec::new(),
                                 estimated_life_remaining: None,
                                 estimated_days_remaining: None,
@@ -1035,6 +1061,9 @@ Get-PhysicalDisk | ForEach-Object {
                                 nvme_available_spare_threshold: None,
                                 nvme_controller_busy_time_minutes: None,
                                 nvme_unsafe_shutdowns: None,
+                                nvme_critical_warning: None,
+                                nvme_host_read_commands: None,
+                                nvme_host_write_commands: None,
                                 attributes: Vec::new(),
                                 estimated_life_remaining: None,
                                 estimated_days_remaining: None,
@@ -1142,6 +1171,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1180,6 +1212,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1212,6 +1247,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1247,6 +1285,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: Some(95.0),
             estimated_days_remaining: Some(3650),
@@ -1289,6 +1330,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1330,6 +1374,9 @@ mod tests {
             nvme_available_spare_threshold: None,
             nvme_controller_busy_time_minutes: None,
             nvme_unsafe_shutdowns: None,
+            nvme_critical_warning: None,
+            nvme_host_read_commands: None,
+            nvme_host_write_commands: None,
             attributes: Vec::new(),
             estimated_life_remaining: None,
             estimated_days_remaining: None,
@@ -1367,6 +1414,9 @@ mod tests {
         assert_eq!(disk.nvme_controller_busy_time_minutes, Some(412));
         assert_eq!(disk.nvme_unsafe_shutdowns, Some(17));
         assert_eq!(disk.nvme_percentage_used, Some(3));
+        assert_eq!(disk.nvme_critical_warning, Some(0));
+        assert_eq!(disk.nvme_host_read_commands, Some(123_456_789));
+        assert_eq!(disk.nvme_host_write_commands, Some(87_654_321));
     }
 
     /// A drive or nvme-cli that omits these keys must leave them unread, not zero.
@@ -1381,5 +1431,8 @@ mod tests {
         assert_eq!(disk.nvme_available_spare_threshold, None);
         assert_eq!(disk.nvme_controller_busy_time_minutes, None);
         assert_eq!(disk.nvme_unsafe_shutdowns, None);
+        assert_eq!(disk.nvme_critical_warning, None);
+        assert_eq!(disk.nvme_host_read_commands, None);
+        assert_eq!(disk.nvme_host_write_commands, None);
     }
 }
