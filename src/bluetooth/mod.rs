@@ -34,7 +34,14 @@ pub struct BluetoothDevice {
 pub struct BluetoothAdapter {
     pub id: String,
     pub name: String,
-    pub address: String,
+    /// The radio's own hardware address as `aa:bb:cc:dd:ee:ff`, or `None`
+    /// where the platform did not report one.
+    ///
+    /// Windows used to store the adapter's PnP device id here, which is a
+    /// path and not an address, so every Windows adapter published a value the
+    /// ontology had to reject. The radio address is read from the adapter's
+    /// `DEVPKEY_Bluetooth_RadioAddress` property.
+    pub address: Option<String>,
     /// Whether the radio is on, or `None` where it was not read.
     ///
     /// Linux defaulted an unreadable `powered` file to on; Windows reported
@@ -103,6 +110,68 @@ pub(crate) fn classify_pnp_entry(name: &str, pnp_id: &str) -> BtEntry {
     } else {
         BtEntry::Stack
     }
+}
+
+/// Normalise a Bluetooth hardware address to lowercase `aa:bb:cc:dd:ee:ff`.
+///
+/// Accepts six hex octets separated by `:` or `-`, or twelve bare hex digits.
+/// Anything else is `None`, so a PnP path or an empty string is never published
+/// as an address.
+pub(crate) fn normalise_bd_address(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let hex: String = if raw.contains(':') || raw.contains('-') {
+        let octets: Vec<&str> = raw.split([':', '-']).collect();
+        if octets.len() != 6 || octets.iter().any(|o| o.len() != 2) {
+            return None;
+        }
+        octets.concat()
+    } else {
+        raw.to_string()
+    };
+    if hex.len() != 12 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex = hex.to_ascii_lowercase();
+    Some(
+        hex.as_bytes()
+            .chunks(2)
+            .map(|p| String::from_utf8_lossy(p).to_string())
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+/// The radio's hardware address from its `DEVPKEY_Bluetooth_RadioAddress`
+/// property, or `None` if the property is absent.
+///
+/// `Get-PnpDeviceProperty` takes a couple of seconds to start, so this is asked
+/// for one radio at a time, and only for an adapter this refresh found. Nothing
+/// is derived from the network adapter in its place.
+#[cfg(target_os = "windows")]
+fn radio_address(instance_id: &str) -> Option<String> {
+    let query = format!(
+        "(Get-PnpDeviceProperty -InstanceId '{}' -KeyName DEVPKEY_Bluetooth_RadioAddress -ErrorAction SilentlyContinue).Data | ConvertTo-Json -Compress",
+        instance_id.replace('\'', "''")
+    );
+    let value =
+        crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", &query])
+            .ok()
+            .flatten();
+    radio_address_from_value(value.as_ref())
+}
+
+/// The radio address from a `DEVPKEY_Bluetooth_RadioAddress` value.
+///
+/// Windows reports it as a 48-bit integer whose hex digits are the address in
+/// order: `145815598978622` is `84:9e:56:fa:d6:3e`. A missing or out-of-range
+/// value is `None`.
+#[cfg(any(target_os = "windows", test))]
+fn radio_address_from_value(value: Option<&serde_json::Value>) -> Option<String> {
+    let n = value?.as_u64()?;
+    if n >= 1 << 48 {
+        return None;
+    }
+    normalise_bd_address(&format!("{n:012x}"))
 }
 
 /// The device address embedded in a PnP id, as `AA:BB:CC:DD:EE:FF`.
@@ -259,7 +328,7 @@ impl BluetoothMonitor {
                     self.adapters.push(BluetoothAdapter {
                         id: format!("bt{idx}"),
                         name: name.to_string(),
-                        address: id.to_string(),
+                        address: radio_address(id),
                         // PnP status is not radio state; nothing here reads it.
                         powered: None,
                     });
@@ -309,10 +378,11 @@ impl BluetoothMonitor {
                     }
 
                     let path = entry.path();
+                    // An unreadable `address` used to default to an empty
+                    // string, which is not an address; it is `None` now.
                     let address = fs::read_to_string(path.join("address"))
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
+                        .ok()
+                        .and_then(|s| normalise_bd_address(&s));
 
                     // Power state, where the kernel publishes one. An
                     // unreadable file defaulted to "1" -- powered on.
@@ -425,8 +495,7 @@ impl BluetoothMonitor {
                                 let address = ctrl
                                     .get("controller_address")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
+                                    .and_then(normalise_bd_address);
                                 let name = ctrl
                                     .get("controller_chipset")
                                     .and_then(|v| v.as_str())
@@ -695,7 +764,7 @@ mod tests {
             adapters: vec![BluetoothAdapter {
                 id: "bt0".into(),
                 name: "Test".into(),
-                address: String::new(),
+                address: None,
                 powered: Some(true),
             }],
             devices: Vec::new(),
@@ -736,13 +805,45 @@ mod tests {
         let adapter = BluetoothAdapter {
             id: "hci0".to_string(),
             name: "Test Adapter".to_string(),
-            address: "11:22:33:44:55:66".to_string(),
+            address: Some("11:22:33:44:55:66".to_string()),
             powered: Some(true),
         };
         let json = serde_json::to_string(&adapter).unwrap();
         let deserialized: BluetoothAdapter = serde_json::from_str(&json).unwrap();
         assert_eq!(adapter.id, deserialized.id);
         assert_eq!(deserialized.powered, Some(true));
+        assert_eq!(deserialized.address, adapter.address);
+    }
+
+    #[test]
+    fn a_hardware_address_is_normalised_to_lowercase_colons() {
+        assert_eq!(
+            normalise_bd_address("84:9E:56:FA:D6:3E").as_deref(),
+            Some("84:9e:56:fa:d6:3e")
+        );
+        assert_eq!(
+            normalise_bd_address("84-9e-56-fa-d6-3e").as_deref(),
+            Some("84:9e:56:fa:d6:3e")
+        );
+        assert_eq!(
+            normalise_bd_address(" 849E56FAD63E\n").as_deref(),
+            Some("84:9e:56:fa:d6:3e")
+        );
+    }
+
+    #[test]
+    fn a_non_address_is_withheld_rather_than_published() {
+        // A PnP path, an empty sysfs read and a short MAC are not addresses.
+        for raw in [
+            r"USB\VID_0489&PID_E13A&MI_00\B&26E6BFF2&0&0000",
+            "",
+            "   ",
+            "84:9e:56:fa:d6",
+            "84:9e:56:fa:d6:3g",
+            "849e56fad63",
+        ] {
+            assert_eq!(normalise_bd_address(raw), None, "{raw:?}");
+        }
     }
 }
 
@@ -862,6 +963,32 @@ mod pnp_classification_tests {
             None,
             "a stack driver has no device address to report"
         );
+    }
+
+    /// The radio address is the adapter's own MAC: on the machine this was
+    /// captured on, `DEVPKEY_Bluetooth_RadioAddress` was 145815598978622 and
+    /// `Get-NetAdapter` reports the Bluetooth Network Connection as
+    /// 84-9E-56-FA-D6-3E.
+    #[test]
+    fn a_radio_address_value_is_its_mac() {
+        let value = serde_json::json!(145815598978622u64);
+        assert_eq!(
+            radio_address_from_value(Some(&value)).as_deref(),
+            Some("84:9e:56:fa:d6:3e")
+        );
+    }
+
+    /// A radio that reports no address, or a value wider than 48 bits, is
+    /// withheld. Nothing is derived from the network adapter in its place.
+    #[test]
+    fn a_missing_or_oversized_radio_address_is_withheld() {
+        assert_eq!(radio_address_from_value(None), None);
+        assert_eq!(
+            radio_address_from_value(Some(&serde_json::Value::Null)),
+            None
+        );
+        let too_wide = serde_json::json!(1u64 << 48);
+        assert_eq!(radio_address_from_value(Some(&too_wide)), None);
     }
 
     /// A name nothing recognises is Unknown, not a plausible default.

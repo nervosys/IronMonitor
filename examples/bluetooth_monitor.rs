@@ -25,7 +25,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for adapter in adapters {
         println!("  📡 {}", adapter.name);
         println!("    ID: {}", adapter.id);
-        println!("    Address: {}", adapter.address);
+        println!(
+            "    Address: {}",
+            adapter.address.as_deref().unwrap_or("not reported")
+        );
         println!(
             "    Powered: {}",
             match adapter.powered {

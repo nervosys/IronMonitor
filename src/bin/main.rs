@@ -1185,7 +1185,11 @@ fn handle_cli_command(
                     );
                     println!("  Adapters: {}", monitor.adapters().len());
                     for adapter in monitor.adapters() {
-                        println!("    {} ({})", adapter.name, adapter.address);
+                        println!(
+                            "    {} ({})",
+                            adapter.name,
+                            adapter.address.as_deref().unwrap_or("address not read")
+                        );
                     }
                     println!("  Devices: {}", monitor.devices().len());
                     for device in monitor.devices() {

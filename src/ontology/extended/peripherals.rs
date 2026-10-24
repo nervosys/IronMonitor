@@ -521,9 +521,9 @@ fn resolve_bluetooth_detail(out: &mut Vec<Reading>) {
         text_reading(
             out,
             format!("network.bluetooth.{i}.address"),
-            bd_address(&a.address),
+            a.address.as_deref().and_then(bd_address),
             U::Identifier,
-            "the adapter's record carries no Bluetooth address; the Windows record holds a device path in this field",
+            "the platform did not report this adapter's hardware address",
             P::Measured,
         );
     }
@@ -577,9 +577,9 @@ fn resolve_bluetooth_detail(out: &mut Vec<Reading>) {
     }
 }
 
-/// A Bluetooth address is six hex octets. The Windows adapter record carries a
-/// PnP device path in that field instead, which is not an address and is not
-/// published as one.
+/// A Bluetooth address is six hex octets. Anything else is not an address and
+/// is not published as one. The adapter's address is already normalised by the
+/// reader; the device address is checked here as it always was.
 fn bd_address(raw: &str) -> Option<&str> {
     let v = raw.trim();
     let octets: Vec<&str> = v.split([':', '-']).collect();

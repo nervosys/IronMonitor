@@ -155,7 +155,9 @@ pub struct PowerSupplyInfo {
     pub voltage_min_mv: Option<u32>,
     /// Current now in microamps (positive = charging, negative = discharging)
     pub current_now_ua: Option<i32>,
-    /// Power now in microwatts
+    /// Power now in milliwatts. Linux reads `power_now` in microwatts and divides
+    /// by 1000; the doc said microwatts, which the field never held, and
+    /// `power_w()` divides by 1000 as well.
     pub power_now_mw: Option<u32>,
     /// Energy now in microwatt-hours
     pub energy_now_uwh: Option<u64>,
@@ -598,6 +600,9 @@ impl PowerSupplyMonitor {
     #[cfg(target_os = "windows")]
     fn enumerate_supplies() -> Result<Vec<PowerSupplyInfo>> {
         let mut supplies = Vec::new();
+        // The battery `GetSystemPowerStatus` describes, held until it is joined
+        // to the batteries WMI describes.
+        let mut status_battery: Option<PowerSupplyInfo> = None;
 
         // Use Windows API to get battery information
         unsafe {
@@ -661,10 +666,14 @@ impl PowerSupplyMonitor {
                 // time until full, so it is not a `time_to_full_min`. Windows
                 // reports no time to full here, and the field stays unset.
 
-                supplies.push(battery_info);
+                status_battery = Some(battery_info);
             }
         }
 
+        supplies.extend(combine_windows_batteries(
+            status_battery,
+            read_wmi_batteries(),
+        ));
         Ok(supplies)
     }
 
@@ -787,6 +796,184 @@ pub fn battery_percent() -> Option<u8> {
     PowerSupplyMonitor::new()
         .ok()
         .and_then(|m| m.primary_battery().and_then(|b| b.capacity_percent))
+}
+
+/// The batteries WMI describes in `root\WMI`, joined by `InstanceName`.
+///
+/// Four classes are read in one PowerShell pass: `BatteryStaticData` (design
+/// capacity, manufacturer, serial number, chemistry), `BatteryFullChargedCapacity`,
+/// `BatteryStatus` (remaining capacity, voltage, charge and discharge rate) and
+/// `BatteryCycleCount`. A desktop has none of these instances and the list is
+/// empty, which is a reading. A failed query is also empty, and the batteries it
+/// would have described are not guessed at.
+#[cfg(windows)]
+fn read_wmi_batteries() -> Vec<PowerSupplyInfo> {
+    const QUERY: &str = concat!(
+        "$ns = 'root/wmi'; ",
+        "[pscustomobject]@{ ",
+        "Static = @(Get-CimInstance -Namespace $ns -ClassName BatteryStaticData -ErrorAction SilentlyContinue | ",
+        "Select-Object InstanceName, DesignedCapacity, ManufactureName, SerialNumber, Chemistry); ",
+        "Full = @(Get-CimInstance -Namespace $ns -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | ",
+        "Select-Object InstanceName, FullChargedCapacity); ",
+        "Status = @(Get-CimInstance -Namespace $ns -ClassName BatteryStatus -ErrorAction SilentlyContinue | ",
+        "Select-Object InstanceName, RemainingCapacity, Voltage, ChargeRate, DischargeRate); ",
+        "Cycle = @(Get-CimInstance -Namespace $ns -ClassName BatteryCycleCount -ErrorAction SilentlyContinue | ",
+        "Select-Object InstanceName, CycleCount) ",
+        "} | ConvertTo-Json -Depth 4 -Compress"
+    );
+    crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])
+        .ok()
+        .flatten()
+        .map(|json| batteries_from_wmi(&json))
+        .unwrap_or_default()
+}
+
+/// Rows of one WMI class in the captured JSON, keyed by `InstanceName`.
+#[cfg(any(windows, test))]
+fn wmi_rows_by_instance(
+    json: &serde_json::Value,
+    key: &str,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    json.get(key)
+        .map(crate::core::command::json_items)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| {
+            let id = row.get("InstanceName")?.as_str()?.to_string();
+            Some((id, row))
+        })
+        .collect()
+}
+
+/// A WMI battery integer, or `None` where it is the API's unknown marker.
+///
+/// The battery API reports `0xFFFFFFFF` for an unknown capacity or voltage.
+#[cfg(any(windows, test))]
+fn wmi_u32(value: Option<&serde_json::Value>) -> Option<u32> {
+    let n = value?.as_u64()?;
+    if n == 0xFFFF_FFFF {
+        return None;
+    }
+    u32::try_from(n).ok()
+}
+
+/// A charge or discharge rate in mW. The battery API reports `0x80000000` for an
+/// unknown rate, and an idle battery reports 0 on both, which is a reading.
+#[cfg(any(windows, test))]
+fn wmi_rate(
+    discharge: Option<&serde_json::Value>,
+    charge: Option<&serde_json::Value>,
+) -> Option<u32> {
+    let rate = |v| wmi_u32(v).filter(|&r| r != 0x8000_0000);
+    match (rate(discharge), rate(charge)) {
+        // At most one of the two is non-zero, so the larger is the rate.
+        (Some(d), Some(c)) => Some(d.max(c)),
+        (Some(d), None) if d > 0 => Some(d),
+        (None, Some(c)) if c > 0 => Some(c),
+        _ => None,
+    }
+}
+
+/// The technology name for a `BatteryStaticData.Chemistry` value, which is four
+/// ASCII bytes. A code not listed here is `None`, not a guess.
+#[cfg(any(windows, test))]
+fn technology_from_chemistry(chemistry: &serde_json::Value) -> Option<String> {
+    let bytes: Vec<u8> = chemistry
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+        .collect();
+    let code = String::from_utf8(bytes).ok()?;
+    match code.trim_end_matches('\0') {
+        "LION" => Some("Li-ion".to_string()),
+        "LIPO" => Some("LiPo".to_string()),
+        "NiMH" => Some("NiMH".to_string()),
+        "NiCd" => Some("NiCd".to_string()),
+        "PbAc" => Some("Lead-acid".to_string()),
+        _ => None,
+    }
+}
+
+/// Build one battery per `BatteryStaticData` instance, filling the rest from the
+/// rows with the same `InstanceName`. A field whose class has no row for that
+/// instance stays unset.
+#[cfg(any(windows, test))]
+fn batteries_from_wmi(json: &serde_json::Value) -> Vec<PowerSupplyInfo> {
+    let full = wmi_rows_by_instance(json, "Full");
+    let status = wmi_rows_by_instance(json, "Status");
+    let cycle = wmi_rows_by_instance(json, "Cycle");
+    // mWh to uWh, the unit the struct keeps.
+    let mwh_to_uwh = |mwh: u32| u64::from(mwh) * 1000;
+
+    let statics = json
+        .get("Static")
+        .map(crate::core::command::json_items)
+        .unwrap_or_default();
+
+    let mut batteries = Vec::new();
+    for row in &statics {
+        let Some(id) = row.get("InstanceName").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let text = |v: Option<&serde_json::Value>| {
+            v.and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let full = full.get(id);
+        let status = status.get(id);
+        let cycle = cycle.get(id);
+
+        let mut info = PowerSupplyInfo::new(id);
+        info.supply_type = PowerSupplyType::Battery;
+        info.manufacturer = text(row.get("ManufactureName"));
+        info.serial_number = text(row.get("SerialNumber"));
+        info.technology = row.get("Chemistry").and_then(technology_from_chemistry);
+        info.energy_full_design_uwh = wmi_u32(row.get("DesignedCapacity"))
+            .filter(|&v| v > 0)
+            .map(mwh_to_uwh);
+        info.energy_full_uwh = full
+            .and_then(|f| wmi_u32(f.get("FullChargedCapacity")))
+            .filter(|&v| v > 0)
+            .map(mwh_to_uwh);
+        info.energy_now_uwh = status
+            .and_then(|s| wmi_u32(s.get("RemainingCapacity")))
+            .map(mwh_to_uwh);
+        info.voltage_now_mv = status.and_then(|s| wmi_u32(s.get("Voltage")));
+        info.power_now_mw =
+            status.and_then(|s| wmi_rate(s.get("DischargeRate"), s.get("ChargeRate")));
+        info.cycle_count = cycle.and_then(|c| wmi_u32(c.get("CycleCount")));
+        batteries.push(info);
+    }
+    batteries
+}
+
+/// Join the battery `GetSystemPowerStatus` describes to the batteries WMI
+/// describes.
+///
+/// `GetSystemPowerStatus` gives one combined percentage and charging state, and
+/// no instance name. It is attributed to a battery only when WMI describes
+/// exactly one, since then it is that battery's. With several batteries it is
+/// dropped rather than given to one of them.
+#[cfg(any(windows, test))]
+fn combine_windows_batteries(
+    status_battery: Option<PowerSupplyInfo>,
+    mut wmi: Vec<PowerSupplyInfo>,
+) -> Vec<PowerSupplyInfo> {
+    match wmi.len() {
+        0 => status_battery.into_iter().collect(),
+        1 => {
+            let mut battery = wmi.remove(0);
+            if let Some(status) = status_battery {
+                battery.capacity_percent = status.capacity_percent;
+                battery.status = status.status;
+                battery.time_to_empty_min = status.time_to_empty_min;
+            }
+            vec![battery]
+        }
+        _ => wmi,
+    }
 }
 
 /// Read one pmset battery line, e.g.
@@ -968,5 +1155,171 @@ mod tests {
         let parsed: PowerSupplyInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "AC0");
         assert_eq!(parsed.supply_type, PowerSupplyType::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod wmi_battery_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A laptop with two packs. The `Full` and `Status` rows are listed in the
+    /// opposite order to `Static`, so only an `InstanceName` join gets them right.
+    fn two_pack_laptop() -> serde_json::Value {
+        json!({
+            "Static": [
+                {
+                    "InstanceName": "ACPI\\PNP0C0A\\1_0",
+                    "DesignedCapacity": 56000,
+                    "ManufactureName": "SMP  ",
+                    "SerialNumber": " 1234 ",
+                    "Chemistry": [76, 73, 79, 78]
+                },
+                {
+                    "InstanceName": "ACPI\\PNP0C0A\\2_0",
+                    "DesignedCapacity": 30000,
+                    "ManufactureName": "",
+                    "SerialNumber": "9876",
+                    "Chemistry": [76, 73, 80, 79]
+                }
+            ],
+            "Full": [
+                {"InstanceName": "ACPI\\PNP0C0A\\2_0", "FullChargedCapacity": 27500},
+                {"InstanceName": "ACPI\\PNP0C0A\\1_0", "FullChargedCapacity": 51234}
+            ],
+            "Status": [
+                {
+                    "InstanceName": "ACPI\\PNP0C0A\\2_0",
+                    "RemainingCapacity": 20000,
+                    "Voltage": 12450,
+                    "ChargeRate": 0,
+                    "DischargeRate": 8000
+                },
+                {
+                    "InstanceName": "ACPI\\PNP0C0A\\1_0",
+                    "RemainingCapacity": 40000,
+                    "Voltage": 12600,
+                    "ChargeRate": 0,
+                    "DischargeRate": 15000
+                }
+            ],
+            "Cycle": [
+                {"InstanceName": "ACPI\\PNP0C0A\\1_0", "CycleCount": 213},
+                {"InstanceName": "ACPI\\PNP0C0A\\2_0", "CycleCount": 4}
+            ]
+        })
+    }
+
+    #[test]
+    fn wmi_fields_are_joined_by_instance_name_and_converted_to_the_struct_units() {
+        let batteries = batteries_from_wmi(&two_pack_laptop());
+        assert_eq!(batteries.len(), 2);
+
+        let a = &batteries[0];
+        assert_eq!(a.name, "ACPI\\PNP0C0A\\1_0");
+        assert_eq!(a.supply_type, PowerSupplyType::Battery);
+        assert_eq!(a.energy_full_design_uwh, Some(56_000_000));
+        assert_eq!(a.energy_full_uwh, Some(51_234_000));
+        assert_eq!(a.energy_now_uwh, Some(40_000_000));
+        assert_eq!(a.voltage_now_mv, Some(12600));
+        assert_eq!(a.power_now_mw, Some(15000));
+        assert_eq!(a.cycle_count, Some(213));
+        assert_eq!(a.manufacturer.as_deref(), Some("SMP"));
+        assert_eq!(a.serial_number.as_deref(), Some("1234"));
+        assert_eq!(a.technology.as_deref(), Some("Li-ion"));
+
+        let b = &batteries[1];
+        assert_eq!(b.energy_full_uwh, Some(27_500_000));
+        assert_eq!(b.energy_now_uwh, Some(20_000_000));
+        assert_eq!(b.power_now_mw, Some(8000));
+        assert_eq!(b.cycle_count, Some(4));
+        assert_eq!(b.technology.as_deref(), Some("LiPo"));
+        assert_eq!(b.manufacturer, None, "a blank manufacturer is not a name");
+    }
+
+    #[test]
+    fn a_desktop_with_no_battery_instances_has_no_batteries() {
+        let desktop = json!({"Static": [], "Full": [], "Status": [], "Cycle": []});
+        assert!(batteries_from_wmi(&desktop).is_empty());
+        // A single object is serialised without the array, and still a list.
+        let single = json!({
+            "Static": {"InstanceName": "X", "DesignedCapacity": 1},
+            "Full": [], "Status": [], "Cycle": []
+        });
+        assert_eq!(batteries_from_wmi(&single).len(), 1);
+        assert!(batteries_from_wmi(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn unknown_markers_and_missing_rows_are_withheld_not_zeroed() {
+        let json = json!({
+            "Static": [{
+                "InstanceName": "pack",
+                "DesignedCapacity": 0,
+                "ManufactureName": "",
+                "SerialNumber": "",
+                "Chemistry": [88, 89, 90, 0]
+            }],
+            "Full": [],
+            "Status": [{
+                "InstanceName": "pack",
+                "RemainingCapacity": 4294967295u64,
+                "Voltage": 4294967295u64,
+                "ChargeRate": 0,
+                "DischargeRate": 2147483648u64
+            }],
+            "Cycle": []
+        });
+        let b = &batteries_from_wmi(&json)[0];
+        assert_eq!(b.energy_full_design_uwh, None, "0 is not a capacity");
+        assert_eq!(b.energy_full_uwh, None, "no FullChargedCapacity row");
+        assert_eq!(b.energy_now_uwh, None, "0xFFFFFFFF is unknown");
+        assert_eq!(b.voltage_now_mv, None, "0xFFFFFFFF is unknown");
+        assert_eq!(b.power_now_mw, None, "an unknown rate is not 0 W");
+        assert_eq!(b.cycle_count, None, "no CycleCount row");
+        assert_eq!(
+            b.technology, None,
+            "an unlisted chemistry code is not guessed"
+        );
+        assert_eq!(b.manufacturer, None);
+        assert_eq!(b.serial_number, None);
+    }
+
+    #[test]
+    fn the_rate_is_the_non_zero_direction_and_idle_is_zero() {
+        let n = |v: u64| json!(v);
+        assert_eq!(wmi_rate(Some(&n(8000)), Some(&n(0))), Some(8000));
+        assert_eq!(wmi_rate(Some(&n(0)), Some(&n(3000))), Some(3000));
+        assert_eq!(wmi_rate(Some(&n(0)), Some(&n(0))), Some(0), "idle on AC");
+        assert_eq!(wmi_rate(None, None), None);
+        assert_eq!(wmi_rate(Some(&n(0)), None), None);
+    }
+
+    #[test]
+    fn a_status_battery_joins_the_one_wmi_battery_and_no_more() {
+        let mut status = PowerSupplyInfo::new("Battery");
+        status.supply_type = PowerSupplyType::Battery;
+        status.capacity_percent = Some(73);
+        status.status = Some(ChargingStatus::Discharging);
+        status.time_to_empty_min = Some(190);
+
+        let wmi = batteries_from_wmi(&two_pack_laptop());
+        let one = combine_windows_batteries(Some(status.clone()), vec![wmi[0].clone()]);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].capacity_percent, Some(73));
+        assert_eq!(one[0].energy_full_uwh, Some(51_234_000), "WMI fields kept");
+
+        // Two packs: the combined percentage is not either pack's, so neither gets it.
+        let two = combine_windows_batteries(Some(status.clone()), wmi.clone());
+        assert_eq!(two.len(), 2);
+        assert!(two.iter().all(|b| b.capacity_percent.is_none()));
+
+        // No WMI battery: the status API's battery stands as it did before.
+        let alone = combine_windows_batteries(Some(status), Vec::new());
+        assert_eq!(alone.len(), 1);
+        assert_eq!(alone[0].capacity_percent, Some(73));
+        assert_eq!(alone[0].energy_full_uwh, None);
+
+        assert!(combine_windows_batteries(None, Vec::new()).is_empty());
     }
 }
