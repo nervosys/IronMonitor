@@ -17,16 +17,6 @@ use ::windows::Win32::System::SystemInformation::*;
 // WMI structures for CPU temperature and model information
 
 /// MSAcpi_ThermalZoneTemperature from root\WMI namespace
-#[cfg(target_os = "windows")]
-#[derive(Deserialize, Debug)]
-#[serde(rename = "MSAcpi_ThermalZoneTemperature")]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-struct MsAcpiThermalZoneTemperature {
-    instance_name: Option<String>,
-    current_temperature: Option<u32>, // In tenths of Kelvin
-}
-
 /// Win32_Processor for CPU model detection
 #[cfg(target_os = "windows")]
 #[derive(Deserialize, Debug)]
@@ -147,52 +137,13 @@ impl WindowsSiliconMonitor {
     // Removed rather than left behind an `#[allow(dead_code)]`: a reader
     // nothing calls, which disagreed with a known-good source by an order of
     // magnitude, is not an asset. `core::cpu` reads this correctly.
-    /// Read CPU temperature using WMI
-    /// Query: SELECT * FROM MSAcpi_ThermalZoneTemperature
-    /// Note: Returns zone temperature (often CPU package temp), requires admin privileges
-    #[cfg(target_os = "windows")]
-    fn read_cpu_temperature(&self, cpu_id: u32) -> Option<i32> {
-        // Cache the temperature reading (WMI queries are expensive)
-        use std::sync::OnceLock;
-        static CACHED_TEMPS: OnceLock<Vec<i32>> = OnceLock::new();
-
-        let temps = CACHED_TEMPS.get_or_init(|| Self::query_thermal_zones().unwrap_or_default());
-
-        // Return cached temperature for the CPU ID (use first zone if only one)
-        temps.get(cpu_id as usize).or(temps.first()).copied()
-    }
-
-    #[cfg(target_os = "windows")]
-    fn query_thermal_zones() -> Option<Vec<i32>> {
-        // Initialize COM library
-        let com = COMLibrary::new().ok()?;
-
-        // Connect to root\WMI namespace (not root\cimv2)
-        let wmi = WMIConnection::with_namespace_path("root\\WMI", com).ok()?;
-
-        // Query thermal zones
-        let zones: Vec<MsAcpiThermalZoneTemperature> = wmi.query().ok()?;
-
-        let temps: Vec<i32> = zones
-            .iter()
-            .filter_map(|z| z.current_temperature)
-            .map(|temp_decikelvin| {
-                // Convert from tenths of Kelvin to Celsius
-                // Formula: (K/10) - 273.15 = C
-                let kelvin = temp_decikelvin as f64 / 10.0;
-                let celsius = kelvin - 273.15;
-                celsius.round() as i32
-            })
-            .collect();
-
-        if temps.is_empty() {
-            None
-        } else {
-            Some(temps)
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
+    /// Per-core CPU temperature. Always `None` on Windows.
+    ///
+    /// The only source wired here was `MSAcpi_ThermalZoneTemperature`, which has
+    /// one row per ACPI thermal zone. A zone is a board sensor, not a core, and
+    /// nothing in the table says which core it belongs to. The reader used to
+    /// return the zone at index N as core N's temperature, and a single zone as
+    /// the temperature of every core. Both were invented per-core values.
     fn read_cpu_temperature(&self, _cpu_id: u32) -> Option<i32> {
         None
     }

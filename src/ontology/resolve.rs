@@ -1113,15 +1113,17 @@ fn resolve_pci(out: &mut Vec<Reading>) {
         match &dev.link_info {
             Some(link) => {
                 for (suffix, value) in [
-                    ("link.width", &link.width),
-                    ("link.max_width", &link.max_width),
-                    ("link.speed", &link.speed),
-                    ("link.max_speed", &link.max_speed),
+                    ("link.width", Some(link.width.as_str())),
+                    ("link.max_width", link.max_width.as_deref()),
+                    ("link.speed", Some(link.speed.as_str())),
+                    ("link.max_speed", link.max_speed.as_deref()),
                 ] {
                     push_opt(
                         out,
                         format!("{base}.{suffix}"),
-                        (!value.trim().is_empty()).then(|| serde_json::json!(value)),
+                        value
+                            .filter(|v| !v.trim().is_empty())
+                            .map(|v| serde_json::json!(v)),
                         Some(Unit::Identifier),
                         "the device did not report this link property",
                     );

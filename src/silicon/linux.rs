@@ -137,16 +137,11 @@ impl LinuxSiliconMonitor {
                                     }
                                 }
 
-                                // First call or invalid delta, return a rough estimate
-                                // Try reading constraint_0_power_limit_uw (TDP-like)
-                                if let Ok(limit_uw) =
-                                    fs::read_to_string(path.join("constraint_0_power_limit_uw"))
-                                {
-                                    if let Ok(limit) = limit_uw.trim().parse::<u64>() {
-                                        // Return half of TDP as a reasonable idle estimate
-                                        return Some((limit as f32 / 1_000_000.0) * 0.5);
-                                    }
-                                }
+                                // No previous sample yet, or an invalid delta. Power is
+                                // energy over time and needs two samples, so this reports
+                                // nothing. It used to return half of
+                                // constraint_0_power_limit_uw (the TDP) as an "idle
+                                // estimate", a constant presented as a reading.
                             }
                         }
                     }
@@ -166,8 +161,10 @@ impl LinuxSiliconMonitor {
 
     /// Get total package power from RAPL
     fn get_package_power(&self) -> Option<f32> {
+        // `read_rapl_power("package")` already matches every `package-*` domain.
+        // A second read in the same cycle would difference the shared energy
+        // counter over microseconds and report that as the package power.
         self.read_rapl_power("package")
-            .or_else(|| self.read_rapl_power("package-0"))
     }
 
     /// Read CPU temperature for a specific core
@@ -430,15 +427,15 @@ impl SiliconMonitor for LinuxSiliconMonitor {
             let avg_freq = average_reported_mhz(&p_cores);
             let avg_util = average_reported_util(&p_cores);
 
-            // P-cores typically use more power, estimate ~60% of package power
-            let power = package_power.map(|p| p * 0.6);
-
+            // RAPL has one domain for the package and none per cluster, so a
+            // P-cluster figure cannot be read. It used to be 60% of the package
+            // power, a fixed split with no measurement behind it.
             clusters.push(CpuCluster {
                 cluster_type: CpuClusterType::Performance,
                 core_ids: Some(p_cores.iter().map(|c| c.id).collect()),
                 frequency_mhz: avg_freq,
                 utilization: avg_util,
-                power_watts: power,
+                power_watts: None,
             });
         }
 
@@ -446,15 +443,14 @@ impl SiliconMonitor for LinuxSiliconMonitor {
             let avg_freq = average_reported_mhz(&e_cores);
             let avg_util = average_reported_util(&e_cores);
 
-            // E-cores use less power, estimate ~40% of package power
-            let power = package_power.map(|p| p * 0.4);
-
+            // As for the P-cluster: no per-cluster RAPL domain exists. This used
+            // to be a fixed 40% of the package power.
             clusters.push(CpuCluster {
                 cluster_type: CpuClusterType::Efficiency,
                 core_ids: Some(e_cores.iter().map(|c| c.id).collect()),
                 frequency_mhz: avg_freq,
                 utilization: avg_util,
-                power_watts: power,
+                power_watts: None,
             });
         }
 
@@ -616,7 +612,9 @@ impl SiliconMonitor for LinuxSiliconMonitor {
 
                     // NVMe Controller (0x010802)
                     if class.starts_with("0x0108") {
-                        // Read current link speed
+                        // Read current link speed. `None` when the attribute is
+                        // missing or unparsable: the capacity below is then unknown,
+                        // not zero or one lane.
                         let cur_speed = std::fs::read_to_string(path.join("current_link_speed"))
                             .ok()
                             .and_then(|s| {
@@ -624,13 +622,11 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                                 s.split_whitespace()
                                     .next()
                                     .and_then(|n| n.parse::<f64>().ok())
-                            })
-                            .unwrap_or(0.0);
+                            });
 
                         let cur_width = std::fs::read_to_string(path.join("current_link_width"))
                             .ok()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .unwrap_or(1);
+                            .and_then(|s| s.trim().parse::<u32>().ok());
 
                         // `cur_speed * cur_width * encoding` is the capacity of
                         // the *negotiated link*, not the traffic on it. It was
@@ -644,7 +640,12 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                         // maximum. The negotiated link is the honest one to
                         // use: a device that supports PCIe 4.0 x4 but trained
                         // at 3.0 x2 cannot exceed what it trained at.
-                        let max_bandwidth_mbps = cur_speed * cur_width as f64 * 1000.0 * 0.98462;
+                        let max_bandwidth_mbps = match (cur_speed, cur_width) {
+                            (Some(speed), Some(width)) => {
+                                Some(speed * width as f64 * 1000.0 * 0.98462)
+                            }
+                            _ => None,
+                        };
 
                         // Try to read device name
                         let name = std::fs::read_to_string(path.join("device"))
@@ -657,7 +658,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                             name,
                             // No traffic counter is read on this path.
                             bandwidth_mbps: None,
-                            max_bandwidth_mbps: Some(max_bandwidth_mbps),
+                            max_bandwidth_mbps,
                             power_watts: None,
                         });
                     }

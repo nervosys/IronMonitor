@@ -78,12 +78,37 @@ pub struct PciLinkInfo {
     pub speed: String,
     /// Current link width (e.g., "x1", "x4", "x16")
     pub width: String,
-    /// Maximum supported speed
-    pub max_speed: String,
-    /// Maximum supported width
-    pub max_width: String,
-    /// PCIe generation (1-5)
-    pub generation: u8,
+    /// Maximum supported speed, or `None` when the platform did not report it.
+    pub max_speed: Option<String>,
+    /// Maximum supported width, or `None` when the platform did not report it.
+    pub max_width: Option<String>,
+    /// PCIe generation (1-6), from the transfer rate in GT/s. `None` when the
+    /// rate was not read or is not one PCIe defines.
+    pub generation: Option<u8>,
+}
+
+/// Parse the transfer rate, in GT/s, from a sysfs link-speed attribute such as
+/// `"2.5 GT/s PCIe"`, `"5.0 GT/s PCIe"` or `"16.0 GT/s PCIe"`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_link_rate_gts(text: &str) -> Option<f64> {
+    text.split_whitespace().next()?.parse::<f64>().ok()
+}
+
+/// The PCIe generation for a transfer rate in GT/s. The rates are compared as
+/// numbers, so 2.5 is Gen 1 and not a substring match on "5" (Gen 2).
+#[cfg(any(target_os = "linux", test))]
+fn pcie_generation_of(rate_gts: f64) -> Option<u8> {
+    [
+        (2.5, 1),
+        (5.0, 2),
+        (8.0, 3),
+        (16.0, 4),
+        (32.0, 5),
+        (64.0, 6),
+    ]
+    .into_iter()
+    .find(|(rate, _)| (rate_gts - rate).abs() < 1e-6)
+    .map(|(_, generation)| generation)
 }
 
 /// Information about a single PCI device
@@ -336,28 +361,21 @@ impl PciDeviceMonitor {
             let link_info = {
                 let speed = Self::read_trimmed(&base.join("current_link_speed"));
                 let width = Self::read_trimmed(&base.join("current_link_width"));
-                let max_speed = Self::read_trimmed(&base.join("max_link_speed"));
-                let max_width = Self::read_trimmed(&base.join("max_link_width"));
-                if !speed.is_empty() || !max_speed.is_empty() {
-                    let gen = if max_speed.contains("32") {
-                        5
-                    } else if max_speed.contains("16") {
-                        4
-                    } else if max_speed.contains("8") {
-                        3
-                    } else if max_speed.contains("5") {
-                        2
-                    } else if max_speed.contains("2.5") {
-                        1
-                    } else {
-                        0
-                    };
+                let max_speed = Self::present(Self::read_trimmed(&base.join("max_link_speed")));
+                let max_width = Self::present(Self::read_trimmed(&base.join("max_link_width")));
+                if !speed.is_empty() || max_speed.is_some() {
+                    // Generation is the device's maximum, so it comes from the same
+                    // attribute as `max_speed`.
+                    let generation = max_speed
+                        .as_deref()
+                        .and_then(parse_link_rate_gts)
+                        .and_then(pcie_generation_of);
                     Some(PciLinkInfo {
                         speed,
                         width,
                         max_speed,
                         max_width,
-                        generation: gen,
+                        generation,
                     })
                 } else {
                     None
@@ -640,17 +658,21 @@ impl PciDeviceMonitor {
         // Width is the reliable signal that this is a PCIe device at all: a device
         // without the capability has neither property, and reporting a speed with
         // no width would describe half a link.
+        // A maximum that was not read is `None`. It used to fall back to the
+        // current value, which described the link as having no headroom.
         let current_width = read_u32(PID_CURRENT_LINK_WIDTH)?;
-        let max_width = read_u32(PID_MAX_LINK_WIDTH).unwrap_or(current_width);
-        let current_speed = read_u32(PID_CURRENT_LINK_SPEED).unwrap_or(0);
-        let max_speed = read_u32(PID_MAX_LINK_SPEED).unwrap_or(current_speed);
+        let max_width = read_u32(PID_MAX_LINK_WIDTH).map(|w| format!("x{w}"));
+        let current_speed = read_u32(PID_CURRENT_LINK_SPEED);
+        let max_speed = read_u32(PID_MAX_LINK_SPEED).map(Self::link_speed_label);
 
         Some(PciLinkInfo {
-            speed: Self::link_speed_label(current_speed),
+            speed: current_speed
+                .map(Self::link_speed_label)
+                .unwrap_or_default(),
             width: format!("x{current_width}"),
-            max_speed: Self::link_speed_label(max_speed),
-            max_width: format!("x{max_width}"),
-            generation: current_speed.min(u8::MAX as u32) as u8,
+            max_speed,
+            max_width,
+            generation: current_speed.map(|s| s.min(u8::MAX as u32) as u8),
         })
     }
 
@@ -794,9 +816,12 @@ impl PciDeviceMonitor {
                     Some(PciLinkInfo {
                         speed: link_speed.clone(),
                         width: link_width.clone(),
-                        max_speed: link_speed,
-                        max_width: link_width,
-                        generation: 0,
+                        // macOS reports only the negotiated link. It used to be
+                        // copied into the maximum fields as well, and the generation
+                        // was a hard-coded 0.
+                        max_speed: None,
+                        max_width: None,
+                        generation: None,
                     })
                 } else {
                     None
@@ -960,6 +985,29 @@ mod tests {
         let (vendor, device) = split_subsys_field(field);
         assert_eq!(vendor.as_deref(), Some("144d"));
         assert_eq!(device.as_deref(), Some("a801"));
+    }
+
+    /// Real `max_link_speed` attributes from sysfs. "2.5" contains "5", so a
+    /// substring match on "5" classed Gen 1 links as Gen 2.
+    #[test]
+    fn sysfs_link_speed_maps_to_generation_by_rate() {
+        let generation = |attr: &str| parse_link_rate_gts(attr).and_then(pcie_generation_of);
+        assert_eq!(generation("2.5 GT/s PCIe"), Some(1));
+        assert_eq!(generation("5.0 GT/s PCIe"), Some(2));
+        assert_eq!(generation("8.0 GT/s PCIe"), Some(3));
+        assert_eq!(generation("16.0 GT/s PCIe"), Some(4));
+        assert_eq!(generation("32.0 GT/s PCIe"), Some(5));
+        assert_eq!(generation("64.0 GT/s PCIe"), Some(6));
+    }
+
+    /// A rate PCIe does not define, or an attribute that is not a rate, is not a
+    /// generation. Sysfs writes "Unknown" for a link with nothing trained.
+    #[test]
+    fn sysfs_link_speed_that_is_not_a_known_rate_has_no_generation() {
+        assert_eq!(parse_link_rate_gts("Unknown"), None);
+        assert_eq!(parse_link_rate_gts(""), None);
+        assert_eq!(pcie_generation_of(7.0), None);
+        assert_eq!(pcie_generation_of(0.0), None);
     }
 
     /// A field of any other length, or with non-hex text, is not an ID and is
