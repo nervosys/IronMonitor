@@ -68,8 +68,9 @@ pub enum DiskType {
 pub struct DiskInfo {
     /// Device name
     pub name: String,
-    /// Device model
-    pub model: String,
+    /// Device model, or `None` where it was not read. Not the string "Unknown":
+    /// a consumer would render that as the drive's name.
+    pub model: Option<String>,
     /// Serial number
     pub serial: Option<String>,
     /// Firmware version

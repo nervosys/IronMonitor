@@ -440,7 +440,8 @@ impl DiskDevice for WindowsDisk {
     fn info(&self) -> Result<DiskInfo, Error> {
         Ok(DiskInfo {
             name: self.name.clone(),
-            model: self.model.clone().unwrap_or_else(|| "Unknown".to_string()),
+            // Unread is `None`. This used to be the string "Unknown".
+            model: self.model.clone(),
             serial: self.serial.clone(),
             firmware: None,
             capacity: self.size,
@@ -898,6 +899,9 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
     // PRO" meant NVMe -- and anything on a SCSI interface defaulted to an NVMe
     // SSD, so a hard disk behind a RAID or SAS controller was published as
     // `nvme_ssd`.
+    // A failed query leaves this map empty, which only lowers each drive's kind
+    // to the interface check below, or to Unknown. It never drops a drive, so it
+    // is not the failure the enumeration reports.
     let physical: HashMap<u32, PhysicalDiskFacts> = crate::platform::windows::wmi_query(
         "root\\Microsoft\\Windows\\Storage",
         "SELECT DeviceId, Size, BusType, MediaType FROM MSFT_PhysicalDisk",
@@ -932,13 +936,21 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
     })
     .unwrap_or_default();
 
+    // A failed connection or query is recorded here, not read as an empty drive
+    // list: a machine whose WMI query failed must not look like one with no
+    // disks. It is returned below if the raw-device fallback finds nothing.
+    let mut wmi_failure: Option<String> = None;
     // Use robust WMI connection that handles GUI context
-    if let Ok(wmi_con) = create_wmi_connection() {
-        let wmi_disks: Vec<Win32DiskDrive> = wmi_con
-            .raw_query(
-                "SELECT DeviceID, Model, SerialNumber, Size, MediaType, InterfaceType, Index FROM Win32_DiskDrive",
-            )
-            .unwrap_or_default();
+    let wmi_con = create_wmi_connection();
+    if let Err(e) = &wmi_con {
+        wmi_failure = Some(format!("WMI connection: {e}"));
+    }
+    if let Ok(wmi_con) = wmi_con {
+        let wmi_disks: Vec<Win32DiskDrive> = wmi_rows(
+            &wmi_con,
+            "SELECT DeviceID, Model, SerialNumber, Size, MediaType, InterfaceType, Index FROM Win32_DiskDrive",
+            &mut wmi_failure,
+        );
 
         for wmi_disk in wmi_disks {
             // Determine disk type - check multiple sources for best accuracy
@@ -1018,8 +1030,12 @@ pub fn enumerate() -> Result<Vec<Box<dyn DiskDevice>>, Error> {
         }
     }
 
-    // If no disks found, return error
+    // If no disks found, return error. A failed WMI read is reported as that
+    // failure, not as "no disks", which the caller would render as none.
     if disks.is_empty() {
+        if let Some(reason) = wmi_failure {
+            return Err(Error::QueryFailed(format!("disk enumeration: {reason}")));
+        }
         return Err(Error::NotFound);
     }
 

@@ -1136,7 +1136,9 @@ fn collect_disks() -> Vec<DiskSnapshot> {
                 .unwrap_or((None, None));
 
             Some(DiskSnapshot {
-                name: info.model,
+                // The model when the device reported one, else the device name.
+                // Not the string "Unknown".
+                name: info.model.unwrap_or_else(|| disk.name().to_string()),
                 mount_point,
                 total,
                 used,

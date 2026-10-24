@@ -51,7 +51,8 @@ impl DiskDevice for MacDisk {
     fn info(&self) -> Result<DiskInfo, Error> {
         Ok(DiskInfo {
             name: self.name.clone(),
-            model: self.model.clone().unwrap_or_else(|| "Unknown".to_string()),
+            // Unread is `None`. This used to be the string "Unknown".
+            model: self.model.clone(),
             serial: self.serial.clone(),
             firmware: None,
             // `size_bytes` is already `Option` and was being flattened to `0`

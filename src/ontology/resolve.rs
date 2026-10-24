@@ -1994,7 +1994,13 @@ fn resolve_disk(out: &mut Vec<Reading>) {
         let base = format!("disk.{i}");
         match disk.info() {
             Ok(info) => {
-                push_text(out, format!("{base}.model"), &info.model);
+                push_opt(
+                    out,
+                    format!("{base}.model"),
+                    info.model.as_deref().map(|m| serde_json::json!(m)),
+                    Some(Unit::Text),
+                    "the device did not report a model",
+                );
                 // `capacity > 0` was this resolver compensating for a field
                 // that could not say "not read". It can now, and the two cases
                 // are finally distinguishable: a device that genuinely reports
@@ -2722,7 +2728,13 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
         push_text(out, format!("{base}.name"), &c.name);
         push_text(out, format!("{base}.vendor"), &c.vendor);
         push_text(out, format!("{base}.model"), &c.model);
-        push_id(out, format!("{base}.driver"), &c.driver);
+        push_opt(
+            out,
+            format!("{base}.driver"),
+            c.driver.as_deref().map(|d| serde_json::json!(d)),
+            Some(Unit::Identifier),
+            "the platform reports no driver for this controller",
+        );
         push_id(
             out,
             format!("{base}.interface"),
@@ -2754,7 +2766,7 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
         push_opt(
             out,
             format!("{base}.ports"),
-            (c.ports > 0).then(|| serde_json::json!(c.ports)),
+            c.ports.filter(|n| *n > 0).map(|n| serde_json::json!(n)),
             Some(Unit::Count),
             "this controller reports no port count",
         );

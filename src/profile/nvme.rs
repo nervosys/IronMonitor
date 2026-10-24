@@ -229,11 +229,11 @@ fn windows_groups() -> Vec<ProfileGroup> {
                 SettingValue::Text(c.vendor.clone()),
             ));
         }
-        if !c.driver.is_empty() {
+        if let Some(driver) = c.driver.as_deref().filter(|d| !d.is_empty()) {
             g.push(Setting::info(
                 "driver",
                 "Driver",
-                SettingValue::Text(c.driver.clone()),
+                SettingValue::Text(driver.to_string()),
             ));
         }
         if !c.pci_address.is_empty() {

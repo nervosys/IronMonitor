@@ -905,13 +905,10 @@ impl ObservabilityApi {
                 let first_fs = fs_info.first();
                 result.push(DiskContext {
                     device: d.name().to_string(),
-                    model: info.as_ref().and_then(|i| {
-                        if i.model.is_empty() {
-                            None
-                        } else {
-                            Some(i.model.clone())
-                        }
-                    }),
+                    model: info
+                        .as_ref()
+                        .and_then(|i| i.model.clone())
+                        .filter(|m| !m.is_empty()),
                     disk_type: format!("{:?}", d.disk_type()),
                     size_gb: info
                         .as_ref()

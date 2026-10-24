@@ -147,8 +147,8 @@ pub struct NetworkSummary {
 pub struct DiskSummary {
     /// Disk device name
     pub name: String,
-    /// Disk model
-    pub model: String,
+    /// Disk model, or `None` where the device did not report one
+    pub model: Option<String>,
     /// Size in GB
     /// Total size in GB, or `None` where the capacity was not read. A disk
     /// of unknown size is not a disk of zero size.

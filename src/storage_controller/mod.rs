@@ -109,14 +109,15 @@ pub struct StorageControllerInfo {
     pub vendor: String,
     /// Model or product name
     pub model: String,
-    /// Driver in use
-    pub driver: String,
+    /// Driver in use, or `None` where it was not read.
+    pub driver: Option<String>,
     /// Controller interface type
     pub interface: StorageInterface,
     /// PCI address (if applicable)
     pub pci_address: String,
-    /// Number of ports
-    pub ports: u32,
+    /// Number of ports, or `None` where it was not read. Not zero: zero is a
+    /// controller with no ports.
+    pub ports: Option<u32>,
     /// NVMe-specific info (if NVMe controller)
     pub nvme_info: Option<NvmeControllerInfo>,
 }
@@ -288,10 +289,16 @@ impl StorageControllerMonitor {
                     name: name.clone(),
                     vendor: String::new(),
                     model,
-                    driver: "nvme".to_string(),
+                    // The driver the device is bound to, from its sysfs link.
+                    // This used to be the literal "nvme" whatever was bound.
+                    driver: std::fs::read_link(base.join("device/driver"))
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
                     interface: StorageInterface::NVMe,
                     pci_address: Self::read_pci_address(&base),
-                    ports: ns_count,
+                    // Not a port count. `ns_count` is the namespaces on the
+                    // controller, and used to be reported as its ports.
+                    ports: None,
                     nvme_info: Some(nvme_info),
                 });
             }
@@ -335,10 +342,12 @@ impl StorageControllerMonitor {
                     name,
                     vendor: String::new(),
                     model: model_name,
-                    driver: proc_name,
+                    // `proc_name` is the host's own report; empty when unread.
+                    driver: (!proc_name.is_empty()).then_some(proc_name),
                     interface,
                     pci_address: String::new(),
-                    ports: 0,
+                    // Not read from this host's sysfs. It used to be `0`.
+                    ports: None,
                     nvme_info: None,
                 });
             }
@@ -677,10 +686,12 @@ impl StorageControllerMonitor {
                     name: name.clone(),
                     vendor,
                     model: name,
-                    driver,
+                    // `DriverName` is empty when Windows has none to report.
+                    driver: (!driver.is_empty()).then_some(driver),
                     interface,
                     pci_address,
-                    ports: 0,
+                    // Not read from this query. It used to be `0`.
+                    ports: None,
                     nvme_info: None,
                 });
             }
@@ -717,11 +728,12 @@ impl StorageControllerMonitor {
                         name,
                         vendor: String::new(),
                         model,
-                        driver: "nvme".to_string(),
+                        // Not read here; the driver name was a literal. It used to be "nvme".
+                        driver: None,
                         interface: StorageInterface::NVMe,
                         pci_address: String::new(),
-                        // Not read here either; see above.
-                        ports: 0,
+                        // Not read here either; see above. It used to be `0`.
+                        ports: None,
                         nvme_info: Some(nvme_info),
                     });
                 }
@@ -738,19 +750,18 @@ impl StorageControllerMonitor {
                 for item in items {
                     let name = item["_name"].as_str().unwrap_or("SATA").to_string();
                     let vendor = item["spsata_vendor"].as_str().unwrap_or("").to_string();
-                    let port_count = item["_items"]
-                        .as_array()
-                        .map(|a| a.len() as u32)
-                        .unwrap_or(0);
-
+                    // `_items` lists the devices attached to the controller, not
+                    // its ports: a six-port controller with two drives would read
+                    // as two. The port count is not read, so it is None.
                     self.controllers.push(StorageControllerInfo {
                         name,
                         vendor,
                         model: String::new(),
-                        driver: "ahci".to_string(),
+                        // Not read; "ahci" was a literal for every SATA controller.
+                        driver: None,
                         interface: StorageInterface::AHCI,
                         pci_address: String::new(),
-                        ports: port_count,
+                        ports: None,
                         nvme_info: None,
                     });
                 }

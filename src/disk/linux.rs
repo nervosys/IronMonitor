@@ -41,23 +41,37 @@ impl LinuxDisk {
             return Ok(DiskType::NvmeSsd);
         }
 
-        // Check if it's a rotational device (HDD)
+        // A USB stick reports `rotational` 0 like an SSD, and used to be typed as
+        // a SATA SSD. The bus is in the device's own sysfs path.
+        match Self::is_usb(name) {
+            Some(true) => return Ok(DiskType::Usb),
+            Some(false) => {}
+            // The path is what says which bus this is. Without it, the type is
+            // not known, and a flag cannot stand in for the bus.
+            None => return Ok(DiskType::Unknown),
+        }
+
+        // Check if it's a rotational device (HDD). An unreadable flag is not a
+        // solid-state drive: the `sd*` fallback that used to return SataSsd here
+        // is gone, and an unread flag is Unknown.
         let rotational_path = format!("/sys/block/{}/queue/rotational", name);
-        if let Ok(content) = fs::read_to_string(&rotational_path) {
-            if content.trim() == "1" {
-                return Ok(DiskType::SataHdd);
-            } else {
-                return Ok(DiskType::SataSsd);
-            }
+        match fs::read_to_string(&rotational_path)
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("1") => Ok(DiskType::SataHdd),
+            Ok("0") => Ok(DiskType::SataSsd),
+            _ => Ok(DiskType::Unknown),
         }
+    }
 
-        // SCSI devices
-        if name.starts_with("sd") {
-            // Could be SSD or HDD, default to SSD if we can't determine
-            return Ok(DiskType::SataSsd);
-        }
-
-        Ok(DiskType::Unknown)
+    /// Whether the kernel places this block device under the USB bus. `/sys/block/<name>`
+    /// is a link into the device tree, and a USB device's resolved path runs
+    /// through a `usbN` controller. `None` where the link could not be resolved.
+    fn is_usb(name: &str) -> Option<bool> {
+        fs::canonicalize(format!("/sys/block/{name}"))
+            .ok()
+            .map(|path| path.to_string_lossy().contains("/usb"))
     }
 
     fn read_sysfs_string(&self, attribute: &str) -> Result<String, Error> {
@@ -118,10 +132,9 @@ impl DiskDevice for LinuxDisk {
     }
 
     fn info(&self) -> Result<DiskInfo, Error> {
-        // Read model
-        let model = self
-            .read_sysfs_string("device/model")
-            .unwrap_or_else(|_| "Unknown".to_string());
+        // Read model. Unread is `None`, not the string "Unknown", which a
+        // consumer would display as if the drive had said so.
+        let model = self.read_sysfs_string("device/model").ok();
 
         // Read vendor
         let vendor = self.read_sysfs_string("device/vendor").ok();
@@ -164,14 +177,16 @@ impl DiskDevice for LinuxDisk {
             capacity,
             block_size: logical_block_size,
             disk_type: self.disk_type,
-            interface_type: Some(match self.disk_type {
-                DiskType::NvmeSsd => "NVMe (PCIe)".to_string(),
-                DiskType::SataSsd | DiskType::SataHdd => "SATA".to_string(),
-                DiskType::Usb => "USB".to_string(),
-                DiskType::Scsi => "SCSI".to_string(),
-                DiskType::Virtual => "Virtual".to_string(),
-                DiskType::Unknown => "Unknown".to_string(),
-            }),
+            // An unknown type has no interface to name. This used to be the
+            // string "Unknown", which is not an interface.
+            interface_type: match self.disk_type {
+                DiskType::NvmeSsd => Some("NVMe (PCIe)".to_string()),
+                DiskType::SataSsd | DiskType::SataHdd => Some("SATA".to_string()),
+                DiskType::Usb => Some("USB".to_string()),
+                DiskType::Scsi => Some("SCSI".to_string()),
+                DiskType::Virtual => Some("Virtual".to_string()),
+                DiskType::Unknown => None,
+            },
             physical_sector_size: physical_block_size,
             logical_sector_size: logical_block_size,
             rotation_rate,
@@ -238,18 +253,14 @@ impl DiskDevice for LinuxDisk {
 
     fn health(&self) -> Result<DiskHealth, Error> {
         // The device file existing says the kernel enumerated it, not that the
-        // drive is well. Ask the SMART collector, which reads the drive's own
-        // health, and fall back to Unknown rather than asserting Healthy — an
-        // existence check reported as a clean bill of health is a claim nothing
-        // measured.
-        match self.smart_disk() {
-            Some(disk) => Ok(match disk.health {
-                crate::smart::DiskHealth::Good => DiskHealth::Healthy,
-                crate::smart::DiskHealth::Warning => DiskHealth::Warning,
-                crate::smart::DiskHealth::Critical => DiskHealth::Critical,
-                crate::smart::DiskHealth::Failed => DiskHealth::Failed,
-                crate::smart::DiskHealth::Unknown => DiskHealth::Unknown,
-            }),
+        // drive is well. This is the drive's own SMART overall-health verdict
+        // (PASSED or FAILED) and nothing else. `SmartDiskInfo::health` is a score
+        // the collector computes from counters, and it used to be published here
+        // as a measured health value. Where the verdict was not read, this is
+        // Unknown, not Healthy.
+        match self.smart_disk().and_then(|disk| disk.smart_passed) {
+            Some(true) => Ok(DiskHealth::Healthy),
+            Some(false) => Ok(DiskHealth::Failed),
             None => Ok(DiskHealth::Unknown),
         }
     }
@@ -263,12 +274,9 @@ impl DiskDevice for LinuxDisk {
         };
 
         Ok(SmartInfo {
-            // Not read. `smartctl -H` prints the drive's own "SMART
-            // overall-health self-assessment test result", and the NVMe log
-            // page has the critical warning byte, but `SmartDiskInfo` captures
-            // neither -- its `health` is partly a score computed from the
-            // counters, which is what this field documents itself not to be.
-            passed: None,
+            // The drive's own verdict from `smartctl -H`, when that run printed
+            // one. The NVMe critical-warning byte is not this verdict.
+            passed: disk.smart_passed,
             attributes: disk
                 .attributes
                 .iter()

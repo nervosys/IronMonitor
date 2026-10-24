@@ -41,7 +41,10 @@ fn print_disk_info(disk: &dyn disk::DiskDevice) -> Result<(), Box<dyn std::error
     match disk.info() {
         Ok(info) => {
             println!("[MB] Device Information:");
-            println!("  Model:          {}", info.model);
+            println!(
+                "  Model:          {}",
+                info.model.as_deref().unwrap_or("unknown")
+            );
             if let Some(vendor) = &info.vendor {
                 println!("  Vendor:         {}", vendor);
             }

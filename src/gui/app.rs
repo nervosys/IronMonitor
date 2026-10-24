@@ -5002,11 +5002,12 @@ impl IronMonitorApp {
 
         let model_name = info
             .as_ref()
-            .map(|i| {
-                if i.model.len() > 40 {
-                    format!("{}…", &i.model[..38])
+            .and_then(|i| i.model.as_deref())
+            .map(|m| {
+                if m.len() > 40 {
+                    format!("{}…", &m[..38])
                 } else {
-                    i.model.clone()
+                    m.to_string()
                 }
             })
             .unwrap_or_else(|| disk_name.clone());

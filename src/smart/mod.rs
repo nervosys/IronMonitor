@@ -130,8 +130,15 @@ pub struct SmartDiskInfo {
     /// construction sites set it to a literal `0` and the Windows one used
     /// `item["Size"].as_u64().unwrap_or(0)`.
     pub capacity_bytes: Option<u64>,
-    /// Overall health assessment
+    /// Overall health assessment. This is the collector's own grade, inferred from
+    /// the counters below by `infer_health`, and is not a drive's verdict. The
+    /// drive's verdict is in [`Self::smart_passed`].
     pub health: DiskHealth,
+    /// The drive's own SMART overall-health verdict: `smart_status.passed` from
+    /// `smartctl -j`, which is what `smartctl -H` prints as PASSED or FAILED.
+    /// `None` where it was not read. Unlike `health`, this is not computed here.
+    #[serde(default)]
+    pub smart_passed: Option<bool>,
     // Every counter below is `Option` because "the platform would not tell us" and
     // "the drive reports zero" are different facts, and this struct used to render
     // both as `0`.
@@ -471,6 +478,7 @@ impl SmartMonitor {
                         firmware,
                         media_type: DriveMediaType::NVMe,
                         capacity_bytes: None,
+                        smart_passed: None,
                         health: DiskHealth::Unknown,
                         temperature_celsius: None,
                         power_on_hours: None,
@@ -552,6 +560,7 @@ impl SmartMonitor {
                     firmware: Self::read_sys(&base.join("device/firmware_rev")),
                     media_type,
                     capacity_bytes,
+                    smart_passed: None,
                     health: DiskHealth::Unknown,
                     temperature_celsius: None,
                     power_on_hours: None,
@@ -577,7 +586,7 @@ impl SmartMonitor {
 
                 // Try smartctl for detailed attributes
                 if let Ok(output) = std::process::Command::new("smartctl")
-                    .args(["-A", "-j", &device])
+                    .args(["-H", "-A", "-j", &device])
                     .output()
                 {
                     if let Ok(text) = String::from_utf8(output.stdout) {
@@ -629,9 +638,12 @@ impl SmartMonitor {
         disk.total_bytes_read = val["data_units_read"].as_u64().map(|units| units * 512_000);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", test))]
     fn parse_smartctl_json(text: &str, disk: &mut SmartDiskInfo) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+            // The drive's own verdict. Absent when smartctl did not print one, and
+            // then it stays None rather than being read as a pass.
+            disk.smart_passed = val["smart_status"]["passed"].as_bool();
             if let Some(attrs) = val["ata_smart_attributes"]["table"].as_array() {
                 for attr in attrs {
                     // An attribute missing any of these is left out rather than
@@ -806,6 +818,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 .to_string(),
                             media_type,
                             capacity_bytes: item["Size"].as_u64(),
+                            smart_passed: None,
                             health,
                             // Null throughout when Get-StorageReliabilityCounter
                             // was unavailable, which is the unelevated case. These
@@ -958,6 +971,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 firmware: String::new(),
                                 media_type: DriveMediaType::Unknown,
                                 capacity_bytes: None,
+                                smart_passed: None,
                                 health: DiskHealth::Unknown,
                                 temperature_celsius: None,
                                 power_on_hours: None,
@@ -1046,6 +1060,7 @@ Get-PhysicalDisk | ForEach-Object {
                                 firmware: String::new(),
                                 media_type: DriveMediaType::Unknown,
                                 capacity_bytes: None,
+                                smart_passed: None,
                                 health: DiskHealth::Unknown,
                                 temperature_celsius: None,
                                 power_on_hours: None,
@@ -1156,6 +1171,7 @@ mod tests {
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
             capacity_bytes: Some(500_000_000_000),
+            smart_passed: None,
             health: DiskHealth::Unknown,
             temperature_celsius: Some(35),
             power_on_hours: Some(5000),
@@ -1196,6 +1212,7 @@ mod tests {
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
             capacity_bytes: Some(500_000_000_000),
+            smart_passed: None,
             // What `IOCTL_STORAGE_PREDICT_FAILURE` reporting a prediction sets.
             health: DiskHealth::Failed,
             temperature_celsius: Some(30),
@@ -1232,6 +1249,7 @@ mod tests {
             firmware: "2.0".into(),
             media_type: DriveMediaType::HDD,
             capacity_bytes: Some(1_000_000_000_000),
+            smart_passed: None,
             health: DiskHealth::Unknown,
             temperature_celsius: Some(72),
             power_on_hours: Some(80000),
@@ -1270,6 +1288,7 @@ mod tests {
             firmware: "1.0".into(),
             media_type: DriveMediaType::SSD,
             capacity_bytes: Some(500_000_000_000),
+            smart_passed: None,
             health: DiskHealth::Good,
             temperature_celsius: Some(35),
             power_on_hours: Some(1000),
@@ -1314,6 +1333,7 @@ mod tests {
             firmware: String::new(),
             media_type: DriveMediaType::NVMe,
             capacity_bytes: None,
+            smart_passed: None,
             // What the platform itself said; the scorer must not overwrite it.
             health: DiskHealth::Unknown,
             temperature_celsius: None,
@@ -1359,6 +1379,7 @@ mod tests {
             firmware: "1.0".into(),
             media_type: DriveMediaType::NVMe,
             capacity_bytes: None,
+            smart_passed: None,
             health: DiskHealth::Unknown,
             temperature_celsius: None,
             power_on_hours: None,
@@ -1381,6 +1402,29 @@ mod tests {
             estimated_life_remaining: None,
             estimated_days_remaining: None,
         }
+    }
+
+    /// The drive's own verdict is `smart_status.passed`. A drive that says FAILED
+    /// must read as FAILED, and a smartctl output without the key must read as
+    /// unread, not as a pass.
+    #[test]
+    fn smartctl_overall_health_verdict_is_read_and_absent_stays_unread() {
+        let failed =
+            r#"{"smart_status": {"passed": false}, "ata_smart_attributes": {"table": []}}"#;
+        let passed = r#"{"smart_status": {"passed": true}}"#;
+        let absent = r#"{"ata_smart_attributes": {"table": []}}"#;
+
+        let mut disk = blank_nvme_disk();
+        SmartMonitor::parse_smartctl_json(failed, &mut disk);
+        assert_eq!(disk.smart_passed, Some(false));
+
+        let mut disk = blank_nvme_disk();
+        SmartMonitor::parse_smartctl_json(passed, &mut disk);
+        assert_eq!(disk.smart_passed, Some(true));
+
+        let mut disk = blank_nvme_disk();
+        SmartMonitor::parse_smartctl_json(absent, &mut disk);
+        assert_eq!(disk.smart_passed, None);
     }
 
     /// Output shaped like `nvme smart-log /dev/nvme0n1 -o json` from nvme-cli. The
