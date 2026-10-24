@@ -96,6 +96,27 @@ impl ProfileProvider for DisplayProfileProvider {
                     .with_source("DisplayMonitor"),
                 );
             }
+            // Windows reports whether HDR is supported and on, but not which
+            // format is in use, so those are their own rows and the mode stays
+            // unreadable rather than being inferred from "on".
+            for (key, label, value) in [
+                ("hdr_supported", "HDR Supported", d.hdr_supported),
+                ("hdr_enabled", "HDR Enabled", d.hdr_enabled),
+            ] {
+                g.push(
+                    Setting::info(
+                        key,
+                        label,
+                        match value {
+                            Some(on) => SettingValue::Bool(on),
+                            None => SettingValue::Unreadable(
+                                "HDR state is not read on this platform".into(),
+                            ),
+                        },
+                    )
+                    .with_risk(SettingRisk::Safe),
+                );
+            }
             g.push(
                 Setting::info(
                     "hdr_mode",
@@ -104,7 +125,7 @@ impl ProfileProvider for DisplayProfileProvider {
                     match d.hdr {
                         Some(mode) => SettingValue::Text(format!("{mode:?}")),
                         None => SettingValue::Unreadable(
-                            "HDR state is not read on this platform".into(),
+                            "the HDR format in use (HDR10, Dolby Vision) is not reported".into(),
                         ),
                     },
                 )
