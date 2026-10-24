@@ -34,6 +34,9 @@
 //! path on which nice time is still reported as 0.0.
 
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::sync::Mutex;
+use std::time::Duration;
 
 /// Aggregate CPU time split, percent.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,17 +46,20 @@ pub struct CpuUsage {
     pub idle: f32,
 }
 
-/// Parse the `CPU usage:` line of `top -l 1 -n 0`.
+/// Parse the last `CPU usage:` line of `top -l 2 -s 1 -n 0`.
 ///
 /// The line reads, on every macOS version this targets:
 /// `CPU usage: 4.76% user, 9.52% sys, 85.71% idle`
+///
+/// `top` prints one such line per sample. The first is the average since boot, so
+/// the last one, which covers the interval, is the reading.
 ///
 /// Returns `None` when the line is absent or malformed, so that a change in
 /// `top`'s output surfaces as missing data rather than as zeros.
 pub fn parse_top_cpu(output: &str) -> Option<CpuUsage> {
     let line = output
         .lines()
-        .find(|l| l.trim_start().starts_with("CPU usage"))?;
+        .rfind(|l| l.trim_start().starts_with("CPU usage"))?;
     let rest = line.split_once(':')?.1;
 
     let field = |label: &str| -> Option<f32> {
@@ -193,9 +199,8 @@ pub fn parse_swapusage(output: &str) -> Option<SwapUsage> {
 
 /// Cumulative CPU ticks for one core, as the kernel counts them since boot.
 ///
-/// The same shape as a `/proc/stat` line on Linux, which is what the Linux reader
-/// turns into percentages — so both platforms report an average since boot rather
-/// than an instantaneous rate, and mean the same thing by "user".
+/// A single reading is an average over uptime, not a current split. The split is the
+/// difference between two readings, see [`usage_between`] and [`current_total_usage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CoreTicks {
     pub user: u64,
@@ -245,6 +250,96 @@ pub fn aggregate_ticks(cores: &[CoreTicks]) -> CoreTicks {
         acc.nice = acc.nice.saturating_add(c.nice);
         acc
     })
+}
+
+/// How long to wait between the two readings that make a current split.
+///
+/// The kernel counts CPU ticks at about 100 per second, so 200 ms accumulates roughly
+/// twenty ticks per core: enough for the split to mean something, and short enough
+/// that the first call of a one-shot command does not stall on it.
+pub const PRIME_INTERVAL: Duration = Duration::from_millis(200);
+
+/// The aggregate reading the last whole-CPU split was taken from.
+///
+/// Process-wide, because a split is a difference between two readings and no caller
+/// should have to hold the earlier one itself. Both the platform reader and the
+/// `stats` reader go through [`current_total_usage`], so they share this one value.
+#[cfg(target_os = "macos")]
+static PREVIOUS_TOTAL: Mutex<Option<CoreTicks>> = Mutex::new(None);
+
+/// The whole-CPU split between two aggregate readings, or `None` if there is none.
+///
+/// `None` in two cases, and neither is replaced by a guess:
+/// - a counter went backwards, so the difference carries no information (the
+///   counters were reset, or the readings are not from the same boot);
+/// - nothing advanced between the readings, so the split is undefined.
+///
+/// The later reading alone is never a fallback. On its own it is the average since
+/// boot, which is what this function exists to keep out of "current load".
+pub fn usage_between(earlier: &CoreTicks, later: &CoreTicks) -> Option<CoreUsage> {
+    let delta = CoreTicks {
+        user: later.user.checked_sub(earlier.user)?,
+        system: later.system.checked_sub(earlier.system)?,
+        idle: later.idle.checked_sub(earlier.idle)?,
+        nice: later.nice.checked_sub(earlier.nice)?,
+    };
+    delta.percentages()
+}
+
+/// The whole-CPU split over the window since the previous call, and the core count.
+///
+/// Before this existed the first call in a process differenced nothing and reported
+/// the average since boot. Every one-shot command (`ironmon get`, `ironmon snapshot`)
+/// is a first call, so each of them presented an uptime average as current load.
+///
+/// With no earlier reading in the process, this takes one, waits [`PRIME_INTERVAL`]
+/// and reads again. If the counters did not move between two reads, which happens
+/// when they fall inside one tick, it waits once more and differences against the
+/// same baseline, which gives a longer window. If that also gives nothing, it returns
+/// an error rather than the since-boot figure.
+#[cfg(target_os = "macos")]
+pub fn current_total_usage() -> crate::error::Result<(CoreUsage, usize)> {
+    use crate::error::IronError;
+
+    let read = || -> crate::error::Result<(CoreTicks, usize)> {
+        let cores = per_core_ticks().ok_or_else(|| {
+            IronError::UnsupportedPlatform("host_processor_info returned no per-core ticks".into())
+        })?;
+        Ok((aggregate_ticks(&cores), cores.len()))
+    };
+
+    // Held across the waits so two callers cannot prime the cache at once.
+    let mut previous = PREVIOUS_TOTAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let baseline = match *previous {
+        Some(prior) => prior,
+        None => {
+            let (first, _) = read()?;
+            std::thread::sleep(PRIME_INTERVAL);
+            first
+        }
+    };
+
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(PRIME_INTERVAL);
+        }
+        let (now, cores) = read()?;
+        *previous = Some(now);
+        if let Some(usage) = usage_between(&baseline, &now) {
+            return Ok((usage, cores));
+        }
+    }
+
+    Err(IronError::Parse(
+        concat!(
+            "per-core tick counters gave no usable split: they did not advance, ",
+            "or went backwards, between reads"
+        )
+        .into(),
+    ))
 }
 
 /// Per-core cumulative ticks from `host_processor_info`.
@@ -344,9 +439,13 @@ pub fn sysctl_string(name: &str) -> Option<String> {
     run("sysctl", &["-n", name]).map(|s| s.trim().to_string())
 }
 
-/// Aggregate CPU usage, or `None` if `top` could not be read or understood.
+/// Aggregate CPU usage over a one-second window, or `None` if `top` could not be read
+/// or understood.
+///
+/// `-l 1` would be a single sample, and `top`'s first sample is the since-boot
+/// average, so this takes two and [`parse_top_cpu`] keeps the second.
 pub fn cpu_usage() -> Option<CpuUsage> {
-    parse_top_cpu(&run("top", &["-l", "1", "-n", "0"])?)
+    parse_top_cpu(&run("top", &["-l", "2", "-s", "1", "-n", "0"])?)
 }
 
 /// Virtual memory page counts, or `None` if `vm_stat` could not be read.
@@ -370,23 +469,13 @@ pub fn swap_usage() -> Option<SwapUsage> {
 /// here unused.
 ///
 /// Per-core ticks are the source rather than `top`, because they are the only
-/// one carrying nice time, and because a percentage derived from cumulative
-/// counters is the same quantity Linux reports from `/proc/stat`.
+/// one carrying nice time. The whole-CPU split is the difference between two of
+/// their readings, see [`current_total_usage`].
 #[cfg(target_os = "macos")]
 pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     use crate::core::cpu::{CpuCore, CpuStats, CpuTotal};
 
-    let ticks = per_core_ticks().ok_or_else(|| {
-        crate::error::IronError::UnsupportedPlatform(
-            "host_processor_info returned no per-core ticks".into(),
-        )
-    })?;
-
-    let total_usage = aggregate_ticks(&ticks).percentages().ok_or_else(|| {
-        crate::error::IronError::Parse(
-            "per-core tick counters summed to zero, which means they were not read".into(),
-        )
-    })?;
+    let (total_usage, core_count) = current_total_usage()?;
 
     // Only the CPU brand string. An earlier version fell back to `hw.model`,
     // which is the *machine* identifier — "Mac14,2" — and reporting that as the
@@ -400,12 +489,12 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     // one this crate's ontology asks for.
     let model = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
-    // Per-core utilization is not reported. The ticks are cumulative since boot, and
-    // a percentage of that is an average over uptime, which the caller reads as the
-    // current load. A current figure needs two samples and this reader keeps none, so
-    // each core is `None` rather than its since-boot share. This used to fill the
-    // four fields from `CoreTicks::percentages`.
-    let cores = (0..ticks.len())
+    // Per-core utilization is not reported. The whole-CPU split is measured over a
+    // window, but the per-core split is not computed from the same per-core deltas
+    // here, so each core is `None` rather than its since-boot share, which is an
+    // average over uptime. This used to fill the four fields from
+    // `CoreTicks::percentages`.
+    let cores = (0..core_count)
         .map(|id| CpuCore {
             id,
             online: true,
@@ -427,8 +516,8 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
         cores,
         total: CpuTotal {
             user: total_usage.user,
-            // The kernel counts nice time; this is the since-boot share, as the
-            // total's other fields are.
+            // The kernel counts nice time, and the split covers the same window
+            // as the other fields.
             nice: Some(total_usage.nice),
             system: total_usage.system,
             idle: total_usage.idle,
@@ -689,5 +778,81 @@ Pages occupied by compressor:             34567.
     #[test]
     fn an_empty_core_list_aggregates_to_no_reading() {
         assert_eq!(aggregate_ticks(&[]).percentages(), None);
+    }
+
+    /// Aggregate counters for an 8-core machine that has been up for days.
+    fn since_boot() -> CoreTicks {
+        CoreTicks {
+            user: 1_804_512,
+            system: 912_377,
+            idle: 21_006_418,
+            nice: 3_921,
+        }
+    }
+
+    /// The split is the growth over the window, not the counters' total.
+    #[test]
+    fn usage_between_is_the_split_of_the_window_only() {
+        let earlier = since_boot();
+        let later = CoreTicks {
+            user: earlier.user + 250,
+            system: earlier.system + 150,
+            idle: earlier.idle + 550,
+            nice: earlier.nice + 50,
+        };
+        let usage = usage_between(&earlier, &later).expect("counters advanced");
+        assert!((usage.user - 25.0).abs() < 0.01);
+        assert!((usage.system - 15.0).abs() < 0.01);
+        assert!((usage.idle - 55.0).abs() < 0.01);
+        assert!((usage.nice - 5.0).abs() < 0.01);
+
+        // The since-boot figure of the same later reading is a different answer,
+        // which is why reporting it as current load was wrong.
+        let since_boot_idle = later.percentages().expect("has time").idle;
+        assert!(since_boot_idle > 70.0);
+        assert!((usage.idle - since_boot_idle).abs() > 10.0);
+    }
+
+    /// Two reads inside one tick: nothing moved, so there is no split to report.
+    #[test]
+    fn a_zero_delta_is_no_split_rather_than_the_since_boot_figure() {
+        let earlier = since_boot();
+        assert_eq!(usage_between(&earlier, &earlier), None);
+    }
+
+    /// A counter that decreased means the readings are not comparable.
+    #[test]
+    fn a_counter_that_went_backwards_is_no_split() {
+        let earlier = since_boot();
+        let later = CoreTicks {
+            user: earlier.user - 1,
+            system: earlier.system + 400,
+            idle: earlier.idle + 600,
+            nice: earlier.nice,
+        };
+        assert_eq!(usage_between(&earlier, &later), None);
+    }
+
+    /// `top` prints one `CPU usage:` line per sample. The first is since boot.
+    #[test]
+    fn top_takes_the_last_sample_not_the_since_boot_one() {
+        const TWO_SAMPLES: &str = "Processes: 498 total, 2 running, 496 sleeping, 2790 threads
+2026/08/06 21:14:02
+Load Avg: 2.31, 2.55, 2.72
+CPU usage: 4.76% user, 9.52% sys, 85.71% idle
+SharedLibs: 512M resident, 88M data, 42M linkedit.
+MemRegions: 123456 total, 4321M resident, 234M private, 1234M shared.
+
+Processes: 499 total, 3 running, 496 sleeping, 2793 threads
+2026/08/06 21:14:03
+Load Avg: 2.36, 2.56, 2.72
+CPU usage: 31.25% user, 12.50% sys, 56.25% idle
+SharedLibs: 512M resident, 88M data, 42M linkedit.
+MemRegions: 123456 total, 4322M resident, 234M private, 1234M shared.
+";
+        let usage = parse_top_cpu(TWO_SAMPLES).expect("parses");
+        assert!((usage.user - 31.25).abs() < 0.01);
+        assert!((usage.system - 12.5).abs() < 0.01);
+        assert!((usage.idle - 56.25).abs() < 0.01);
     }
 }

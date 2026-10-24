@@ -565,46 +565,42 @@ mod macos_stats {
         let model = macos::sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
 
         // `host_processor_info` is preferred over parsing `top`: it is the only
-        // source of per-core figures and of nice time, and it reports cumulative
-        // ticks, which is the same thing the Linux reader turns into percentages
-        // from /proc/stat. Both therefore mean an average since boot.
-        if let Some(ticks) = macos::per_core_ticks() {
-            if let Some(total) = macos::aggregate_ticks(&ticks).percentages() {
-                let cores = ticks
-                    .iter()
-                    .enumerate()
-                    .map(|(id, _core)| CpuCore {
-                        id,
-                        online: true,
-                        // macOS exposes no governor.
-                        governor: None,
-                        frequency: None,
-                        // One sample of cumulative ticks is an average since boot,
-                        // not a current split, and this reader keeps no previous
-                        // sample to difference against. These were that average.
-                        user: None,
-                        nice: None,
-                        system: None,
-                        idle: None,
-                        model: model.clone(),
-                    })
-                    .collect();
+        // source of per-core figures and of nice time. Its whole-CPU split is the
+        // difference between two readings, shared with the platform reader through
+        // `current_total_usage`, so the two agree.
+        if let Ok((total, core_count)) = macos::current_total_usage() {
+            let cores = (0..core_count)
+                .map(|id| CpuCore {
+                    id,
+                    online: true,
+                    // macOS exposes no governor.
+                    governor: None,
+                    frequency: None,
+                    // Not computed per core. A single reading would be an average
+                    // since boot, so these stay unread rather than take that figure.
+                    user: None,
+                    nice: None,
+                    system: None,
+                    idle: None,
+                    model: model.clone(),
+                })
+                .collect();
 
-                return Ok(CpuStats {
-                    cores,
-                    total: CpuTotal {
-                        user: total.user,
-                        nice: Some(total.nice),
-                        system: total.system,
-                        idle: total.idle,
-                    },
-                });
-            }
+            return Ok(CpuStats {
+                cores,
+                total: CpuTotal {
+                    user: total.user,
+                    nice: Some(total.nice),
+                    system: total.system,
+                    idle: total.idle,
+                },
+            });
         }
 
-        // Fallback: `top`, which reports one aggregate and no nice time. Reached
-        // only if the Mach call fails, and it keeps a failure there from turning
-        // into no CPU data at all.
+        // Fallback: `top -l 2`, where the second sample covers the interval and the
+        // first is the since-boot average. It reports one aggregate and no nice
+        // time. Reached only if the Mach call fails, and it keeps a failure there
+        // from turning into no CPU data.
         let usage = macos::cpu_usage().ok_or_else(|| {
             unsupported("CPU statistics: host_processor_info failed and `top` was not understood")
         })?;
