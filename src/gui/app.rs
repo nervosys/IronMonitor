@@ -7236,15 +7236,12 @@ impl IronMonitorApp {
                             .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
 
-                        let status_color = if result.destination_reached {
-                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                        } else {
-                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
-                        };
-                        let status_text = if result.destination_reached {
-                            "✓ Destination reached"
-                        } else {
-                            "⚠ Destination not reached"
+                        // Unknown when the output named no target address, which is
+                        // not the same as the route having failed to arrive.
+                        let (status_text, status_color) = match result.destination_reached {
+                            Some(true) => ("✓ Destination reached", CyberColors::NEON_GREEN),
+                            Some(false) => ("⚠ Destination not reached", CyberColors::NEON_YELLOW),
+                            None => ("? Destination unknown (target address not in output)", CyberColors::TEXT_MUTED),
                         };
                         columns[1].label(RichText::new(status_text).color(theme::color(&palette_ctx, status_color)));
 
@@ -7255,10 +7252,14 @@ impl IronMonitorApp {
                             .show(&mut columns[1], |ui| {
                                 for hop in &result.hops {
                                     let addr = hop.address.as_deref().unwrap_or("*");
-                                    let rtt = hop
-                                        .rtt_ms
-                                        .map(|r| format!("{:.2}ms", r))
-                                        .unwrap_or_else(|| "*".to_string());
+                                    // "*" is a silent hop. A reply with no exact time
+                                    // is shown as what the tool said, not as a silence.
+                                    let rtt = match (hop.rtt_ms, hop.rtt_below_1ms, hop.responded) {
+                                        (Some(r), _, _) => format!("{:.2}ms", r),
+                                        (None, true, _) => "<1ms".to_string(),
+                                        (None, false, true) => "-".to_string(),
+                                        (None, false, false) => "*".to_string(),
+                                    };
 
                                     let addr_color = if hop.responded {
                                         theme::color(&palette_ctx, CyberColors::NEON_GREEN)
@@ -7407,7 +7408,8 @@ impl IronMonitorApp {
                     ui.horizontal(|ui| {
                         let (status_text, status_color) = match result.is_up {
                             Some(true) => ("UP", theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                            Some(false) => ("DOWN", theme::color(&palette_ctx, CyberColors::NEON_RED)),
+                            // ICMP is often blocked, so a silent host is not known to be down.
+                            Some(false) => ("no ICMP reply", theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             // Ping gave no verdict; not the same as no reply.
                             None => ("ping unreadable", theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         };
@@ -7479,7 +7481,13 @@ impl IronMonitorApp {
 
                                         for svc in &result.services {
                                             ui.label(RichText::new(format!("{}/tcp", svc.port)).color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)));
-                                            ui.label(RichText::new(&svc.service).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
+                                            // A name taken from the port number is a guess; say so.
+                                            let service = if svc.service_by_port {
+                                                format!("{}? (by port)", svc.service)
+                                            } else {
+                                                svc.service.clone()
+                                            };
+                                            ui.label(RichText::new(service).color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)));
 
                                             let version = match (&svc.product, &svc.version) {
                                                 (Some(p), Some(v)) => format!("{} {}", p, v),

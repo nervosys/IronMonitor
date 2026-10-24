@@ -37,7 +37,8 @@
 //! let result = traceroute("google.com", 30)?;
 //! for hop in &result.hops {
 //!     if let Some(addr) = &hop.address {
-//!         println!("{:>2}  {:15}  {:.2} ms", hop.ttl, addr, hop.rtt_ms.unwrap_or(0.0));
+//!         let rtt = hop.rtt_ms.map_or("-".to_string(), |r| format!("{r:.2} ms"));
+//!         println!("{:>2}  {:15}  {}", hop.ttl, addr, rtt);
 //!     } else {
 //!         println!("{:>2}  *", hop.ttl);
 //!     }
@@ -151,11 +152,19 @@ pub struct TracerouteHop {
     pub address: Option<String>,
     /// Hostname of the hop (if resolved)
     pub hostname: Option<String>,
-    /// Round-trip time in milliseconds
+    /// First exact round-trip time in milliseconds. `None` when no probe gave
+    /// one: no reply came back, or every reply was reported as `<1 ms`.
     pub rtt_ms: Option<f64>,
-    /// Additional RTT measurements
+    /// One entry per probe that drew a reply. `None` marks a probe Windows
+    /// reported as `<1 ms`: the reply is real, but its time is only bounded,
+    /// so no figure is recorded for it. `rtt_below_1ms` says so.
     pub rtt_probes: Vec<Option<f64>>,
-    /// Whether this hop responded
+    /// True when a probe reported `<1 ms`. Windows tracert prints that instead
+    /// of a number; a 1.0 or 0.5 standing in for it would be a made-up reading.
+    #[serde(default)]
+    pub rtt_below_1ms: bool,
+    /// Whether this hop answered: an address or a round-trip time was read.
+    /// A silent hop reads `false`.
     pub responded: bool,
 }
 
@@ -164,12 +173,14 @@ pub struct TracerouteHop {
 pub struct TracerouteResult {
     /// Target host
     pub target: String,
-    /// Resolved target IP
+    /// Resolved target IP, read from the tool's header line
     pub target_ip: Option<String>,
     /// List of hops
     pub hops: Vec<TracerouteHop>,
-    /// Whether the destination was reached
-    pub destination_reached: bool,
+    /// Whether a hop answered from the target's address. `None` when the
+    /// output did not name the target's address, so it is not known whether
+    /// the route got there.
+    pub destination_reached: Option<bool>,
     /// Total number of hops
     pub total_hops: usize,
 }
@@ -418,7 +429,7 @@ pub fn traceroute(host: &str, max_hops: u8) -> Result<TracerouteResult> {
         target: host.to_string(),
         target_ip: None,
         hops: Vec::new(),
-        destination_reached: false,
+        destination_reached: None,
         total_hops: 0,
     };
 
@@ -442,6 +453,35 @@ pub fn traceroute(host: &str, max_hops: u8) -> Result<TracerouteResult> {
     Ok(result)
 }
 
+/// The target address a traceroute header names, or `None` when the line names
+/// none that parses as an IP address.
+///
+/// Linux and macOS print `traceroute to host (1.2.3.4), 30 hops max`. Windows
+/// prints `Tracing route to host [1.2.3.4]`, or, when the target was given as
+/// an address, `Tracing route to 1.2.3.4 over a maximum of 30 hops:`.
+fn traceroute_target_ip(line: &str) -> Option<String> {
+    let candidate = match line.strip_prefix("traceroute to ") {
+        Some(rest) => {
+            let start = rest.find('(')?;
+            let end = rest.find(')')?;
+            rest.get(start + 1..end)?
+        }
+        None => {
+            let rest = line.strip_prefix("Tracing route to ")?;
+            if let (Some(start), Some(end)) = (rest.find('['), rest.find(']')) {
+                rest.get(start + 1..end)?
+            } else {
+                rest.split_whitespace().next()?
+            }
+        }
+    };
+    candidate
+        .trim()
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| ip.to_string())
+}
+
 /// Parse traceroute command output
 fn parse_traceroute_output(output: &str, result: &mut TracerouteResult) {
     let lines: Vec<&str> = output.lines().collect();
@@ -452,19 +492,15 @@ fn parse_traceroute_output(output: &str, result: &mut TracerouteResult) {
             continue;
         }
 
-        // Skip header lines
+        // Skip header lines. The target address is read from the header, which
+        // is the only place the tool names it when the host was a name.
         if line.starts_with("traceroute to")
             || line.starts_with("Tracing route")
             || line.contains("maximum")
             || line.contains("over a maximum")
         {
-            // Try to extract target IP
-            if line.contains('(') && line.contains(')') {
-                if let Some(start) = line.find('(') {
-                    if let Some(end) = line.find(')') {
-                        result.target_ip = Some(line[start + 1..end].to_string());
-                    }
-                }
+            if let Some(ip) = traceroute_target_ip(line) {
+                result.target_ip = Some(ip);
             }
             continue;
         }
@@ -490,69 +526,59 @@ fn parse_traceroute_output(output: &str, result: &mut TracerouteResult) {
                 hostname: None,
                 rtt_ms: None,
                 rtt_probes: Vec::new(),
+                rtt_below_1ms: false,
                 responded: false,
             };
 
-            // Check for timeout (all asterisks)
-            let has_response = parts.iter().any(|p| !p.contains('*') && p.len() > 1);
+            // The hop is the first token that parses as an IP address. The
+            // other tokens are numbers, "ms", "*" and "<1", none of which is one.
+            hop.address = parts[1..]
+                .iter()
+                .find(|p| p.parse::<IpAddr>().is_ok())
+                .map(|p| p.to_string());
 
-            if has_response {
-                hop.responded = true;
-
-                // Find IP address
-                for part in &parts[1..] {
-                    // Check if it's an IP address (contains dots and numbers)
-                    if part.chars().all(|c| c.is_ascii_digit() || c == '.') && part.contains('.') {
-                        hop.address = Some(part.to_string());
-                        break;
-                    }
-                }
-
-                // Find RTT values (numbers followed by "ms")
-                let mut i = 0;
-                while i < parts.len() {
-                    if parts[i].ends_with("ms") {
-                        // RTT value with "ms" suffix
-                        let rtt_str = parts[i].trim_end_matches("ms");
-                        if let Ok(rtt) = rtt_str.parse::<f64>() {
-                            hop.rtt_probes.push(Some(rtt));
-                        }
-                    } else if i + 1 < parts.len() && parts[i + 1] == "ms" {
-                        // RTT value followed by "ms"
-                        if let Ok(rtt) = parts[i].parse::<f64>() {
-                            hop.rtt_probes.push(Some(rtt));
-                        }
-                    } else if parts[i].starts_with('<') && parts[i].contains("ms") {
-                        // Windows "<1 ms" format
-                        let rtt_str = parts[i]
-                            .trim_start_matches('<')
-                            .trim_end_matches("ms")
-                            .trim();
-                        if let Ok(rtt) = rtt_str.parse::<f64>() {
-                            hop.rtt_probes.push(Some(rtt));
-                        }
-                    }
+            // Round-trip times. A token carries its unit either attached ("5ms")
+            // or as the next token ("5 ms"). Windows prints a sub-millisecond
+            // reply as "<1 ms": that is a reply, with no exact time.
+            let mut i = 1;
+            while i < parts.len() {
+                let token = parts[i];
+                let attached = token.ends_with("ms");
+                let spaced = !attached && parts.get(i + 1) == Some(&"ms");
+                if !attached && !spaced {
                     i += 1;
+                    continue;
                 }
-
-                // Set primary RTT from first probe
-                if !hop.rtt_probes.is_empty() {
-                    hop.rtt_ms = hop.rtt_probes[0];
-                }
-
-                // Check if this is the destination
-                if let Some(ref target_ip) = result.target_ip {
-                    if let Some(ref hop_addr) = hop.address {
-                        if hop_addr == target_ip {
-                            result.destination_reached = true;
-                        }
+                let value = token.trim_start_matches('<').trim_end_matches("ms");
+                if token.starts_with('<') {
+                    if value.parse::<f64>().is_ok() {
+                        hop.rtt_probes.push(None);
+                        hop.rtt_below_1ms = true;
                     }
+                } else if let Ok(rtt) = value.parse::<f64>() {
+                    hop.rtt_probes.push(Some(rtt));
                 }
+                i += if attached { 1 } else { 2 };
             }
+
+            hop.rtt_ms = hop.rtt_probes.iter().copied().flatten().next();
+
+            // A silent hop has no address and no time. Its line still has words
+            // ("Request timed out."), so the words do not count as a reply.
+            hop.responded = hop.address.is_some() || !hop.rtt_probes.is_empty();
 
             result.hops.push(hop);
         }
     }
+
+    // Reached only when the target's address is known and a hop answered from
+    // it. With no target address the output cannot say either way.
+    result.destination_reached = result.target_ip.as_ref().map(|target| {
+        result
+            .hops
+            .iter()
+            .any(|hop| hop.address.as_deref() == Some(target.as_str()))
+    });
 
     result.total_hops = result.hops.len();
 }
@@ -679,6 +705,12 @@ pub fn parallel_scan(
     timeout: Duration,
     max_threads: usize,
 ) -> Result<Vec<PortScanResult>> {
+    // Nothing to scan. Chunking by a zero size panics, and an empty list
+    // needs no name resolution either.
+    if ports.is_empty() {
+        return Ok(Vec::new());
+    }
+
     // Resolve hostname once
     let addrs: Vec<SocketAddr> = format!("{}:0", host)
         .to_socket_addrs()
@@ -693,8 +725,9 @@ pub fn parallel_scan(
     // Shared results vector
     let results = Arc::new(Mutex::new(Vec::with_capacity(ports.len())));
 
-    // Process ports in chunks to limit concurrency
-    let chunk_size = max_threads.min(ports.len());
+    // Process ports in chunks to limit concurrency. A thread budget of 0 would
+    // be a zero chunk size, so it is raised to 1.
+    let chunk_size = max_threads.max(1).min(ports.len());
     let port_chunks: Vec<Vec<u16>> = ports.chunks(chunk_size).map(|c| c.to_vec()).collect();
 
     for chunk in port_chunks {
@@ -945,6 +978,11 @@ pub struct ServiceInfo {
     pub port: u16,
     /// Service name (e.g., "http", "ssh")
     pub service: String,
+    /// True when `service` is only the name conventionally given to this port
+    /// number, because no banner named the service. It is a guess, not a
+    /// detection, and renders as one.
+    #[serde(default)]
+    pub service_by_port: bool,
     /// Service version (if detected)
     pub version: Option<String>,
     /// Banner/response from service
@@ -1063,14 +1101,19 @@ fn parse_banner_for_version(port: u16, banner: &str) -> ServiceInfo {
     let mut info = ServiceInfo {
         port,
         service: get_service_name(port).unwrap_or_else(|| "unknown".to_string()),
+        service_by_port: false,
         version: None,
         banner: Some(banner.chars().take(256).collect()),
         product: None,
         extra_info: None,
     };
+    // Set below when a banner named the service. Until then `service` is the
+    // port-number guess, and `service_by_port` says so.
+    let mut named_by_banner = false;
 
     // HTTP detection
     if banner.starts_with("HTTP/") {
+        named_by_banner = true;
         info.service = "http".to_string();
         if let Some(server_line) = banner
             .lines()
@@ -1100,6 +1143,7 @@ fn parse_banner_for_version(port: u16, banner: &str) -> ServiceInfo {
     }
     // SSH detection
     else if banner_lower.starts_with("ssh-") {
+        named_by_banner = true;
         info.service = "ssh".to_string();
         let parts: Vec<&str> = banner.split_whitespace().collect();
         if !parts.is_empty() {
@@ -1114,25 +1158,14 @@ fn parse_banner_for_version(port: u16, banner: &str) -> ServiceInfo {
             info.product = Some("Dropbear".to_string());
         }
     }
-    // FTP detection
-    else if banner.starts_with("220") {
-        info.service = "ftp".to_string();
-        if banner_lower.contains("vsftpd") {
-            info.product = Some("vsftpd".to_string());
-        } else if banner_lower.contains("proftpd") {
-            info.product = Some("ProFTPD".to_string());
-        } else if banner_lower.contains("filezilla") {
-            info.product = Some("FileZilla".to_string());
-        } else if banner_lower.contains("microsoft") {
-            info.product = Some("Microsoft FTP".to_string());
-        }
-    }
-    // SMTP detection
+    // SMTP detection. Tested before FTP: an SMTP greeting also starts with
+    // "220", and a Postfix or Exim greeting is not an FTP one.
     else if banner.starts_with("220")
         && (banner_lower.contains("smtp")
             || banner_lower.contains("mail")
             || banner_lower.contains("esmtp"))
     {
+        named_by_banner = true;
         info.service = "smtp".to_string();
         if banner_lower.contains("postfix") {
             info.product = Some("Postfix".to_string());
@@ -1144,13 +1177,33 @@ fn parse_banner_for_version(port: u16, banner: &str) -> ServiceInfo {
             info.product = Some("Microsoft SMTP".to_string());
         }
     }
+    // FTP detection. "220" alone is the code of any service greeting, so FTP
+    // needs an FTP marker in the banner. Without one the service stays the
+    // port-number guess.
+    else if banner.starts_with("220")
+        && (banner_lower.contains("ftp") || banner_lower.contains("filezilla"))
+    {
+        named_by_banner = true;
+        info.service = "ftp".to_string();
+        if banner_lower.contains("vsftpd") {
+            info.product = Some("vsftpd".to_string());
+        } else if banner_lower.contains("proftpd") {
+            info.product = Some("ProFTPD".to_string());
+        } else if banner_lower.contains("filezilla") {
+            info.product = Some("FileZilla".to_string());
+        } else if banner_lower.contains("microsoft") {
+            info.product = Some("Microsoft FTP".to_string());
+        }
+    }
     // MySQL detection
     else if banner.len() > 4 && banner.as_bytes().get(4) == Some(&0x0a) {
+        named_by_banner = true;
         info.service = "mysql".to_string();
         info.product = Some("MySQL".to_string());
     }
     // Redis detection
     else if banner_lower.contains("redis_version") {
+        named_by_banner = true;
         info.service = "redis".to_string();
         info.product = Some("Redis".to_string());
         if let Some(ver_line) = banner.lines().find(|l| l.starts_with("redis_version:")) {
@@ -1158,6 +1211,7 @@ fn parse_banner_for_version(port: u16, banner: &str) -> ServiceInfo {
         }
     }
 
+    info.service_by_port = !named_by_banner && get_service_name(port).is_some();
     info
 }
 
@@ -1226,9 +1280,11 @@ pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapSca
                 let service_info = if let Some(banner) = grab_banner(host, port, timeout) {
                     parse_banner_for_version(port, &banner)
                 } else {
+                    // No banner: the service is the port-number guess, and says so.
                     ServiceInfo {
                         port,
                         service: get_service_name(port).unwrap_or_else(|| "unknown".to_string()),
+                        service_by_port: get_service_name(port).is_some(),
                         version: None,
                         banner: None,
                         product: None,
@@ -2104,6 +2160,203 @@ mod tests {
         assert!(ports.contains(&22));
         assert!(ports.contains(&80));
         assert!(ports.contains(&443));
+    }
+}
+
+#[cfg(test)]
+mod traceroute_parse_tests {
+    use super::*;
+
+    // Windows tracert, English, target given as a name: the header puts the
+    // address in square brackets. The "<1 ms" lines are real tracert output.
+    const WINDOWS_REACHED: &str = r#"
+Tracing route to example.com [93.184.216.34]
+over a maximum of 30 hops:
+
+  1    <1 ms    <1 ms    <1 ms  192.168.1.1
+  2     2 ms     1 ms     1 ms  10.0.0.1
+  3     *        *        *     Request timed out.
+  4    12 ms    11 ms    13 ms  203.0.113.5
+  5    20 ms    19 ms    21 ms  93.184.216.34
+
+Trace complete.
+"#;
+
+    // Windows tracert with the target given as an address: the header has no
+    // brackets, and the address is the first word after "to".
+    const WINDOWS_NOT_REACHED: &str = r#"
+Tracing route to 8.8.8.8 over a maximum of 30 hops:
+
+  1     1 ms     1 ms     1 ms  192.168.1.1
+  2     *        *        *     Request timed out.
+  3     9 ms     9 ms     8 ms  10.20.0.1
+  4     *        *        *     Destination host unreachable.
+
+Trace complete.
+"#;
+
+    // Windows when the name does not resolve: no header names a target.
+    const WINDOWS_UNRESOLVED: &str = r#"
+Unable to resolve target system name no-such-host.invalid.
+"#;
+
+    // Linux traceroute -n, with a silent hop and a hop that answered twice.
+    const LINUX_REACHED: &str = r#"traceroute to 93.184.216.34 (93.184.216.34), 15 hops max, 60 byte packets
+ 1  192.168.1.1  0.543 ms  0.412 ms  0.398 ms
+ 2  * * *
+ 3  10.0.0.1  4.120 ms  4.011 ms  *
+ 4  93.184.216.34  20.113 ms  19.998 ms  20.201 ms
+"#;
+
+    fn parse(output: &str) -> TracerouteResult {
+        let mut result = TracerouteResult {
+            target: "host".to_string(),
+            target_ip: None,
+            hops: Vec::new(),
+            destination_reached: None,
+            total_hops: 0,
+        };
+        parse_traceroute_output(output, &mut result);
+        result
+    }
+
+    #[test]
+    fn bracketed_windows_header_names_the_target_and_reaching_it_is_seen() {
+        let r = parse(WINDOWS_REACHED);
+        assert_eq!(r.target_ip.as_deref(), Some("93.184.216.34"));
+        assert_eq!(r.destination_reached, Some(true));
+        assert_eq!(r.total_hops, 5);
+    }
+
+    #[test]
+    fn bare_address_windows_header_names_the_target_and_missing_it_is_seen() {
+        let r = parse(WINDOWS_NOT_REACHED);
+        assert_eq!(r.target_ip.as_deref(), Some("8.8.8.8"));
+        assert_eq!(r.destination_reached, Some(false));
+    }
+
+    #[test]
+    fn without_a_target_header_whether_the_route_arrived_is_unknown() {
+        let r = parse(WINDOWS_UNRESOLVED);
+        assert_eq!(r.target_ip, None);
+        assert_eq!(r.destination_reached, None);
+        assert!(r.hops.is_empty());
+    }
+
+    #[test]
+    fn linux_header_names_the_target_in_parentheses() {
+        let r = parse(LINUX_REACHED);
+        assert_eq!(r.target_ip.as_deref(), Some("93.184.216.34"));
+        assert_eq!(r.destination_reached, Some(true));
+    }
+
+    #[test]
+    fn windows_sub_millisecond_reply_is_a_reply_with_no_invented_time() {
+        let r = parse(WINDOWS_REACHED);
+        let hop = &r.hops[0];
+        assert_eq!(hop.address.as_deref(), Some("192.168.1.1"));
+        assert!(hop.responded);
+        assert!(hop.rtt_below_1ms);
+        assert_eq!(hop.rtt_probes, vec![None, None, None]);
+        assert_eq!(hop.rtt_ms, None);
+
+        // Exact times on the same kind of line are still read.
+        let hop = &r.hops[1];
+        assert_eq!(hop.rtt_ms, Some(2.0));
+        assert!(!hop.rtt_below_1ms);
+        assert_eq!(hop.rtt_probes, vec![Some(2.0), Some(1.0), Some(1.0)]);
+    }
+
+    #[test]
+    fn a_silent_hop_is_not_a_reply_even_though_its_line_has_words() {
+        let r = parse(WINDOWS_REACHED);
+        let silent = &r.hops[2];
+        assert_eq!(silent.address, None);
+        assert!(silent.rtt_probes.is_empty());
+        assert_eq!(silent.rtt_ms, None);
+        assert!(!silent.responded);
+
+        let r = parse(WINDOWS_NOT_REACHED);
+        assert!(
+            !r.hops[3].responded,
+            "destination unreachable is not a reply"
+        );
+    }
+
+    #[test]
+    fn linux_silent_hop_is_unresponded_and_partial_hop_keeps_its_probes() {
+        let r = parse(LINUX_REACHED);
+        assert!(!r.hops[1].responded);
+        assert!(r.hops[2].responded);
+        assert_eq!(r.hops[2].rtt_probes, vec![Some(4.12), Some(4.011)]);
+        assert_eq!(r.hops[2].rtt_ms, Some(4.12));
+    }
+}
+
+#[cfg(test)]
+mod banner_parse_tests {
+    use super::*;
+
+    // Postfix greets with the bare code 220 and names itself.
+    const POSTFIX: &str = "220 mx.example.com ESMTP Postfix";
+    // vsftpd greets with the bare code and its name in parentheses.
+    const VSFTPD: &str = "220 (vsFTPd 3.0.3)";
+    // A 220 greeting that names no protocol.
+    const PLAIN_220: &str = "220 Welcome to the service";
+
+    #[test]
+    fn smtp_greeting_is_not_read_as_ftp() {
+        let info = parse_banner_for_version(25, POSTFIX);
+        assert_eq!(info.service, "smtp");
+        assert_eq!(info.product.as_deref(), Some("Postfix"));
+        assert!(!info.service_by_port);
+    }
+
+    #[test]
+    fn ftp_greeting_with_a_marker_is_ftp() {
+        let info = parse_banner_for_version(21, VSFTPD);
+        assert_eq!(info.service, "ftp");
+        assert_eq!(info.product.as_deref(), Some("vsftpd"));
+        assert!(!info.service_by_port);
+    }
+
+    #[test]
+    fn a_220_without_a_marker_does_not_name_ftp() {
+        // Port 21 is conventionally FTP, so the port number is the guess, and
+        // it is marked as one.
+        let on_ftp_port = parse_banner_for_version(21, PLAIN_220);
+        assert_eq!(on_ftp_port.service, "ftp");
+        assert!(on_ftp_port.service_by_port);
+        assert_eq!(on_ftp_port.product, None);
+
+        // A port with no well-known name has no guess to fall back on.
+        let unnamed = parse_banner_for_version(2525, PLAIN_220);
+        assert_eq!(unnamed.service, "unknown");
+        assert!(!unnamed.service_by_port);
+    }
+
+    #[test]
+    fn unrecognised_banner_on_a_known_port_is_the_port_guess() {
+        let info = parse_banner_for_version(22, "garbage");
+        assert_eq!(info.service, "ssh");
+        assert!(info.service_by_port);
+    }
+}
+
+#[cfg(test)]
+mod parallel_scan_tests {
+    use super::*;
+
+    #[test]
+    fn empty_port_list_scans_nothing_and_does_not_panic() {
+        let results = parallel_scan("127.0.0.1", &[], Duration::from_millis(50), 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn zero_thread_budget_still_scans_every_port() {
+        let results = parallel_scan("127.0.0.1", &[1, 2], Duration::from_millis(50), 0).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }
 

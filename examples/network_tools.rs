@@ -193,22 +193,24 @@ fn print_traceroute_result(result: &TracerouteResult) {
 
     for hop in &result.hops {
         let addr = hop.address.as_deref().unwrap_or("*");
-        let rtt = hop
-            .rtt_ms
-            .map(|r| format!("{:.2} ms", r))
-            .unwrap_or_else(|| "*".to_string());
+        let rtt = match (hop.rtt_ms, hop.rtt_below_1ms, hop.responded) {
+            (Some(r), _, _) => format!("{:.2} ms", r),
+            (None, true, _) => "<1 ms".to_string(),
+            (None, false, true) => "-".to_string(),
+            (None, false, false) => "*".to_string(),
+        };
         let hostname = hop.hostname.as_deref().unwrap_or("");
 
         println!("  {:>3}  {:>15}  {:>12}  {}", hop.ttl, addr, rtt, hostname);
     }
 
-    if result.destination_reached {
-        println!("\n  ✓ Destination reached in {} hops", result.hops.len());
-    } else {
-        println!(
+    match result.destination_reached {
+        Some(true) => println!("\n  ✓ Destination reached in {} hops", result.hops.len()),
+        Some(false) => println!(
             "\n  ✗ Destination not reached within {} hops",
             result.total_hops
-        );
+        ),
+        None => println!("\n  ? Destination unknown: the output named no target address"),
     }
 }
 
