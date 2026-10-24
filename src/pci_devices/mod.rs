@@ -109,8 +109,13 @@ pub struct PciDeviceInfo {
     pub device_name: String,
     /// Kernel driver in use
     pub driver: String,
-    /// Kernel module loaded for this device
-    pub kernel_module: String,
+    /// Kernel module that handles this device, `None` where it was not read.
+    ///
+    /// Read on Linux from the basename of `driver/module`. That link is absent
+    /// for a driver built into the kernel and for a device with no driver
+    /// bound, so `None` there is not a module name. Other platforms do not
+    /// read it. It used to be an empty string on every platform.
+    pub kernel_module: Option<String>,
     /// PCI revision
     pub revision: String,
     /// IOMMU group (for passthrough/vfio)
@@ -299,6 +304,12 @@ impl PciDeviceMonitor {
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                 .unwrap_or_default();
 
+            // Kernel module. The `module` link exists only for a loadable
+            // module, so a built-in driver leaves it absent.
+            let kernel_module = std::fs::read_link(base.join("driver/module"))
+                .ok()
+                .and_then(|p| module_name_of_link(&p));
+
             // IOMMU group
             let iommu_group = std::fs::read_link(base.join("iommu_group"))
                 .ok()
@@ -367,7 +378,7 @@ impl PciDeviceMonitor {
                 vendor_name,
                 device_name,
                 driver,
-                kernel_module: String::new(),
+                kernel_module,
                 revision,
                 iommu_group,
                 link_info,
@@ -487,7 +498,8 @@ impl PciDeviceMonitor {
                 vendor_name,
                 device_name: name,
                 driver: service.unwrap_or_default(),
-                kernel_module: String::new(),
+                // Not read on Windows; see the field.
+                kernel_module: None,
                 revision: String::new(),
                 iommu_group: None,
                 link_info: Self::devnode_link_info(pnp_id),
@@ -803,7 +815,8 @@ impl PciDeviceMonitor {
                     vendor_name: String::new(),
                     device_name: name,
                     driver,
-                    kernel_module: String::new(),
+                    // Not read on macOS; see the field.
+                    kernel_module: None,
                     revision: String::new(),
                     iommu_group: None,
                     link_info,
@@ -883,6 +896,18 @@ impl std::fmt::Display for PciClass {
 /// 1043 (ASUS). The reader used to store all eight digits in both fields, so
 /// neither field held an ID. Any other shape is not that layout and is reported
 /// as absent rather than guessed at.
+/// The kernel module a `driver/module` link names, as its last path component.
+///
+/// The kernel points the link at `../../../../module/<name>`, so the name is
+/// the basename. An empty name is no name.
+#[cfg(any(target_os = "linux", test))]
+fn module_name_of_link(target: &std::path::Path) -> Option<String> {
+    target
+        .file_name()
+        .map(|n| n.to_string_lossy().trim().to_string())
+        .filter(|n| !n.is_empty())
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn split_subsys_field(field: &str) -> (Option<String>, Option<String>) {
     let field = field.trim();
@@ -898,6 +923,20 @@ fn split_subsys_field(field: &str) -> (Option<String>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kernel's relative link target names the module by its basename. A
+    /// built-in driver has no such link, which the reader sees as `None` and
+    /// this helper never gets to.
+    #[test]
+    fn kernel_module_is_the_basename_of_the_module_link() {
+        let target = std::path::Path::new("../../../../../module/nvidia");
+        assert_eq!(module_name_of_link(target).as_deref(), Some("nvidia"));
+        // A module whose name differs from its driver's, as `nvidia_drm`
+        // is for the `nvidia` driver.
+        let drm = std::path::Path::new("../../../../../module/nvidia_drm");
+        assert_eq!(module_name_of_link(drm).as_deref(), Some("nvidia_drm"));
+        assert_eq!(module_name_of_link(std::path::Path::new("")), None);
+    }
 
     /// `SUBSYS_88771043` is subsystem device 8877 from vendor 1043, the layout
     /// Microsoft documents. Splitting it the other way round named vendor 8877.
@@ -1055,7 +1094,7 @@ mod tests {
             vendor_name: "Intel Corporation".into(),
             device_name: "UHD Graphics".into(),
             driver: "i915".into(),
-            kernel_module: String::new(),
+            kernel_module: None,
             revision: "00".into(),
             iommu_group: Some(1),
             link_info: None,

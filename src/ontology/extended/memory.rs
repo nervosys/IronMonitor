@@ -99,8 +99,20 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         "Whether every module has the same capacity, compared across the per-slot capacities. Absent where fewer than two capacities were read.",
     )
     .derived(&["memory.dimm.{n}.capacity"]));
-    e(add, "memory.topology.max_capacity_bytes", K::Limit, Some(U::Bytes), P::Specification, true,
-      "Largest capacity the board supports, from the SMBIOS physical memory array record. Absent because no reader queries that record yet.");
+    e(
+        add,
+        "memory.topology.max_capacity_bytes",
+        K::Limit,
+        Some(U::Bytes),
+        P::Specification,
+        true,
+        concat!(
+            "The board's declared maximum memory capacity, from its SMBIOS type 16 ",
+            "Physical Memory Array record, summed over the system-memory arrays. It is ",
+            "the board's rating, not the installed amount. Absent where the record was ",
+            "not read: Linux needs root for dmidecode, and macOS publishes no maximum."
+        ),
+    );
 
     // ── EDAC error counters (EdacMonitor) ───────────────────────────────────
     e(
@@ -380,12 +392,22 @@ fn resolve_analysis(out: &mut Vec<Reading>, topology: &MemoryTopology) {
         "fewer than two DIMM capacities were read, so there is nothing to match",
     );
 
+    // Why it is unknown depends on the platform, and says so: a root-only read
+    // on Linux, a WMI array with no capacity on Windows, and no such figure on
+    // macOS.
+    let max_why = if cfg!(target_os = "linux") {
+        "the board's maximum is in the SMBIOS type 16 record, which dmidecode reads only as root, and this run did not read it"
+    } else if cfg!(target_os = "windows") {
+        "no system-memory Win32_PhysicalMemoryArray reported a usable capacity"
+    } else {
+        "this platform publishes no board maximum capacity"
+    };
     push_spec_opt(
         out,
         "memory.topology.max_capacity_bytes",
         a.max_capacity_bytes.map(|b| serde_json::json!(b)),
         Some(U::Bytes),
-        "the board's maximum capacity is in the SMBIOS memory array record, which no reader queries",
+        max_why,
     );
 }
 

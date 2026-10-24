@@ -160,9 +160,18 @@ const PCI_REVISION_WHY: &str = concat!(
     "the device listing reported no revision for this device. Windows and macOS ",
     "do not expose the PCI revision register"
 );
-const PCI_KERNEL_MODULE_WHY: &str = concat!(
-    "the device enumerator does not read the kernel module name. The driver bound ",
-    "to the device is published as pci.<address>.driver"
+// The kernel module is read from sysfs on Linux only. There, no module is named
+// when the driver is built into the kernel or no driver is bound, and that is a
+// different fact from a platform that does not read the link at all.
+const PCI_KERNEL_MODULE_LINUX_WHY: &str = concat!(
+    "no kernel module is linked to this device. Its driver is either built into ",
+    "the kernel, which has no module, or no driver is bound. The bound driver is ",
+    "published as pci.<address>.driver"
+);
+const PCI_KERNEL_MODULE_OTHER_WHY: &str = concat!(
+    "the kernel module is read from sysfs on Linux only. This platform's device ",
+    "enumerator does not read it. The bound driver is published as ",
+    "pci.<address>.driver"
 );
 const PCI_IOMMU_GROUP_LINUX_WHY: &str = concat!(
     "the device is in no IOMMU group. The kernel links one only when an IOMMU is ",
@@ -1231,9 +1240,13 @@ fn resolve_pci_extras(out: &mut Vec<Reading>) {
         push_opt(
             out,
             format!("{base}.kernel_module"),
-            nonempty(&dev.kernel_module),
+            dev.kernel_module.as_ref().map(|m| serde_json::json!(m)),
             Some(U::Identifier),
-            PCI_KERNEL_MODULE_WHY,
+            if cfg!(target_os = "linux") {
+                PCI_KERNEL_MODULE_LINUX_WHY
+            } else {
+                PCI_KERNEL_MODULE_OTHER_WHY
+            },
         );
 
         let iommu_why = if cfg!(any(target_os = "windows", target_os = "macos")) {

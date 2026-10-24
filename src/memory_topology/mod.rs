@@ -195,11 +195,13 @@ pub struct MemoryAnalysis {
     /// `None` when any populated module's size was not read. A sum that left
     /// that module out would be short by an amount nothing reported.
     pub total_capacity_bytes: Option<u64>,
-    /// Maximum supported capacity in bytes.
+    /// The board's declared maximum memory capacity in bytes (SMBIOS type 16,
+    /// the Physical Memory Array), summed over the system-memory arrays.
     ///
-    /// Always `None`: the board's maximum is in the memory array record
-    /// (SMBIOS type 16, `Win32_PhysicalMemoryArray`), and no reader queries
-    /// it. This was a per-slot guess multiplied by the slot count.
+    /// Not the installed amount, and not a per-slot estimate. `None` where the
+    /// record was not read: on Linux that needs root for `dmidecode`, and macOS
+    /// publishes no such figure. It used to be a per-slot guess multiplied by
+    /// the slot count, and before that a constant `None` that nothing filled.
     pub max_capacity_bytes: Option<u64>,
     /// Number of modules the reader enumerated as populated.
     pub populated_slots: usize,
@@ -270,7 +272,7 @@ impl MemoryTopologyMonitor {
     /// Create a new memory topology monitor.
     pub fn new() -> Result<Self, IronError> {
         let dimms = Self::enumerate_dimms()?;
-        let analysis = Self::analyze(&dimms);
+        let analysis = Self::analysis_of(&dimms);
         Ok(Self {
             topology: MemoryTopology { dimms, analysis },
         })
@@ -279,8 +281,16 @@ impl MemoryTopologyMonitor {
     /// Refresh data.
     pub fn refresh(&mut self) -> Result<(), IronError> {
         self.topology.dimms = Self::enumerate_dimms()?;
-        self.topology.analysis = Self::analyze(&self.topology.dimms);
+        self.topology.analysis = Self::analysis_of(&self.topology.dimms);
         Ok(())
+    }
+
+    /// The analysis of the enumerated modules, plus the board's declared
+    /// maximum, which comes from a different record and is read separately.
+    fn analysis_of(dimms: &[DimmInfo]) -> MemoryAnalysis {
+        let mut analysis = Self::analyze(dimms);
+        analysis.max_capacity_bytes = Self::max_capacity_bytes();
+        analysis
     }
 
     /// Get the topology.
@@ -391,6 +401,8 @@ impl MemoryTopologyMonitor {
 
         MemoryAnalysis {
             total_capacity_bytes,
+            // Not derived from the modules. `analysis_of` sets it from the
+            // memory array record.
             max_capacity_bytes: None,
             populated_slots: populated_count,
             total_slots,
@@ -505,6 +517,108 @@ impl MemoryTopologyMonitor {
         }
 
         score.clamp(0, 100) as u32
+    }
+
+    /// The board's declared maximum capacity, or `None` where it was not read.
+    ///
+    /// Never an error: a missing maximum must not fail the module listing.
+    #[cfg(target_os = "linux")]
+    fn max_capacity_bytes() -> Option<u64> {
+        // SMBIOS type 16 through dmidecode. Reading it needs root, so an
+        // unprivileged run fails here and the answer is unknown.
+        let out = std::process::Command::new("dmidecode")
+            .args(["-t", "16"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Self::parse_dmidecode_max_capacity(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn max_capacity_bytes() -> Option<u64> {
+        let out = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_PhysicalMemoryArray | Select-Object MaxCapacityEx,MaxCapacity,Use | ConvertTo-Json",
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Self::parse_windows_max_capacity(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    /// macOS publishes no board maximum, so there is nothing to read.
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    fn max_capacity_bytes() -> Option<u64> {
+        None
+    }
+
+    /// The board maximum from `Win32_PhysicalMemoryArray` JSON, in bytes.
+    ///
+    /// Sums `MaxCapacityEx` (or `MaxCapacity` where Ex is zero or absent) over
+    /// the arrays whose `Use` is 3, system memory. Both are in kilobytes. An
+    /// array with no usable capacity leaves the sum short, so the answer is
+    /// `None`, as is output with no system-memory array in it.
+    #[allow(dead_code)]
+    fn parse_windows_max_capacity(text: &str) -> Option<u64> {
+        let trimmed = text.trim();
+        let items: Vec<serde_json::Value> = match serde_json::from_str(trimmed).ok()? {
+            serde_json::Value::Array(items) => items,
+            obj @ serde_json::Value::Object(_) => vec![obj],
+            _ => return None,
+        };
+
+        let mut total: u64 = 0;
+        let mut system_arrays = 0usize;
+        for item in items.iter().filter(|i| i["Use"].as_u64() == Some(3)) {
+            system_arrays += 1;
+            let ex = item["MaxCapacityEx"].as_u64().filter(|&kb| kb > 0);
+            // 0x80000000 in MaxCapacity is the marker for "see MaxCapacityEx".
+            // Without Ex, that value is no capacity to report.
+            let plain = item["MaxCapacity"]
+                .as_u64()
+                .filter(|&kb| kb > 0 && kb != 0x8000_0000);
+            let kb = ex.or(plain)?;
+            total = total.checked_add(kb.checked_mul(1024)?)?;
+        }
+        (system_arrays > 0).then_some(total)
+    }
+
+    /// The board maximum from `dmidecode -t 16` output, in bytes.
+    ///
+    /// Each `Physical Memory Array` record names its `Use` and its
+    /// `Maximum Capacity`. The system-memory records are summed. A record
+    /// whose capacity is missing or unparsed leaves the sum short, so the
+    /// answer is `None`.
+    #[allow(dead_code)]
+    fn parse_dmidecode_max_capacity(text: &str) -> Option<u64> {
+        let mut total: u64 = 0;
+        let mut system_arrays = 0usize;
+        for block in text.split("\nHandle ") {
+            if !block.contains("Physical Memory Array") {
+                continue;
+            }
+            let field = |key: &str| {
+                block
+                    .lines()
+                    .map(str::trim)
+                    .find_map(|l| l.strip_prefix(key).map(str::trim))
+            };
+            match field("Use:") {
+                Some("System Memory") => {}
+                Some(_) => continue,
+                None => return None,
+            }
+            system_arrays += 1;
+            let bytes = Self::parse_size_to_bytes(field("Maximum Capacity:")?)?;
+            total = total.checked_add(bytes)?;
+        }
+        (system_arrays > 0).then_some(total)
     }
 
     #[cfg(target_os = "linux")]
@@ -1406,6 +1520,133 @@ Can't read memory from /dev/mem
         );
         assert_eq!(
             MemoryTopologyMonitor::parse_size_to_bytes("16 furlongs"),
+            None
+        );
+    }
+
+    /// Two system-memory arrays add up. Ex is preferred where set, MaxCapacity
+    /// covers an array with Ex at zero, and a non-system array is not counted.
+    #[test]
+    fn windows_board_maximum_sums_the_system_arrays_in_kilobytes() {
+        let json = r#"[
+            {"MaxCapacityEx": 0, "MaxCapacity": 33554432, "Use": 3},
+            {"MaxCapacityEx": 33554432, "MaxCapacity": 2147483648, "Use": 3},
+            {"MaxCapacityEx": 1024, "MaxCapacity": 1024, "Use": 4}
+        ]"#;
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity(json),
+            Some(64 << 30)
+        );
+    }
+
+    /// `ConvertTo-Json` writes one object, not an array, for a single array.
+    #[test]
+    fn windows_board_maximum_accepts_a_single_object() {
+        let json = r#"{"MaxCapacityEx": null, "MaxCapacity": 16777216, "Use": 3}"#;
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity(json),
+            Some(16 << 30)
+        );
+    }
+
+    /// 0x80000000 in MaxCapacity means "see MaxCapacityEx". Without Ex it is
+    /// no capacity, and a system array with no usable capacity leaves the sum
+    /// short, so both are unknown rather than a figure.
+    #[test]
+    fn windows_board_maximum_unknown_when_no_capacity_is_usable() {
+        let sentinel = r#"[{"MaxCapacity": 2147483648, "Use": 3}]"#;
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity(sentinel),
+            None
+        );
+        let missing = r#"[{"Use": 3}, {"MaxCapacityEx": 1048576, "Use": 3}]"#;
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity(missing),
+            None
+        );
+        let no_system = r#"[{"MaxCapacity": 1024, "Use": 4}]"#;
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity(no_system),
+            None
+        );
+        assert_eq!(MemoryTopologyMonitor::parse_windows_max_capacity(""), None);
+        assert_eq!(
+            MemoryTopologyMonitor::parse_windows_max_capacity("not json"),
+            None
+        );
+    }
+
+    /// Realistic `dmidecode -t 16` output. The video array is not system
+    /// memory, so it is not counted.
+    #[test]
+    fn dmidecode_board_maximum_sums_the_system_arrays() {
+        let text = "# dmidecode 3.5\n\
+Getting SMBIOS data from sysfs.\n\
+SMBIOS 3.4.0 present.\n\
+\n\
+Handle 0x1000, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tLocation: System Board Or Motherboard\n\
+\tUse: System Memory\n\
+\tError Correction Type: Multi-bit ECC\n\
+\tMaximum Capacity: 128 GB\n\
+\tError Information Handle: Not Provided\n\
+\tNumber Of Devices: 4\n\
+\n\
+Handle 0x1005, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tLocation: Other\n\
+\tUse: Video Memory\n\
+\tMaximum Capacity: 1 GB\n\
+\tNumber Of Devices: 1\n";
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(text),
+            Some(128 << 30)
+        );
+    }
+
+    /// Two system arrays are summed. An unparsed capacity, a missing Use line
+    /// or no system array at all is unknown.
+    #[test]
+    fn dmidecode_board_maximum_unknown_when_a_record_is_unreadable() {
+        let two = "Handle 0x1000, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tUse: System Memory\n\
+\tMaximum Capacity: 64 GB\n\
+\n\
+Handle 0x1001, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tUse: System Memory\n\
+\tMaximum Capacity: 64 GB\n";
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(two),
+            Some(128 << 30)
+        );
+        let not_specified = "Handle 0x1000, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tUse: System Memory\n\
+\tMaximum Capacity: Not Specified\n";
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(not_specified),
+            None
+        );
+        let no_use = "Handle 0x1000, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tMaximum Capacity: 64 GB\n";
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(no_use),
+            None
+        );
+        let video_only = "Handle 0x1000, DMI type 16, 23 bytes\n\
+Physical Memory Array\n\
+\tUse: Video Memory\n\
+\tMaximum Capacity: 1 GB\n";
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(video_only),
+            None
+        );
+        assert_eq!(
+            MemoryTopologyMonitor::parse_dmidecode_max_capacity(""),
             None
         );
     }
