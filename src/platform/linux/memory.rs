@@ -174,12 +174,15 @@ fn read_emc_info() -> Result<EmcInfo> {
     let min = read_file_u32(format!("{}/min_freq", emc_path))? / 1000;
     let max = read_file_u32(format!("{}/max_freq", emc_path))? / 1000;
 
-    // Calculate bandwidth percentage (simplified)
-    let value = if max > 0 {
-        ((cur as f32 / max as f32) * 100.0) as u32
-    } else {
-        0
-    };
+    // Current clock as a percentage of the maximum clock. This is a frequency
+    // ratio, not a measured bandwidth. With no maximum the ratio is undefined,
+    // so there is no reading. This used to be 0.
+    if max == 0 {
+        return Err(crate::error::IronError::FeatureNotAvailable(
+            "EMC reports no maximum frequency".to_string(),
+        ));
+    }
+    let value = ((cur as f32 / max as f32) * 100.0) as u32;
 
     Ok(EmcInfo {
         online: true,

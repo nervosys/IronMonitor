@@ -126,17 +126,25 @@ impl IpmiController {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Sensors from `ipmitool`, else from an `ipmi` hwmon device. When neither
+    /// source can be read the error is returned: an empty list here reads as
+    /// "this machine has no sensors", which is not what happened.
     pub fn read_sensors(&self) -> Result<Vec<IpmiSensor>, super::DatacenterError> {
         match self.run(&["sensor", "list"]) {
             Ok(stdout) => Ok(parse_sensor_list(&stdout)),
-            Err(_) => self.read_sensors_sysfs(),
+            Err(ipmi_err) => self.read_sensors_sysfs().map_err(|_| ipmi_err),
         }
     }
 
+    /// Fails when no `ipmi` hwmon device exists at all. An existing device with
+    /// no readable temperature input returns an empty list, because that device
+    /// was read.
     fn read_sensors_sysfs(&self) -> Result<Vec<IpmiSensor>, super::DatacenterError> {
         // Populated only on Linux; `mut` is unused on other platforms.
         #[allow(unused_mut)]
         let mut sensors = Vec::new();
+        #[allow(unused_mut)]
+        let mut found_ipmi_hwmon = false;
         #[cfg(target_os = "linux")]
         {
             use std::fs;
@@ -147,6 +155,7 @@ impl IpmiController {
                     let name_path = entry.path().join("name");
                     if let Ok(name) = fs::read_to_string(&name_path) {
                         if name.trim().contains("ipmi") {
+                            found_ipmi_hwmon = true;
                             // Read temp/fan/voltage inputs
                             for i in 1..=16 {
                                 let temp_path = entry.path().join(format!("temp{}_input", i));
@@ -176,7 +185,13 @@ impl IpmiController {
                 }
             }
         }
-        Ok(sensors)
+        if found_ipmi_hwmon {
+            Ok(sensors)
+        } else {
+            Err(super::DatacenterError::IpmiError(
+                "no ipmi hwmon device to read sensors from".into(),
+            ))
+        }
     }
 
     pub fn bmc_info(&self) -> Result<BmcInfo, super::DatacenterError> {

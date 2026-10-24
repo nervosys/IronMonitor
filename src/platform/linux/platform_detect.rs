@@ -68,7 +68,8 @@ fn read_kernel_release() -> String {
 fn detect_hardware_info() -> Result<HardwareInfo> {
     use super::jetson::{read_jetson_model, read_l4t_version, read_serial_number};
 
-    let model = read_jetson_model().unwrap_or_else(|| "Unknown".to_string());
+    // Empty, not "Unknown": the resolver publishes an empty model as unavailable.
+    let model = read_jetson_model().unwrap_or_default();
     let serial_number = read_serial_number();
     let l4t = read_l4t_version();
 
@@ -78,14 +79,17 @@ fn detect_hardware_info() -> Result<HardwareInfo> {
     // Read SoC info from device tree compatible string
     let soc = read_soc_info();
 
-    // Detect CUDA architecture from GPU or SoC
-    let cuda_arch = detect_cuda_arch(&soc);
+    // Only nvcc can report the architecture. The SoC-name table used to fill it
+    // in when nvcc was absent; that value was not read here.
+    let cuda_arch = detect_cuda_arch();
 
-    // Derive module from P-Number or model
-    let module = derive_module_from_p_number(&p_number, &model);
+    // Looked up from the P-Number, which was read. The model-name fallback used to
+    // guess a module from a product name, and was dropped.
+    let module = derive_module_from_p_number(&p_number);
 
-    // Derive codename from model
-    let codename = derive_codename(&model);
+    // No codename is read. This used to be derived from a substring of the model
+    // name ("orin" -> "Orin"), which is a guess from a product name.
+    let codename = None;
 
     // Map L4T version to JetPack version
     let jetpack = l4t.as_ref().and_then(|v| map_l4t_to_jetpack(v));
@@ -151,25 +155,13 @@ fn read_soc_info() -> Option<String> {
         }
     }
 
-    // Fallback: read from model name
-    if let Ok(model) = fs::read_to_string("/proc/device-tree/model") {
-        let model = model.trim_end_matches('\0').to_lowercase();
-        if model.contains("orin") {
-            return Some("Tegra234 (Orin)".to_string());
-        } else if model.contains("xavier") {
-            return Some("Tegra194 (Xavier)".to_string());
-        } else if model.contains("tx2") {
-            return Some("Tegra186 (TX2)".to_string());
-        } else if model.contains("tx1") || model.contains("nano") {
-            return Some("Tegra210 (TX1/Nano)".to_string());
-        }
-    }
-
+    // No fallback to the model name. It used to match "orin", "xavier" and so on
+    // in the board name, which is a guess from a product name.
     None
 }
 
-/// Detect CUDA architecture from GPU or SoC
-fn detect_cuda_arch(soc: &Option<String>) -> Option<String> {
+/// Detect CUDA architecture from nvcc. Without nvcc there is no reading.
+fn detect_cuda_arch() -> Option<String> {
     // Try to get from nvcc first
     if let Ok(output) = std::process::Command::new("nvcc")
         .args(["--list-gpu-arch"])
@@ -186,28 +178,11 @@ fn detect_cuda_arch(soc: &Option<String>) -> Option<String> {
         }
     }
 
-    // Map SoC to CUDA architecture
-    if let Some(soc_name) = soc {
-        let soc_lower = soc_name.to_lowercase();
-        if soc_lower.contains("orin") {
-            return Some("sm_87 (Ampere)".to_string());
-        } else if soc_lower.contains("xavier") {
-            return Some("sm_72 (Volta)".to_string());
-        } else if soc_lower.contains("tx2") || soc_lower.contains("tegra186") {
-            return Some("sm_62 (Pascal)".to_string());
-        } else if soc_lower.contains("tx1")
-            || soc_lower.contains("nano")
-            || soc_lower.contains("tegra210")
-        {
-            return Some("sm_53 (Maxwell)".to_string());
-        }
-    }
-
     None
 }
 
 /// Derive module name from P-Number
-fn derive_module_from_p_number(p_number: &Option<String>, model: &str) -> Option<String> {
+fn derive_module_from_p_number(p_number: &Option<String>) -> Option<String> {
     // P-Number to module mapping
     if let Some(pnum) = p_number {
         let pnum_lower = pnum.to_lowercase();
@@ -241,96 +216,40 @@ fn derive_module_from_p_number(p_number: &Option<String>, model: &str) -> Option
         }
     }
 
-    // Fallback to model name parsing
-    let model_lower = model.to_lowercase();
-    if model_lower.contains("agx orin") {
-        Some("Jetson AGX Orin".to_string())
-    } else if model_lower.contains("orin nx") {
-        Some("Jetson Orin NX".to_string())
-    } else if model_lower.contains("orin nano") {
-        Some("Jetson Orin Nano".to_string())
-    } else if model_lower.contains("agx xavier") {
-        Some("Jetson AGX Xavier".to_string())
-    } else if model_lower.contains("xavier nx") {
-        Some("Jetson Xavier NX".to_string())
-    } else if model_lower.contains("tx2") {
-        Some("Jetson TX2".to_string())
-    } else if model_lower.contains("tx1") {
-        Some("Jetson TX1".to_string())
-    } else if model_lower.contains("nano") {
-        Some("Jetson Nano".to_string())
-    } else {
-        None
-    }
+    // The model-name fallback used to guess a module from a product name, and was
+    // dropped. Only the P-Number, which was read, is looked up.
+    None
 }
 
-/// Derive codename from model
-fn derive_codename(model: &str) -> Option<String> {
-    let model_lower = model.to_lowercase();
-    if model_lower.contains("orin") {
-        Some("Orin".to_string())
-    } else if model_lower.contains("xavier") {
-        Some("Xavier".to_string())
-    } else if model_lower.contains("tx2") {
-        Some("Parker".to_string())
-    } else if model_lower.contains("tx1") {
-        Some("Erista".to_string())
-    } else if model_lower.contains("nano") {
-        Some("Nano".to_string())
-    } else {
-        None
-    }
+/// Parse `(major, revision)` from an L4T line such as
+/// `# R36 (release), REVISION: 4.0, GCID: ...`.
+///
+/// Both parts must be present. A line with no `REVISION:` used to fall back to
+/// revision 0, and an unrecognised one to a `JetPack 4.x` label.
+fn parse_l4t(l4t: &str) -> Option<(u32, u32)> {
+    let lower = l4t.to_lowercase();
+    let major: u32 = lower
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix('r'))?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    let revision: u32 = lower
+        .split_once("revision:")?
+        .1
+        .trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    Some((major, revision))
 }
 
 /// Map L4T version to JetPack version
 fn map_l4t_to_jetpack(l4t: &str) -> Option<String> {
-    // Parse L4T version from string like "# R36 (release), REVISION: 4.0"
-    let l4t_lower = l4t.to_lowercase();
-
-    // Extract major.minor from L4T string
-    let (major, minor) = if l4t_lower.contains("r36") {
-        if l4t_lower.contains("4.") || l4t_lower.contains("revision: 4") {
-            (36, 4)
-        } else if l4t_lower.contains("3.") || l4t_lower.contains("revision: 3") {
-            (36, 3)
-        } else if l4t_lower.contains("2.") || l4t_lower.contains("revision: 2") {
-            (36, 2)
-        } else {
-            (36, 0)
-        }
-    } else if l4t_lower.contains("r35") {
-        if l4t_lower.contains("5.") || l4t_lower.contains("revision: 5") {
-            (35, 5)
-        } else if l4t_lower.contains("4.") || l4t_lower.contains("revision: 4") {
-            (35, 4)
-        } else if l4t_lower.contains("3.") || l4t_lower.contains("revision: 3") {
-            (35, 3)
-        } else if l4t_lower.contains("2.") || l4t_lower.contains("revision: 2") {
-            (35, 2)
-        } else if l4t_lower.contains("1.") || l4t_lower.contains("revision: 1") {
-            (35, 1)
-        } else {
-            (35, 0)
-        }
-    } else if l4t_lower.contains("r34") {
-        (34, 0)
-    } else if l4t_lower.contains("r32") {
-        if l4t_lower.contains("7.") || l4t_lower.contains("revision: 7") {
-            (32, 7)
-        } else if l4t_lower.contains("6.") || l4t_lower.contains("revision: 6") {
-            (32, 6)
-        } else if l4t_lower.contains("5.") || l4t_lower.contains("revision: 5") {
-            (32, 5)
-        } else if l4t_lower.contains("4.") || l4t_lower.contains("revision: 4") {
-            (32, 4)
-        } else if l4t_lower.contains("3.") || l4t_lower.contains("revision: 3") {
-            (32, 3)
-        } else {
-            (32, 0)
-        }
-    } else {
-        return None;
-    };
+    let (major, minor) = parse_l4t(l4t)?;
 
     // L4T to JetPack mapping
     match (major, minor) {
@@ -352,7 +271,7 @@ fn map_l4t_to_jetpack(l4t: &str) -> Option<String> {
         (32, 5) => Some("JetPack 4.5.1".to_string()),
         (32, 4) => Some("JetPack 4.4.1".to_string()),
         (32, 3) => Some("JetPack 4.3".to_string()),
-        (32, _) => Some("JetPack 4.x".to_string()),
+        // Any other revision is unmapped. This was labelled "JetPack 4.x".
         _ => None,
     }
 }
@@ -398,40 +317,85 @@ fn detect_cuda_version() -> Option<String> {
     None
 }
 
-fn detect_cudnn_version() -> Option<String> {
-    // Try using dpkg
-    if let Ok(output) = std::process::Command::new("dpkg")
-        .args(["-l", "libcudnn*"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("libcudnn") {
-                    return Some(line.to_string());
-                }
-            }
-        }
-    }
+/// The version of the first installed (`ii`) package whose name starts with
+/// `package_prefix`, from `dpkg -l` output.
+///
+/// A row is `ii  name  version  arch  description`. The row used to be stored
+/// whole, so the "version" was the entire line.
+fn dpkg_installed_version(dpkg_output: &str, package_prefix: &str) -> Option<String> {
+    dpkg_output.lines().find_map(|line| {
+        let mut columns = line.split_whitespace();
+        let status = columns.next()?;
+        let name = columns.next()?;
+        let version = columns.next()?;
+        (status == "ii" && name.starts_with(package_prefix)).then(|| version.to_string())
+    })
+}
 
-    None
+fn dpkg_version(glob: &str, package_prefix: &str) -> Option<String> {
+    let output = std::process::Command::new("dpkg")
+        .args(["-l", glob])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    dpkg_installed_version(&String::from_utf8_lossy(&output.stdout), package_prefix)
+}
+
+fn detect_cudnn_version() -> Option<String> {
+    dpkg_version("libcudnn*", "libcudnn")
 }
 
 fn detect_tensorrt_version() -> Option<String> {
-    // Try using dpkg
-    if let Ok(output) = std::process::Command::new("dpkg")
-        .args(["-l", "libnvinfer*"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("libnvinfer") {
-                    return Some(line.to_string());
-                }
-            }
-        }
+    dpkg_version("libnvinfer*", "libnvinfer")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dpkg_row_yields_the_version_column() {
+        let output = concat!(
+            "Desired=Unknown/Install/Remove/Purge/Hold\n",
+            "| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend\n",
+            "||/ Name           Version              Architecture Description\n",
+            "+++-==============-====================-============-=================================\n",
+            "ii  libcudnn8      8.6.0.163-1+cuda11.8 arm64        cuDNN runtime libraries\n",
+            "ii  libnvinfer8    8.5.2-1+cuda11.4     arm64        TensorRT runtime libraries\n",
+        );
+        assert_eq!(
+            dpkg_installed_version(output, "libcudnn").as_deref(),
+            Some("8.6.0.163-1+cuda11.8")
+        );
+        assert_eq!(
+            dpkg_installed_version(output, "libnvinfer").as_deref(),
+            Some("8.5.2-1+cuda11.4")
+        );
+        assert_eq!(dpkg_installed_version(output, "libcublas"), None);
     }
 
-    None
+    #[test]
+    fn removed_packages_are_not_installed() {
+        let output = "rc  libcudnn8  8.4.0 arm64  cuDNN runtime libraries\n";
+        assert_eq!(dpkg_installed_version(output, "libcudnn"), None);
+    }
+
+    #[test]
+    fn l4t_line_maps_to_jetpack_only_when_fully_parsed() {
+        let release = "# R35 (release), REVISION: 4.1, GCID: 33958178, BOARD: t186ref";
+        assert_eq!(
+            map_l4t_to_jetpack(release).as_deref(),
+            Some("JetPack 5.1.2")
+        );
+        assert_eq!(
+            map_l4t_to_jetpack("# R32 (release), REVISION: 7.4, GCID: 1").as_deref(),
+            Some("JetPack 4.6.4")
+        );
+        // No revision, and an unknown release: neither is labelled.
+        assert_eq!(map_l4t_to_jetpack("# R32 (release)"), None);
+        assert_eq!(map_l4t_to_jetpack("# R32 (release), REVISION: 9.0"), None);
+        assert_eq!(map_l4t_to_jetpack("# R99 (release), REVISION: 1.0"), None);
+    }
 }

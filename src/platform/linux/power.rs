@@ -27,9 +27,12 @@ pub fn read_power_stats() -> Result<PowerStats> {
             .map(|r| r.power)
             .sum();
 
+        // No average is read here. The total used to repeat the instantaneous
+        // sum as its average; `PowerAverageTracker` supplies one once it has
+        // samples.
         stats.total = TotalPower {
             power: total_power,
-            average: total_power, // Note: Use PowerAverageTracker for time-series averaging
+            average: None,
         };
     }
 
@@ -102,9 +105,10 @@ fn read_ina3221_channel(hwmon_path: &Path, channel: u32) -> Result<PowerRail> {
         voltage,
         current,
         power,
-        // Seeded from the instantaneous reading, and `None` where there is
-        // none; `PowerAverageTracker` replaces it once it has samples.
-        average: power,
+        // Not seeded from the instantaneous reading: that made a single sample
+        // read as its own average. `PowerAverageTracker` fills it once it has
+        // samples.
+        average: None,
         warn,
         crit,
     })

@@ -645,7 +645,9 @@ fn get_cpu_model_name() -> String {
                 r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
                 "ProcessorNameString",
             )
-            .unwrap_or_else(|| "Unknown CPU".to_string())
+            // Empty, not a stand-in name: the resolver publishes an empty model
+            // as unavailable, and the display falls back to "unknown".
+            .unwrap_or_default()
         })
         .clone()
 }
@@ -1098,7 +1100,10 @@ pub fn read_power_stats() -> Result<PowerStats> {
                 // field said 0 mA.
                 current: None,
                 power: Some(rate_mw),
-                average: Some(rate_mw),
+                // Not read: the battery class reports only the instantaneous
+                // rate. This was `Some(rate_mw)`, one sample passed off as an
+                // average.
+                average: None,
                 warn: None,
                 crit: None,
             },
@@ -1107,7 +1112,7 @@ pub fn read_power_stats() -> Result<PowerStats> {
         // Accumulated across batteries; `empty()` starts at `None`, and the
         // first battery with a reading establishes the total.
         power_stats.total.power = Some(power_stats.total.power.unwrap_or(0) + rate_mw);
-        power_stats.total.average = Some(power_stats.total.average.unwrap_or(0) + rate_mw);
+        // No total average either: the sum above is instantaneous.
     }
 
     Ok(power_stats)
@@ -1331,7 +1336,9 @@ pub fn detect_platform() -> Result<BoardInfo> {
             release,
         },
         hardware: HardwareInfo {
-            model: model.unwrap_or_else(|| "Unknown".to_string()),
+            // Empty, not "Unknown": the resolver publishes an empty model as
+            // unavailable. This used to name the board "Unknown".
+            model: model.unwrap_or_default(),
             p_number: None,
             module: manufacturer,
             soc: None,
