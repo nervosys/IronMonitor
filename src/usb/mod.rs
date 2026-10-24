@@ -283,8 +283,13 @@ impl UsbMonitor {
                         continue;
                     }
                     let path = entry.path();
-                    let vendor_id = read_usb_attr(&path, "idVendor");
-                    let product_id = read_usb_attr(&path, "idProduct");
+                    // `None` when sysfs did not give a number. It used to be
+                    // `0`, which then reached the device as `Some(0)`, a vendor
+                    // id of 0000 that no device carries.
+                    let vendor_id =
+                        read_usb_attr(&path, "idVendor").and_then(|v| u16::try_from(v).ok());
+                    let product_id =
+                        read_usb_attr(&path, "idProduct").and_then(|v| u16::try_from(v).ok());
                     let manufacturer = read_usb_string(&path, "manufacturer");
                     let product = read_usb_string(&path, "product");
                     let serial = read_usb_string(&path, "serial");
@@ -299,8 +304,9 @@ impl UsbMonitor {
                     };
                     let class_code = read_usb_attr(&path, "bDeviceClass");
                     // `bDeviceClass` is one byte; a sysfs value that does not
-                    // fit one is a failed parse, not a class.
-                    let class = u8::try_from(class_code)
+                    // fit one, or that could not be read, is not a class.
+                    let class = class_code
+                        .and_then(|c| u8::try_from(c).ok())
                         .map(class_from_code)
                         .unwrap_or(UsbDeviceClass::Unknown);
                     let parts: Vec<&str> = name.split('-').collect();
@@ -315,8 +321,8 @@ impl UsbMonitor {
                         address: normalise_address(&name),
                         bus_number,
                         port_number,
-                        vendor_id: Some(vendor_id as u16),
-                        product_id: Some(product_id as u16),
+                        vendor_id,
+                        product_id,
                         manufacturer,
                         product,
                         description: None,
@@ -423,22 +429,7 @@ impl UsbMonitor {
                         current_serial = Some(val.to_string());
                     }
                     "Speed" => {
-                        current_speed = if val.contains("480") {
-                            UsbSpeed::High
-                        } else if val.contains("5 Gb")
-                            || val.contains("10 Gb")
-                            || val.contains("20 Gb")
-                        {
-                            UsbSpeed::Super
-                        } else if val.contains("1.5") {
-                            UsbSpeed::Low
-                        } else if val.contains("12 Mb") {
-                            UsbSpeed::Full
-                        } else {
-                            // A `Speed` line this parser does not recognise is
-                            // not full speed; it used to be.
-                            UsbSpeed::Unknown
-                        };
+                        current_speed = speed_from_profiler(val);
                     }
                     "Location ID" => {
                         current_location = val.to_string();
@@ -518,113 +509,122 @@ impl UsbMonitor {
             .output()
             .map_err(|e| crate::error::IronError::Other(format!("WMI query failed: {}", e)))?;
 
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-                let items = if json.is_array() {
-                    json.as_array().cloned().unwrap_or_default()
+        // A failed query is not an empty machine. Returning `Ok` here let
+        // `refresh` publish `usb.<none>` when the registry walk also found
+        // nothing.
+        if !output.status.success() {
+            return Err(crate::error::IronError::System(format!(
+                "WMI USB query exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json = serde_json::from_str::<serde_json::Value>(stdout.trim()).map_err(|e| {
+            crate::error::IronError::System(format!("WMI USB query output did not parse: {e}"))
+        })?;
+        let items = if json.is_array() {
+            json.as_array().cloned().unwrap_or_default()
+        } else {
+            vec![json]
+        };
+
+        for item in items.iter() {
+            let name = item.get("Name").and_then(|v| v.as_str()).unwrap_or("");
+            let manufacturer = item.get("Manufacturer").and_then(|v| v.as_str());
+            let pnp_id = item
+                .get("PNPDeviceID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let description = item.get("Description").and_then(|v| v.as_str());
+
+            // Parse VID/PID from PNPDeviceID like "USB\VID_046D&PID_C52B\..."
+            let (vid, pid) = parse_vid_pid(pnp_id);
+
+            // The class byte from the device's own descriptor, as
+            // Windows recorded it in the compatible ids.
+            //
+            // This was `classify_usb_device(name, description)`, which
+            // matched substrings: "hub" meant Hub, "disk" meant
+            // MassStorage, "camera" meant Video. That is the same shape
+            // as the speed heuristic removed below -- a guess from what
+            // a device is *called* standing in for what it *declares*
+            // -- and it is wrong in both directions, silently. A
+            // descriptor byte is available and is not a guess.
+            let string_array = |field: &str| -> Vec<String> {
+                item.get(field)
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let hardware = string_array("HardwareID");
+            let compatible = string_array("CompatibleID");
+            let class =
+                class_from_device_ids(&hardware, &compatible).unwrap_or(UsbDeviceClass::Unknown);
+
+            // Not read on Windows.
+            //
+            // This was a "class heuristic": `USB3` or `xHCI` in the
+            // device's name or PnP path meant `Super`, `USB 2` or
+            // `EHCI` meant `High`. Those strings describe what the
+            // device *is*, and the entity asks what it *negotiated* --
+            // "a super-speed device on a high-speed port reports high,
+            // which is how a wrong cable shows". A USB 3 device on a
+            // USB 2 cable keeps `USB3` in its PnP path, so the reader
+            // reported `Super` for precisely the case the field exists
+            // to expose. On this host it made all six devices `super`.
+            //
+            // The negotiated speed comes from
+            // `IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX` on the
+            // parent hub, whose `USB_NODE_CONNECTION_INFORMATION_EX`
+            // carries a `Speed` field. That call now happens, in
+            // `windows_speed`, and this is its answer.
+            //
+            // Still `Unknown` for a device the hub did not describe,
+            // which the resolver reports as "the platform did not
+            // report a negotiated bus speed". On this host that is
+            // exactly the six root hubs, and it is the true answer for
+            // them: a root hub sits on no upstream port, so there is no
+            // negotiation above it to describe.
+            let speed = speeds
+                .get(&pnp_id.to_uppercase())
+                .copied()
+                .unwrap_or(UsbSpeed::Unknown);
+
+            // Extract serial from PNP ID (third segment)
+            let serial = pnp_id
+                .split('\\')
+                .nth(2)
+                .filter(|s| s.len() > 4 && !s.contains('&'))
+                .map(|s| s.to_string());
+
+            devices.push(UsbDevice {
+                // `USB\\VID_046D&PID_C548&MI_01\\9&24C94812&0&0001` --
+                // vendor, product, interface number and the hub-port
+                // chain Windows derived the instance id from. Unique
+                // for every node this query returns, including the
+                // interfaces that share a parent's location.
+                address: normalise_address(pnp_id),
+                // Not reported by this query. See the field docs.
+                bus_number: None,
+                port_number: None,
+                vendor_id: vid,
+                product_id: pid,
+                manufacturer: manufacturer.map(|s| s.to_string()),
+                product: if name.is_empty() {
+                    None
                 } else {
-                    vec![json]
-                };
-
-                for item in items.iter() {
-                    let name = item.get("Name").and_then(|v| v.as_str()).unwrap_or("");
-                    let manufacturer = item.get("Manufacturer").and_then(|v| v.as_str());
-                    let pnp_id = item
-                        .get("PNPDeviceID")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let description = item.get("Description").and_then(|v| v.as_str());
-
-                    // Parse VID/PID from PNPDeviceID like "USB\VID_046D&PID_C52B\..."
-                    let (vid, pid) = parse_vid_pid(pnp_id);
-
-                    // The class byte from the device's own descriptor, as
-                    // Windows recorded it in the compatible ids.
-                    //
-                    // This was `classify_usb_device(name, description)`, which
-                    // matched substrings: "hub" meant Hub, "disk" meant
-                    // MassStorage, "camera" meant Video. That is the same shape
-                    // as the speed heuristic removed below -- a guess from what
-                    // a device is *called* standing in for what it *declares*
-                    // -- and it is wrong in both directions, silently. A
-                    // descriptor byte is available and is not a guess.
-                    let string_array = |field: &str| -> Vec<String> {
-                        item.get(field)
-                            .and_then(|v| v.as_array())
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| v.as_str().map(str::to_string))
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    };
-                    let hardware = string_array("HardwareID");
-                    let compatible = string_array("CompatibleID");
-                    let class = class_from_device_ids(&hardware, &compatible)
-                        .unwrap_or(UsbDeviceClass::Unknown);
-
-                    // Not read on Windows.
-                    //
-                    // This was a "class heuristic": `USB3` or `xHCI` in the
-                    // device's name or PnP path meant `Super`, `USB 2` or
-                    // `EHCI` meant `High`. Those strings describe what the
-                    // device *is*, and the entity asks what it *negotiated* --
-                    // "a super-speed device on a high-speed port reports high,
-                    // which is how a wrong cable shows". A USB 3 device on a
-                    // USB 2 cable keeps `USB3` in its PnP path, so the reader
-                    // reported `Super` for precisely the case the field exists
-                    // to expose. On this host it made all six devices `super`.
-                    //
-                    // The negotiated speed comes from
-                    // `IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX` on the
-                    // parent hub, whose `USB_NODE_CONNECTION_INFORMATION_EX`
-                    // carries a `Speed` field. That call now happens, in
-                    // `windows_speed`, and this is its answer.
-                    //
-                    // Still `Unknown` for a device the hub did not describe,
-                    // which the resolver reports as "the platform did not
-                    // report a negotiated bus speed". On this host that is
-                    // exactly the six root hubs, and it is the true answer for
-                    // them: a root hub sits on no upstream port, so there is no
-                    // negotiation above it to describe.
-                    let speed = speeds
-                        .get(&pnp_id.to_uppercase())
-                        .copied()
-                        .unwrap_or(UsbSpeed::Unknown);
-
-                    // Extract serial from PNP ID (third segment)
-                    let serial = pnp_id
-                        .split('\\')
-                        .nth(2)
-                        .filter(|s| s.len() > 4 && !s.contains('&'))
-                        .map(|s| s.to_string());
-
-                    devices.push(UsbDevice {
-                        // `USB\\VID_046D&PID_C548&MI_01\\9&24C94812&0&0001` --
-                        // vendor, product, interface number and the hub-port
-                        // chain Windows derived the instance id from. Unique
-                        // for every node this query returns, including the
-                        // interfaces that share a parent's location.
-                        address: normalise_address(pnp_id),
-                        // Not reported by this query. See the field docs.
-                        bus_number: None,
-                        port_number: None,
-                        vendor_id: vid,
-                        product_id: pid,
-                        manufacturer: manufacturer.map(|s| s.to_string()),
-                        product: if name.is_empty() {
-                            None
-                        } else {
-                            Some(name.to_string())
-                        },
-                        description: description.map(|s| s.to_string()),
-                        serial_number: serial,
-                        class,
-                        speed,
-                    });
-                }
-            }
+                    Some(name.to_string())
+                },
+                description: description.map(|s| s.to_string()),
+                serial_number: serial,
+                class,
+                speed,
+            });
         }
 
         Ok(devices)
@@ -645,43 +645,50 @@ impl UsbMonitor {
             .output()
             .map_err(|e| crate::error::IronError::Other(format!("Registry query failed: {}", e)))?;
 
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-                let items = if json.is_array() {
-                    json.as_array().cloned().unwrap_or_default()
-                } else {
-                    vec![json]
-                };
+        // Same rule as the WMI walk: a failed query is an error, not no devices.
+        if !output.status.success() {
+            return Err(crate::error::IronError::System(format!(
+                "registry USB query exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json = serde_json::from_str::<serde_json::Value>(stdout.trim()).map_err(|e| {
+            crate::error::IronError::System(format!("registry USB query output did not parse: {e}"))
+        })?;
+        let items = if json.is_array() {
+            json.as_array().cloned().unwrap_or_default()
+        } else {
+            vec![json]
+        };
 
-                for item in items.iter() {
-                    let dep = item.get("Dependent").and_then(|v| v.as_str()).unwrap_or("");
-                    let (vid, pid) = parse_vid_pid(dep);
-                    if vid.is_some() || pid.is_some() {
-                        devices.push(UsbDevice {
-                            // The `Dependent` reference is this fallback's
-                            // device path -- the same instance path the WMI
-                            // enumeration above reads, wrapped in a CIM
-                            // reference.
-                            address: normalise_address(dep),
-                            bus_number: None,
-                            port_number: None,
-                            vendor_id: vid,
-                            product_id: pid,
-                            manufacturer: None,
-                            product: Some(
-                                dep.split('\\')
-                                    .next_back()
-                                    .unwrap_or("USB Device")
-                                    .to_string(),
-                            ),
-                            description: None,
-                            serial_number: None,
-                            class: UsbDeviceClass::Unknown,
-                            speed: UsbSpeed::Unknown,
-                        });
-                    }
-                }
+        for item in items.iter() {
+            let dep = item.get("Dependent").and_then(|v| v.as_str()).unwrap_or("");
+            let (vid, pid) = parse_vid_pid(dep);
+            if vid.is_some() || pid.is_some() {
+                devices.push(UsbDevice {
+                    // The `Dependent` reference is this fallback's
+                    // device path -- the same instance path the WMI
+                    // enumeration above reads, wrapped in a CIM
+                    // reference.
+                    address: normalise_address(dep),
+                    bus_number: None,
+                    port_number: None,
+                    vendor_id: vid,
+                    product_id: pid,
+                    manufacturer: None,
+                    product: Some(
+                        dep.split('\\')
+                            .next_back()
+                            .unwrap_or("USB Device")
+                            .to_string(),
+                    ),
+                    description: None,
+                    serial_number: None,
+                    class: UsbDeviceClass::Unknown,
+                    speed: UsbSpeed::Unknown,
+                });
             }
         }
 
@@ -711,12 +718,43 @@ pub(crate) fn parse_vid_pid(pnp_id: &str) -> (Option<u16>, Option<u16>) {
     (vid, pid)
 }
 
+/// Map a `Speed` line from `system_profiler SPUSBDataType` to a bus speed.
+///
+/// `10 Gb/s` is `SuperPlus` and `20 Gb/s` is `SuperPlusx2`. Both used to map to
+/// `Super`, the 5 Gb/s generation, so a 10 or 20 Gb/s link read as the wrong one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn speed_from_profiler(val: &str) -> UsbSpeed {
+    if val.contains("480") {
+        UsbSpeed::High
+    } else if val.contains("20 Gb") {
+        UsbSpeed::SuperPlusx2
+    } else if val.contains("10 Gb") {
+        UsbSpeed::SuperPlus
+    } else if val.contains("5 Gb") {
+        UsbSpeed::Super
+    } else if val.contains("1.5") {
+        UsbSpeed::Low
+    } else if val.contains("12 Mb") {
+        UsbSpeed::Full
+    } else {
+        // A `Speed` line this parser does not recognise is not full speed;
+        // it used to be.
+        UsbSpeed::Unknown
+    }
+}
+
+/// Parse a sysfs hexadecimal USB attribute such as `idVendor` (`"046d\n"`).
+/// `None` when the text is not hex, so an unreadable attribute is never a zero.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_hex_attr(raw: &str) -> Option<u32> {
+    u32::from_str_radix(raw.trim(), 16).ok()
+}
+
 #[cfg(target_os = "linux")]
-fn read_usb_attr(path: &std::path::Path, attr: &str) -> u32 {
+fn read_usb_attr(path: &std::path::Path, attr: &str) -> Option<u32> {
     std::fs::read_to_string(path.join(attr))
         .ok()
-        .and_then(|s| u32::from_str_radix(s.trim(), 16).ok())
-        .unwrap_or(0)
+        .and_then(|s| parse_hex_attr(&s))
 }
 
 #[cfg(target_os = "linux")]
@@ -963,5 +1001,24 @@ mod tests {
             let deserialized: UsbDeviceClass = serde_json::from_str(&json).unwrap();
             assert_eq!(class, deserialized);
         }
+    }
+
+    #[test]
+    fn profiler_speed_lines_map_to_their_generation() {
+        assert_eq!(speed_from_profiler("480 Mb/s"), UsbSpeed::High);
+        assert_eq!(speed_from_profiler("12 Mb/s"), UsbSpeed::Full);
+        assert_eq!(speed_from_profiler("1.5 Mb/s"), UsbSpeed::Low);
+        assert_eq!(speed_from_profiler("5 Gb/s"), UsbSpeed::Super);
+        assert_eq!(speed_from_profiler("10 Gb/s"), UsbSpeed::SuperPlus);
+        assert_eq!(speed_from_profiler("20 Gb/s"), UsbSpeed::SuperPlusx2);
+        // A line this parser does not know is unknown, not full speed.
+        assert_eq!(speed_from_profiler("40 Gb/s"), UsbSpeed::Unknown);
+    }
+
+    #[test]
+    fn hex_attr_is_none_when_not_hex() {
+        assert_eq!(parse_hex_attr("046d\n"), Some(0x046d));
+        assert_eq!(parse_hex_attr(""), None);
+        assert_eq!(parse_hex_attr("not-hex"), None);
     }
 }

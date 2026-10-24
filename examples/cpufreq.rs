@@ -308,7 +308,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         for state in &cpu.idle_states {
-            let status = if state.enabled { "✅ On" } else { "❌ Off" };
+            let status = match state.enabled {
+                Some(true) => "✅ On",
+                Some(false) => "❌ Off",
+                None => "unknown",
+            };
             let latency = state
                 .latency_us
                 .map_or_else(|| "not read".to_string(), |v| v.to_string());

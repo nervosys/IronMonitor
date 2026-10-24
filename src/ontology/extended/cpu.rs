@@ -885,11 +885,13 @@ fn resolve_cpufreq(out: &mut Vec<Reading>) {
                 Some(U::Milliseconds),
                 "the kernel exposes no target residency for this idle state",
             );
-            out.push(Reading::measured(
+            push_opt(
+                out,
                 format!("{base}.enabled"),
-                serde_json::json!(state.enabled),
+                state.enabled.map(|e| serde_json::json!(e)),
                 None,
-            ));
+                "the kernel's disable flag for this idle state could not be read",
+            );
             push_opt(
                 out,
                 format!("{base}.usage"),

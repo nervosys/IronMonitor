@@ -148,14 +148,14 @@ pub struct CpuIdleState {
     pub latency_us: Option<u32>,
     /// Residency requirement (microseconds)
     pub residency_us: Option<u32>,
-    /// Is state enabled
-    pub enabled: bool,
+    /// Is state enabled, `None` when sysfs `disable` was not readable
+    pub enabled: Option<bool>,
     /// Times this state was entered, `None` when sysfs did not give it
     pub usage: Option<u64>,
     /// Time spent in this state (microseconds), `None` when sysfs did not give it
     pub time_us: Option<u64>,
-    /// Is state disabled by admin
-    pub disable: bool,
+    /// Is state disabled by admin, `None` when sysfs `disable` was not readable
+    pub disable: Option<bool>,
 }
 
 /// Per-CPU frequency information
@@ -794,10 +794,10 @@ impl CpuFreqMonitor {
                 desc: None,
                 latency_us: None,
                 residency_us: None,
-                enabled: true,
+                enabled: None,
                 usage: None,
                 time_us: None,
-                disable: false,
+                disable: None,
             };
 
             // Read state name
@@ -820,11 +820,13 @@ impl CpuFreqMonitor {
                 .ok()
                 .and_then(|s| s.trim().parse().ok());
 
-            // Read disable status
+            // Read disable status. An unreadable file is `None`, not "not
+            // disabled": the old `unwrap_or(false)` made an unreadable state
+            // read as enabled, and `enabled` was derived from that guess.
             state.disable = fs::read_to_string(state_dir.join("disable"))
-                .map(|s| s.trim() == "1")
-                .unwrap_or(false);
-            state.enabled = !state.disable;
+                .ok()
+                .map(|s| s.trim() == "1");
+            state.enabled = state.disable.map(|d| !d);
 
             // Read usage count
             state.usage = fs::read_to_string(state_dir.join("usage"))
@@ -1131,13 +1133,19 @@ impl CpuFreqMonitor {
             // Apply WMI info if available
             if let Some(current) = current_mhz {
                 cpu.model = name.clone();
-                cpu.current_freq_mhz = Some(current);
-                // `max_mhz.unwrap_or(current)` reported the current frequency
-                // as the maximum whenever WMI gave no maximum — which makes
-                // `freq_percent` read 100% and `is_max_freq` read true, for a
-                // ceiling nobody reported.
-                cpu.max_freq_khz = max_mhz.map(|m| (m as u64) * 1000);
-                cpu.current_freq_khz = Some((current as u64) * 1000);
+                // Win32_Processor is one instance per processor package, and
+                // the first one is all `windows_query_wmi_cpu` reads. Its
+                // clocks describe CPU 0 alone. Copying them to every core
+                // gave each core a reading that was not its own.
+                if id == 0 {
+                    cpu.current_freq_mhz = Some(current);
+                    // `max_mhz.unwrap_or(current)` reported the current frequency
+                    // as the maximum whenever WMI gave no maximum — which makes
+                    // `freq_percent` read 100% and `is_max_freq` read true, for a
+                    // ceiling nobody reported.
+                    cpu.max_freq_khz = max_mhz.map(|m| (m as u64) * 1000);
+                    cpu.current_freq_khz = Some((current as u64) * 1000);
+                }
                 // Windows exposes no minimum core frequency here. This was
                 // `max_freq_khz / 4`, which is not a property of any CPU — it
                 // just produced a plausible-looking number, then `0` standing in
@@ -1145,13 +1153,11 @@ impl CpuFreqMonitor {
                 cpu.min_freq_khz = None;
                 cpu.scaling_driver = Some("windows-wmi".to_string());
                 cpu.available_governors.push(governor.clone());
-            } else if base_freq_mhz > 0 {
-                // Fallback to base frequency from registry
-                cpu.current_freq_mhz = Some(base_freq_mhz);
-                cpu.current_freq_khz = Some((base_freq_mhz as u64) * 1000);
-                // The registry gives a *base* frequency, which is not a maximum.
-                // Assigning it to `max_freq_khz` claimed a ceiling this path
-                // never read; it belongs in the field that means base.
+            } else if id == 0 && base_freq_mhz > 0 {
+                // Registry `~MHz` under `CentralProcessor\0` is the boot-time
+                // nominal clock of CPU 0. It is not a current reading, so
+                // `current_freq_mhz` stays `None` here; the registry value
+                // belongs in the field that means base.
                 cpu.base_freq_khz = Some((base_freq_mhz as u64) * 1000);
                 cpu.max_freq_khz = None;
                 cpu.min_freq_khz = None;
