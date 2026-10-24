@@ -115,8 +115,12 @@ pub struct LsmStatus {
 /// Kernel hardening features.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KernelHardening {
-    /// ASLR level (0=disabled, 1=partial, 2=full).
-    pub aslr_level: u32,
+    /// ASLR level (0=disabled, 1=partial, 2=full), or `None` where it was not
+    /// read. Linux reads `kernel.randomize_va_space`; Windows and macOS do not
+    /// read it here. The readers used to assert `2` on those platforms, and
+    /// Linux used `unwrap_or(0)`, which reported an unreadable sysctl as
+    /// disabled. Neither is a reading.
+    pub aslr_level: Option<u32>,
     /// Whether kernel pointer leak protection is enabled (`kptr_restrict`),
     /// or `None` where the setting does not exist.
     ///
@@ -131,10 +135,13 @@ pub struct KernelHardening {
     pub dmesg_restrict: Option<bool>,
     /// Whether unprivileged BPF is disabled. See [`Self::kptr_restrict`].
     pub unprivileged_bpf_disabled: Option<bool>,
-    /// Whether ptrace is restricted (Yama scope).
-    pub ptrace_scope: u32,
-    /// Whether kernel module loading is locked down.
-    pub modules_locked: bool,
+    /// Whether ptrace is restricted (Yama scope), or `None` where it was not
+    /// read. Only Linux reads `kernel.yama.ptrace_scope`. The Windows and macOS
+    /// readers used to assert a scope they never checked.
+    pub ptrace_scope: Option<u32>,
+    /// Whether kernel module loading is locked down (`kernel.modules_disabled`
+    /// on Linux), or `None` where it was not read.
+    pub modules_locked: Option<bool>,
     /// Whether kernel lockdown is active.
     pub lockdown_mode: String,
     /// Whether Secure Boot is enabled, or `None` where it could not be read.
@@ -293,25 +300,26 @@ impl SecurityMitigationsMonitor {
 
         // Hardening scoring (max 10 points)
         let mut hard_score: u32 = 0;
-        if hardening.aslr_level >= 2 {
-            hard_score += 2;
-        } else {
-            findings.push(SecurityFinding {
+        // Only credit hardening that was actually observed. `None` scores
+        // nothing and is not a finding, the same as an unread setting elsewhere.
+        match hardening.aslr_level {
+            Some(level) if level >= 2 => hard_score += 2,
+            Some(level) => findings.push(SecurityFinding {
                 severity: "medium".into(),
                 title: "ASLR not at full level".into(),
-                description: format!("ASLR level is {}, maximum is 2.", hardening.aslr_level),
+                description: format!("ASLR level is {}, maximum is 2.", level),
                 remediation: "Set kernel.randomize_va_space = 2".into(),
-            });
+            }),
+            None => {}
         }
-        // Only credit hardening that was actually observed. `Some(false)` and
-        // `None` both score nothing, but only the first is a finding.
+        // `Some(false)` and `None` both score nothing, but only the first is a finding.
         if hardening.kptr_restrict == Some(true) {
             hard_score += 2;
         }
         if hardening.dmesg_restrict == Some(true) {
             hard_score += 1;
         }
-        if hardening.ptrace_scope >= 1 {
+        if hardening.ptrace_scope.is_some_and(|scope| scope >= 1) {
             hard_score += 2;
         }
         match hardening.secure_boot {
@@ -635,9 +643,11 @@ impl SecurityMitigationsMonitor {
                 .unwrap_or_default()
         };
 
+        // An unreadable ASLR sysctl is not disabled ASLR. `unwrap_or(0)` used
+        // to report it as level 0.
         let aslr = read_sysctl("/proc/sys/kernel/randomize_va_space")
             .parse::<u32>()
-            .unwrap_or(0);
+            .ok();
 
         // An unreadable or absent sysctl is not a disabled setting: older
         // kernels do not have all of these, and `unwrap_or(0)` reported every
@@ -657,9 +667,18 @@ impl SecurityMitigationsMonitor {
             .ok()
             .map(|v| v > 0);
 
+        // Yama absent means there is no scope to read, not an unrestricted one.
+        // `unwrap_or(0)` used to report it as scope 0.
         let ptrace = read_sysctl("/proc/sys/kernel/yama/ptrace_scope")
             .parse::<u32>()
-            .unwrap_or(0);
+            .ok();
+
+        // `modules_locked` was a literal `false` on every platform. This is the
+        // kernel's own flag: 1 once module loading has been disabled for good.
+        let modules_locked = read_sysctl("/proc/sys/kernel/modules_disabled")
+            .parse::<u32>()
+            .ok()
+            .map(|v| v > 0);
 
         let lockdown = read_sysctl("/sys/kernel/security/lockdown");
 
@@ -680,7 +699,7 @@ impl SecurityMitigationsMonitor {
             dmesg_restrict: dmesg,
             unprivileged_bpf_disabled: bpf,
             ptrace_scope: ptrace,
-            modules_locked: false,
+            modules_locked,
             lockdown_mode: if lockdown.is_empty() {
                 "none".into()
             } else {
@@ -698,15 +717,19 @@ impl SecurityMitigationsMonitor {
         let sb = crate::platform::windows::secure_boot_enabled();
 
         Ok(KernelHardening {
-            aslr_level: 2, // Windows always has ASLR
+            // Windows has ASLR, but this reader does not read its state.
+            // "Always has ASLR" was asserted as level 2 without a check.
+            aslr_level: None,
             // These four are Linux kernel tunables with no Windows equivalent.
             // Asserting `true` credited the posture score for hardening that
             // was never checked and does not exist in this form here.
             kptr_restrict: None,
             dmesg_restrict: None,
             unprivileged_bpf_disabled: None,
-            ptrace_scope: 0,
-            modules_locked: false,
+            // Yama is Linux-only. The reader used to report scope 0 here, which
+            // read as "unrestricted" rather than "not applicable".
+            ptrace_scope: None,
+            modules_locked: None,
             lockdown_mode: "none".into(),
             secure_boot: sb,
             stack_protector: None,
@@ -716,13 +739,16 @@ impl SecurityMitigationsMonitor {
     #[cfg(target_os = "macos")]
     fn detect_hardening() -> Result<KernelHardening, IronError> {
         Ok(KernelHardening {
-            aslr_level: 2, // macOS always has ASLR
+            // macOS ASLR is not read here. "Always has ASLR" was asserted as 2.
+            aslr_level: None,
             // Linux tunables with no macOS equivalent; none of this is read.
             kptr_restrict: None,
             dmesg_restrict: None,
             unprivileged_bpf_disabled: None,
-            ptrace_scope: 1,
-            modules_locked: false,
+            // Yama is Linux-only. Scope 1 was asserted, and it credited the
+            // ptrace component of the score on every Mac.
+            ptrace_scope: None,
+            modules_locked: None,
             lockdown_mode: "none".into(),
             // "Apple Silicon always has Secure Boot" is not a reading, and this
             // code runs on Intel Macs too, where it depends on the T2 chip and
@@ -754,12 +780,12 @@ impl Default for SecurityMitigationsMonitor {
             vulnerabilities: Vec::new(),
             security_modules: Vec::new(),
             hardening: KernelHardening {
-                aslr_level: 0,
+                aslr_level: None,
                 kptr_restrict: None,
                 dmesg_restrict: None,
                 unprivileged_bpf_disabled: None,
-                ptrace_scope: 0,
-                modules_locked: false,
+                ptrace_scope: None,
+                modules_locked: None,
                 lockdown_mode: "unknown".into(),
                 secure_boot: None,
                 stack_protector: None,
@@ -815,12 +841,12 @@ mod tests {
         }];
 
         let hardening = KernelHardening {
-            aslr_level: 2,
+            aslr_level: Some(2),
             kptr_restrict: None,
             dmesg_restrict: None,
             unprivileged_bpf_disabled: None,
-            ptrace_scope: 1,
-            modules_locked: false,
+            ptrace_scope: Some(1),
+            modules_locked: None,
             lockdown_mode: "none".into(),
             secure_boot: None,
             stack_protector: None,
@@ -829,6 +855,36 @@ mod tests {
         let posture = SecurityMitigationsMonitor::compute_posture(&vulns, &lsms, &hardening);
         assert!(posture.score >= 70); // Good security posture
         assert!(posture.risk_level == "Low" || posture.risk_level == "Minimal");
+    }
+
+    #[test]
+    fn unread_hardening_is_neither_credited_nor_penalised() {
+        let vulns = Vec::new();
+        let lsms = Vec::new();
+        let unread = KernelHardening {
+            aslr_level: None,
+            kptr_restrict: None,
+            dmesg_restrict: None,
+            unprivileged_bpf_disabled: None,
+            ptrace_scope: None,
+            modules_locked: None,
+            lockdown_mode: "unknown".into(),
+            secure_boot: None,
+            stack_protector: None,
+        };
+
+        let posture = SecurityMitigationsMonitor::compute_posture(&vulns, &lsms, &unread);
+        let hardening_score = posture
+            .component_scores
+            .iter()
+            .find(|(name, _)| name == "Kernel Hardening")
+            .map(|(_, score)| *score);
+        assert_eq!(hardening_score, Some(0));
+        // ASLR is only a finding when it was read and is below full.
+        assert!(!posture
+            .findings
+            .iter()
+            .any(|f| f.title == "ASLR not at full level"));
     }
 
     #[test]
@@ -856,12 +912,12 @@ mod tests {
             ],
             security_modules: Vec::new(),
             hardening: KernelHardening {
-                aslr_level: 2,
+                aslr_level: Some(2),
                 kptr_restrict: None,
                 dmesg_restrict: None,
                 unprivileged_bpf_disabled: None,
-                ptrace_scope: 0,
-                modules_locked: false,
+                ptrace_scope: None,
+                modules_locked: None,
                 lockdown_mode: "none".into(),
                 secure_boot: None,
                 stack_protector: None,

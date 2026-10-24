@@ -9,7 +9,6 @@ use super::super::resolve::*;
 use super::super::{Domain as D, Entity, EntityKind as K, Provenance as P, Unit as U};
 
 use crate::security_mitigations::{MitigationStatus, SecurityModule};
-use std::path::Path;
 
 pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
     // ── Per-processor cpufreq ────────────────────────────────────────────────
@@ -1238,11 +1237,13 @@ fn resolve_security(out: &mut Vec<Reading>) {
     }
 
     let h = &monitor.hardening;
-    out.push(Reading::measured(
+    push_opt(
+        out,
         "system.security.aslr_level",
-        serde_json::json!(h.aslr_level),
+        h.aslr_level.map(|v| serde_json::json!(v)),
         Some(U::Count),
-    ));
+        "the ASLR state was not read on this platform, or its sysctl could not be read",
+    );
     push_opt(
         out,
         "system.security.kptr_restrict",
@@ -1264,22 +1265,15 @@ fn resolve_security(out: &mut Vec<Reading>) {
         None,
         "the kernel exposes no unprivileged_bpf_disabled setting, which older kernels do not have",
     );
-    // The reader reads the scope as zero when Yama is absent, which would
-    // present a missing module as an unrestricted one. Publish it only when
-    // the Yama setting exists.
-    if Path::new("/proc/sys/kernel/yama/ptrace_scope").exists() {
-        out.push(Reading::measured(
-            "system.security.ptrace_scope",
-            serde_json::json!(h.ptrace_scope),
-            Some(U::Count),
-        ));
-    } else {
-        out.push(Reading::unavailable(
-            "system.security.ptrace_scope",
-            Some(U::Count),
-            "the Yama module is not loaded, so there is no ptrace scope to read",
-        ));
-    }
+    // The reader leaves the scope unread when Yama is absent, so a missing
+    // module is not presented as an unrestricted one.
+    push_opt(
+        out,
+        "system.security.ptrace_scope",
+        h.ptrace_scope.map(|v| serde_json::json!(v)),
+        Some(U::Count),
+        "the Yama module is not loaded, so there is no ptrace scope to read",
+    );
     // The reader substitutes "none" when the lockdown file is missing or empty,
     // and the gate in `push_text` turns that into an absence.
     push_text(out, "system.security.lockdown_mode", &h.lockdown_mode);

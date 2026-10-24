@@ -364,19 +364,10 @@ impl SandboxDetector {
                 .push("macOS sandbox container ID found".to_string());
         }
 
-        // Check for sandbox profile
-        if let Ok(output) = std::process::Command::new("sandbox-exec")
-            .arg("-p")
-            .arg("(version 1)")
-            .arg("true")
-            .output()
-        {
-            if output.status.success() {
-                info.is_macos_sandbox = true;
-                info.indicators
-                    .push("macOS sandbox-exec available".to_string());
-            }
-        }
+        // `sandbox-exec -p "(version 1)" true` used to set `is_macos_sandbox`.
+        // It succeeds on every Mac, because the tool ships with the OS, so it
+        // reported a sandbox on machines that are not in one. Only the
+        // container identity above says the process is sandboxed.
     }
 
     /// Detect Wine/compatibility layers
@@ -389,18 +380,9 @@ impl SandboxDetector {
                 .push("Wine environment detected".to_string());
         }
 
-        // Check for Wine registry files (on Linux)
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(home) = std::env::var("HOME") {
-                let wine_prefix = format!("{}/.wine", home);
-                if Path::new(&wine_prefix).exists() {
-                    info.is_wine = true;
-                    info.indicators
-                        .push("Wine prefix directory found".to_string());
-                }
-            }
-        }
+        // A `~/.wine` directory used to set `is_wine`. It is left behind by any
+        // Wine install, including one that is not running, so it says nothing
+        // about the current process.
 
         // Check for Proton (Steam compatibility layer)
         if std::env::var("STEAM_COMPAT_DATA_PATH").is_ok() {

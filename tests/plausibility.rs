@@ -676,7 +676,7 @@ fn secure_boot_claim_matches_the_firmware_flag() {
     let info = &monitor.boot_info;
 
     assert_eq!(
-        info.boot_type == BootType::SecureBoot,
+        info.boot_type == Some(BootType::SecureBoot),
         info.secure_boot == Some(true),
         "boot_type {:?} and secure_boot {:?} disagree; one of them was derived from \
          something other than UEFISecureBootEnabled",
@@ -686,7 +686,7 @@ fn secure_boot_claim_matches_the_firmware_flag() {
 
     // Legacy BIOS cannot have Secure Boot at all.
     assert!(
-        !(info.boot_type == BootType::Legacy && info.secure_boot == Some(true)),
+        !(info.boot_type == Some(BootType::Legacy) && info.secure_boot == Some(true)),
         "reported a legacy BIOS boot with Secure Boot enabled, which is not a state \
          that exists"
     );
@@ -698,7 +698,7 @@ fn secure_boot_claim_matches_the_firmware_flag() {
     if info.secure_boot.is_none() {
         assert_ne!(
             info.boot_type,
-            BootType::SecureBoot,
+            Some(BootType::SecureBoot),
             "claimed a Secure Boot type while the flag itself was never read"
         );
     }

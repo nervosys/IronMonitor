@@ -158,8 +158,10 @@ pub struct KernelParams {
 /// Boot configuration information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootInfo {
-    /// Boot type (Legacy/UEFI/SecureBoot)
-    pub boot_type: BootType,
+    /// Boot type (Legacy/UEFI/SecureBoot), or `None` where the firmware type
+    /// was not read. macOS does not read it, and the old literal `Uefi` there
+    /// was an assumption about the hardware, not a reading.
+    pub boot_type: Option<BootType>,
     /// Whether Secure Boot is enforcing.
     ///
     /// `None` when it could not be established, which is not `false`. A
@@ -172,7 +174,10 @@ pub struct BootInfo {
     pub boot_partition: Option<String>,
     /// EFI system partition
     pub efi_partition: Option<String>,
-    /// Bootloader name
+    /// Bootloader name, or `None` where it was not detected.
+    ///
+    /// The Windows and macOS readers used to assign a fixed name ("Windows Boot
+    /// Manager", "iBoot") whether or not anything was checked.
     pub bootloader: Option<String>,
     /// Bootloader version
     pub bootloader_version: Option<String>,
@@ -231,7 +236,7 @@ impl BootMonitor {
                 uptime: Duration::ZERO,
             },
             boot_info: BootInfo {
-                boot_type: BootType::Unknown,
+                boot_type: None,
                 secure_boot: None,
                 boot_device: None,
                 boot_partition: None,
@@ -299,7 +304,7 @@ impl BootMonitor {
     pub fn is_uefi(&self) -> bool {
         matches!(
             self.boot_info.boot_type,
-            BootType::Uefi | BootType::SecureBoot
+            Some(BootType::Uefi | BootType::SecureBoot)
         )
     }
 
@@ -336,12 +341,12 @@ impl BootMonitor {
 
             // UEFI is what was established; SecureBoot is an upgrade only the
             // variable can justify, and an unread variable justifies neither.
-            self.boot_info.boot_type = match self.boot_info.secure_boot {
+            self.boot_info.boot_type = Some(match self.boot_info.secure_boot {
                 Some(true) => BootType::SecureBoot,
                 _ => BootType::Uefi,
-            };
+            });
         } else {
-            self.boot_info.boot_type = BootType::Legacy;
+            self.boot_info.boot_type = Some(BootType::Legacy);
         }
 
         // Get boot device from /proc/cmdline
@@ -378,10 +383,12 @@ impl BootMonitor {
         use std::fs;
 
         // Get uptime
+        let mut uptime_read = false;
         if let Ok(content) = fs::read_to_string("/proc/uptime") {
             if let Some(uptime_str) = content.split_whitespace().next() {
                 if let Ok(uptime_secs) = uptime_str.parse::<f64>() {
                     self.boot_time.uptime = Duration::from_secs_f64(uptime_secs);
+                    uptime_read = true;
                 }
             }
         }
@@ -419,12 +426,42 @@ impl BootMonitor {
             }
         }
 
-        // Calculate boot timestamp from uptime
-        let now = chrono::Utc::now();
-        self.boot_time.boot_timestamp =
-            Some(now - chrono::Duration::from_std(self.boot_time.uptime).unwrap_or_default());
+        // Boot timestamp is now minus uptime, so it exists only when uptime was
+        // read. Subtracting an unread (zero) uptime reported boot as happening now.
+        if uptime_read {
+            let now = chrono::Utc::now();
+            self.boot_time.boot_timestamp =
+                Some(now - chrono::Duration::from_std(self.boot_time.uptime).unwrap_or_default());
+        }
 
         Ok(())
+    }
+
+    /// Status of one freedesktop autostart entry, read from the file itself.
+    ///
+    /// `Hidden=true` removes the entry, and `X-GNOME-Autostart-enabled=false`
+    /// disables it in GNOME sessions. Neither was read, so every `.desktop`
+    /// file in an autostart directory showed as enabled. A file that cannot be
+    /// read is `Unknown`, not `Enabled`.
+    #[cfg(target_os = "linux")]
+    fn desktop_autostart_status(path: &std::path::Path) -> StartupItemStatus {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return StartupItemStatus::Unknown;
+        };
+        let disabled = content.lines().any(|line| {
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            matches!(
+                (key.trim(), value.trim()),
+                ("Hidden", "true") | ("X-GNOME-Autostart-enabled", "false")
+            )
+        });
+        if disabled {
+            StartupItemStatus::Disabled
+        } else {
+            StartupItemStatus::Enabled
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -483,11 +520,12 @@ impl BootMonitor {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
                         if name.ends_with(".desktop") {
+                            let status = Self::desktop_autostart_status(&entry.path());
                             self.startup_items.push(StartupItem {
                                 name: name.trim_end_matches(".desktop").to_string(),
                                 description: None,
                                 item_type: StartupItemType::Application,
-                                status: StartupItemStatus::Enabled,
+                                status,
                                 command: None,
                                 publisher: None,
                                 location: Some(dir.to_string()),
@@ -560,12 +598,12 @@ impl BootMonitor {
 
         self.boot_info.boot_type = match crate::platform::windows::firmware_type() {
             Some(BootType::Uefi) if self.boot_info.secure_boot == Some(true) => {
-                BootType::SecureBoot
+                Some(BootType::SecureBoot)
             }
-            Some(kind) => kind,
+            Some(kind) => Some(kind),
             // `GetFirmwareType` can fail without telling us which firmware this is;
             // claiming Legacy on a failed query is how the old code got it wrong.
-            None => BootType::Unknown,
+            None => None,
         };
 
         // Get boot device.
@@ -591,8 +629,8 @@ impl BootMonitor {
             }
         }
 
-        // Get bootloader info
-        self.boot_info.bootloader = Some("Windows Boot Manager".to_string());
+        // Bootloader: left unset. This used to be the literal "Windows Boot
+        // Manager" on every Windows machine, which was assumed, not read.
 
         Ok(())
     }
@@ -778,8 +816,9 @@ impl BootMonitor {
         // Intel Macs can be checked via nvram
         let _output = Command::new("nvram").arg("boot-args").output();
 
-        // All modern Macs boot via EFI
-        self.boot_info.boot_type = BootType::Uefi;
+        // Boot type is not read on macOS. This used to set `Uefi` for every
+        // Mac, on the assumption that all modern Macs boot via EFI.
+        self.boot_info.boot_type = None;
 
         // Secure Boot is not read on macOS.
         //
@@ -793,7 +832,7 @@ impl BootMonitor {
         // `boot-policy` NVRAM variables; until one of those is called this
         // stays `None`.
 
-        self.boot_info.bootloader = Some("iBoot".to_string());
+        // Bootloader: not read. This used to be the literal "iBoot" on every Mac.
 
         Ok(())
     }
@@ -936,7 +975,7 @@ impl Default for BootMonitor {
                 uptime: Duration::ZERO,
             },
             boot_info: BootInfo {
-                boot_type: BootType::Unknown,
+                boot_type: None,
                 secure_boot: None,
                 boot_device: None,
                 boot_partition: None,
@@ -996,8 +1035,8 @@ fn parse_time_string(s: &str) -> std::result::Result<f64, std::num::ParseFloatEr
 /// Boot configuration summary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootSummary {
-    /// Boot type
-    pub boot_type: BootType,
+    /// Boot type; `None` where it was not read.
+    pub boot_type: Option<BootType>,
     /// Whether Secure Boot is enforcing; `None` if not established.
     pub secure_boot: Option<bool>,
     /// Total boot time
@@ -1045,5 +1084,50 @@ mod tests {
             BootTime::format_duration(Duration::from_secs(90000)),
             "1d 1h"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn desktop_autostart_honours_hidden_and_gnome_flags() {
+        let dir = std::env::temp_dir().join(format!("ironmon-autostart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        let plain = write(
+            "plain.desktop",
+            "[Desktop Entry]\nType=Application\nName=Plain\n",
+        );
+        let hidden = write("hidden.desktop", "[Desktop Entry]\nHidden=true\n");
+        let gnome_off = write(
+            "gnome.desktop",
+            "[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n",
+        );
+        let hidden_false = write("hidden_false.desktop", "[Desktop Entry]\nHidden=false\n");
+
+        assert_eq!(
+            BootMonitor::desktop_autostart_status(&plain),
+            StartupItemStatus::Enabled
+        );
+        assert_eq!(
+            BootMonitor::desktop_autostart_status(&hidden),
+            StartupItemStatus::Disabled
+        );
+        assert_eq!(
+            BootMonitor::desktop_autostart_status(&gnome_off),
+            StartupItemStatus::Disabled
+        );
+        assert_eq!(
+            BootMonitor::desktop_autostart_status(&hidden_false),
+            StartupItemStatus::Enabled
+        );
+        assert_eq!(
+            BootMonitor::desktop_autostart_status(&dir.join("missing.desktop")),
+            StartupItemStatus::Unknown
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

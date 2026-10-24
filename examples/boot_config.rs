@@ -17,15 +17,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("────────────────────────────────────────────────────────────");
 
     let boot_emoji = match monitor.boot_info.boot_type {
-        BootType::Legacy => "📟",
-        BootType::Uefi => "🔌",
-        BootType::SecureBoot => "🔒",
-        BootType::Unknown => "❓",
+        Some(BootType::Legacy) => "📟",
+        Some(BootType::Uefi) => "🔌",
+        Some(BootType::SecureBoot) => "🔒",
+        Some(BootType::Unknown) | None => "❓",
     };
 
     println!(
         "   {} Boot Type:   {}",
-        boot_emoji, monitor.boot_info.boot_type
+        boot_emoji,
+        monitor
+            .boot_info
+            .boot_type
+            .map_or_else(|| "unknown (not read)".to_string(), |t| t.to_string())
     );
     println!(
         "   🛡️  Secure Boot: {}",
@@ -230,7 +234,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("────────────────────────────────────────────────────────────");
 
     let summary = boot_summary()?;
-    println!("   Boot Type:       {}", summary.boot_type);
+    println!(
+        "   Boot Type:       {}",
+        summary
+            .boot_type
+            .map_or_else(|| "unknown (not read)".to_string(), |t| t.to_string())
+    );
     println!(
         "   Secure Boot:     {}",
         match summary.secure_boot {
