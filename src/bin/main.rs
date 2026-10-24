@@ -1450,7 +1450,7 @@ fn print_cpu_identity(cpu: &ironmonitor::core::cpu::CpuStats) {
     let Some(core) = cpu.cores.first() else {
         return;
     };
-    if !core.model.is_empty() && core.model != "Unknown CPU" {
+    if !core.model.is_empty() {
         println!("  {} {}", "Model:".white().bold(), core.model.green());
     }
     if let Some(freq) = &core.frequency {

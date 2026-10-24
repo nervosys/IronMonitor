@@ -1469,7 +1469,9 @@ impl App {
                 .cores
                 .first()
                 .map(|c| c.model.clone())
-                .unwrap_or_else(|| "CPU".to_string()),
+                // An unread model is empty; say so rather than draw a blank title.
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| "CPU (model not read)".to_string()),
             // Physical cores come from the microarchitecture reader, which is
             // the same source `cpu.cores.physical` resolves from, and is read
             // once because the count cannot change. `threads` is the logical
