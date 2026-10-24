@@ -192,6 +192,10 @@ pub struct Signals {
     /// Busiest GPU utilisation seen, percent. `None` when no GPU reported one —
     /// which is not zero.
     pub gpu_utilization: Option<f32>,
+    /// How many GPUs were enumerated. `Some(0)` is a finding: the machine has
+    /// no GPU, so it has no GPU load and a quiet CPU is enough to call it idle.
+    /// `None` means enumeration failed or was not attempted, which is not zero.
+    pub gpu_count: Option<usize>,
     /// System-wide CPU utilisation, percent.
     pub cpu_utilization: Option<f32>,
 }
@@ -202,9 +206,10 @@ impl Signals {
     /// cannot drift apart.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
-        match self.gpu_utilization {
-            Some(u) => parts.push(format!("busiest GPU at {u:.0}% utilisation")),
-            None => parts.push("no GPU reported utilisation".to_string()),
+        match (self.gpu_utilization, self.gpu_count) {
+            (Some(u), _) => parts.push(format!("busiest GPU at {u:.0}% utilisation")),
+            (None, Some(0)) => parts.push("no GPU present".to_string()),
+            (None, _) => parts.push("no GPU reported utilisation".to_string()),
         }
         match self.cpu_utilization {
             Some(u) => parts.push(format!("CPU at {u:.0}%", u = u)),
@@ -285,9 +290,21 @@ pub fn classify_from_signals(signals: &Signals) -> Classification {
     // A reading that was not obtained is not 0%. Idle needs both processors to be
     // measured and quiet; the heavy-GPU case needs the GPU measured; anything
     // else needs both measured to say "some load". Otherwise the answer is unknown.
-    if let (Some(gpu), Some(cpu)) = (signals.gpu_utilization, signals.cpu_utilization) {
-        if gpu <= IDLE_GPU_PERCENT && cpu <= IDLE_CPU_PERCENT {
-            evidence.push("neither processor is meaningfully busy".to_string());
+    // A machine enumerated as having no GPU has no GPU load to measure, so its
+    // GPU side is known rather than missing.
+    let no_gpu = signals.gpu_utilization.is_none() && signals.gpu_count == Some(0);
+    let gpu_quiet = match signals.gpu_utilization {
+        Some(gpu) => Some(gpu <= IDLE_GPU_PERCENT),
+        None if no_gpu => Some(true),
+        None => None,
+    };
+    if let (Some(true), Some(cpu)) = (gpu_quiet, signals.cpu_utilization) {
+        if cpu <= IDLE_CPU_PERCENT {
+            evidence.push(if no_gpu {
+                "no GPU is present and the CPU is not meaningfully busy".to_string()
+            } else {
+                "neither processor is meaningfully busy".to_string()
+            });
             return Classification {
                 use_case: UseCase::Idle,
                 confidence: 0.8,
@@ -314,7 +331,7 @@ pub fn classify_from_signals(signals: &Signals) -> Classification {
         }
     }
 
-    if signals.gpu_utilization.is_none() || signals.cpu_utilization.is_none() {
+    if (signals.gpu_utilization.is_none() && !no_gpu) || signals.cpu_utilization.is_none() {
         evidence.push(
             "a utilisation reading needed to classify was not obtained; no use case is inferred"
                 .to_string(),
@@ -927,6 +944,26 @@ mod tests {
         assert_eq!(c.use_case, UseCase::Unknown);
         assert_eq!(c.confidence, 0.0);
         assert_eq!(classify(&signals).use_case, UseCase::Unknown);
+    }
+
+    /// No GPU enumerated is a finding, not a missing reading: a quiet CPU on a
+    /// machine with no GPU is idle, while a failed enumeration stays unknown.
+    #[test]
+    fn a_machine_with_no_gpu_can_be_idle() {
+        let mut signals = Signals {
+            gpu_utilization: None,
+            gpu_count: Some(0),
+            cpu_utilization: Some(2.0),
+            ..Default::default()
+        };
+        assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
+        signals.cpu_utilization = Some(60.0);
+        assert_eq!(
+            classify_from_signals(&signals).use_case,
+            UseCase::Interactive
+        );
+        signals.gpu_count = None;
+        assert_eq!(classify_from_signals(&signals).use_case, UseCase::Unknown);
     }
 
     /// Both readings measured and quiet is still idle.

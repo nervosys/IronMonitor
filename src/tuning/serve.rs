@@ -160,6 +160,14 @@ pub fn collect_signals() -> Signals {
 
     if let Ok(monitor) = crate::UnifiedMonitor::new() {
         if let Ok(gpus) = monitor.snapshot_gpus() {
+            // An empty list is "no GPU" only when no vendor's detection failed;
+            // a failed probe that found nothing is not a machine without a GPU.
+            let failed = !monitor.gpus().detection_failures().is_empty();
+            signals.gpu_count = if gpus.is_empty() && failed {
+                None
+            } else {
+                Some(gpus.len())
+            };
             // `None` when no GPU was enumerated at all, which the classifier
             // reports as an absent reading rather than as 0%.
             // ...and now also `None` when no enumerated GPU reported a
