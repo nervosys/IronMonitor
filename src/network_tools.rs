@@ -216,7 +216,8 @@ pub struct PortScanResult {
     pub port: u16,
     /// Port status
     pub status: PortStatus,
-    /// Service name (well-known ports)
+    /// The well-known service for this port number, from a port table. Not
+    /// detected: nothing on the socket is identified, so render it as a guess.
     pub service: Option<String>,
     /// Connection time in milliseconds (if open)
     pub connect_time_ms: Option<f64>,

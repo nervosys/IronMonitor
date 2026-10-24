@@ -7374,8 +7374,14 @@ impl IronMonitorApp {
                                             RichText::new(format!("{}", result.status))
                                                 .color(theme::color(&palette_ctx, status_color)),
                                         );
+                                        // The port table's name for the port, not a detected
+                                        // service: nothing on the socket was identified.
+                                        let service = result
+                                            .service
+                                            .as_deref()
+                                            .map_or_else(|| "-".to_string(), |s| format!("{s}? (by port)"));
                                         ui.label(
-                                            RichText::new(result.service.as_deref().unwrap_or("-"))
+                                            RichText::new(service)
                                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                                         );
                                         ui.label(
