@@ -140,10 +140,13 @@ pub fn revert_cycle(cycle: &Cycle, confirm: bool) -> Vec<crate::profile::apply::
 pub fn collect_signals() -> Signals {
     let mut signals = Signals::default();
 
+    // The AI fields stay `None` unless the probe itself ran. A failed probe is
+    // not an empty result: reporting it as "no AI workload" would let the
+    // classifier call the machine idle on evidence that was never gathered.
     if let Ok(mut monitor) = crate::ai_workload::AiWorkloadMonitor::new() {
         if let Ok(workloads) = monitor.detect_workloads() {
-            signals.ai_present = !workloads.is_empty();
-            signals.ai_training = workloads.iter().any(|w| w.is_training());
+            signals.ai_present = Some(!workloads.is_empty());
+            signals.ai_training = Some(workloads.iter().any(|w| w.is_training()));
             // An unidentified framework is dropped rather than listed. Without
             // this the set carries the literal "unknown" as if it were a
             // framework name -- the same absence-word defect `push_str_as`
@@ -223,7 +226,11 @@ pub(crate) fn read_cpu_utilization() -> Option<f32> {
 /// than an identified AI framework for exactly that reason. It is not a
 /// substitute for asking the graphics driver what is presenting, which is the
 /// right long-term answer and is not implemented here.
-fn detect_game_processes() -> Vec<String> {
+///
+/// `None` when the process list could not be read. An empty list is a finding
+/// (read, nothing matched); `None` is not, and used to be returned as an empty
+/// list, which reported "no game process recognised" for a probe that never ran.
+fn detect_game_processes() -> Option<Vec<String>> {
     const MARKERS: [&str; 8] = [
         "steam",
         "epicgameslauncher",
@@ -236,10 +243,10 @@ fn detect_game_processes() -> Vec<String> {
     ];
 
     let Ok(mut monitor) = crate::process_monitor::ProcessMonitor::new() else {
-        return Vec::new();
+        return None;
     };
     let Ok(processes) = monitor.processes() else {
-        return Vec::new();
+        return None;
     };
 
     let mut found: Vec<String> = processes
@@ -249,7 +256,7 @@ fn detect_game_processes() -> Vec<String> {
         .collect();
     found.sort();
     found.dedup();
-    found
+    Some(found)
 }
 
 /// How a verifying cycle measures.

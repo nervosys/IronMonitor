@@ -182,13 +182,23 @@ fn risk_rank(risk: SettingRisk) -> u8 {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Signals {
     /// Names of processes that look like games, from the running process list.
-    pub game_processes: Vec<String>,
+    /// `Some(empty)` means the list was read and nothing matched; `None` means
+    /// the process list was not read, which is not the same thing.
+    ///
+    /// Defaulting this to an empty list used to report "no game process
+    /// recognised" when the process monitor had failed.
+    pub game_processes: Option<Vec<String>>,
     /// AI frameworks detected by [`crate::ai_workload`].
     pub ai_frameworks: Vec<String>,
     /// Whether any detected AI workload is training rather than inference.
-    pub ai_training: bool,
-    /// Whether any AI workload was detected at all.
-    pub ai_present: bool,
+    /// `None` when the AI workload probe did not run to completion.
+    pub ai_training: Option<bool>,
+    /// Whether any AI workload was detected at all. `Some(false)` is a probe
+    /// that ran and found none; `None` is a probe that was not read.
+    ///
+    /// Defaulting this to `false` used to report "no AI workload detected" when
+    /// the probe had failed, and an idle verdict followed from that.
+    pub ai_present: Option<bool>,
     /// Busiest GPU utilisation seen, percent. `None` when no GPU reported one —
     /// which is not zero.
     pub gpu_utilization: Option<f32>,
@@ -215,30 +225,29 @@ impl Signals {
             Some(u) => parts.push(format!("CPU at {u:.0}%", u = u)),
             None => parts.push("CPU utilisation unavailable".to_string()),
         }
-        if self.ai_present {
-            parts.push(format!(
+        match (self.ai_present, self.ai_training) {
+            (Some(true), training) => parts.push(format!(
                 "AI workload detected ({}) doing {}",
                 if self.ai_frameworks.is_empty() {
                     "framework unidentified".to_string()
                 } else {
                     self.ai_frameworks.join(", ")
                 },
-                if self.ai_training {
-                    "training"
-                } else {
-                    "inference"
+                match training {
+                    Some(true) => "training",
+                    Some(false) => "inference",
+                    None => "work of a kind not read",
                 }
-            ));
-        } else {
-            parts.push("no AI workload detected".to_string());
+            )),
+            (Some(false), _) => parts.push("no AI workload detected".to_string()),
+            (None, _) => parts.push("AI workload probe not read".to_string()),
         }
-        if self.game_processes.is_empty() {
-            parts.push("no game process recognised".to_string());
-        } else {
-            parts.push(format!(
-                "game processes: {}",
-                self.game_processes.join(", ")
-            ));
+        match &self.game_processes {
+            Some(games) if games.is_empty() => {
+                parts.push("no game process recognised".to_string());
+            }
+            Some(games) => parts.push(format!("game processes: {}", games.join(", "))),
+            None => parts.push("game process list not read".to_string()),
         }
         parts.join("; ")
     }
@@ -260,28 +269,71 @@ pub fn classify_from_signals(signals: &Signals) -> Classification {
 
     // An identified AI workload is direct evidence, not an inference from load,
     // so it outranks the utilisation heuristics below.
-    if signals.ai_present {
-        let (use_case, confidence) = if signals.ai_training {
-            (UseCase::AiTraining, 0.9)
-        } else {
-            (UseCase::AiInference, 0.8)
+    if signals.ai_present == Some(true) {
+        let classified = match signals.ai_training {
+            Some(true) => Some((UseCase::AiTraining, 0.9)),
+            Some(false) => Some((UseCase::AiInference, 0.8)),
+            // An AI workload was seen but its kind was not read. Choosing
+            // between training and inference would be a guess.
+            None => None,
         };
-        evidence.push("an AI framework was identified in a running process".to_string());
+        if let Some((use_case, confidence)) = classified {
+            evidence.push("an AI framework was identified in a running process".to_string());
+            return Classification {
+                use_case,
+                confidence,
+                method: Method::Signals,
+                evidence,
+            };
+        }
+        evidence.push(
+            "an AI workload was seen but whether it trains or infers was not read; \
+             no use case is inferred"
+                .to_string(),
+        );
         return Classification {
-            use_case,
-            confidence,
+            use_case: UseCase::Unknown,
+            confidence: 0.0,
             method: Method::Signals,
             evidence,
         };
     }
 
-    if !signals.game_processes.is_empty() {
+    if signals
+        .game_processes
+        .as_ref()
+        .is_some_and(|games| !games.is_empty())
+    {
         evidence.push("a known game executable is running".to_string());
         return Classification {
             use_case: UseCase::Gaming,
             // Lower than the AI case: this rests on a name table, which is
             // necessarily incomplete and occasionally wrong.
             confidence: 0.7,
+            method: Method::Signals,
+            evidence,
+        };
+    }
+
+    // Every verdict below this point is "nothing identifies the workload", which
+    // is only a finding if both identifying probes ran and found nothing. With
+    // either unread, Idle, the unidentified-load case, and the heavy-GPU case
+    // would all be guesses, so no use case is inferred.
+    let unread_probes: Vec<&str> = [
+        (signals.ai_present.is_none(), "the AI workload probe"),
+        (signals.game_processes.is_none(), "the game process list"),
+    ]
+    .into_iter()
+    .filter_map(|(unread, name)| unread.then_some(name))
+    .collect();
+    if !unread_probes.is_empty() {
+        evidence.push(format!(
+            "{} not read; no use case is inferred",
+            unread_probes.join(" and ")
+        ));
+        return Classification {
+            use_case: UseCase::Unknown,
+            confidence: 0.0,
             method: Method::Signals,
             evidence,
         };
@@ -871,13 +923,23 @@ mod tests {
 
     // ── Classification ───────────────────────────────────────────────────────
 
+    /// Both identifying probes ran and found nothing. Idle, Interactive and
+    /// the unidentified-load verdicts are only findings given this.
+    fn probes_read_nothing_found() -> Signals {
+        Signals {
+            ai_present: Some(false),
+            game_processes: Some(vec![]),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn an_identified_training_workload_outranks_utilisation() {
         // Low utilisation between batches must not read as idle when the
         // framework itself has been identified.
         let signals = Signals {
-            ai_present: true,
-            ai_training: true,
+            ai_present: Some(true),
+            ai_training: Some(true),
             ai_frameworks: vec!["pytorch".into()],
             gpu_utilization: Some(2.0),
             cpu_utilization: Some(3.0),
@@ -891,8 +953,8 @@ mod tests {
     #[test]
     fn inference_and_training_are_distinguished() {
         let signals = Signals {
-            ai_present: true,
-            ai_training: false,
+            ai_present: Some(true),
+            ai_training: Some(false),
             gpu_utilization: Some(40.0),
             ..Default::default()
         };
@@ -907,7 +969,7 @@ mod tests {
         let signals = Signals {
             gpu_utilization: Some(1.0),
             cpu_utilization: Some(2.0),
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
     }
@@ -920,7 +982,7 @@ mod tests {
         let signals = Signals {
             gpu_utilization: None,
             cpu_utilization: Some(2.0),
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         let c = classify_from_signals(&signals);
         assert_eq!(c.use_case, UseCase::Unknown);
@@ -938,7 +1000,7 @@ mod tests {
         let signals = Signals {
             gpu_utilization: Some(1.0),
             cpu_utilization: None,
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         let c = classify_from_signals(&signals);
         assert_eq!(c.use_case, UseCase::Unknown);
@@ -954,7 +1016,7 @@ mod tests {
             gpu_utilization: None,
             gpu_count: Some(0),
             cpu_utilization: Some(2.0),
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
         signals.cpu_utilization = Some(60.0);
@@ -972,7 +1034,7 @@ mod tests {
         let signals = Signals {
             gpu_utilization: Some(1.0),
             cpu_utilization: Some(2.0),
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         assert_eq!(classify_from_signals(&signals).use_case, UseCase::Idle);
     }
@@ -993,7 +1055,7 @@ mod tests {
     #[test]
     fn a_game_process_classifies_as_gaming() {
         let signals = Signals {
-            game_processes: vec!["cyberpunk2077.exe".into()],
+            game_processes: Some(vec!["cyberpunk2077.exe".into()]),
             gpu_utilization: Some(95.0),
             cpu_utilization: Some(60.0),
             ..Default::default()
@@ -1009,7 +1071,7 @@ mod tests {
         let signals = Signals {
             gpu_utilization: Some(80.0),
             cpu_utilization: Some(20.0),
-            ..Default::default()
+            ..probes_read_nothing_found()
         };
         let c = classify_from_signals(&signals);
         assert!(
@@ -1042,12 +1104,12 @@ mod tests {
         for signals in [
             Signals::default(),
             Signals {
-                ai_present: true,
-                ai_training: true,
+                ai_present: Some(true),
+                ai_training: Some(true),
                 ..Default::default()
             },
             Signals {
-                game_processes: vec!["game.exe".into()],
+                game_processes: Some(vec!["game.exe".into()]),
                 ..Default::default()
             },
         ] {
@@ -1055,5 +1117,111 @@ mod tests {
             assert!(!c.evidence.is_empty(), "no evidence for {signals:?}");
             assert!((0.0..=1.0).contains(&c.confidence));
         }
+    }
+
+    /// An AI probe that was never read is not "no AI workload". Idle needs the
+    /// probe to have run and found nothing, so a quiet machine with the AI
+    /// probe failed is unknown, and the evidence names the probe.
+    #[test]
+    fn an_unread_ai_probe_is_unknown_not_idle() {
+        let signals = Signals {
+            ai_present: None,
+            game_processes: Some(vec![]),
+            gpu_utilization: Some(1.0),
+            cpu_utilization: Some(2.0),
+            ..Default::default()
+        };
+        let c = classify_from_signals(&signals);
+        assert_eq!(c.use_case, UseCase::Unknown);
+        assert_eq!(c.confidence, 0.0);
+        assert!(
+            c.evidence
+                .iter()
+                .any(|e| e.contains("AI workload probe not read")),
+            "evidence must name the missing probe: {:?}",
+            c.evidence
+        );
+        assert_eq!(classify(&signals).use_case, UseCase::Unknown);
+    }
+
+    /// Same for the process list: a failed process monitor must not read as
+    /// "no game running", and must not let a busy GPU be labelled Gaming.
+    #[test]
+    fn an_unread_process_list_is_unknown_not_idle_or_gaming() {
+        let quiet = Signals {
+            ai_present: Some(false),
+            game_processes: None,
+            gpu_utilization: Some(1.0),
+            cpu_utilization: Some(2.0),
+            ..Default::default()
+        };
+        let c = classify_from_signals(&quiet);
+        assert_eq!(c.use_case, UseCase::Unknown);
+        assert!(
+            c.evidence
+                .iter()
+                .any(|e| e.contains("game process list not read")),
+            "evidence must name the missing probe: {:?}",
+            c.evidence
+        );
+
+        let busy = Signals {
+            game_processes: None,
+            gpu_utilization: Some(95.0),
+            cpu_utilization: Some(60.0),
+            ..quiet
+        };
+        assert_eq!(classify_from_signals(&busy).use_case, UseCase::Unknown);
+    }
+
+    /// An AI workload seen with its kind unread cannot be named as training or
+    /// inference, and is not a reason to fall through to a load-based guess.
+    #[test]
+    fn an_ai_workload_of_unread_kind_is_unknown() {
+        let signals = Signals {
+            ai_present: Some(true),
+            ai_training: None,
+            game_processes: Some(vec![]),
+            gpu_utilization: Some(40.0),
+            ..Default::default()
+        };
+        let c = classify_from_signals(&signals);
+        assert_eq!(c.use_case, UseCase::Unknown);
+        assert_eq!(c.confidence, 0.0);
+    }
+
+    /// A positive detection does not need the other probe. A game found while
+    /// the AI probe is unread is still Gaming, and an AI workload found while
+    /// the process list is unread is still an AI use case.
+    #[test]
+    fn positive_detections_survive_an_unread_probe() {
+        let game = Signals {
+            ai_present: None,
+            game_processes: Some(vec!["steam.exe".into()]),
+            ..Default::default()
+        };
+        assert_eq!(classify_from_signals(&game).use_case, UseCase::Gaming);
+
+        let ai = Signals {
+            ai_present: Some(true),
+            ai_training: Some(false),
+            game_processes: None,
+            ..Default::default()
+        };
+        assert_eq!(classify_from_signals(&ai).use_case, UseCase::AiInference);
+    }
+
+    /// The summary distinguishes a probe that found nothing from one not read.
+    #[test]
+    fn the_summary_says_not_read_for_unread_probes() {
+        let unread = Signals::default().summary();
+        assert!(unread.contains("AI workload probe not read"), "{unread}");
+        assert!(unread.contains("game process list not read"), "{unread}");
+        assert!(!unread.contains("no AI workload detected"), "{unread}");
+        assert!(!unread.contains("no game process recognised"), "{unread}");
+
+        let empty = probes_read_nothing_found().summary();
+        assert!(empty.contains("no AI workload detected"), "{empty}");
+        assert!(empty.contains("no game process recognised"), "{empty}");
     }
 }
