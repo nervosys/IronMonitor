@@ -45,16 +45,211 @@ pub struct DisplayInfo {
     /// display on those platforms reported 0 Hz as though measured.
     pub refresh_rate: Option<f32>,
     pub brightness: Option<f32>,
-    /// HDR mode of the display, or `None` where it was not read. No reader on
-    /// any platform reads it yet. The field used to hold `HdrMode::Off` on
-    /// every path that did not read it, which reported an HDR-capable panel as
-    /// SDR without anyone having asked the panel.
+    /// HDR mode of the display, or `None` where it was not read. No reader
+    /// fills it: the Windows advanced-colour query says whether HDR is on, not
+    /// which format is in use, so it cannot set this. Use `hdr_supported` and
+    /// `hdr_enabled`. The field used to hold `HdrMode::Off` on every path that
+    /// did not read it, which reported an HDR-capable panel as SDR without
+    /// anyone having asked the panel.
     pub hdr: Option<HdrMode>,
+    /// Whether the display path can use advanced colour (HDR), from the Windows
+    /// `DisplayConfig` query. `None` on Linux and macOS, and on Windows where
+    /// the query did not answer for this display.
+    pub hdr_supported: Option<bool>,
+    /// Whether advanced colour is switched on for the display, from the same
+    /// query. See [`Self::hdr_supported`].
+    pub hdr_enabled: Option<bool>,
+    /// Bits per colour channel the display path is driving, from the same
+    /// query. `None` where it was not read, and where the query reported zero.
+    pub bits_per_color_channel: Option<u8>,
     pub scale_factor: Option<f64>,
     pub physical_width_mm: Option<u32>,
     pub physical_height_mm: Option<u32>,
     pub bits_per_pixel: Option<u8>,
 }
+
+/// The advanced-colour state of one active display path, as the Windows
+/// `DisplayConfig` query reports it.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdvancedColorState {
+    supported: bool,
+    enabled: bool,
+    bits_per_color_channel: Option<u8>,
+}
+
+/// Decode the `DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO` bitfield and its bits per
+/// channel.
+///
+/// The bitfield is `advancedColorSupported` in bit 0 and `advancedColorEnabled`
+/// in bit 1. Bit 2 (`wideColorEnforced`) and bit 3
+/// (`advancedColorForceDisabled`) are not part of the answer to either
+/// question, so they are ignored here. A zero bits-per-channel is not a depth.
+#[cfg(any(windows, test))]
+fn decode_advanced_color(value: u32, bits_per_color_channel: u32) -> AdvancedColorState {
+    AdvancedColorState {
+        supported: value & 0b01 != 0,
+        enabled: value & 0b10 != 0,
+        bits_per_color_channel: u8::try_from(bits_per_color_channel)
+            .ok()
+            .filter(|bits| *bits > 0),
+    }
+}
+
+/// The advanced-colour state for the display whose GDI source name is
+/// `gdi_name`, given the state of every active path.
+///
+/// Cloned displays put more than one path on one source. The state is
+/// reported only when every such path answered and they agree. If they
+/// disagree, or one did not answer, the display's state is unknown.
+#[cfg(any(windows, test))]
+fn agreed_advanced_color(
+    paths: &[(String, Option<AdvancedColorState>)],
+    gdi_name: &str,
+) -> Option<AdvancedColorState> {
+    let mut states = paths
+        .iter()
+        .filter(|(name, _)| name == gdi_name)
+        .map(|(_, state)| *state);
+    let first = states.next()??;
+    states.all(|state| state == Some(first)).then_some(first)
+}
+
+/// Active display paths from the `DisplayConfig` database, or `None` where the
+/// query fails.
+///
+/// The size query and the read are two calls, and the topology can change
+/// between them. The API then reports `ERROR_INSUFFICIENT_BUFFER`, so the pair
+/// is retried a few times before giving up.
+#[cfg(target_os = "windows")]
+fn windows_active_display_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+
+    const ATTEMPTS: usize = 3;
+    for _ in 0..ATTEMPTS {
+        let mut path_count = 0u32;
+        let mut mode_count = 0u32;
+        // SAFETY: both out-parameters are live, writable locals for the whole
+        // call, and the call reads no other memory.
+        let status = unsafe {
+            GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+        };
+        if status != ERROR_SUCCESS {
+            return None;
+        }
+
+        // Each buffer is allocated with exactly the count the size query gave,
+        // and the in/out counts are set to those capacities. On return each
+        // count is the number of entries written, which cannot exceed the
+        // capacity, so `truncate` below is only a narrowing.
+        let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> =
+            (0..path_count).map(|_| Default::default()).collect();
+        let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> =
+            (0..mode_count).map(|_| Default::default()).collect();
+        let mut paths_written = path_count;
+        let mut modes_written = mode_count;
+        // SAFETY: `paths` and `modes` are valid for `paths_written` and
+        // `modes_written` elements, which are the capacities the call is told.
+        // The topology-id argument is `None`, which the binding passes as null.
+        let status = unsafe {
+            QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut paths_written,
+                paths.as_mut_ptr(),
+                &mut modes_written,
+                modes.as_mut_ptr(),
+                None,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            paths.truncate(paths_written as usize);
+            return Some(paths);
+        }
+        if status != ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+    }
+    None
+}
+
+/// The GDI device name (`\\.\DISPLAY1`) of the source a display path drives,
+/// or `None` where the source name was not read.
+#[cfg(target_os = "windows")]
+fn windows_source_gdi_name(path: &DISPLAYCONFIG_PATH_INFO) -> Option<String> {
+    let mut name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+            size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+            adapterId: path.sourceInfo.adapterId,
+            id: path.sourceInfo.id,
+        },
+        ..Default::default()
+    };
+    // SAFETY: `name` is a live `DISPLAYCONFIG_SOURCE_DEVICE_NAME` whose header
+    // names the request type and its size. The call reads the header and writes
+    // at most `size` bytes. The struct starts with that header, so the cast is
+    // the pointer the API documents.
+    let status = unsafe {
+        DisplayConfigGetDeviceInfo(&mut name as *mut _ as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER)
+    };
+    // `DisplayConfigGetDeviceInfo` returns a Win32 status, where zero is success.
+    if status != 0 {
+        return None;
+    }
+    let buf = &name.viewGdiDeviceName;
+    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+/// The advanced-colour state of one display path, or `None` where the query
+/// did not answer for its target.
+#[cfg(target_os = "windows")]
+fn windows_advanced_color(path: &DISPLAYCONFIG_PATH_INFO) -> Option<AdvancedColorState> {
+    let mut info = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+            size: std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32,
+            adapterId: path.targetInfo.adapterId,
+            id: path.targetInfo.id,
+        },
+        ..Default::default()
+    };
+    // SAFETY: `info` is a live `DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO` whose
+    // header names the request type and its size, and the call writes at most
+    // `size` bytes. The struct starts with that header, so the cast is the
+    // pointer the API documents.
+    let status = unsafe {
+        DisplayConfigGetDeviceInfo(&mut info as *mut _ as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER)
+    };
+    if status != 0 {
+        return None;
+    }
+    // SAFETY: the call wrote the union's bitfield through the `value` member, a
+    // `u32` for which every bit pattern is valid, so reading that member back
+    // is sound.
+    let value = unsafe { info.Anonymous.value };
+    Some(decode_advanced_color(value, info.bitsPerColorChannel))
+}
+
+/// The advanced-colour state of every active display path, keyed by the GDI
+/// name of its source. A path whose query failed carries `None`.
+#[cfg(target_os = "windows")]
+fn windows_advanced_color_by_source() -> Vec<(String, Option<AdvancedColorState>)> {
+    windows_active_display_paths()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|path| Some((windows_source_gdi_name(path)?, windows_advanced_color(path))))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Devices::Display::{
+    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+    DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+    DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+    QDC_ONLY_ACTIVE_PATHS,
+};
 
 /// EDID metadata for one monitor, joined to the GDI enumeration by hardware id.
 #[cfg(target_os = "windows")]
@@ -186,6 +381,7 @@ impl DisplayMonitor {
         }
 
         let wmi = Self::windows_monitor_metadata();
+        let advanced_color = windows_advanced_color_by_source();
 
         let mut idx = 0u32;
         loop {
@@ -262,6 +458,12 @@ impl DisplayMonitor {
             // and the driver name is not used as a stand-in for it.
             let name = meta.and_then(|m| m.name.clone());
 
+            // The advanced-colour state comes from the display path whose source
+            // is this adapter's GDI device name. No path, or paths that disagree,
+            // leaves all three fields unknown.
+            let advanced =
+                agreed_advanced_color(&advanced_color, &wide_to_string(&adapter.DeviceName));
+
             self.displays.push(DisplayInfo {
                 id: wide_to_string(&adapter.DeviceName),
                 name,
@@ -284,8 +486,12 @@ impl DisplayMonitor {
                 brightness: None,
                 // Not read. The Windows advanced-colour query reports whether
                 // HDR is on, but not which of HDR10, HDR10+ or Dolby Vision it is,
-                // so it would not fill this field honestly either.
+                // so it would not fill this field honestly either. See
+                // `hdr_supported` and `hdr_enabled`.
                 hdr: None,
+                hdr_supported: advanced.map(|a| a.supported),
+                hdr_enabled: advanced.map(|a| a.enabled),
+                bits_per_color_channel: advanced.and_then(|a| a.bits_per_color_channel),
                 scale_factor: None,
                 physical_width_mm: meta.and_then(|m| m.physical_width_mm),
                 physical_height_mm: meta.and_then(|m| m.physical_height_mm),
@@ -471,6 +677,11 @@ impl DisplayMonitor {
                         // DRM connector properties carry HDR metadata, which this
                         // reader does not parse. Unknown, not SDR.
                         hdr: None,
+                        // Advanced-colour state is read through the Windows
+                        // DisplayConfig query only.
+                        hdr_supported: None,
+                        hdr_enabled: None,
+                        bits_per_color_channel: None,
                         scale_factor: None,
                         physical_width_mm: phys_w,
                         physical_height_mm: phys_h,
@@ -559,6 +770,9 @@ impl DisplayMonitor {
                                 brightness: read_backlight_brightness(),
                                 // Not read by the xrandr path. See the DRM path.
                                 hdr: None,
+                                hdr_supported: None,
+                                hdr_enabled: None,
+                                bits_per_color_channel: None,
                                 scale_factor: None,
                                 physical_width_mm: phys_w,
                                 physical_height_mm: phys_h,
@@ -654,6 +868,9 @@ impl DisplayMonitor {
                                         brightness: None,
                                         // system_profiler's HDR state is not parsed here.
                                         hdr: None,
+                                        hdr_supported: None,
+                                        hdr_enabled: None,
+                                        bits_per_color_channel: None,
                                         scale_factor: None,
                                         physical_width_mm: None,
                                         physical_height_mm: None,
@@ -833,6 +1050,9 @@ mod tests {
             refresh_rate: Some(60.0),
             brightness: None,
             hdr: None,
+            hdr_supported: None,
+            hdr_enabled: None,
+            bits_per_color_channel: None,
             scale_factor: Some(1.0),
             physical_width_mm: None,
             physical_height_mm: None,
@@ -854,6 +1074,9 @@ mod tests {
             refresh_rate: Some(144.0),
             brightness: Some(0.8),
             hdr: Some(HdrMode::Hdr10),
+            hdr_supported: Some(true),
+            hdr_enabled: Some(true),
+            bits_per_color_channel: Some(10),
             scale_factor: Some(1.5),
             physical_width_mm: Some(600),
             physical_height_mm: Some(340),
@@ -875,6 +1098,9 @@ mod tests {
             refresh_rate: Some(60.0),
             brightness: Some(0.5),
             hdr: None,
+            hdr_supported: None,
+            hdr_enabled: None,
+            bits_per_color_channel: None,
             scale_factor: Some(1.0),
             physical_width_mm: Some(530),
             physical_height_mm: Some(300),
@@ -884,5 +1110,74 @@ mod tests {
         let deserialized: DisplayInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(display.id, deserialized.id);
         assert_eq!(display.width, deserialized.width);
+    }
+
+    #[test]
+    fn test_decode_advanced_color_bits() {
+        // Bit 0 supported, bit 1 enabled. Both clear: an SDR panel, HDR not on.
+        assert_eq!(
+            decode_advanced_color(0b0000, 8),
+            AdvancedColorState {
+                supported: false,
+                enabled: false,
+                bits_per_color_channel: Some(8),
+            }
+        );
+        // Supported and switched on.
+        let on = decode_advanced_color(0b0011, 10);
+        assert!(on.supported && on.enabled);
+        assert_eq!(on.bits_per_color_channel, Some(10));
+        // Supported, not switched on.
+        let off = decode_advanced_color(0b0001, 10);
+        assert!(off.supported && !off.enabled);
+        // Bits 2 and 3 (wide colour enforced, force disabled) do not set either
+        // answer. Here force-disabled is set, so HDR is not on.
+        let forced = decode_advanced_color(0b1101, 10);
+        assert!(forced.supported && !forced.enabled);
+        // Only the force bits: neither answer is given.
+        let only_force = decode_advanced_color(0b1100, 10);
+        assert!(!only_force.supported && !only_force.enabled);
+    }
+
+    #[test]
+    fn test_decode_advanced_color_zero_depth_is_unknown() {
+        // A zero channel depth is not a depth, and it must not reach the field.
+        assert_eq!(
+            decode_advanced_color(0b0011, 0).bits_per_color_channel,
+            None
+        );
+        // A value too large for the field is not truncated into one either.
+        assert_eq!(
+            decode_advanced_color(0b0011, 256).bits_per_color_channel,
+            None
+        );
+    }
+
+    #[test]
+    fn test_agreed_advanced_color_requires_every_path_to_agree() {
+        let on = AdvancedColorState {
+            supported: true,
+            enabled: true,
+            bits_per_color_channel: Some(10),
+        };
+        let off = AdvancedColorState {
+            supported: true,
+            enabled: false,
+            bits_per_color_channel: Some(8),
+        };
+        let paths = vec![
+            ("\\\\.\\DISPLAY1".to_string(), Some(on)),
+            ("\\\\.\\DISPLAY2".to_string(), Some(off)),
+            ("\\\\.\\DISPLAY2".to_string(), Some(on)),
+            ("\\\\.\\DISPLAY3".to_string(), None),
+        ];
+        // One path, one answer.
+        assert_eq!(agreed_advanced_color(&paths, "\\\\.\\DISPLAY1"), Some(on));
+        // Two paths on one source that disagree: unknown.
+        assert_eq!(agreed_advanced_color(&paths, "\\\\.\\DISPLAY2"), None);
+        // A path whose query failed: unknown.
+        assert_eq!(agreed_advanced_color(&paths, "\\\\.\\DISPLAY3"), None);
+        // No path drives this source: unknown.
+        assert_eq!(agreed_advanced_color(&paths, "\\\\.\\DISPLAY9"), None);
     }
 }

@@ -107,7 +107,34 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Identifier),
         P::Measured,
         true,
-        "HDR mode the display is using, such as hdr10, hdr10_plus or dolby_vision, or null where it was not read. No reader on any platform reads it yet, so this is null everywhere: unknown, not standard dynamic range.",
+        "HDR mode the display is using, such as hdr10, hdr10_plus or dolby_vision, or null where it was not read. No reader fills it: the Windows advanced-colour query says whether HDR is on, not which format, so this stays null. Use hdr_supported and hdr_enabled instead. Null means unknown, not standard dynamic range.",
+    ));
+    add(Entity::new(
+        "board.display.{n}.hdr_supported",
+        D::Board,
+        K::Measurement,
+        None,
+        P::Measured,
+        true,
+        "Whether the display can use HDR (advanced colour), as the Windows display configuration reports it. Null where the platform does not report it, which is Linux and macOS today, or where the query did not answer for this display.",
+    ));
+    add(Entity::new(
+        "board.display.{n}.hdr_enabled",
+        D::Board,
+        K::Measurement,
+        None,
+        P::Measured,
+        true,
+        "Whether HDR (advanced colour) is switched on for the display, as the Windows display configuration reports it. Null where the platform does not report it, which is Linux and macOS today, or where the query did not answer for this display.",
+    ));
+    add(Entity::new(
+        "board.display.{n}.bits_per_color_channel",
+        D::Board,
+        K::Measurement,
+        Some(U::Count),
+        P::Measured,
+        true,
+        "Bits per colour channel the display path is driving, as the Windows display configuration reports it. Null where the platform does not report it, which is Linux and macOS today, or where the query did not answer for this display.",
     ));
 
     // ── Cameras ─────────────────────────────────────────────────────────────
@@ -350,9 +377,43 @@ fn resolve_display_detail(out: &mut Vec<Reading>) {
                 .map(|mode| serde_json::json!(format!("{mode:?}").to_lowercase())),
             Some(U::Identifier),
             concat!(
-                "HDR state is not read on any platform: the Windows advanced-colour ",
-                "query, the DRM connector properties and the macOS display profile ",
-                "are not parsed, so the display's HDR mode is unknown, not standard"
+                "the display's HDR format is not read on any platform: the Windows ",
+                "advanced-colour query reports only whether HDR is on, the DRM connector ",
+                "properties and the macOS display profile are not parsed, so the mode is ",
+                "unknown, not standard"
+            ),
+        );
+        // Advanced-colour state is read only by the Windows DisplayConfig query.
+        // Linux and macOS have no reader for it, and a Windows display the query
+        // did not answer for is unread in the same way.
+        push_opt(
+            out,
+            format!("{base}.hdr_supported"),
+            d.hdr_supported.map(|b| serde_json::json!(b)),
+            None,
+            concat!(
+                "the platform's display configuration did not report HDR support for this ",
+                "display: only the Windows DisplayConfig query reads it"
+            ),
+        );
+        push_opt(
+            out,
+            format!("{base}.hdr_enabled"),
+            d.hdr_enabled.map(|b| serde_json::json!(b)),
+            None,
+            concat!(
+                "the platform's display configuration did not report whether HDR is on for ",
+                "this display: only the Windows DisplayConfig query reads it"
+            ),
+        );
+        push_opt(
+            out,
+            format!("{base}.bits_per_color_channel"),
+            d.bits_per_color_channel.map(|b| serde_json::json!(b)),
+            Some(U::Count),
+            concat!(
+                "the platform's display configuration did not report the colour depth of this ",
+                "display: only the Windows DisplayConfig query reads it"
             ),
         );
     }

@@ -231,6 +231,9 @@ windows = { version = "0.58", features = [
     # devices; these calls cost microseconds.
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Properties",
+    # HDR ("advanced colour") state per active display path, from
+    # `DisplayConfigGetDeviceInfo`. The Settings toggle has no other reader.
+    "Win32_Devices_Display",
     # USB negotiated link speed: `IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX`
     # against the parent hub. Not a PnP property -- Windows reports it nowhere
     # else, including `Get-PnpDeviceProperty` and every `root\wmi` class.
