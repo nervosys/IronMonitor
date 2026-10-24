@@ -150,6 +150,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     not the whole dpkg line, "average" power is not the instantaneous value,
     thermal max and critical come from typed trip points, and a failed
     `ipmitool` with no IPMI hwmon device is a failed read, not no sensors.
+  - The whole-CPU busy/idle split is measured over an interval on every
+    platform. The first read in a process used to divide cumulative counters
+    with nothing to subtract, so every `ironmon get` and `snapshot` reported
+    the average since boot as current load; it now takes a second reading
+    200 ms later. Linux per-core figures had the same fault and are fixed with
+    it. The macOS `top` fallback takes its second sample for the same reason.
+  - A systemd unit shown `active (exited)` is reported exited rather than
+    stopped, and an active sub-state the reader does not know is unknown
+    rather than running.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a
