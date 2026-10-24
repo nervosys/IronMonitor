@@ -538,7 +538,10 @@ fn draw_accelerators_tab(f: &mut Frame, app: &App, area: Rect) {
                     let sparkline = Sparkline::default()
                         .block(Block::default().borders(Borders::ALL).title(title))
                         .data(&data)
-                        .style(Style::default().fg(accel_color(accel.utilization.unwrap_or(0.0))));
+                        .style(
+                            Style::default()
+                                .fg(accel.utilization.map_or(Color::DarkGray, accel_color)),
+                        );
                     f.render_widget(sparkline, spark_chunks[idx]);
                 }
             }
@@ -635,7 +638,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 swap_bar,
-                Style::default().fg(memory_color(swap_pct.unwrap_or(0.0) as f32)),
+                Style::default().fg(swap_pct.map_or(Color::DarkGray, |p| memory_color(p as f32))),
             ),
             Span::styled(
                 match swap_pct {
@@ -643,7 +646,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
                     None => " -".to_string(),
                 },
                 Style::default()
-                    .fg(memory_color(swap_pct.unwrap_or(0.0) as f32))
+                    .fg(swap_pct.map_or(Color::DarkGray, |p| memory_color(p as f32)))
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -699,10 +702,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // System Information
-    let uptime_secs = app.system_info.uptime.as_secs();
-    let days = uptime_secs / 86400;
-    let hours = (uptime_secs % 86400) / 3600;
-    let minutes = (uptime_secs % 3600) / 60;
+    let uptime_text = uptime_opt(app.system_info.uptime);
 
     let mut sys_lines = vec![
         Line::from(vec![
@@ -715,11 +715,11 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Kernel: ", Style::default().fg(glances_colors::TITLE)),
-            Span::raw(&app.system_info.kernel),
+            Span::raw(app.system_info.kernel.as_deref().unwrap_or("--")),
         ]),
         Line::from(vec![
             Span::styled("Uptime: ", Style::default().fg(glances_colors::TITLE)),
-            Span::raw(format!("{}d {}h {}m", days, hours, minutes)),
+            Span::raw(uptime_text),
         ]),
     ];
     if let Some(ref manufacturer) = app.system_info.manufacturer {
@@ -1050,7 +1050,8 @@ fn draw_single_accelerator(
         enc_dec_str
     );
 
-    let accel_clr = accel_color(accel.utilization.unwrap_or(0.0));
+    // No reading draws an empty grey bar, not a green 0% one.
+    let accel_clr = accel.utilization.map_or(Color::DarkGray, accel_color);
 
     let accel_gauge = Gauge::default()
         .gauge_style(Style::default().fg(accel_clr).add_modifier(Modifier::BOLD))
@@ -1119,7 +1120,7 @@ fn draw_single_gpu(f: &mut Frame, gpu: &super::app::GpuInfo, idx: usize, area: R
 
     // A gauge at 0% and a gauge with no reading look identical, so the
     // label carries the dash and the bar simply sits empty.
-    let gpu_clr = accel_color(gpu.utilization.unwrap_or(0.0));
+    let gpu_clr = gpu.utilization.map_or(Color::DarkGray, accel_color);
 
     let gpu_gauge = Gauge::default()
         .gauge_style(Style::default().fg(gpu_clr).add_modifier(Modifier::BOLD))
@@ -1393,8 +1394,12 @@ fn draw_network_bar(f: &mut Frame, app: &App, area: Rect) {
         .filter(|i| {
             // An interface with no established rate is not known to be idle,
             // so it is not filtered out for being idle.
-            i.is_up == Some(true)
-                && (i.rx_rate.unwrap_or(0.0) > 0.0 || i.tx_rate.unwrap_or(0.0) > 0.0)
+            // Only an interface whose rates were both read and both zero is idle.
+            let idle = matches!(
+                (i.rx_rate, i.tx_rate),
+                (Some(rx), Some(tx)) if rx <= 0.0 && tx <= 0.0
+            );
+            i.is_up == Some(true) && !idle
         })
         .collect();
     active_ifaces.sort_by(|a, b| {
@@ -1448,12 +1453,19 @@ fn draw_network_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Calculate a visual gauge based on activity (normalize to something reasonable)
     // Use logarithmic scale for better visualization
-    let max_rate =
-        (net_info.total_rx_rate.unwrap_or(0.0) + net_info.total_tx_rate.unwrap_or(0.0)).max(1.0);
-    let gauge_percent = ((max_rate.log10() + 3.0) * 10.0).clamp(0.0, 100.0) as u16;
+    // With neither rate read there is no activity to plot: the bar stays empty and
+    // grey. It used to floor the total at 1 B/s, which drew a 30% bar.
+    let known_total = match (net_info.total_rx_rate, net_info.total_tx_rate) {
+        (None, None) => None,
+        (rx, tx) => Some(rx.unwrap_or(0.0) + tx.unwrap_or(0.0)),
+    };
+    let gauge_percent = known_total.map_or(0, |total| {
+        let max_rate = total.max(1.0);
+        ((max_rate.log10() + 3.0) * 10.0).clamp(0.0, 100.0) as u16
+    });
 
     // Color based on activity (network-class colors: cyan/teal family)
-    let net_clr = network_color(gauge_percent as f32);
+    let net_clr = known_total.map_or(Color::DarkGray, |_| network_color(gauge_percent as f32));
 
     let net_gauge = Gauge::default()
         .block(
@@ -1822,8 +1834,9 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                     let is_selected = selected_display_idx == Some(display_idx);
                     // Use device-class colors for process metrics
                     let cpu_clr = p.cpu_percent.map_or(Color::DarkGray, cpu_color);
-                    let gpu_clr = accel_color(p.gpu_usage_percent.unwrap_or(0.0));
-                    let enc_clr = accel_color(p.encoder_usage_percent.unwrap_or(0.0));
+                    // An unread figure is a grey cell, not a green 0%.
+                    let gpu_clr = p.gpu_usage_percent.map_or(Color::DarkGray, accel_color);
+                    let enc_clr = p.encoder_usage_percent.map_or(Color::DarkGray, accel_color);
 
                     // Calculate GPU memory percentage from total GPU memory
                     let gpu_mem_percent = match p.total_gpu_memory_bytes {
@@ -1832,7 +1845,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         }
                         _ => p.gpu_memory_percentage,
                     };
-                    let gpu_mem_pct_clr = accel_color(gpu_mem_percent.unwrap_or(0.0));
+                    let gpu_mem_pct_clr = gpu_mem_percent.map_or(Color::DarkGray, accel_color);
 
                     // Color GPU mem based on usage
                     let gpu_mem_color = match p.total_gpu_memory_bytes {
@@ -1881,7 +1894,11 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                             }
                             (Some(e), None) if e > 0.1 => format!("{:.0}/-", e),
                             (None, Some(d)) if d > 0.1 => format!("-/{:.0}", d),
-                            _ => "-/-".to_string(),
+                            // Measured zeros print as zeros; only an unread side is a dash.
+                            (Some(e), Some(d)) => format!("{:.0}/{:.0}", e, d),
+                            (Some(e), None) => format!("{:.0}/-", e),
+                            (None, Some(d)) => format!("-/{:.0}", d),
+                            (None, None) => "-".to_string(),
                         };
 
                         Row::new(vec![
@@ -2148,7 +2165,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         .unwrap_or_else(|| "  N/A".to_string());
 
                     // Use Glances threshold colors for GPU usage
-                    let gpu_clr = accel_color(p.gpu_usage_percent.unwrap_or(0.0));
+                    let gpu_clr = p.gpu_usage_percent.map_or(Color::DarkGray, accel_color);
 
                     let proc_type = format!("{:?}", p.gpu_process_type);
 
@@ -2255,7 +2272,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         .map(|u| format!("{:>5.1}%", u))
                         .unwrap_or_else(|| "  N/A".to_string());
 
-                    let accel_clr = accel_color(p.gpu_usage_percent.unwrap_or(0.0));
+                    let accel_clr = p.gpu_usage_percent.map_or(Color::DarkGray, accel_color);
 
                     let proc_type = format!("{:?}", p.gpu_process_type);
 
@@ -2580,17 +2597,16 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             .block(gpu_block)
             .gauge_style(
                 Style::default()
-                    .fg(usage_color(gpu.utilization.unwrap_or(0.0)))
+                    .fg(gpu.utilization.map_or(Color::DarkGray, usage_color))
                     .bg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             )
             .percent(safe_percent(gpu.utilization.unwrap_or(0.0)))
             .label(format!(
-                "{} | {:.0}°C | {:.0}W / {:.0}W",
+                "{} | {} | {}",
                 pct_opt(gpu.utilization.map(f64::from)),
-                gpu.temperature.unwrap_or(0.0),
-                gpu.power.unwrap_or(0.0),
-                gpu.power_limit.unwrap_or(0.0)
+                celsius_opt(gpu.temperature),
+                watts_opt(gpu.power, gpu.power_limit)
             ));
 
         f.render_widget(gpu_gauge, chunks[2]);
@@ -2696,15 +2712,8 @@ fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
             "Utilization: {}",
             pct_opt(gpu.utilization.map(f64::from))
         )),
-        Line::from(format!(
-            "Temperature: {:.0}°C",
-            gpu.temperature.unwrap_or(0.0)
-        )),
-        Line::from(format!(
-            "Power: {:.0}W / {:.0}W",
-            gpu.power.unwrap_or(0.0),
-            gpu.power_limit.unwrap_or(0.0)
-        )),
+        Line::from(format!("Temperature: {}", celsius_opt(gpu.temperature))),
+        Line::from(format!("Power: {}", watts_opt(gpu.power, gpu.power_limit))),
         Line::from(match (gpu.memory_used, gpu.memory_total, mem_percent) {
             (Some(used), Some(total), Some(pct)) => format!(
                 "Memory: {:.1} GB / {:.1} GB ({}%)",
@@ -2849,16 +2858,14 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // System Info
-    let uptime_secs = app.system_info.uptime.as_secs();
-    let days = uptime_secs / 86400;
-    let hours = (uptime_secs % 86400) / 3600;
-    let minutes = (uptime_secs % 3600) / 60;
+    let uptime_text = uptime_opt(app.system_info.uptime);
+    let kernel_text = app.system_info.kernel.as_deref().unwrap_or("--");
 
     let mut info_lines = vec![
         Line::from(format!("Hostname: {}", app.system_info.hostname)),
         Line::from(format!("OS: {}", app.system_info.os)),
-        Line::from(format!("Kernel: {}", app.system_info.kernel)),
-        Line::from(format!("Uptime: {}d {}h {}m", days, hours, minutes)),
+        Line::from(format!("Kernel: {}", kernel_text)),
+        Line::from(format!("Uptime: {}", uptime_text)),
     ];
 
     if let Some(ref manufacturer) = app.system_info.manufacturer {
@@ -3671,6 +3678,25 @@ fn watts_opt(draw: Option<f32>, limit: Option<f32>) -> String {
     format!("{}/{}W", w(draw), w(limit))
 }
 
+/// Render time since boot as `Nd Nh Nm`, or `--` where it could not be read.
+///
+/// The uptime used to be `Duration::from_secs(0)` in that case, which printed
+/// "0d 0h 0m" for a machine that had been up for weeks.
+fn uptime_opt(uptime: Option<std::time::Duration>) -> String {
+    uptime.map_or_else(
+        || "--".to_string(),
+        |d| {
+            let secs = d.as_secs();
+            format!(
+                "{}d {}h {}m",
+                secs / 86400,
+                (secs % 86400) / 3600,
+                (secs % 3600) / 60
+            )
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3687,6 +3713,14 @@ mod tests {
         assert_eq!(watts_opt(None, None), "-/-W");
         assert_eq!(watts_opt(Some(77.2), Some(450.0)), "77/450W");
         assert_eq!(format!("({})", pct_opt(Some(14.2))), "(14%)");
+    }
+
+    #[test]
+    fn unread_uptime_is_dashes_not_zero_days() {
+        use std::time::Duration;
+        assert_eq!(uptime_opt(None), "--");
+        assert_eq!(uptime_opt(Some(Duration::from_secs(0))), "0d 0h 0m");
+        assert_eq!(uptime_opt(Some(Duration::from_secs(90_061))), "1d 1h 1m");
     }
 
     #[test]

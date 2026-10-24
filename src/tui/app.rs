@@ -892,8 +892,11 @@ impl From<&NpuInfo> for AcceleratorInfo {
 pub struct SystemInfo {
     pub hostname: String,
     pub os: String,
-    pub kernel: String,
-    pub uptime: Duration,
+    /// The kernel build string, or `None` where it could not be read.
+    pub kernel: Option<String>,
+    /// Time since boot, or `None` where it could not be read. Rendered as "--"
+    /// rather than as zero, which would read as a machine that just rebooted.
+    pub uptime: Option<Duration>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
 }
@@ -1674,15 +1677,16 @@ impl App {
         let os = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
 
         // Windows publishes the running build in the registry, revision included.
-        // This line used to be the constant "Windows NT", which is not a version of
-        // anything — it named the kernel family and was displayed where the version
+        // When the registry does not answer the kernel is `None` and renders as "--".
+        // It used to fall back to the constant "Windows NT", which is not a version
+        // of anything: it named the kernel family and was displayed where the version
         // belongs, so a machine on 10.0.26200.8875 reported the same string as one
         // from 1993.
         #[cfg(target_os = "windows")]
-        let kernel = windows_kernel_version().unwrap_or_else(|| "Windows NT".to_string());
+        let kernel = windows_kernel_version();
 
-        // Linux and macOS both answer `uname -r`; they had separate, byte-identical
-        // branches here.
+        // Linux and macOS both answer `uname -r`. A failed `uname` used to print the
+        // word "Unknown" in the version slot; it is now `None`.
         #[cfg(not(target_os = "windows"))]
         let kernel = std::process::Command::new("uname")
             .arg("-r")
@@ -1690,23 +1694,35 @@ impl App {
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Unknown".to_string());
+            .filter(|s| !s.is_empty());
 
-        // Get uptime - platform-specific
+        // Get uptime - platform-specific. Where it cannot be read this is `None`;
+        // it used to be `Duration::from_secs(0)`, which rendered as "0d 0h 0m".
         #[cfg(target_os = "windows")]
-        let uptime = crate::platform::windows::get_system_uptime();
+        let uptime = Some(crate::platform::windows::get_system_uptime());
 
         #[cfg(target_os = "linux")]
         let uptime = std::fs::read_to_string("/proc/uptime")
             .ok()
             .and_then(|s| s.split_whitespace().next().map(|s| s.to_string()))
             .and_then(|s| s.parse::<f64>().ok())
-            .map(|secs| Duration::from_secs(secs as u64))
-            .unwrap_or(Duration::from_secs(0));
+            .map(|secs| Duration::from_secs(secs as u64));
 
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let uptime = Duration::from_secs(0);
+        #[cfg(target_os = "macos")]
+        let uptime = crate::platform::macos::sysctl_string("kern.boottime")
+            .and_then(|raw| parse_boottime_secs(&raw))
+            .map(|boot_secs| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // A boot time in the future means the clocks disagree; saturate
+                // rather than wrap.
+                Duration::from_secs(now.saturating_sub(boot_secs))
+            });
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        let uptime: Option<Duration> = None;
 
         // Get motherboard info if available
         #[cfg(target_os = "windows")]
@@ -2588,6 +2604,33 @@ fn windows_kernel_version() -> Option<String> {
         Some(ubr) => format!("{major}.{minor}.{build}.{ubr}"),
         None => format!("{major}.{minor}.{build}"),
     })
+}
+
+/// Boot time in whole seconds since the epoch, from `sysctl kern.boottime`, which
+/// prints `{ sec = 1754500000, usec = 123456 } Mon Aug  6 ...`.
+#[cfg(any(target_os = "macos", test))]
+fn parse_boottime_secs(raw: &str) -> Option<u64> {
+    raw.split("sec = ")
+        .nth(1)
+        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|s| s.parse().ok())
+}
+
+#[cfg(test)]
+mod boottime_tests {
+    use super::parse_boottime_secs;
+
+    #[test]
+    fn parses_sysctl_kern_boottime_output() {
+        let raw = "{ sec = 1754500000, usec = 123456 } Mon Aug  6 09:00:00 2025";
+        assert_eq!(parse_boottime_secs(raw), Some(1_754_500_000));
+    }
+
+    #[test]
+    fn rejects_unrecognised_output() {
+        assert_eq!(parse_boottime_secs("garbage"), None);
+        assert_eq!(parse_boottime_secs(""), None);
+    }
 }
 
 #[cfg(test)]
