@@ -49,6 +49,7 @@ fn main() {
                 ServiceStatus::Stopping => "⏸️",
                 ServiceStatus::NotFound => "❓",
                 ServiceStatus::Unknown => "❔",
+                ServiceStatus::Exited => "☑️",
             };
             println!("   {} {:30} {}", icon, name, status);
         }
@@ -85,6 +86,7 @@ fn main() {
                     ServiceStatus::Failed => "\x1b[31mfailed\x1b[0m",
                     ServiceStatus::Starting => "\x1b[33mstarting\x1b[0m",
                     ServiceStatus::Stopping => "\x1b[33mstopping\x1b[0m",
+                    ServiceStatus::Exited => "exited",
                     _ => "unknown",
                 };
 
