@@ -471,18 +471,25 @@ struct HardwareFeatures {
     /// which expose no such limit to an unprivileged reader.
     cpu_tdp_measured: bool,
 
-    // Memory features
-    ram_total_gb: f32,
+    // Memory features. `None` is unread. Used to be `0.0`, which scored as a machine
+    // with no RAM and fired the RAM-upgrade advice.
+    ram_total_gb: Option<f32>,
     ram_channels: u32,
     ram_speed_mhz: u32,
 
-    // GPU features
-    has_discrete_gpu: bool,
+    // GPU features. `None` is unread throughout. `has_discrete_gpu` is read from the
+    // GPU monitor's `integrated` flag; `gpu_vram_gb` from its memory total. A
+    // failed or empty VRAM read used to leave `0.0`, which read as a card with no
+    // memory.
+    has_discrete_gpu: Option<bool>,
     gpu_count: u32,
     gpu_model: String,
-    gpu_vram_gb: f32,
-    has_tensor_cores: bool,
-    has_rt_cores: bool,
+    gpu_vram_gb: Option<f32>,
+    /// Not read by any reader, so always `None`. Used to be inferred from the GPU
+    /// model name ("rtx", "a100", "apple m"), which is a guess about the silicon.
+    has_tensor_cores: Option<bool>,
+    /// Not read by any reader, so always `None`. Used to be inferred from the name.
+    has_rt_cores: Option<bool>,
     gpu_tdp_watts: Option<f32>,
     /// Whether `gpu_tdp_watts` is the cap the driver enforces or the name
     /// table's stand-in for it. The thermal envelope reports which, because a
@@ -494,11 +501,15 @@ struct HardwareFeatures {
     /// and `0` when there is no figure.
     gpu_adapters_counted: u32,
 
-    // Storage features
-    has_nvme: bool,
-    has_ssd: bool,
-    total_storage_gb: f32,
-    boot_drive_type: String,
+    // Storage features. `has_ssd` and `has_nvme` are `Some(false)` only when every
+    // disk was enumerated and classified as lacking the property. A virtio disk, a
+    // failed enumeration or an unknown media type leaves them `None`.
+    has_nvme: Option<bool>,
+    has_ssd: Option<bool>,
+    total_storage_gb: Option<f32>,
+    /// The drive holding the root or system volume, when it could be identified and
+    /// classified. `None` otherwise, never the first disk enumerated.
+    boot_drive_type: Option<String>,
 
     // Platform features
     has_battery: bool,
@@ -511,9 +522,12 @@ struct HardwareFeatures {
     numa_nodes: Option<u32>,
     pcie_gen: u32,
 
-    // Network
-    max_nic_speed_gbps: f32,
-    nic_count: u32,
+    // Network. Both are `None` when no physical interface's speed or count was read.
+    // Used to be `0.0` and `0`, and "slow network" advice fired on them.
+    max_nic_speed_gbps: Option<f32>,
+    /// Physical network interfaces only. Loopback and virtual interfaces (veth,
+    /// docker, bridges, tun/tap, vEthernet, WSL) are excluded.
+    nic_count: Option<u32>,
 }
 
 impl HardwareFeatures {
@@ -521,6 +535,31 @@ impl HardwareFeatures {
     /// nothing, so an unread chassis never satisfies a "Server" or "Laptop" test.
     fn chassis(&self) -> &str {
         self.chassis_type.as_deref().unwrap_or("")
+    }
+
+    /// RAM is known and at least `gb`. An unread RAM size satisfies no threshold.
+    fn ram_at_least(&self, gb: f32) -> bool {
+        self.ram_total_gb.is_some_and(|v| v >= gb)
+    }
+
+    /// RAM is known and below `gb`. An unread RAM size never triggers a shortage.
+    fn ram_below(&self, gb: f32) -> bool {
+        self.ram_total_gb.is_some_and(|v| v < gb)
+    }
+
+    /// VRAM is known and at least `gb`.
+    fn vram_at_least(&self, gb: f32) -> bool {
+        self.gpu_vram_gb.is_some_and(|v| v >= gb)
+    }
+
+    /// VRAM is known and below `gb`.
+    fn vram_below(&self, gb: f32) -> bool {
+        self.gpu_vram_gb.is_some_and(|v| v < gb)
+    }
+
+    /// A discrete GPU was read. `None` is not evidence of an integrated-only machine.
+    fn is_discrete_gpu(&self) -> bool {
+        self.has_discrete_gpu == Some(true)
     }
 }
 
@@ -570,15 +609,31 @@ fn anything_read(f: &HardwareFeatures) -> bool {
         || f.cpu_max_freq_mhz.is_some_and(|c| c > 0)
         || !f.cpu_model.is_empty()
         || !f.cpu_vendor.is_empty()
-        || f.ram_total_gb > 0.0
-        || f.has_discrete_gpu
+        || f.ram_total_gb.is_some_and(|v| v > 0.0)
+        || f.is_discrete_gpu()
         || f.gpu_count > 0
         || !f.gpu_model.is_empty()
         || f.has_battery
         || f.is_virtual
         || f.chassis_type.is_some()
-        || f.nic_count > 0
-        || f.max_nic_speed_gbps > 0.0
+        || f.nic_count.is_some_and(|n| n > 0)
+        || f.max_nic_speed_gbps.is_some_and(|v| v > 0.0)
+}
+
+/// Parse the output of a PowerShell `ConvertTo-Json` call, which emits an object for a
+/// single item and an array for several. `None` when there was no output or it did not
+/// parse: the query failed or matched nothing, which is not the same as an empty list
+/// that was read.
+#[cfg(target_os = "windows")]
+fn json_items(text: &str) -> Option<Vec<serde_json::Value>> {
+    let text = text.trim();
+    if text.starts_with('[') {
+        serde_json::from_str(text).ok()
+    } else {
+        serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .map(|v| vec![v])
+    }
 }
 
 /// The label for an SMBIOS chassis code read from `/sys/class/dmi/id/chassis_type`.
@@ -593,6 +648,63 @@ fn dmi_chassis_label(code: &str) -> Option<&'static str> {
         "17" | "23" => Some("Server"),
         "35" | "36" => Some("Mini PC"),
         _ => None,
+    }
+}
+
+/// A sysfs frequency file's text, in kHz, as whole MHz. `None` when it does not parse or
+/// is zero.
+#[cfg(target_os = "linux")]
+fn khz_as_mhz(text: &str) -> Option<u32> {
+    text.trim()
+        .parse::<u32>()
+        .ok()
+        .map(|khz| khz / 1000)
+        .filter(|&mhz| mhz > 0)
+}
+
+/// The whole-disk name for a block device named in `/proc/mounts`: `nvme0n1` for
+/// `nvme0n1p2`, `sda` for `sda2`. `None` for a device this does not map to a physical
+/// disk (device-mapper, virtio `vda`, overlay).
+#[cfg(target_os = "linux")]
+fn base_disk_name(name: &str) -> Option<&str> {
+    if name.starts_with("nvme") {
+        let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        Some(match trimmed.strip_suffix('p') {
+            Some(disk) if disk.ends_with(|c: char| c.is_ascii_digit()) => disk,
+            _ => name,
+        })
+    } else if name.starts_with("sd") {
+        Some(name.trim_end_matches(|c: char| c.is_ascii_digit()))
+    } else {
+        None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod sysfs_parse_tests {
+    use super::*;
+
+    #[test]
+    fn cpufreq_is_read_in_khz_and_reported_in_mhz() {
+        // cpuinfo_max_freq as sysfs writes it: a kHz figure with a newline.
+        assert_eq!(khz_as_mhz("5700000\n"), Some(5700));
+        assert_eq!(khz_as_mhz("2400000"), Some(2400));
+        // Absent, empty, or non-numeric is unread.
+        assert_eq!(khz_as_mhz(""), None);
+        assert_eq!(khz_as_mhz("0\n"), None);
+        assert_eq!(khz_as_mhz("n/a"), None);
+    }
+
+    #[test]
+    fn a_root_partition_maps_to_its_whole_disk() {
+        assert_eq!(base_disk_name("nvme0n1p2"), Some("nvme0n1"));
+        assert_eq!(base_disk_name("nvme0n1"), Some("nvme0n1"));
+        assert_eq!(base_disk_name("sda2"), Some("sda"));
+        assert_eq!(base_disk_name("sda"), Some("sda"));
+        // Devices that are not a physical disk this reader classifies.
+        assert_eq!(base_disk_name("vda1"), None);
+        assert_eq!(base_disk_name("mapper/cryptroot"), None);
+        assert_eq!(base_disk_name("overlay"), None);
     }
 }
 
@@ -682,7 +794,6 @@ impl HardwareInferenceEngine {
                 let mut model = String::new();
                 let mut cores = std::collections::HashSet::new();
                 let mut logical = 0u32;
-                let mut max_freq = 0u32;
                 let mut vendor = String::new();
 
                 for line in cpuinfo.lines() {
@@ -706,13 +817,6 @@ impl HardwareInferenceEngine {
                     if line.starts_with("processor") {
                         logical += 1;
                     }
-                    if line.starts_with("cpu MHz") {
-                        if let Some(f) = line.split(':').nth(1) {
-                            if let Ok(freq) = f.trim().parse::<f32>() {
-                                max_freq = max_freq.max(freq as u32);
-                            }
-                        }
-                    }
                 }
 
                 self.features.cpu_model = model;
@@ -725,8 +829,16 @@ impl HardwareInferenceEngine {
                 // Zero means no line was found, which is unread, not a 0-core machine.
                 self.features.cpu_cores_physical = (physical > 0).then_some(physical);
                 self.features.cpu_cores_logical = (logical > 0).then_some(logical);
-                self.features.cpu_max_freq_mhz = (max_freq > 0).then_some(max_freq);
             }
+
+            // The maximum clock. The "cpu MHz" lines in /proc/cpuinfo are each core's
+            // current clock, and used to be taken as the maximum. cpuinfo_max_freq is
+            // the rated maximum, in kHz. Absent where cpufreq is not exposed: `None`.
+            self.features.cpu_max_freq_mhz =
+                std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+                    .ok()
+                    .as_deref()
+                    .and_then(khz_as_mhz);
         }
 
         #[cfg(target_os = "windows")]
@@ -832,7 +944,7 @@ impl HardwareInferenceEngine {
                     if line.starts_with("MemTotal:") {
                         if let Some(kb) = line.split_whitespace().nth(1) {
                             if let Ok(k) = kb.parse::<u64>() {
-                                self.features.ram_total_gb = k as f32 / 1_048_576.0;
+                                self.features.ram_total_gb = Some(k as f32 / 1_048_576.0);
                             }
                         }
                     }
@@ -852,7 +964,7 @@ impl HardwareInferenceEngine {
             {
                 let text = String::from_utf8(output.stdout).unwrap_or_default();
                 if let Ok(kb) = text.trim().parse::<u64>() {
-                    self.features.ram_total_gb = kb as f32 / 1_048_576.0;
+                    self.features.ram_total_gb = Some(kb as f32 / 1_048_576.0);
                 }
             }
         }
@@ -865,27 +977,21 @@ impl HardwareInferenceEngine {
             {
                 let text = String::from_utf8(output.stdout).unwrap_or_default();
                 if let Ok(bytes) = text.trim().parse::<u64>() {
-                    self.features.ram_total_gb = bytes as f32 / 1_073_741_824.0;
+                    self.features.ram_total_gb = Some(bytes as f32 / 1_073_741_824.0);
                 }
             }
         }
     }
 
     fn extract_gpu_features(&mut self) {
+        // Model names and the adapter count come from the platform's enumeration.
+        // Whether an adapter is discrete, and its memory, come from the GPU monitor.
         #[cfg(target_os = "linux")]
         {
-            // Check for discrete GPUs
             if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
                     if name.starts_with("card") && !name.contains('-') {
-                        // Check if discrete (not integrated)
-                        let boot_vga =
-                            std::fs::read_to_string(entry.path().join("device/boot_vga"))
-                                .unwrap_or_default()
-                                .trim()
-                                .to_string();
-
                         let label = std::fs::read_to_string(entry.path().join("device/label"))
                             .or_else(|_| {
                                 std::fs::read_to_string(entry.path().join("device/product_name"))
@@ -898,18 +1004,6 @@ impl HardwareInferenceEngine {
                             self.features.gpu_model = label;
                             self.features.gpu_count += 1;
                         }
-
-                        // Check VRAM
-                        if let Ok(vram) =
-                            std::fs::read_to_string(entry.path().join("device/mem_info_vram_total"))
-                        {
-                            if let Ok(bytes) = vram.trim().parse::<u64>() {
-                                self.features.gpu_vram_gb = bytes as f32 / 1_073_741_824.0;
-                                self.features.has_discrete_gpu = true;
-                            }
-                        }
-
-                        let _ = boot_vga;
                     }
                 }
             }
@@ -918,85 +1012,43 @@ impl HardwareInferenceEngine {
         #[cfg(target_os = "windows")]
         {
             if let Ok(output) = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command",
-                    "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json"])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_VideoController | Select-Object Name | ConvertTo-Json",
+                ])
                 .output()
             {
                 let text = String::from_utf8(output.stdout).unwrap_or_default();
-                let gpus: Vec<serde_json::Value> = if text.trim_start().starts_with('[') {
-                    serde_json::from_str(&text).unwrap_or_default()
-                } else {
-                    serde_json::from_str::<serde_json::Value>(&text)
-                        .map(|v| vec![v])
-                        .unwrap_or_default()
-                };
-
-                // True VRAM comes from the driver's registry key, not from WMI.
-                //
-                // `AdapterRAM` is a 32-bit field, so the RTX 3090 Ti in this
-                // machine reports 4293918720 --- just under 4GiB --- for a card
-                // with 24GB. Divided by 2^30 that is 4.0, and the report said
-                // "Insufficient VRAM for ML training" about a card that has more
-                // VRAM than most machines have RAM. Every card above 4GB is
-                // misreported the same way, so the larger the card the more wrong
-                // the answer, which is the opposite of a safe failure.
-                //
-                // `HardwareInformation.qwMemorySize` is a REG_QWORD holding the
-                // real figure and needs no elevation. Adapters missing from it
-                // keep `gpu_vram_gb` at its default rather than taking the
-                // overflowed value: not knowing is the honest outcome, and a
-                // confident 4.0 is what caused this.
-                let vram_by_desc = crate::platform::windows::adapter_vram_bytes();
-
-                for gpu in gpus {
-                    let name = gpu.get("Name").and_then(|v| v.as_str()).unwrap_or("");
-
-                    if !name.is_empty() {
+                for gpu in json_items(&text).unwrap_or_default() {
+                    if let Some(name) = gpu
+                        .get("Name")
+                        .and_then(|v| v.as_str())
+                        .filter(|n| !n.is_empty())
+                    {
                         self.features.gpu_model = name.to_string();
                         self.features.gpu_count += 1;
-
-                        // `DriverDesc` and the WMI `Name` are the same string for
-                        // every adapter seen so far, but match case-insensitively
-                        // rather than relying on that.
-                        if let Some((_, bytes)) = vram_by_desc
-                            .iter()
-                            .find(|(desc, _)| desc.eq_ignore_ascii_case(name))
-                        {
-                            // Rounded to whole GiB. A card sold as 24GB reports
-                            // 25757220864 bytes --- 23.988 GiB, twelve mebibytes
-                            // short, because the driver reserves some. Every
-                            // threshold downstream is written as `>= 24.0`,
-                            // `>= 16.0`, `>= 8.0`, so an unrounded value fails all
-                            // of them for a card of exactly that size: this 3090
-                            // Ti missed the `>= 24.0` strength by 0.012. VRAM is
-                            // provisioned in whole GiB, so rounding reports the
-                            // size the hardware actually has rather than the
-                            // remainder after the driver takes its cut.
-                            let gib = *bytes as f32 / 1_073_741_824.0;
-                            self.features.gpu_vram_gb = gib.round();
-                        }
-
-                        let lower = name.to_lowercase();
-                        if lower.contains("nvidia") || lower.contains("geforce")
-                            || lower.contains("rtx") || lower.contains("gtx")
-                            || lower.contains("radeon") || lower.contains("rx ")
-                        {
-                            self.features.has_discrete_gpu = true;
-                        }
                     }
                 }
             }
         }
 
-        // Infer GPU capabilities from model name
-        let gpu_lower = self.features.gpu_model.to_lowercase();
-        self.features.has_tensor_cores = gpu_lower.contains("rtx")
-            || gpu_lower.contains("a100")
-            || gpu_lower.contains("h100")
-            || gpu_lower.contains("l40")
-            || gpu_lower.contains("apple m");
-        self.features.has_rt_cores =
-            gpu_lower.contains("rtx") || gpu_lower.contains("m3") || gpu_lower.contains("m4");
+        // Discrete and VRAM come from the GPU monitor, which reports whether each adapter
+        // is integrated and its memory total. The model name is not used: "Radeon" names
+        // integrated APUs as well as cards, and a name does not say how much memory the
+        // part has. The Windows registry VRAM read is no longer used here; the monitor's
+        // total for NVIDIA cards comes from NVML.
+        let adapters = Self::gpu_adapters();
+        let (discrete, vram) = Self::discrete_gpu_and_vram(adapters.as_deref());
+        self.features.has_discrete_gpu = discrete;
+        self.features.gpu_vram_gb = vram;
+
+        // Tensor and RT cores are not read by any reader. They used to be inferred from
+        // the model name ("rtx", "a100", "apple m"), which says what the silicon is
+        // called, not whether it has the units.
+        self.features.has_tensor_cores = None;
+        self.features.has_rt_cores = None;
+
         // The driver's own enforced power cap, where there is one, and the name
         // table only where there is not.
         //
@@ -1007,20 +1059,15 @@ impl HardwareInferenceEngine {
         // verdict -- and the correct number was already being read on another
         // surface, which is the shape recorded in the handoff as "the reader was
         // in the same binary".
-        // Only where there is a discrete GPU to ask about. The lookup builds a
-        // `UnifiedMonitor` and snapshots every adapter, which costs seconds --
-        // worth paying for a real card's real cap, not worth paying to learn
-        // that an integrated-only machine has no cap to report.
-        let measured = self
-            .features
-            .has_discrete_gpu
-            .then(Self::measured_gpu_power_caps_watts)
-            .flatten();
+        let gpu_lower = self.features.gpu_model.to_lowercase();
+        let measured = adapters
+            .as_deref()
+            .and_then(Self::measured_gpu_power_caps_watts);
         match measured {
-            Some((watts, adapters)) => {
+            Some((watts, counted)) => {
                 self.features.gpu_tdp_watts = Some(watts);
                 self.features.gpu_tdp_measured = true;
-                self.features.gpu_adapters_counted = adapters;
+                self.features.gpu_adapters_counted = counted;
             }
             None => {
                 // One name, one figure. The table is keyed on the model string
@@ -1037,109 +1084,243 @@ impl HardwareInferenceEngine {
         }
     }
 
+    /// The GPU monitor's adapters, or `None` when the monitor could not be created or
+    /// could not enumerate them. Taken once per analysis: a snapshot queries every
+    /// adapter, which costs seconds.
+    fn gpu_adapters() -> Option<Vec<crate::GpuInfo>> {
+        let monitor = crate::UnifiedMonitor::new().ok()?;
+        monitor.snapshot_gpus().ok()
+    }
+
+    /// Whether a discrete GPU is present, and the largest discrete card's memory in
+    /// whole GiB. Each is `None` where the adapters were not read. An empty list reads
+    /// as neither. VRAM is `None` if any discrete adapter's total is unknown, because the
+    /// largest of the known totals could understate the machine.
+    fn discrete_gpu_and_vram(adapters: Option<&[crate::GpuInfo]>) -> (Option<bool>, Option<f32>) {
+        const GIB: f32 = 1_073_741_824.0;
+        let Some(gpus) = adapters.filter(|g| !g.is_empty()) else {
+            return (None, None);
+        };
+        let discrete: Vec<&crate::GpuInfo> = gpus
+            .iter()
+            .filter(|g| g.static_info.integrated == Some(false))
+            .collect();
+        if discrete.is_empty() {
+            // Every adapter is known to be integrated: a reading. Any unknown flag is not.
+            let all_integrated = gpus.iter().all(|g| g.static_info.integrated == Some(true));
+            return (all_integrated.then_some(false), None);
+        }
+        let totals: Option<Vec<u64>> = discrete
+            .iter()
+            .map(|g| g.dynamic_info.memory.total)
+            .collect();
+        let vram = totals
+            .and_then(|t| t.into_iter().max())
+            .map(|bytes| (bytes as f32 / GIB).round());
+        (Some(true), vram)
+    }
+
     fn extract_storage_features(&mut self) {
+        // Storage is `Some(false)` only when every disk was enumerated and classified as
+        // lacking the property. An unclassifiable device (virtio `vda`, `xvda`, `mmcblk`,
+        // or a media type the query did not report) may be an SSD, so it leaves the answer
+        // `None` rather than `false`.
         #[cfg(target_os = "linux")]
         {
-            // Check for NVMe drives
-            if std::path::Path::new("/sys/class/nvme").exists() {
-                self.features.has_nvme = true;
-                self.features.has_ssd = true;
-            }
+            let mut classified = 0usize;
+            let mut unclassified = false;
+            let mut any_nvme = std::path::Path::new("/sys/class/nvme").exists();
+            let mut any_ssd = any_nvme;
+            let mut total: Option<f32> = None;
 
-            // Check block devices
             if let Ok(entries) = std::fs::read_dir("/sys/block") {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("sd") || name.starts_with("nvme") {
-                        let rotational =
-                            std::fs::read_to_string(entry.path().join("queue/rotational"))
-                                .unwrap_or_default()
-                                .trim()
-                                .to_string();
-
-                        if rotational == "0" {
-                            self.features.has_ssd = true;
+                    let is_nvme = name.starts_with("nvme");
+                    if !(name.starts_with("sd") || is_nvme) {
+                        // Pseudo devices are not storage. Anything else may be a disk.
+                        let pseudo = ["loop", "ram", "zram", "sr", "dm-", "md"]
+                            .iter()
+                            .any(|p| name.starts_with(p));
+                        if !pseudo {
+                            unclassified = true;
                         }
+                        continue;
+                    }
 
-                        if let Ok(size) = std::fs::read_to_string(entry.path().join("size")) {
-                            if let Ok(sectors) = size.trim().parse::<u64>() {
-                                self.features.total_storage_gb += (sectors * 512) as f32 / 1e9;
+                    if is_nvme {
+                        any_nvme = true;
+                        any_ssd = true;
+                        classified += 1;
+                    } else {
+                        match std::fs::read_to_string(entry.path().join("queue/rotational"))
+                            .ok()
+                            .as_deref()
+                            .map(str::trim)
+                        {
+                            Some("0") => {
+                                any_ssd = true;
+                                classified += 1;
                             }
+                            Some("1") => classified += 1,
+                            _ => unclassified = true,
                         }
+                    }
 
-                        if name.starts_with("nvme") {
-                            self.features.boot_drive_type = "NVMe".into();
-                        } else if self.features.boot_drive_type.is_empty() {
-                            self.features.boot_drive_type = if rotational == "0" {
-                                "SATA SSD".into()
-                            } else {
-                                "HDD".into()
-                            };
-                        }
+                    if let Some(sectors) = std::fs::read_to_string(entry.path().join("size"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                    {
+                        total = Some(total.unwrap_or(0.0) + (sectors * 512) as f32 / 1e9);
                     }
                 }
             }
+
+            self.features.has_nvme = if any_nvme {
+                Some(true)
+            } else {
+                (classified > 0 && !unclassified).then_some(false)
+            };
+            self.features.has_ssd = if any_ssd {
+                Some(true)
+            } else {
+                (classified > 0 && !unclassified).then_some(false)
+            };
+            self.features.total_storage_gb = total;
+            self.features.boot_drive_type = Self::linux_root_drive_type();
         }
 
         #[cfg(target_os = "windows")]
         {
-            if let Ok(output) = std::process::Command::new("powershell")
+            // Bus types as `ConvertTo-Json` names them, and as the CIM class numbers them.
+            const BUS_TYPES: &[(&str, u64)] = &[
+                ("scsi", 1),
+                ("atapi", 2),
+                ("ata", 3),
+                ("1394", 4),
+                ("ssa", 5),
+                ("fibre channel", 6),
+                ("usb", 7),
+                ("raid", 8),
+                ("iscsi", 9),
+                ("sas", 10),
+                ("sata", 11),
+                ("sd", 12),
+                ("mmc", 13),
+                ("virtual", 14),
+                ("file backed virtual", 15),
+                ("storage spaces", 16),
+                ("nvme", 17),
+                ("scm", 18),
+                ("ufs", 19),
+            ];
+
+            let disks = std::process::Command::new("powershell")
                 .args([
                     "-NoProfile",
                     "-Command",
                     "Get-PhysicalDisk | Select-Object MediaType,Size,BusType | ConvertTo-Json",
                 ])
                 .output()
-            {
-                let text = String::from_utf8(output.stdout).unwrap_or_default();
-                let disks: Vec<serde_json::Value> = if text.trim_start().starts_with('[') {
-                    serde_json::from_str(&text).unwrap_or_default()
-                } else {
-                    serde_json::from_str::<serde_json::Value>(&text)
-                        .map(|v| vec![v])
-                        .unwrap_or_default()
-                };
+                .ok()
+                .and_then(|o| json_items(&String::from_utf8(o.stdout).unwrap_or_default()))
+                .unwrap_or_default();
 
-                for disk in disks {
-                    // `Get-PhysicalDisk | ConvertTo-Json` serialises MediaType and
-                    // BusType as their *friendly strings* -- "SSD", "NVMe",
-                    // "Unspecified" -- not as the integers the MSFT_PhysicalDisk
-                    // class defines. This read them with `as_u64()`, got `None`
-                    // for every disk, and `unwrap_or(0)` turned a total parse
-                    // failure into "not an SSD".
-                    //
-                    // So SSD detection has never once worked on Windows. The
-                    // machine this was found on has three NVMe drives and no
-                    // rotating disk, and the report led with "No SSD detected --
-                    // HDD will severely bottleneck modern workloads" at 0.85
-                    // confidence, plus a priority-10 recommendation to replace a
-                    // drive that does not exist. A fallback that stands in for a
-                    // reading nobody took is how a module fails completely and
-                    // still produces confident output.
-                    //
-                    // Both forms are accepted: the strings PowerShell emits and
-                    // the integers the CIM class documents, in case a caller
-                    // reaches this through a path that preserves them.
-                    let media_type = wmi_enum(disk.get("MediaType"), &[("ssd", 4), ("hdd", 3)]);
-                    let bus_type = wmi_enum(disk.get("BusType"), &[("nvme", 17), ("sata", 11)]);
-                    let size = disk.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
+            // Each disk's media and bus type, `Some` only where the value was one this
+            // reader knows. `Unspecified` (a USB gadget, for one) is `None`.
+            let kinds: Vec<(Option<u64>, Option<u64>)> = disks
+                .iter()
+                .map(|disk| {
+                    (
+                        wmi_enum(disk.get("MediaType"), &[("hdd", 3), ("ssd", 4)]),
+                        wmi_enum(disk.get("BusType"), BUS_TYPES),
+                    )
+                })
+                .collect();
 
-                    self.features.total_storage_gb += size as f32 / 1e9;
+            let any_nvme = kinds.iter().any(|(_, bus)| *bus == Some(17));
+            let any_ssd = kinds
+                .iter()
+                .any(|(media, bus)| *media == Some(4) || *bus == Some(17));
+            self.features.has_nvme = if any_nvme {
+                Some(true)
+            } else {
+                (!kinds.is_empty() && kinds.iter().all(|(_, bus)| bus.is_some())).then_some(false)
+            };
+            self.features.has_ssd = if any_ssd {
+                Some(true)
+            } else {
+                (!kinds.is_empty() && kinds.iter().all(|(media, _)| *media == Some(3)))
+                    .then_some(false)
+            };
 
-                    // MediaType: 3 = HDD, 4 = SSD
-                    if media_type == Some(4) {
-                        self.features.has_ssd = true;
-                    }
-                    // BusType: 17 = NVMe
-                    if bus_type == Some(17) {
-                        self.features.has_nvme = true;
-                        self.features.has_ssd = true;
-                        self.features.boot_drive_type = "NVMe".into();
-                    } else if media_type == Some(4) && self.features.boot_drive_type != "NVMe" {
-                        self.features.boot_drive_type = "SSD".into();
-                    }
-                }
-            }
+            // The size is known only if every disk's size was read.
+            let sizes: Option<Vec<u64>> = disks
+                .iter()
+                .map(|d| d.get("Size").and_then(|v| v.as_u64()))
+                .collect();
+            self.features.total_storage_gb = (!disks.is_empty())
+                .then(|| sizes.map(|s| s.iter().sum::<u64>() as f32 / 1e9))
+                .flatten();
+
+            self.features.boot_drive_type = Self::windows_system_drive_type(BUS_TYPES);
+        }
+    }
+
+    /// The kind of the disk holding the root volume, read from `/proc/mounts`. `None`
+    /// when the root device is not a disk this reader classifies (device-mapper, overlay,
+    /// virtio), or its rotational flag was not read.
+    #[cfg(target_os = "linux")]
+    fn linux_root_drive_type() -> Option<String> {
+        let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+        let device = mounts.lines().find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (dev, mountpoint) = (fields.next()?, fields.next()?);
+            (mountpoint == "/").then_some(dev)
+        })?;
+        let name = device.strip_prefix("/dev/")?;
+
+        let base = base_disk_name(name)?;
+
+        if base.starts_with("nvme") {
+            return Some("NVMe".into());
+        }
+        match std::fs::read_to_string(format!("/sys/block/{base}/queue/rotational"))
+            .ok()?
+            .trim()
+        {
+            "0" => Some("SATA SSD".into()),
+            "1" => Some("HDD".into()),
+            _ => None,
+        }
+    }
+
+    /// The kind of the disk holding the system volume. The disk number comes from the
+    /// partition on the system drive letter, so this is the disk Windows boots from.
+    /// `None` when that partition or disk cannot be read.
+    #[cfg(target_os = "windows")]
+    fn windows_system_drive_type(bus_types: &[(&str, u64)]) -> Option<String> {
+        let script = concat!(
+            "$p = Get-Partition -DriveLetter $env:SystemDrive.Substring(0,1) -ErrorAction Stop; ",
+            "Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq [string]$p.DiskNumber } ",
+            "| Select-Object MediaType,BusType | ConvertTo-Json"
+        );
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .ok()?;
+        let text = String::from_utf8(output.stdout).ok()?;
+        let disk = json_items(&text)?.into_iter().next()?;
+        let media = wmi_enum(disk.get("MediaType"), &[("hdd", 3), ("ssd", 4)]);
+        let bus = wmi_enum(disk.get("BusType"), bus_types);
+        if bus == Some(17) {
+            Some("NVMe".into())
+        } else if media == Some(4) {
+            Some("SSD".into())
+        } else if media == Some(3) {
+            Some("HDD".into())
+        } else {
+            None
         }
     }
 
@@ -1268,45 +1449,50 @@ impl HardwareInferenceEngine {
         #[cfg(target_os = "linux")]
         {
             if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+                let mut physical = 0u32;
+                let mut fastest: Option<f32> = None;
                 for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name == "lo" {
+                    // A physical NIC links to its bus device. Loopback, veth, bridges
+                    // (docker0, br-*, virbr*), tun/tap and other virtual interfaces have
+                    // no such link, so they are not counted.
+                    let path = entry.path();
+                    if !path.join("device").exists() {
                         continue;
                     }
-                    self.features.nic_count += 1;
+                    physical += 1;
 
-                    if let Ok(speed) = std::fs::read_to_string(entry.path().join("speed")) {
-                        if let Ok(mbps) = speed.trim().parse::<u32>() {
-                            let gbps = mbps as f32 / 1000.0;
-                            self.features.max_nic_speed_gbps =
-                                self.features.max_nic_speed_gbps.max(gbps);
-                        }
+                    // A down interface has no readable speed, and is skipped rather than
+                    // counted as zero.
+                    if let Some(mbps) = std::fs::read_to_string(path.join("speed"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                    {
+                        let gbps = mbps as f32 / 1000.0;
+                        fastest = Some(fastest.map_or(gbps, |f| f.max(gbps)));
                     }
                 }
+                self.features.nic_count = Some(physical);
+                self.features.max_nic_speed_gbps = fastest;
             }
         }
 
         #[cfg(target_os = "windows")]
         {
-            if let Ok(output) = std::process::Command::new("powershell")
+            // `-Physical` excludes the vEthernet, Hyper-V and WSL adapters.
+            if let Some(adapters) = std::process::Command::new("powershell")
                 .args([
                     "-NoProfile",
                     "-Command",
                     "Get-NetAdapter -Physical | Select-Object LinkSpeed | ConvertTo-Json",
                 ])
                 .output()
+                .ok()
+                .and_then(|o| json_items(&String::from_utf8(o.stdout).unwrap_or_default()))
             {
-                let text = String::from_utf8(output.stdout).unwrap_or_default();
-                let adapters: Vec<serde_json::Value> = if text.trim_start().starts_with('[') {
-                    serde_json::from_str(&text).unwrap_or_default()
-                } else {
-                    serde_json::from_str::<serde_json::Value>(&text)
-                        .map(|v| vec![v])
-                        .unwrap_or_default()
-                };
+                self.features.nic_count = Some(adapters.len() as u32);
 
+                let mut fastest: Option<f32> = None;
                 for adapter in &adapters {
-                    self.features.nic_count += 1;
                     if let Some(speed) = adapter.get("LinkSpeed").and_then(|v| v.as_str()) {
                         // Parse "1 Gbps", "10 Gbps", "100 Mbps"
                         let parts: Vec<&str> = speed.split_whitespace().collect();
@@ -1324,13 +1510,13 @@ impl HardwareInferenceEngine {
                                     _ => None,
                                 };
                                 if let Some(gbps) = gbps {
-                                    self.features.max_nic_speed_gbps =
-                                        self.features.max_nic_speed_gbps.max(gbps);
+                                    fastest = Some(fastest.map_or(gbps, |f| f.max(gbps)));
                                 }
                             }
                         }
                     }
                 }
+                self.features.max_nic_speed_gbps = fastest;
             }
         }
     }
@@ -1369,7 +1555,7 @@ impl HardwareInferenceEngine {
             if f.cpu_cores_physical.is_some_and(|v| v >= 16) {
                 s += CLASSIFICATION_WEIGHT_SERVER_PHYSICAL_CORES;
             }
-            if f.ram_total_gb >= 64.0 {
+            if f.ram_at_least(64.0) {
                 s += CLASSIFICATION_WEIGHT_SERVER_RAM;
             }
             if f.numa_nodes.is_some_and(|n| n >= 2) {
@@ -1381,7 +1567,7 @@ impl HardwareInferenceEngine {
             if !f.has_battery {
                 s += CLASSIFICATION_WEIGHT_SERVER_NO_BATTERY;
             }
-            if f.nic_count >= 2 {
+            if f.nic_count.is_some_and(|n| n >= 2) {
                 s += CLASSIFICATION_WEIGHT_SERVER_NICS;
             }
             s.min(CLASSIFICATION_CONFIDENCE_SERVER_CAP)
@@ -1420,19 +1606,21 @@ impl HardwareInferenceEngine {
             if f.cpu_cores_physical.is_some_and(|v| v <= 8) {
                 s += CLASSIFICATION_WEIGHT_LAPTOP_LOW_CORES;
             }
-            if f.ram_total_gb <= 32.0 {
+            if f.ram_total_gb.is_some_and(|v| v <= 32.0) {
                 s += CLASSIFICATION_WEIGHT_LAPTOP_LOW_RAM;
             }
             s.min(CLASSIFICATION_CONFIDENCE_LAPTOP_CAP)
         };
         if laptop_score > 0.3 {
             let gpu_lower = f.gpu_model.to_lowercase();
-            if f.has_discrete_gpu && (gpu_lower.contains("rtx") || gpu_lower.contains("rx ")) {
+            if f.is_discrete_gpu() && (gpu_lower.contains("rtx") || gpu_lower.contains("rx ")) {
                 scores.push((
                     SystemClass::GamingLaptop,
                     laptop_score * CLASSIFICATION_SCALE_GAMING_LAPTOP,
                 ));
-            } else if f.ram_total_gb <= 16.0 && f.cpu_cores_physical.is_some_and(|v| v <= 4) {
+            } else if f.ram_total_gb.is_some_and(|v| v <= 16.0)
+                && f.cpu_cores_physical.is_some_and(|v| v <= 4)
+            {
                 scores.push((
                     SystemClass::Ultrabook,
                     laptop_score * CLASSIFICATION_SCALE_ULTRABOOK,
@@ -1454,7 +1642,7 @@ impl HardwareInferenceEngine {
                 || gpu_lower.contains("rx 6")
                 || gpu_lower.contains("rx 7");
 
-            if f.is_server_cpu || f.ram_total_gb >= 64.0 {
+            if f.is_server_cpu || f.ram_at_least(64.0) {
                 scores.push((
                     SystemClass::Workstation,
                     CLASSIFICATION_CONFIDENCE_WORKSTATION,
@@ -1470,7 +1658,8 @@ impl HardwareInferenceEngine {
         }
 
         // Embedded
-        if f.cpu_cores_physical.is_some_and(|v| v <= 4) && f.ram_total_gb <= 4.0 {
+        if f.cpu_cores_physical.is_some_and(|v| v <= 4) && f.ram_total_gb.is_some_and(|v| v <= 4.0)
+        {
             let model = f.cpu_model.to_lowercase();
             if model.contains("arm") || model.contains("cortex") || model.contains("tegra") {
                 scores.push((SystemClass::Embedded, CLASSIFICATION_CONFIDENCE_EMBEDDED));
@@ -1524,7 +1713,9 @@ impl HardwareInferenceEngine {
         });
 
         // RAM scoring (up to 200 points)
-        score += match f.ram_total_gb as u32 {
+        // Each term is added only where its input was read. An unread size scores nothing
+        // rather than the smallest bucket.
+        score += f.ram_total_gb.map_or(0, |gb| match gb as u32 {
             0..=2 => 5,
             3..=4 => 20,
             5..=8 => 50,
@@ -1533,12 +1724,12 @@ impl HardwareInferenceEngine {
             33..=64 => 160,
             65..=128 => 180,
             _ => 200, // 128+ GB
-        };
+        });
 
         // GPU scoring (up to 300 points)
-        if f.has_discrete_gpu {
+        if f.is_discrete_gpu() {
             score += 50; // Base discrete GPU bonus
-            score += match f.gpu_vram_gb as u32 {
+            score += f.gpu_vram_gb.map_or(0, |gb| match gb as u32 {
                 0..=2 => 10,
                 3..=4 => 40,
                 5..=8 => 80,
@@ -1546,36 +1737,36 @@ impl HardwareInferenceEngine {
                 13..=16 => 160,
                 17..=24 => 200,
                 _ => 250, // 24+ GB VRAM
-            };
-            if f.has_tensor_cores {
+            });
+            if f.has_tensor_cores == Some(true) {
                 score += 30;
             }
-            if f.has_rt_cores {
+            if f.has_rt_cores == Some(true) {
                 score += 20;
             }
         }
 
         // Storage scoring (up to 100 points)
-        if f.has_nvme {
+        if f.has_nvme == Some(true) {
             score += 60;
-        } else if f.has_ssd {
+        } else if f.has_ssd == Some(true) {
             score += 30;
         }
-        score += match f.total_storage_gb as u32 {
+        score += f.total_storage_gb.map_or(0, |gb| match gb as u32 {
             0..=128 => 5,
             129..=512 => 15,
             513..=2048 => 25,
             _ => 40,
-        };
+        });
 
         // Network scoring (up to 50 points)
-        score += match f.max_nic_speed_gbps as u32 {
+        score += f.max_nic_speed_gbps.map_or(0, |gbps| match gbps as u32 {
             0 => 0,
             1 => 15,
             10 => 30,
             25 => 40,
             _ => 50, // 40+ Gbps
-        };
+        });
 
         // Normalize to 0-100
         let normalized = ((score as f32 / 1000.0) * 100.0).min(100.0) as u8;
@@ -1603,9 +1794,11 @@ impl HardwareInferenceEngine {
         let mut bottlenecks = Vec::new();
 
         // CPU vs GPU imbalance
-        if f.has_discrete_gpu
+        // Each rule below names the inputs it reads. A rule whose input is unread (`None`)
+        // emits nothing, so an unread value is never treated as zero or as false.
+        if f.is_discrete_gpu()
             && f.cpu_cores_physical.is_some_and(|v| v <= 4)
-            && f.gpu_vram_gb >= 8.0
+            && f.vram_at_least(8.0)
         {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::CpuBound,
@@ -1613,44 +1806,47 @@ impl HardwareInferenceEngine {
                 severity: 70,
                 reason: format!(
                     "Only {} CPU cores paired with {}GB GPU — CPU will bottleneck GPU-intensive tasks",
-                    // Guarded by `is_some_and` above, so the value is present.
-                    f.cpu_cores_physical.unwrap_or_default(), f.gpu_vram_gb as u32
+                    // Guarded by `is_some_and` above, so the values are present.
+                    f.cpu_cores_physical.unwrap_or_default(),
+                    f.gpu_vram_gb.unwrap_or_default() as u32
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_CPU_GPU_IMBALANCE,
             });
         }
 
         // RAM too low for GPU workloads
-        if f.has_discrete_gpu && f.gpu_vram_gb >= 8.0 && f.ram_total_gb < 16.0 {
+        if f.is_discrete_gpu() && f.vram_at_least(8.0) && f.ram_below(16.0) {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::MemoryBound,
                 component: "System RAM".into(),
                 severity: 60,
                 reason: format!(
                     "{:.0}GB RAM is insufficient for GPU workloads with {}GB VRAM",
-                    f.ram_total_gb, f.gpu_vram_gb as u32
+                    f.ram_total_gb.unwrap_or_default(),
+                    f.gpu_vram_gb.unwrap_or_default() as u32
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_RAM_GPU_WORKLOADS,
             });
         }
 
         // RAM too low for core count
-        if f.cpu_cores_physical.is_some_and(|v| v >= 8) && f.ram_total_gb < 16.0 {
+        if f.cpu_cores_physical.is_some_and(|v| v >= 8) && f.ram_below(16.0) {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::MemoryBound,
                 component: "System RAM".into(),
                 severity: 55,
                 reason: format!(
                     "{:.0}GB RAM for {} cores — should have at least 2GB/core",
-                    f.ram_total_gb,
+                    f.ram_total_gb.unwrap_or_default(),
                     f.cpu_cores_physical.unwrap_or_default()
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_RAM_PER_CORE,
             });
         }
 
-        // No SSD
-        if !f.has_ssd && !f.has_nvme {
+        // No SSD. Fires only when every disk was read and none is an SSD. NVMe implies
+        // SSD in the readers, so `has_ssd == Some(false)` covers both.
+        if f.has_ssd == Some(false) {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::StorageBound,
                 component: "Storage".into(),
@@ -1661,7 +1857,10 @@ impl HardwareInferenceEngine {
         }
 
         // High core count with SATA (not NVMe)
-        if f.cpu_cores_physical.is_some_and(|v| v >= 16) && f.has_ssd && !f.has_nvme {
+        if f.cpu_cores_physical.is_some_and(|v| v >= 16)
+            && f.has_ssd == Some(true)
+            && f.has_nvme == Some(false)
+        {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::StorageBound,
                 component: "Storage bus".into(),
@@ -1673,14 +1872,14 @@ impl HardwareInferenceEngine {
         }
 
         // Slow network for server
-        if f.is_server_cpu && f.max_nic_speed_gbps < 10.0 {
+        if f.is_server_cpu && f.max_nic_speed_gbps.is_some_and(|v| v < 10.0) {
             bottlenecks.push(Bottleneck {
                 bottleneck_type: BottleneckType::NetworkBound,
                 component: "Network".into(),
                 severity: 45,
                 reason: format!(
                     "Server CPU with only {:.0} Gbps NIC — consider 10/25 GbE",
-                    f.max_nic_speed_gbps
+                    f.max_nic_speed_gbps.unwrap_or_default()
                 ),
                 confidence: BOTTLENECK_CONFIDENCE_SLOW_SERVER_NIC,
             });
@@ -1703,29 +1902,33 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.has_tensor_cores {
+            if f.has_tensor_cores == Some(true) {
                 score += 30;
                 strengths.push("Tensor cores available".into());
             }
-            if f.gpu_vram_gb >= 24.0 {
+            // Each shortfall is named only when its input was read below the threshold.
+            if f.vram_at_least(24.0) {
                 score += 25;
-                strengths.push(format!("{:.0}GB VRAM for large models", f.gpu_vram_gb));
-            } else if f.gpu_vram_gb >= 12.0 {
+                strengths.push(format!(
+                    "{:.0}GB VRAM for large models",
+                    f.gpu_vram_gb.unwrap_or_default()
+                ));
+            } else if f.vram_at_least(12.0) {
                 score += 15;
-            } else if f.gpu_vram_gb >= 8.0 {
+            } else if f.vram_at_least(8.0) {
                 score += 8;
                 limiting.push("Limited VRAM for large models".into());
-            } else {
+            } else if f.vram_below(8.0) {
                 limiting.push("Insufficient VRAM for ML training".into());
             }
-            if f.ram_total_gb >= 64.0 {
+            if f.ram_at_least(64.0) {
                 score += 15;
-            } else if f.ram_total_gb >= 32.0 {
+            } else if f.ram_at_least(32.0) {
                 score += 10;
-            } else {
+            } else if f.ram_below(32.0) {
                 limiting.push("RAM may limit dataset size".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 10;
             }
             if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
@@ -1751,26 +1954,26 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.has_discrete_gpu {
+            if f.is_discrete_gpu() {
                 score += 30;
                 strengths.push("Discrete GPU".into());
             }
-            if f.gpu_vram_gb >= 8.0 {
+            if f.vram_at_least(8.0) {
                 score += 20;
             }
-            if f.has_tensor_cores {
+            if f.has_tensor_cores == Some(true) {
                 score += 15;
             }
             if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
-            if f.ram_total_gb >= 16.0 {
+            if f.ram_at_least(16.0) {
                 score += 10;
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 10;
             }
-            if !f.has_discrete_gpu {
+            if f.has_discrete_gpu == Some(false) {
                 limiting.push("No discrete GPU — CPU inference only".into());
             }
 
@@ -1789,15 +1992,18 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.has_discrete_gpu && f.gpu_vram_gb >= 8.0 {
+            if f.is_discrete_gpu() && f.vram_at_least(8.0) {
                 score += 35;
-                strengths.push(format!("Discrete GPU with {:.0}GB VRAM", f.gpu_vram_gb));
-            } else if f.has_discrete_gpu {
+                strengths.push(format!(
+                    "Discrete GPU with {:.0}GB VRAM",
+                    f.gpu_vram_gb.unwrap_or_default()
+                ));
+            } else if f.is_discrete_gpu() {
                 score += 15;
-            } else {
+            } else if f.has_discrete_gpu == Some(false) {
                 limiting.push("No discrete GPU".into());
             }
-            if f.has_rt_cores {
+            if f.has_rt_cores == Some(true) {
                 score += 10;
                 strengths.push("Ray tracing support".into());
             }
@@ -1807,18 +2013,18 @@ impl HardwareInferenceEngine {
             } else if f.cpu_max_freq_mhz.is_some_and(|v| v >= 3000) {
                 score += 10;
             }
-            if f.ram_total_gb >= 16.0 {
+            if f.ram_at_least(16.0) {
                 score += 10;
-            } else {
+            } else if f.ram_below(16.0) {
                 limiting.push("< 16GB RAM".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 10;
             }
             if f.cpu_cores_physical.is_some_and(|v| v >= 6) {
                 score += 10;
             }
-            if f.has_ssd {
+            if f.has_ssd == Some(true) {
                 score += 10;
             }
 
@@ -1837,7 +2043,7 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.has_discrete_gpu {
+            if f.is_discrete_gpu() {
                 score += 20;
             }
             if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
@@ -1846,24 +2052,24 @@ impl HardwareInferenceEngine {
             } else if f.cpu_cores_physical.is_some_and(|v| v >= 6) {
                 score += 15;
             }
-            if f.ram_total_gb >= 32.0 {
+            if f.ram_at_least(32.0) {
                 score += 20;
                 strengths.push("Plenty of RAM for timelines".into());
-            } else if f.ram_total_gb >= 16.0 {
+            } else if f.ram_at_least(16.0) {
                 score += 10;
-            } else {
+            } else if f.ram_below(16.0) {
                 limiting.push("< 16GB RAM limits timeline length".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 15;
                 strengths.push("NVMe for fast media reads".into());
             }
-            if f.total_storage_gb >= 2000.0 {
+            if f.total_storage_gb.is_some_and(|v| v >= 2000.0) {
                 score += 10;
-            } else {
+            } else if f.total_storage_gb.is_some_and(|v| v < 2000.0) {
                 limiting.push("Limited storage for large projects".into());
             }
-            if f.gpu_vram_gb >= 8.0 {
+            if f.vram_at_least(8.0) {
                 score += 15;
             }
 
@@ -1892,21 +2098,21 @@ impl HardwareInferenceEngine {
             } else {
                 limiting.push("Few cores — slow parallel builds".into());
             }
-            if f.ram_total_gb >= 32.0 {
+            if f.ram_at_least(32.0) {
                 score += 25;
-            } else if f.ram_total_gb >= 16.0 {
+            } else if f.ram_at_least(16.0) {
                 score += 15;
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 20;
                 strengths.push("Fast build I/O with NVMe".into());
-            } else if f.has_ssd {
+            } else if f.has_ssd == Some(true) {
                 score += 10;
             }
             if f.cpu_max_freq_mhz.is_some_and(|v| v >= 4000) {
                 score += 10;
             }
-            if f.total_storage_gb >= 512.0 {
+            if f.total_storage_gb.is_some_and(|v| v >= 512.0) {
                 score += 10;
             }
 
@@ -1930,21 +2136,21 @@ impl HardwareInferenceEngine {
             } else if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
-            if f.ram_total_gb >= 16.0 {
+            if f.ram_at_least(16.0) {
                 score += 20;
             }
-            if f.max_nic_speed_gbps >= 10.0 {
+            if f.max_nic_speed_gbps.is_some_and(|v| v >= 10.0) {
                 score += 25;
                 strengths.push("10+ GbE networking".into());
-            } else if f.max_nic_speed_gbps >= 1.0 {
+            } else if f.max_nic_speed_gbps.is_some_and(|v| v >= 1.0) {
                 score += 10;
-            } else {
+            } else if f.max_nic_speed_gbps.is_some_and(|v| v < 1.0) {
                 limiting.push("Slow network".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 15;
             }
-            if f.nic_count >= 2 {
+            if f.nic_count.is_some_and(|n| n >= 2) {
                 score += 10;
                 strengths.push("Multiple NICs for redundancy".into());
             }
@@ -1967,26 +2173,26 @@ impl HardwareInferenceEngine {
             let mut strengths = Vec::new();
             let mut limiting = Vec::new();
 
-            if f.ram_total_gb >= 64.0 {
+            if f.ram_at_least(64.0) {
                 score += 30;
                 strengths.push("Large RAM for caching".into());
-            } else if f.ram_total_gb >= 32.0 {
+            } else if f.ram_at_least(32.0) {
                 score += 20;
-            } else {
+            } else if f.ram_below(32.0) {
                 limiting.push("RAM limits index caching".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 25;
                 strengths.push("NVMe for fast IOPS".into());
-            } else if f.has_ssd {
+            } else if f.has_ssd == Some(true) {
                 score += 15;
-            } else {
+            } else if f.has_ssd == Some(false) {
                 limiting.push("HDD severely limits database IOPS".into());
             }
             if f.cpu_cores_physical.is_some_and(|v| v >= 8) {
                 score += 20;
             }
-            if f.total_storage_gb >= 2000.0 {
+            if f.total_storage_gb.is_some_and(|v| v >= 2000.0) {
                 score += 15;
             }
             if f.has_ecc == Some(true) {
@@ -2017,17 +2223,17 @@ impl HardwareInferenceEngine {
             } else {
                 limiting.push("Few cores limits VM density".into());
             }
-            if f.ram_total_gb >= 128.0 {
+            if f.ram_at_least(128.0) {
                 score += 30;
-            } else if f.ram_total_gb >= 64.0 {
+            } else if f.ram_at_least(64.0) {
                 score += 20;
                 strengths.push("Good RAM for VMs".into());
-            } else if f.ram_total_gb >= 32.0 {
+            } else if f.ram_at_least(32.0) {
                 score += 10;
-            } else {
+            } else if f.ram_below(32.0) {
                 limiting.push("Limited RAM for virtual machines".into());
             }
-            if f.has_nvme {
+            if f.has_nvme == Some(true) {
                 score += 15;
             }
             if f.numa_nodes.is_some_and(|n| n >= 2) {
@@ -2037,7 +2243,7 @@ impl HardwareInferenceEngine {
             if f.is_server_cpu {
                 score += 10;
             }
-            if f.total_storage_gb >= 2000.0 {
+            if f.total_storage_gb.is_some_and(|v| v >= 2000.0) {
                 score += 5;
             }
 
@@ -2059,17 +2265,17 @@ impl HardwareInferenceEngine {
             if f.cpu_cores_physical.is_some_and(|v| v >= 4) {
                 score += 15;
             }
-            if f.ram_total_gb >= 8.0 {
+            if f.ram_at_least(8.0) {
                 score += 15;
-            } else {
+            } else if f.ram_below(8.0) {
                 limiting.push("< 8GB RAM may cause slowdowns".into());
             }
-            if f.has_ssd {
+            if f.has_ssd == Some(true) {
                 score += 15;
-            } else {
+            } else if f.has_ssd == Some(false) {
                 limiting.push("HDD makes boot and app launch slow".into());
             }
-            if f.cpu_cores_physical.is_some_and(|v| v < 2) || f.ram_total_gb < 4.0 {
+            if f.cpu_cores_physical.is_some_and(|v| v < 2) || f.ram_below(4.0) {
                 score = score.saturating_sub(30);
             }
 
@@ -2539,9 +2745,7 @@ impl HardwareInferenceEngine {
     ///
     /// Milliwatts in the reading, watts here, because every threshold in
     /// `analyze_thermal_envelope` is written in watts.
-    fn measured_gpu_power_caps_watts() -> Option<(f32, u32)> {
-        let monitor = crate::UnifiedMonitor::new().ok()?;
-        let gpus = monitor.snapshot_gpus().ok()?;
+    fn measured_gpu_power_caps_watts(gpus: &[crate::GpuInfo]) -> Option<(f32, u32)> {
         let caps: Vec<f32> = gpus
             .iter()
             .filter_map(|g| g.dynamic_info.power.limit)
@@ -2616,20 +2820,20 @@ impl HardwareInferenceEngine {
         let mut recs = Vec::new();
 
         // RAM upgrades
-        if f.ram_total_gb < 8.0 {
+        if f.ram_below(8.0) {
             recs.push(UpgradeRecommendation {
                 component: "RAM".into(),
-                current: format!("{:.0}GB", f.ram_total_gb),
+                current: format!("{:.0}GB", f.ram_total_gb.unwrap_or_default()),
                 recommended: "16GB+".into(),
                 description: "Upgrade to at least 16GB RAM".into(),
                 expected_impact: "40-60% reduction in memory-related slowdowns".into(),
                 priority: 9,
                 cost_tier: 2,
             });
-        } else if f.ram_total_gb < 16.0 && f.has_discrete_gpu {
+        } else if f.ram_below(16.0) && f.is_discrete_gpu() {
             recs.push(UpgradeRecommendation {
                 component: "RAM".into(),
-                current: format!("{:.0}GB", f.ram_total_gb),
+                current: format!("{:.0}GB", f.ram_total_gb.unwrap_or_default()),
                 recommended: "32GB".into(),
                 description: "Upgrade RAM for GPU workloads".into(),
                 expected_impact: "20-30% better multitasking and GPU workflow performance".into(),
@@ -2639,7 +2843,7 @@ impl HardwareInferenceEngine {
         }
 
         // Storage upgrades
-        if !f.has_ssd && !f.has_nvme {
+        if f.has_ssd == Some(false) {
             recs.push(UpgradeRecommendation {
                 component: "Boot Drive".into(),
                 current: "HDD".into(),
@@ -2649,7 +2853,10 @@ impl HardwareInferenceEngine {
                 priority: 10,
                 cost_tier: 2,
             });
-        } else if f.has_ssd && !f.has_nvme && f.cpu_cores_physical.is_some_and(|v| v >= 8) {
+        } else if f.has_ssd == Some(true)
+            && f.has_nvme == Some(false)
+            && f.cpu_cores_physical.is_some_and(|v| v >= 8)
+        {
             recs.push(UpgradeRecommendation {
                 component: "Boot Drive".into(),
                 current: "SATA SSD".into(),
@@ -2689,7 +2896,10 @@ impl HardwareInferenceEngine {
                 BottleneckType::NetworkBound if bn.severity > 40 => {
                     recs.push(UpgradeRecommendation {
                         component: "Network".into(),
-                        current: format!("{:.0} Gbps NIC", f.max_nic_speed_gbps),
+                        current: format!(
+                            "{:.0} Gbps NIC",
+                            f.max_nic_speed_gbps.unwrap_or_default()
+                        ),
                         recommended: "10 GbE NIC".into(),
                         description: "Network is a bottleneck for server workloads".into(),
                         expected_impact: "10x network throughput".into(),
@@ -2715,11 +2925,12 @@ impl HardwareInferenceEngine {
         let mut anomalies = Vec::new();
 
         // Huge GPU + tiny RAM
-        if f.gpu_vram_gb >= 16.0 && f.ram_total_gb < 16.0 {
+        if f.vram_at_least(16.0) && f.ram_below(16.0) {
             anomalies.push(HardwareAnomaly {
                 description: format!(
                     "GPU has {:.0}GB VRAM but system only has {:.0}GB RAM",
-                    f.gpu_vram_gb, f.ram_total_gb
+                    f.gpu_vram_gb.unwrap_or_default(),
+                    f.ram_total_gb.unwrap_or_default()
                 ),
                 severity: AnomalySeverity::Warning,
                 explanation:
@@ -2739,17 +2950,20 @@ impl HardwareInferenceEngine {
         }
 
         // More GPU VRAM than system RAM
-        if f.gpu_vram_gb > f.ram_total_gb && f.gpu_vram_gb > 0.0 {
-            anomalies.push(HardwareAnomaly {
-                description: format!(
-                    "GPU VRAM ({:.0}GB) exceeds system RAM ({:.0}GB)",
-                    f.gpu_vram_gb, f.ram_total_gb
-                ),
-                severity: AnomalySeverity::Warning,
-                explanation:
-                    "System RAM should typically be at least 2x GPU VRAM for optimal performance"
-                        .into(),
-            });
+        // Both sizes must be read: a missing VRAM or RAM figure is not a comparison.
+        if let (Some(vram), Some(ram)) = (f.gpu_vram_gb, f.ram_total_gb) {
+            if vram > ram && vram > 0.0 {
+                anomalies.push(HardwareAnomaly {
+                    description: format!(
+                        "GPU VRAM ({:.0}GB) exceeds system RAM ({:.0}GB)",
+                        vram, ram
+                    ),
+                    severity: AnomalySeverity::Warning,
+                    explanation:
+                        "System RAM should typically be at least 2x GPU VRAM for optimal performance"
+                            .into(),
+                });
+            }
         }
 
         // Many cores + low frequency
@@ -2768,8 +2982,8 @@ impl HardwareInferenceEngine {
         }
 
         // No discrete GPU with tensor expectations
-        if !f.has_discrete_gpu
-            && f.ram_total_gb >= 64.0
+        if f.has_discrete_gpu == Some(false)
+            && f.ram_at_least(64.0)
             && f.cpu_cores_physical.is_some_and(|v| v >= 16)
         {
             anomalies.push(HardwareAnomaly {
@@ -2781,12 +2995,14 @@ impl HardwareInferenceEngine {
         }
 
         // Very large storage with slow network
-        if f.total_storage_gb >= 10000.0 && f.max_nic_speed_gbps < 10.0 {
+        if f.total_storage_gb.is_some_and(|v| v >= 10000.0)
+            && f.max_nic_speed_gbps.is_some_and(|v| v < 10.0)
+        {
             anomalies.push(HardwareAnomaly {
                 description: format!(
                     "{:.0}TB storage with only {:.0} Gbps network",
-                    f.total_storage_gb / 1000.0,
-                    f.max_nic_speed_gbps
+                    f.total_storage_gb.unwrap_or_default() / 1000.0,
+                    f.max_nic_speed_gbps.unwrap_or_default()
                 ),
                 severity: AnomalySeverity::Warning,
                 explanation: "Large storage with slow network — data transfers will be slow".into(),
@@ -2808,11 +3024,20 @@ impl HardwareInferenceEngine {
         self.features.cpu_model.hash(&mut hasher);
         self.features.cpu_cores_physical.hash(&mut hasher);
         self.features.cpu_cores_logical.hash(&mut hasher);
-        (self.features.ram_total_gb as u64).hash(&mut hasher);
+        self.features
+            .ram_total_gb
+            .map(|v| v as u64)
+            .hash(&mut hasher);
         self.features.gpu_model.hash(&mut hasher);
-        (self.features.gpu_vram_gb as u64).hash(&mut hasher);
+        self.features
+            .gpu_vram_gb
+            .map(|v| v as u64)
+            .hash(&mut hasher);
         self.features.has_nvme.hash(&mut hasher);
-        (self.features.total_storage_gb as u64).hash(&mut hasher);
+        self.features
+            .total_storage_gb
+            .map(|v| v as u64)
+            .hash(&mut hasher);
 
         format!("{:016x}", hasher.finish())
     }
@@ -2866,7 +3091,7 @@ mod tests {
         // scores as it always did.
         let one_reading = HardwareInferenceEngine {
             features: HardwareFeatures {
-                ram_total_gb: 32.0,
+                ram_total_gb: Some(32.0),
                 ..HardwareFeatures::default()
             },
         };
@@ -2896,31 +3121,31 @@ mod tests {
                 has_ecc: Some(false),
                 cpu_tdp_watts: Some(125.0),
                 cpu_tdp_measured: false,
-                ram_total_gb: 32.0,
+                ram_total_gb: Some(32.0),
                 ram_channels: 2,
                 ram_speed_mhz: 3600,
-                has_discrete_gpu: true,
+                has_discrete_gpu: Some(true),
                 gpu_count: 1,
                 gpu_model: "NVIDIA GeForce RTX 4070 Ti".into(),
-                gpu_vram_gb: 12.0,
-                has_tensor_cores: true,
-                has_rt_cores: true,
+                gpu_vram_gb: Some(12.0),
+                has_tensor_cores: Some(true),
+                has_rt_cores: Some(true),
                 gpu_tdp_watts: Some(285.0),
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
                 gpu_adapters_counted: 1,
-                has_nvme: true,
-                has_ssd: true,
-                total_storage_gb: 2000.0,
-                boot_drive_type: "NVMe".into(),
+                has_nvme: Some(true),
+                has_ssd: Some(true),
+                total_storage_gb: Some(2000.0),
+                boot_drive_type: Some("NVMe".into()),
                 has_battery: false,
                 chassis_type: Some("Desktop".into()),
                 is_virtual: false,
                 numa_nodes: Some(1),
                 pcie_gen: 4,
-                max_nic_speed_gbps: 2.5,
-                nic_count: 1,
+                max_nic_speed_gbps: Some(2.5),
+                nic_count: Some(1),
             },
         };
 
@@ -2947,31 +3172,31 @@ mod tests {
                 has_ecc: Some(true),
                 cpu_tdp_watts: Some(225.0),
                 cpu_tdp_measured: false,
-                ram_total_gb: 512.0,
+                ram_total_gb: Some(512.0),
                 ram_channels: 8,
                 ram_speed_mhz: 4800,
-                has_discrete_gpu: false,
+                has_discrete_gpu: Some(false),
                 gpu_count: 0,
                 gpu_model: String::new(),
-                gpu_vram_gb: 0.0,
-                has_tensor_cores: false,
-                has_rt_cores: false,
+                gpu_vram_gb: None,
+                has_tensor_cores: Some(false),
+                has_rt_cores: Some(false),
                 gpu_tdp_watts: None,
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
                 gpu_adapters_counted: 1,
-                has_nvme: true,
-                has_ssd: true,
-                total_storage_gb: 15000.0,
-                boot_drive_type: "NVMe".into(),
+                has_nvme: Some(true),
+                has_ssd: Some(true),
+                total_storage_gb: Some(15000.0),
+                boot_drive_type: Some("NVMe".into()),
                 has_battery: false,
                 chassis_type: Some("Server".into()),
                 is_virtual: false,
                 numa_nodes: Some(2),
                 pcie_gen: 5,
-                max_nic_speed_gbps: 25.0,
-                nic_count: 4,
+                max_nic_speed_gbps: Some(25.0),
+                nic_count: Some(4),
             },
         };
 
@@ -3000,31 +3225,31 @@ mod tests {
                 has_ecc: Some(false),
                 cpu_tdp_watts: Some(15.0),
                 cpu_tdp_measured: false,
-                ram_total_gb: 8.0,
+                ram_total_gb: Some(8.0),
                 ram_channels: 2,
                 ram_speed_mhz: 3200,
-                has_discrete_gpu: true,
+                has_discrete_gpu: Some(true),
                 gpu_count: 1,
                 gpu_model: "NVIDIA GeForce RTX 4070 Laptop".into(),
-                gpu_vram_gb: 8.0,
-                has_tensor_cores: true,
-                has_rt_cores: true,
+                gpu_vram_gb: Some(8.0),
+                has_tensor_cores: Some(true),
+                has_rt_cores: Some(true),
                 gpu_tdp_watts: Some(100.0),
                 // Synthetic features, so the figure above is the table's, not a
                 // driver's, and it prices one adapter.
                 gpu_tdp_measured: false,
                 gpu_adapters_counted: 1,
-                has_nvme: true,
-                has_ssd: true,
-                total_storage_gb: 512.0,
-                boot_drive_type: "NVMe".into(),
+                has_nvme: Some(true),
+                has_ssd: Some(true),
+                total_storage_gb: Some(512.0),
+                boot_drive_type: Some("NVMe".into()),
                 has_battery: true,
                 chassis_type: Some("Laptop".into()),
                 is_virtual: false,
                 numa_nodes: Some(1),
                 pcie_gen: 4,
-                max_nic_speed_gbps: 1.0,
-                nic_count: 1,
+                max_nic_speed_gbps: Some(1.0),
+                nic_count: Some(1),
             },
         };
 
@@ -3157,11 +3382,11 @@ mod tests {
                 cpu_cores_physical: Some(2),
                 cpu_cores_logical: Some(4),
                 cpu_max_freq_mhz: Some(1800),
-                ram_total_gb: 4.0,
-                has_discrete_gpu: false,
-                has_ssd: false,
-                has_nvme: false,
-                total_storage_gb: 500.0,
+                ram_total_gb: Some(4.0),
+                has_discrete_gpu: Some(false),
+                has_ssd: Some(false),
+                has_nvme: Some(false),
+                total_storage_gb: Some(500.0),
                 ..HardwareFeatures::default()
             },
         };
@@ -3176,13 +3401,13 @@ mod tests {
                 cpu_cores_physical: Some(16),
                 cpu_cores_logical: Some(32),
                 cpu_max_freq_mhz: Some(4500),
-                ram_total_gb: 128.0,
-                has_discrete_gpu: true,
-                gpu_vram_gb: 24.0,
-                has_tensor_cores: true,
-                has_nvme: true,
-                has_ssd: true,
-                total_storage_gb: 4000.0,
+                ram_total_gb: Some(128.0),
+                has_discrete_gpu: Some(true),
+                gpu_vram_gb: Some(24.0),
+                has_tensor_cores: Some(true),
+                has_nvme: Some(true),
+                has_ssd: Some(true),
+                total_storage_gb: Some(4000.0),
                 ..HardwareFeatures::default()
             },
         };
@@ -3192,6 +3417,178 @@ mod tests {
             .find(|w| w.workload == Workload::MlTraining)
             .unwrap();
         assert!(ml.score >= 60); // Should score well for ML
+    }
+
+    fn engine_with(features: HardwareFeatures) -> HardwareInferenceEngine {
+        HardwareInferenceEngine { features }
+    }
+
+    fn workload(engine: &HardwareInferenceEngine, kind: Workload) -> WorkloadSuitability {
+        engine
+            .score_workloads()
+            .into_iter()
+            .find(|w| w.workload == kind)
+            .unwrap()
+    }
+
+    // Each test below leaves one input `None` (unread) and checks that the rules which
+    // depend on it emit nothing. Without the `None` check, the same rules fire as if the
+    // value were zero or false, which is how the advice used to be generated.
+
+    #[test]
+    fn unread_storage_emits_no_storage_advice() {
+        let unread = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(16),
+            ..HardwareFeatures::default()
+        });
+        assert!(!unread
+            .detect_bottlenecks()
+            .iter()
+            .any(|b| matches!(b.bottleneck_type, BottleneckType::StorageBound)));
+        assert!(!unread
+            .suggest_upgrades(&[])
+            .iter()
+            .any(|u| u.component == "Boot Drive"));
+        assert!(!workload(&unread, Workload::DatabaseServer)
+            .limiting_factors
+            .iter()
+            .any(|s| s.contains("HDD")));
+
+        // The same machine with its disks read as spinning rust does get the advice.
+        let hdd = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(16),
+            has_ssd: Some(false),
+            has_nvme: Some(false),
+            ..HardwareFeatures::default()
+        });
+        assert!(hdd
+            .detect_bottlenecks()
+            .iter()
+            .any(|b| matches!(b.bottleneck_type, BottleneckType::StorageBound)));
+        assert!(hdd
+            .suggest_upgrades(&[])
+            .iter()
+            .any(|u| u.component == "Boot Drive"));
+    }
+
+    #[test]
+    fn unread_vram_emits_no_vram_advice() {
+        // A discrete card whose memory was not read, in a machine whose RAM was.
+        let engine = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(8),
+            ram_total_gb: Some(8.0),
+            has_discrete_gpu: Some(true),
+            gpu_vram_gb: None,
+            ..HardwareFeatures::default()
+        });
+        assert!(!engine
+            .detect_bottlenecks()
+            .iter()
+            .any(|b| b.reason.contains("GPU workloads")));
+        assert!(!engine
+            .detect_anomalies()
+            .iter()
+            .any(|a| a.description.contains("VRAM")));
+        assert!(!workload(&engine, Workload::MlTraining)
+            .limiting_factors
+            .iter()
+            .any(|s| s.contains("VRAM")));
+    }
+
+    #[test]
+    fn unread_ram_emits_no_ram_advice() {
+        let engine = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(16),
+            has_discrete_gpu: Some(true),
+            gpu_vram_gb: Some(24.0),
+            ..HardwareFeatures::default()
+        });
+        assert!(!engine
+            .suggest_upgrades(&[])
+            .iter()
+            .any(|u| u.component == "RAM"));
+        assert!(!engine
+            .detect_anomalies()
+            .iter()
+            .any(|a| a.description.contains("RAM")));
+        assert!(!engine
+            .detect_bottlenecks()
+            .iter()
+            .any(|b| b.component == "System RAM"));
+        assert!(!workload(&engine, Workload::MlTraining)
+            .limiting_factors
+            .iter()
+            .any(|s| s.contains("RAM")));
+    }
+
+    #[test]
+    fn unread_gpu_presence_emits_no_gpu_absence_advice() {
+        let engine = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(16),
+            ram_total_gb: Some(64.0),
+            has_discrete_gpu: None,
+            ..HardwareFeatures::default()
+        });
+        assert!(!engine
+            .detect_anomalies()
+            .iter()
+            .any(|a| a.description.contains("no discrete GPU")));
+        for kind in [Workload::MlInference, Workload::Gaming] {
+            assert!(!workload(&engine, kind)
+                .limiting_factors
+                .iter()
+                .any(|s| s.contains("No discrete GPU")));
+        }
+    }
+
+    #[test]
+    fn unread_network_emits_no_network_advice() {
+        let engine = engine_with(HardwareFeatures {
+            cpu_cores_physical: Some(64),
+            is_server_cpu: true,
+            ram_total_gb: Some(512.0),
+            total_storage_gb: Some(15000.0),
+            max_nic_speed_gbps: None,
+            nic_count: None,
+            ..HardwareFeatures::default()
+        });
+        assert!(!engine
+            .detect_bottlenecks()
+            .iter()
+            .any(|b| matches!(b.bottleneck_type, BottleneckType::NetworkBound)));
+        assert!(!engine
+            .detect_anomalies()
+            .iter()
+            .any(|a| a.description.contains("Gbps")));
+        assert!(!engine
+            .suggest_upgrades(&[])
+            .iter()
+            .any(|u| u.component == "Network"));
+        assert!(!workload(&engine, Workload::WebServer)
+            .limiting_factors
+            .iter()
+            .any(|s| s.contains("Slow network")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_output_is_read_as_items_or_as_nothing() {
+        // One object, as ConvertTo-Json emits for a single disk, and an array for several.
+        assert_eq!(json_items(r#"{"Name":"a"}"#).map(|v| v.len()), Some(1));
+        assert_eq!(
+            json_items(r#"[{"Name":"a"},{"Name":"b"}]"#).map(|v| v.len()),
+            Some(2)
+        );
+        // No output, or text that is not JSON, is unread rather than an empty list.
+        assert_eq!(json_items(""), None);
+        assert_eq!(json_items("Get-PhysicalDisk : not recognized"), None);
+
+        // A media or bus type PowerShell reports as "Unspecified" is not a classification.
+        let table = &[("hdd", 3), ("ssd", 4)];
+        let unspecified = serde_json::Value::String("Unspecified".into());
+        assert_eq!(wmi_enum(Some(&unspecified), table), None);
+        let ssd = serde_json::Value::String("SSD".into());
+        assert_eq!(wmi_enum(Some(&ssd), table), Some(4));
     }
 
     #[test]

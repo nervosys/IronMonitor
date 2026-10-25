@@ -240,8 +240,11 @@ pub struct AiWorkload {
     pub training_metrics: Option<TrainingMetrics>,
     /// Inference metrics (if applicable)
     pub inference_metrics: Option<InferenceMetrics>,
-    /// GPU indices used
-    pub gpu_indices: Vec<usize>,
+    /// GPU indices this process is attributed to. `None` where attribution does not run
+    /// on this platform, or where it could not be read. `Some` with an empty list is a
+    /// reading that found no GPU. Used to be an empty `Vec` on every platform that did not
+    /// attribute, which read as "uses no GPU".
+    pub gpu_indices: Option<Vec<usize>>,
     /// TPU configuration (if applicable)
     pub tpu_config: Option<TpuConfig>,
     /// Distributed configuration
@@ -547,8 +550,12 @@ impl AiWorkloadMonitor {
         // Check if this process is using GPU via NVML
         let gpu_indices = self.detect_gpu_usage(pid)?;
 
+        // A `None` list is not evidence of GPU use, so it does not count as GPU use here.
+        // The skip keeps its existing meaning: no GPU evidence and no framework.
+        let gpu_in_use = gpu_indices.as_deref().is_some_and(|g| !g.is_empty());
+
         // If no GPU usage and unknown framework, skip
-        if gpu_indices.is_empty() && framework == AiFramework::Unknown {
+        if !gpu_in_use && framework == AiFramework::Unknown {
             return Ok(None);
         }
 
@@ -557,7 +564,7 @@ impl AiWorkloadMonitor {
             WorkloadType::Training
         } else if exe_lower.contains("serve") || exe_lower.contains("server") {
             WorkloadType::Inference
-        } else if !gpu_indices.is_empty() {
+        } else if gpu_in_use {
             // Has GPU, likely inference or training
             WorkloadType::Inference
         } else {
@@ -725,7 +732,8 @@ impl AiWorkloadMonitor {
             // performance API call here to supply GPU figures.
             training_metrics: None,
             inference_metrics: None,
-            gpu_indices: Vec::new(),
+            // Metal attribution is not performed here, so this is unread rather than empty.
+            gpu_indices: None,
             tpu_config: None,
             distributed_config: None,
             cloud_provider,
@@ -889,9 +897,12 @@ impl AiWorkloadMonitor {
     }
 
     #[allow(dead_code)]
-    fn detect_gpu_usage(&self, _pid: u32) -> Result<Vec<usize>> {
+    fn detect_gpu_usage(&self, _pid: u32) -> Result<Option<Vec<usize>>> {
         // Check which GPUs this process is using
-        // This would ideally query GPU drivers, but for now we can check CUDA_VISIBLE_DEVICES
+        // This would ideally query GPU drivers, but for now we can check CUDA_VISIBLE_DEVICES.
+        // Only a set CUDA_VISIBLE_DEVICES is a list. Its absence means the process sees every
+        // GPU, which says nothing about which it uses, so that is `None` too. Windows and macOS
+        // do not attribute GPU use at all, so they are `None`.
         #[cfg(target_os = "linux")]
         {
             use std::fs;
@@ -899,15 +910,17 @@ impl AiWorkloadMonitor {
             if let Ok(environ) = fs::read_to_string(&environ_path) {
                 let env_map = self.parse_environ(&environ);
                 if let Some(cuda_devices) = env_map.get("CUDA_VISIBLE_DEVICES") {
-                    return Ok(cuda_devices
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect());
+                    return Ok(Some(
+                        cuda_devices
+                            .split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect(),
+                    ));
                 }
             }
         }
 
-        Ok(Vec::new())
+        Ok(None)
     }
 
     #[allow(dead_code)]

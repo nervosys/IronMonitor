@@ -61,10 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Cloud:      {:?}", workload.cloud_provider);
 
                 // Show GPU usage
-                if !workload.gpu_indices.is_empty() {
-                    println!("  GPUs:       {:?}", workload.gpu_indices);
-                } else {
-                    println!("  GPUs:       Not using GPU");
+                match &workload.gpu_indices {
+                    Some(gpus) if !gpus.is_empty() => println!("  GPUs:       {:?}", gpus),
+                    Some(_) => println!("  GPUs:       Not using GPU"),
+                    None => println!("  GPUs:       unknown (not attributed on this platform)"),
                 }
 
                 // Show TPU configuration if applicable
