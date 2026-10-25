@@ -54,6 +54,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- RAPL: an unread `enabled` attribute is no longer published as a measured
+  `true`; a missing powercap tree is an error, not "present with no domains";
+  PSys is reported separately instead of being added to the package total; and
+  `efficiency_ratio` is renamed `tdp_headroom_fraction`, which is what it is.
+- System power draw counts only a discharging battery. It used to sum USB-PD
+  ports and a charging battery's inflow. Windows now reads the battery's
+  Charging and Discharging properties.
+- Watchdog, voltage regulator and thermal zone readers no longer turn unread
+  sysfs attributes into "no governor", `triggered: false`, a "software only"
+  verdict, the sysfs id as a supply name, or a zone type of "unknown". A
+  missing regulator class is an error, and trip points are no longer capped at
+  twenty without saying so.
+- Storage controllers: macOS no longer publishes a literal namespace count of 1
+  and transport `pcie`; inactive md arrays parse correctly and are `inactive`,
+  not `failed`; an interface with no evidence is `unknown`, not SCSI or the WMI
+  query class. Windows NVMe controllers say their identity was not read rather
+  than that they are not NVMe.
+- SMART enumeration failures are errors rather than "no drives", and the macOS
+  `diskutil` fallback, which could never match, now parses its plist. EDAC
+  enumerates controllers, csrows and DIMMs instead of fixed ranges, and an
+  absent label is unavailable rather than the directory index.
+- Memory channels are derived from DIMM locators or not at all: a failed
+  `dmidecode` is no longer a one-channel machine, and Windows no longer infers
+  slot count from installed modules. Peak bandwidth is unavailable when the
+  channel count is. Windows swap free and per-process swap no longer report
+  commit headroom and paged pool.
+- Processes: GPU attribution that did not run is unknown rather than "no GPU";
+  macOS users are names, not uids; categories match whole words. AI workloads no
+  longer call Ollama ONNX, stamp the monitor's clock as the start time, or call
+  an unknown host on-premises.
+- Wine, Proton and `SANDBOX-` computer names are no longer sandbox evidence, so
+  consent no longer refuses Steam Proton users.
+- Printer state is parsed after the queue name, and connection comes from the
+  port, not from "pdf" in the name. Chassis fields read live are published as
+  measured and pass the firmware placeholder filter. WSL no longer reports the
+  kernel release as the Windows build or asserts WSL 1. IPMI `cr` and `nc`
+  statuses are recognised.
+- Linux physical core counts are summed across sockets; multi-socket Windows
+  `Win32_Processor` output is parsed; unidentified CPUs have no microarchitecture
+  name rather than "Unknown Intel"; Graviton process nodes come only from an
+  identified generation; the lockdown mode is the active one; scheduler run
+  queue depth, which read a file mainline Linux does not have, is gone.
+  Interconnect die counts and inter-socket link figures are no longer guessed.
+- NVLink is reported only where NVML shows an active link to the other GPU;
+  pair topology otherwise comes from NVML or is unknown. Windows PCI class comes
+  from the `CC_` hardware id, not the device name, and a device with no bus
+  location is announced rather than keyed by its PnP path.
+- Silicon: NPU vendors come from the PCI vendor id; NVMe link bandwidth is in
+  megabytes, not megabits; per-CPU utilization is differenced between samples;
+  RAPL counter wraps are handled; Windows NPU vendors are no longer guessed from
+  names.
+- Hardware advice no longer fires from unread inputs: no "replace HDD" when the
+  disks were not classified, no VRAM verdict from a failed read, no "no discrete
+  GPU" for an NVIDIA card, and CPU clock rules use the rated maximum.
+- NVIDIA `integrated` is unread. It came from a product-name match; NVML has no
+  such property.
+- The Jetson clocks, power mode and swap commands run `sudo -n`, require
+  `--confirm`, and record every attempt in the apply audit log.
 - A failed GPU enumeration is no longer reported as `gpu.<none>`, which says the
   machine has no GPU. It is now the new domain diagnostic `gpu.<unreadable>`,
   which carries the error and says whether GPUs exist is unknown. `gpu.<none>`

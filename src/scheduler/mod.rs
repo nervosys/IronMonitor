@@ -260,7 +260,9 @@ impl SchedulerMonitor {
             // back to 0, which published an unparsed line as cpu0 with no time
             // run or waited.
             let field = |i: usize| parts.get(i).and_then(|s| s.parse::<u64>().ok());
-            let Some(cpu) = parts[0].strip_prefix("cpu").and_then(|s| s.parse::<u32>().ok())
+            let Some(cpu) = parts[0]
+                .strip_prefix("cpu")
+                .and_then(|s| s.parse::<u32>().ok())
             else {
                 continue;
             };
