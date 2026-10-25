@@ -1465,7 +1465,7 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
 
                 // Try to open process for more info
                 let mut memory_kb = 0u64;
-                let mut cpu_percent = 0.0f32;
+                let mut cpu_percent: Option<f32> = None;
 
                 if let Ok(process_handle) =
                     OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
@@ -1508,16 +1508,19 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
                         let total_time = kernel + user;
                         let uptime_100ns = get_system_uptime().as_nanos() as u64 / 100;
                         if uptime_100ns > 0 {
-                            cpu_percent = (total_time as f64 / uptime_100ns as f64 * 100.0) as f32;
-                            cpu_percent = cpu_percent.min(100.0);
+                            let percent = (total_time as f64 / uptime_100ns as f64 * 100.0) as f32;
+                            cpu_percent = Some(percent.min(100.0));
                         }
                     }
 
                     let _ = CloseHandle(process_handle);
                 }
 
-                // Determine process state based on thread count
-                let state = if entry.cntThreads > 0 { 'R' } else { 'S' };
+                // Not read. This was `R` whenever the process had a thread, which
+                // is every process, so the R/S split it produced was a constant.
+                // Toolhelp does not report a run state, and the thread count is
+                // not one.
+                let state = None;
 
                 // Only include processes with significant memory usage (> 1MB)
                 if memory_kb > 1024 {
@@ -1532,7 +1535,9 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
                         state,
                         cpu_percent,
                         memory_kb,
-                        gpu_memory_kb: 0, // Filled in by GPU module
+                        // Not read here, and no GPU module fills it in. This was
+                        // `0`, which reads as "no GPU memory in use".
+                        gpu_memory_kb: None,
                         name,
                     });
                 }

@@ -2806,10 +2806,10 @@ fn format_size(kb: u64) -> String {
 fn print_process_info(processes: &ironmonitor::core::process::ProcessStats) {
     println!("=== Process Information ===");
     println!("Total Processes: {}", processes.process_count());
-    println!(
-        "Total GPU Memory: {:.2} MB\n",
-        processes.total_gpu_memory_kb as f64 / 1024.0
-    );
+    match processes.total_gpu_memory_kb {
+        Some(kb) => println!("Total GPU Memory: {:.2} MB\n", kb as f64 / 1024.0),
+        None => println!("Total GPU Memory: unknown\n"),
+    }
 
     if processes.process_count() > 0 {
         println!(
@@ -2820,14 +2820,17 @@ fn print_process_info(processes: &ironmonitor::core::process::ProcessStats) {
 
         for proc in processes.sorted_by_gpu_memory().iter().take(10) {
             println!(
-                "{:<8} {:<12} {:<8} {:<8} {:<8} {:<10.1} {:<10} {:<20}",
+                "{:<8} {:<12} {:<8} {:<8} {:<8} {:<10} {:<10} {:<20}",
                 proc.pid,
                 proc.user,
                 proc.gpu,
                 proc.process_type.as_deref().unwrap_or("-"),
-                proc.state,
-                proc.cpu_percent,
-                format_size(proc.gpu_memory_kb),
+                proc.state
+                    .map_or_else(|| "unknown".to_string(), String::from),
+                proc.cpu_percent
+                    .map_or_else(|| "unknown".to_string(), |c| format!("{c:.1}")),
+                proc.gpu_memory_kb
+                    .map_or_else(|| "unknown".to_string(), format_size),
                 proc.name,
             );
         }
@@ -2986,10 +2989,11 @@ fn print_engine_info(engines: &ironmonitor::core::engine::EngineStats) {
             println!("\n  {} {}", "▶".green(), group_name.white().bold());
 
             for (engine_name, info) in group_engines {
-                let status = if info.online {
-                    "ONLINE".green()
-                } else {
-                    "OFFLINE".red()
+                // An engine whose enable count was not read is unknown, not offline.
+                let status = match info.online {
+                    Some(true) => "ONLINE".green(),
+                    Some(false) => "OFFLINE".red(),
+                    None => "UNKNOWN".yellow(),
                 };
                 let current = info
                     .current

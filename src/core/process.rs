@@ -15,14 +15,18 @@ pub struct ProcessInfo {
     pub process_type: Option<String>,
     /// Priority
     pub priority: i32,
-    /// Process state (R, S, D, Z, T, etc.)
-    pub state: char,
-    /// CPU usage percentage
-    pub cpu_percent: f32,
+    /// Process state (R, S, D, Z, T, etc.), or `None` where it was not read.
+    /// Windows used to report `R` for any process with a thread, which was
+    /// every process.
+    pub state: Option<char>,
+    /// CPU usage percentage, `None` where it was not read. Windows used to
+    /// report `0.0` when the process times could not be queried.
+    pub cpu_percent: Option<f32>,
     /// Memory used in KB
     pub memory_kb: u64,
-    /// GPU memory used in KB
-    pub gpu_memory_kb: u64,
+    /// GPU memory used in KB, `None` where it was not read. Windows never
+    /// filled this in; it was `0` and read as "no GPU memory".
+    pub gpu_memory_kb: Option<u64>,
     /// Process name
     pub name: String,
 }
@@ -32,8 +36,10 @@ pub struct ProcessInfo {
 pub struct ProcessStats {
     /// GPU processes
     pub processes: Vec<ProcessInfo>,
-    /// Total GPU memory used by all processes
-    pub total_gpu_memory_kb: u64,
+    /// Total GPU memory used by all processes, `None` where the platform reader
+    /// did not measure it. `0` here used to mean both "no GPU memory" and "not
+    /// read".
+    pub total_gpu_memory_kb: Option<u64>,
 }
 
 impl ProcessStats {
@@ -50,7 +56,7 @@ impl ProcessStats {
     pub fn empty() -> Self {
         Self {
             processes: Vec::new(),
-            total_gpu_memory_kb: 0,
+            total_gpu_memory_kb: None,
         }
     }
 
@@ -62,6 +68,8 @@ impl ProcessStats {
     /// Get processes sorted by GPU memory usage
     pub fn sorted_by_gpu_memory(&self) -> Vec<&ProcessInfo> {
         let mut procs: Vec<&ProcessInfo> = self.processes.iter().collect();
+        // `None` (not read) is the smallest `Option`, so under `Reverse` it ranks
+        // after every measured figure.
         procs.sort_by_key(|p| std::cmp::Reverse(p.gpu_memory_kb));
         procs
     }
@@ -74,6 +82,7 @@ impl ProcessStats {
                 .partial_cmp(&a.cpu_percent)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        // `None` compares below every value, so unread CPU ranks last.
         procs
     }
 }
@@ -99,7 +108,9 @@ pub(crate) mod linux {
         // Check if nvmap is available (Jetson)
         let nvmap_path = "/sys/kernel/debug/nvmap/iovmm/maps";
         if !Path::new(nvmap_path).exists() {
-            // Not a Jetson or nvmap not available
+            // Not a Jetson or nvmap not available. Nothing was read, so the
+            // total stays `None`: it used to be `0`, which is a measured "no GPU
+            // memory in use".
             return Ok(stats);
         }
 
@@ -126,31 +137,35 @@ pub(crate) mod linux {
     /// what any position meant — and neither could a reader.
     type NvmapRow = (u32, String, String, u64);
 
-    fn parse_nvmap_table(path: &str) -> Result<(u64, Vec<NvmapRow>)> {
+    /// The total is `None` when its line is absent or unparseable. A client
+    /// whose size does not parse is left out rather than reported as holding
+    /// zero bytes of GPU memory.
+    fn parse_nvmap_table(path: &str) -> Result<(Option<u64>, Vec<NvmapRow>)> {
         let content = fs::read_to_string(path)?;
         let mut processes = Vec::new();
-        let mut total = 0u64;
+        let mut total = None;
 
         for line in content.lines() {
             // Parse lines like: "user process PID sizeU"
             let parts: Vec<&str> = line.split_whitespace().collect();
 
-            if parts.len() >= 4 {
-                if parts[0] == "total" {
-                    // Parse total line
-                    if let Some(size_str) = parts.get(1) {
-                        total = parse_size_with_unit(size_str);
-                    }
-                    continue;
+            // The total line is checked before the field count: it may carry
+            // only the size, and the count check used to drop it.
+            if parts.first() == Some(&"total") {
+                if let Some(size_str) = parts.get(1) {
+                    total = parse_size_with_unit(size_str);
                 }
+                continue;
+            }
 
+            if parts.len() >= 4 {
                 // Parse process line
                 if let Ok(pid) = parts[2].parse::<u32>() {
-                    let user = parts[0].to_string();
-                    let name = parts[1].to_string();
-                    let size = parse_size_with_unit(parts[3]);
-
-                    processes.push((pid, user, name, size));
+                    if let Some(size) = parse_size_with_unit(parts[3]) {
+                        let user = parts[0].to_string();
+                        let name = parts[1].to_string();
+                        processes.push((pid, user, name, size));
+                    }
                 }
             }
         }
@@ -158,17 +173,11 @@ pub(crate) mod linux {
         Ok((total, processes))
     }
 
-    fn parse_size_with_unit(size_str: &str) -> u64 {
-        // Parse sizes like "1234K", "5M", "1G"
-        if size_str.is_empty() {
-            return 0;
-        }
-
+    /// Parse a size such as `1234K`, `5M` or `1G`. `None` when the number does
+    /// not parse. It used to be `0`, which read as a client holding no memory.
+    fn parse_size_with_unit(size_str: &str) -> Option<u64> {
         // Security: Safely get last character without unwrap
-        let last_char = match size_str.chars().last() {
-            Some(c) => c,
-            None => return 0,
-        };
+        let last_char = size_str.chars().last()?;
 
         let (num_str, unit) = if last_char.is_alphabetic() {
             let last_idx = size_str.len() - last_char.len_utf8();
@@ -177,14 +186,14 @@ pub(crate) mod linux {
             (size_str, 'K')
         };
 
-        let num: u64 = num_str.parse().unwrap_or(0);
+        let num: u64 = num_str.parse().ok()?;
 
-        match unit {
+        Some(match unit {
             'K' | 'k' => num,
             'M' | 'm' => num * 1024,
             'G' | 'g' => num * 1024 * 1024,
             _ => num,
-        }
+        })
     }
 
     fn read_uptime() -> Result<f64> {
@@ -249,7 +258,7 @@ pub(crate) mod linux {
             as f64;
         let total_time = (utime + stime) / clk_tck;
         let proc_uptime = (uptime - (starttime / clk_tck)).max(1.0);
-        let cpu_percent = (100.0 * (total_time / proc_uptime)) as f32;
+        let cpu_percent = Some((100.0 * (total_time / proc_uptime)) as f32);
 
         // Read /proc/[pid]/statm for memory
         let statm_content = fs::read_to_string(format!("{}/statm", proc_path))?;
@@ -279,11 +288,56 @@ pub(crate) mod linux {
             // the Windows reader used to report as "System".
             process_type: None,
             priority,
-            state,
+            state: Some(state),
             cpu_percent,
             memory_kb: vm_rss,
-            gpu_memory_kb: gpu_mem,
+            gpu_memory_kb: Some(gpu_mem),
             name: name.to_string(),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn nvmap_sizes_are_parsed_or_refused() {
+            assert_eq!(parse_size_with_unit("1234K"), Some(1234));
+            assert_eq!(parse_size_with_unit("5M"), Some(5 * 1024));
+            assert_eq!(parse_size_with_unit("1G"), Some(1024 * 1024));
+            assert_eq!(parse_size_with_unit("77"), Some(77));
+            assert_eq!(parse_size_with_unit(""), None);
+            assert_eq!(parse_size_with_unit("K"), None);
+            assert_eq!(parse_size_with_unit("abcM"), None);
+        }
+
+        #[test]
+        fn a_client_with_an_unreadable_size_is_left_out_not_zeroed() {
+            let dir = std::env::temp_dir().join(format!(
+                "ironmon-nvmap-{}-{}",
+                std::process::id(),
+                "unreadable-size"
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("maps");
+            let table = [
+                "user name PID size",
+                "total 2048K",
+                "root Xorg 100 512K",
+                "root broken 101 ?M",
+            ]
+            .join("\n");
+            fs::write(&path, table).unwrap();
+            let (total, rows) = parse_nvmap_table(path.to_str().unwrap()).unwrap();
+            assert_eq!(total, Some(2048));
+            assert_eq!(
+                rows.len(),
+                1,
+                "the unparseable client must not appear as 0 KB"
+            );
+            assert_eq!(rows[0].0, 100);
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }

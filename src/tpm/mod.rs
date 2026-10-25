@@ -133,6 +133,19 @@ fn count_pcr_banks(base: &std::path::Path) -> Option<u32> {
     (banks > 0).then_some(banks)
 }
 
+/// The TPM status from the two `Win32_Tpm` flags. A flag that was not reported
+/// is `None`, and `None` names no status: `false` here would publish "Disabled"
+/// for a TPM whose state was never read.
+#[cfg(any(target_os = "windows", test))]
+fn status_from_flags(enabled: Option<bool>, activated: Option<bool>) -> TpmStatus {
+    match (enabled, activated) {
+        (Some(false), _) => TpmStatus::Disabled,
+        (Some(true), Some(true)) => TpmStatus::Enabled,
+        (Some(true), Some(false)) => TpmStatus::Locked,
+        (Some(true), None) | (None, _) => TpmStatus::Unknown,
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn version_from_node(pnp_ids: &str) -> Option<TpmVersion> {
     pnp_ids.lines().find_map(|line| {
@@ -218,23 +231,19 @@ impl TpmMonitor {
                 let base = entry.path();
 
                 // Read TPM version from tpm_version_major
-                let version =
-                    if let Ok(major) = std::fs::read_to_string(base.join("tpm_version_major")) {
-                        match major.trim() {
-                            "2" => TpmVersion::V2_0,
-                            "1" => TpmVersion::V1_2,
-                            _ => TpmVersion::Unknown,
-                        }
-                    } else {
-                        // Fallback: check caps or device path
-                        if std::path::Path::new("/dev/tpmrm0").exists() {
-                            TpmVersion::V2_0
-                        } else if std::path::Path::new("/dev/tpm0").exists() {
-                            TpmVersion::V1_2
-                        } else {
-                            TpmVersion::Unknown
-                        }
-                    };
+                // Only `tpm_version_major` says which specification the device
+                // speaks. The device node used to decide it: `/dev/tpmrm0` was
+                // read as 2.0 and `/dev/tpm0` as 1.2, which is a guess from the
+                // node name when the kernel did not say, so an unreadable
+                // attribute is now `Unknown`.
+                let version = match std::fs::read_to_string(base.join("tpm_version_major")) {
+                    Ok(major) => match major.trim() {
+                        "2" => TpmVersion::V2_0,
+                        "1" => TpmVersion::V1_2,
+                        _ => TpmVersion::Unknown,
+                    },
+                    Err(_) => TpmVersion::Unknown,
+                };
 
                 // Read manufacturer from caps
                 let caps = std::fs::read_to_string(base.join("caps")).unwrap_or_default();
@@ -263,15 +272,18 @@ impl TpmMonitor {
                 let pcr_banks = count_pcr_banks(&base);
 
                 // Algorithms, from the `pcr-*` directories the driver exposes.
-                // An empty result is left empty: it used to be replaced with
+                // No `pcr-*` directory means the driver exposed no banks to
+                // enumerate, so the list is `None`, not empty: an empty list is
+                // a claim that the device has none. It used to be replaced with
                 // the standard TPM 2.0 list, which is a specification talking,
                 // not this device.
-                let mut algorithms = Vec::new();
-                for algo in &["sha1", "sha256", "sha384", "sha512", "sm3-256"] {
-                    if base.join(format!("pcr-{}", algo)).exists() {
-                        algorithms.push(algo.to_uppercase());
-                    }
-                }
+                let algorithms = pcr_banks.map(|_| {
+                    ["sha1", "sha256", "sha384", "sha512", "sm3-256"]
+                        .iter()
+                        .filter(|algo| base.join(format!("pcr-{}", algo)).exists())
+                        .map(|algo| algo.to_uppercase())
+                        .collect::<Vec<String>>()
+                });
 
                 // Measured boot check (IMA or tpm_bios). Both paths existing is
                 // evidence that measurements are active; neither existing is
@@ -289,7 +301,7 @@ impl TpmMonitor {
                     firmware_version,
                     device_path: format!("/dev/{}", entry.file_name().to_string_lossy()),
                     is_primary: true,
-                    algorithms: Some(algorithms),
+                    algorithms,
                     pcr_banks,
                     measured_boot,
                 });
@@ -336,15 +348,14 @@ impl TpmMonitor {
                 TpmVersion::Unknown
             };
 
-            let enabled = val["IsEnabled_InitialValue"].as_bool().unwrap_or(false);
-            let activated = val["IsActivated_InitialValue"].as_bool().unwrap_or(false);
-            let status = if enabled && activated {
-                TpmStatus::Enabled
-            } else if enabled {
-                TpmStatus::Locked
-            } else {
-                TpmStatus::Disabled
-            };
+            // A flag that is absent from the WMI row is not `false`. `false` here
+            // would publish "Disabled" for a TPM whose state was never read, which
+            // used to be the result on any row lacking the property. Only a
+            // reported value can name a status.
+            let status = status_from_flags(
+                val["IsEnabled_InitialValue"].as_bool(),
+                val["IsActivated_InitialValue"].as_bool(),
+            );
 
             let manufacturer = val["ManufacturerIdTxt"].as_str().unwrap_or("").to_string();
             let firmware_version = val["ManufacturerVersion"]
@@ -567,6 +578,22 @@ mod tests {
             count_pcr_banks(&dir),
             None,
             "a missing directory is None too"
+        );
+    }
+
+    #[test]
+    fn an_unreported_tpm_flag_is_not_a_disabled_tpm() {
+        assert_eq!(status_from_flags(None, None), TpmStatus::Unknown);
+        assert_eq!(status_from_flags(None, Some(true)), TpmStatus::Unknown);
+        assert_eq!(status_from_flags(Some(true), None), TpmStatus::Unknown);
+        assert_eq!(status_from_flags(Some(false), None), TpmStatus::Disabled);
+        assert_eq!(
+            status_from_flags(Some(true), Some(true)),
+            TpmStatus::Enabled
+        );
+        assert_eq!(
+            status_from_flags(Some(true), Some(false)),
+            TpmStatus::Locked
         );
     }
 

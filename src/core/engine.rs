@@ -13,8 +13,10 @@ use crate::platform::common::{path_exists, read_file_u32};
 /// Engine information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineInfo {
-    /// Engine online status
-    pub online: bool,
+    /// Engine online status, `None` when `clk_enable_count` could not be read.
+    /// It was `false` then, which reported an engine as offline when nothing
+    /// had been read about it.
+    pub online: Option<bool>,
     /// Current frequency in MHz, `None` if `clk_rate` could not be read. It was
     /// 0, a stopped clock, for a clock nobody read.
     pub current: Option<u32>,
@@ -163,7 +165,7 @@ pub(crate) mod linux {
 
     fn read_engine_info(path: &str) -> Result<EngineInfo> {
         let mut info = EngineInfo {
-            online: false,
+            online: None,
             current: None,
             max: None,
             min: None,
@@ -173,11 +175,11 @@ pub(crate) mod linux {
         // and labelled MHz, so a 1.0368 GHz NVENC clock read 1036800 MHz.
         const HZ_PER_MHZ: u32 = 1_000_000;
 
-        // Read online status
+        // Read online status. An unreadable count is `None`, not offline.
         let enable_count_path = format!("{}/clk_enable_count", path);
         if path_exists(&enable_count_path) {
             if let Ok(count) = read_file_u32(&enable_count_path) {
-                info.online = count == 1;
+                info.online = Some(count == 1);
             }
         }
 
@@ -219,11 +221,13 @@ pub(crate) mod linux {
     mod tests {
         use super::*;
 
-        fn clock_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+        /// One directory per test: the tests run in parallel, so a name derived
+        /// from the file count alone let two one-file tests share a directory.
+        fn clock_dir(label: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
             let dir = std::env::temp_dir().join(format!(
                 "ironmon-engine-{}-{}",
                 std::process::id(),
-                files.len()
+                label
             ));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
@@ -235,11 +239,14 @@ pub(crate) mod linux {
 
         #[test]
         fn clock_rates_are_hz_and_reported_in_mhz() {
-            let dir = clock_dir(&[
-                ("clk_rate", "1036800000\n"),
-                ("clk_max_rate", "1203200000\n"),
-                ("clk_min_rate", "115200000\n"),
-            ]);
+            let dir = clock_dir(
+                "rates",
+                &[
+                    ("clk_rate", "1036800000\n"),
+                    ("clk_max_rate", "1203200000\n"),
+                    ("clk_min_rate", "115200000\n"),
+                ],
+            );
             let info = read_engine_info(dir.to_str().unwrap()).unwrap();
             assert_eq!(
                 (info.current, info.max, info.min),
@@ -250,9 +257,26 @@ pub(crate) mod linux {
 
         #[test]
         fn an_unread_clock_is_not_a_stopped_one() {
-            let dir = clock_dir(&[]);
+            let dir = clock_dir("unread", &[]);
             let info = read_engine_info(dir.to_str().unwrap()).unwrap();
             assert_eq!(info.current, None);
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn an_unread_enable_count_is_not_offline() {
+            let dir = clock_dir("enable-unread", &[("clk_rate", "0\n")]);
+            let info = read_engine_info(dir.to_str().unwrap()).unwrap();
+            assert_eq!(info.online, None);
+            assert_eq!(info.current, Some(0));
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_zero_enable_count_is_offline() {
+            let dir = clock_dir("enable-zero", &[("clk_enable_count", "0\n")]);
+            let info = read_engine_info(dir.to_str().unwrap()).unwrap();
+            assert_eq!(info.online, Some(false));
             let _ = fs::remove_dir_all(dir);
         }
     }

@@ -248,6 +248,26 @@ pub fn measure(source: &dyn MetricSource, plan: &SamplingPlan) -> Option<Measure
 /// noise the two windows showed, so a jittery metric demands a bigger move
 /// before it is believed.
 pub fn compare(spec: &MetricSpec, before: &Measurement, after: &Measurement) -> Verdict {
+    // A window in which most readings failed is the median of whatever happened
+    // to succeed, which can be a different metric's behaviour. `missed` was
+    // recorded but never consulted, so a window of three good readings out of
+    // eight attempts could decide a verdict as firmly as a clean one. Require a
+    // strict majority of the attempts to have succeeded before believing either
+    // window; otherwise the question stays open, and the verdict says so.
+    for (window, label) in [(before, "before"), (after, "after")] {
+        let succeeded = window.samples.len();
+        let attempted = succeeded + window.missed;
+        if succeeded * 2 <= attempted {
+            return Verdict::Unverifiable {
+                reason: format!(
+                    "{} is inconclusive: only {succeeded} of {attempted} readings {label} \
+                     the write succeeded, which is not a majority",
+                    spec.id
+                ),
+            };
+        }
+    }
+
     let delta = after.median - before.median;
     let noise = before.mad + after.mad;
     let threshold = spec.min_effect.max(noise);
@@ -586,6 +606,28 @@ mod tests {
         assert!(
             matches!(noisy, Verdict::Unchanged { .. }),
             "the same 5-unit move inside 10 units of scatter is not evidence, got {noisy:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_that_mostly_failed_to_read_gives_no_verdict() {
+        // A clear improvement, but the after-window kept failing: three good
+        // readings out of eight attempts is not a majority, so no verdict.
+        let before = measurement(&[10.0, 10.0, 10.0, 10.0, 10.0]);
+        let after = Measurement::from_samples(vec![50.0, 50.0, 50.0], 5).expect("non-empty");
+        let v = compare(&spec(Direction::HigherIsBetter, 1.0), &before, &after);
+        assert!(
+            matches!(v, Verdict::Unverifiable { .. }),
+            "3 of 8 readings must not decide an improvement, got {v:?}"
+        );
+
+        // The same move with a majority of the attempts read is still a result.
+        let after =
+            Measurement::from_samples(vec![50.0, 50.0, 50.0, 50.0, 50.0], 3).expect("non-empty");
+        let v = compare(&spec(Direction::HigherIsBetter, 1.0), &before, &after);
+        assert!(
+            matches!(v, Verdict::Improved { .. }),
+            "5 of 8 readings is a majority and must still count, got {v:?}"
         );
     }
 

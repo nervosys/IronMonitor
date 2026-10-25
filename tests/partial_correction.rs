@@ -802,6 +802,19 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/core/process.rs",
+        "ProcessInfo",
+        "priority memory_kb",
+        concat!(
+            "Linux builds a ProcessInfo only after priority and the statm RSS have parsed ",
+            "(get_process_info returns Err otherwise, and the process is dropped). Windows ",
+            "takes priority from the snapshot entry, which always carries it, and includes ",
+            "a process only when its working set was read and exceeds 1 MB, so a 0 for ",
+            "memory never reaches a row. state, gpu_memory_kb and cpu_percent are the ",
+            "Option fields, because those are the ones with no source on some platform."
+        ),
+    ),
+    (
         "src/cgroup_monitor/mod.rs",
         "CgroupMemory",
         "usage_bytes limit_bytes cache_bytes rss_bytes",

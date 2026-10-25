@@ -770,6 +770,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. The Overview autofit grows the window toward the same limit, and a
   clamped window is centred in the work area rather than cascaded off it.
 
+- TPM, engine and process readers no longer publish values they did not read.
+  A Windows TPM whose enabled or activated flag was absent was "disabled"; a
+  Linux TPM without `tpm_version_major` was guessed from its device node; the
+  Linux algorithm list was the standard TPM 2.0 list when no PCR bank existed;
+  an engine whose enable count was unread was "offline"; Windows processes were
+  all "running" with GPU memory of 0; and Jetson GPU memory whose size failed to
+  parse counted as 0. These are unknown now. Tuning verification also no longer
+  decides a verdict from a window where most reads failed.
+
 ### Changed
 
 - Keep the tab strip on one row down to a 1264 px window, the width a 1280 px
