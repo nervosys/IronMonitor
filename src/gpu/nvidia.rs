@@ -55,35 +55,6 @@ impl NvidiaGpu {
             _phantom: std::marker::PhantomData,
         })
     }
-
-    /// Check if this is a Jetson device (integrated GPU)
-    #[cfg(feature = "nvidia")]
-    fn is_jetson_device(&self) -> bool {
-        // Jetson GPUs are integrated and have specific names
-        if let Ok(name) = self.device.name() {
-            let name_lower = name.to_lowercase();
-            // Jetson GPU names typically contain these identifiers
-            name_lower.contains("tegra")
-                || name_lower.contains("orin")
-                || name_lower.contains("xavier")
-                || name_lower.contains("nano")
-                || name_lower.contains("tx1")
-                || name_lower.contains("tx2")
-                || name_lower.contains("agx")
-                || name_lower.contains("gv11b")
-                || name_lower.contains("gp10b")
-                || name_lower.contains("ga10b")
-        } else {
-            // Also check if this is a Jetson by bus type (integrated = no PCIe bus)
-            // Jetson GPUs don't have PCIe info
-            self.device.pci_info().is_err()
-        }
-    }
-
-    #[cfg(not(feature = "nvidia"))]
-    fn is_jetson_device(&self) -> bool {
-        false
-    }
 }
 
 impl Gpu for NvidiaGpu {
@@ -118,8 +89,11 @@ impl Gpu for NvidiaGpu {
 
         let l2_cache = None; // Not available in nvml-wrapper 0.10
 
-        // Detect if this is a Jetson (integrated GPU)
-        let integrated = self.is_jetson_device();
+        // NVML has no integrated/discrete property; its bus types are PCI, PCIe,
+        // FPCI and AGP. This used to be a match on the product name ("nano",
+        // "agx", "orin"...), which the ontology already refused to publish, so
+        // it is left unread rather than guessed.
+        let integrated = None;
 
         Ok(GpuStaticInfo {
             index: self.index,
@@ -133,7 +107,7 @@ impl Gpu for NvidiaGpu {
             shader_cores,
             l2_cache,
             num_engines: None,
-            integrated: Some(integrated),
+            integrated,
         })
     }
 

@@ -499,6 +499,15 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/scheduler/mod.rs",
+        "CpuSchedStats",
+        "running_ns waiting_ns timeslices",
+        concat!(
+            "a /proc/schedstat line missing any of them is skipped, so a row ",
+            "exists only when all three were parsed"
+        ),
+    ),
+    (
         "src/fleet.rs",
         "HostMetrics",
         "uptime_seconds",

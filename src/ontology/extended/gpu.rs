@@ -789,8 +789,8 @@ fn resolve_adapter(out: &mut Vec<Reading>, index: usize, gpu: &GpuInfo) {
     );
     // The AMD and Intel readers used to set `integrated` from substrings of
     // the product name ("vega", "arc"), which called a Radeon 780M discrete;
-    // they now leave it unread. NVIDIA's still comes from a Jetson name check.
-    // Only Apple's is known rather than guessed.
+    // they now leave it unread. NVIDIA's came from a Jetson name check and is
+    // now unread too, since NVML has no such property. Only Apple's is known.
     if s.vendor == crate::gpu::GpuVendor::Apple {
         out.push(Reading::derived(
             format!("{base}.integrated"),
@@ -801,7 +801,7 @@ fn resolve_adapter(out: &mut Vec<Reading>, index: usize, gpu: &GpuInfo) {
         out.push(Reading::unavailable(
             format!("{base}.integrated"),
             None,
-            "this vendor's reader guesses it from the product name rather than reading it",
+            "this vendor's driver interface reports no integrated-or-discrete property, so it was not read",
         ));
     }
 

@@ -256,14 +256,19 @@ impl SchedulerMonitor {
                 continue;
             }
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
+            // A line missing any of these fields is skipped. Each used to fall
+            // back to 0, which published an unparsed line as cpu0 with no time
+            // run or waited.
+            let field = |i: usize| parts.get(i).and_then(|s| s.parse::<u64>().ok());
+            let Some(cpu) = parts[0].strip_prefix("cpu").and_then(|s| s.parse::<u32>().ok())
+            else {
                 continue;
-            }
-            let cpu_str = parts[0].strip_prefix("cpu").unwrap_or("0");
-            let cpu: u32 = cpu_str.parse().unwrap_or(0);
-            let running_ns: u64 = parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let waiting_ns: u64 = parts.get(8).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let timeslices: u64 = parts.get(9).and_then(|s| s.parse().ok()).unwrap_or(0);
+            };
+            let (Some(running_ns), Some(waiting_ns), Some(timeslices)) =
+                (field(7), field(8), field(9))
+            else {
+                continue;
+            };
 
             // No runqueue depth. The per-CPU `runqueue` file this used to read
             // is not in mainline Linux, and the fallback of 0 published an idle

@@ -12,7 +12,11 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let devices = PcieMonitor::enumerate()?;
 //! for dev in &devices {
-//!     println!("{} [{:04x}:{:04x}]", dev.name, dev.vendor_id, dev.device_id);
+//!     // An id sysfs did not give us is `None`, not vendor 0x0000.
+//!     match (dev.vendor_id, dev.device_id) {
+//!         (Some(v), Some(d)) => println!("{} [{:04x}:{:04x}]", dev.name, v, d),
+//!         _ => println!("{} [ids not read]", dev.name),
+//!     }
 //!     println!("  BDF: {}", dev.bdf);
 //!     // A link speed sysfs did not give us reads as `None`, not as Gen0.
 //!     match (dev.current_link_speed.gen_number(), dev.current_link_width) {

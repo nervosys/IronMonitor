@@ -187,12 +187,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         1,
         "numa_node -1 is the kernel's own 'no affinity'; library API only, not in the ontology (a second read, behind a closure, is not seen by this scan)",
     ),
-    (
-        "src/pcie.rs",
-        "read_hex_file",
-        3,
-        "PCI IDs; nothing outside pcie.rs consumes the module (fix if it gains a consumer: class 0 decodes as 'unclassified')",
-    ),
 ];
 
 #[test]
