@@ -17,6 +17,9 @@ pub enum AudioDeviceType {
     Output,
     Input,
     Duplex,
+    /// The platform reported neither playback nor capture for this device. This
+    /// used to be classed as `Output`, which the card list does not say.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,7 +575,11 @@ impl AudioMonitor {
                             .chars()
                             .take_while(|c| c.is_ascii_digit() || c.is_whitespace())
                             .collect();
-                        let card_num = card_id_str.trim().parse::<u32>().unwrap_or(0);
+                        // A line whose card number does not parse is skipped. It used
+                        // to be card 0, which every later check then treated as real.
+                        let Ok(card_num) = card_id_str.trim().parse::<u32>() else {
+                            continue;
+                        };
                         let short_name = trimmed[bracket_start + 1..bracket_end].trim().to_string();
 
                         // Get full name from the colon part
@@ -593,18 +600,19 @@ impl AudioMonitor {
                             (true, true) => AudioDeviceType::Duplex,
                             (true, false) => AudioDeviceType::Output,
                             (false, true) => AudioDeviceType::Input,
-                            _ => AudioDeviceType::Output,
+                            (false, false) => AudioDeviceType::Unknown,
                         };
-
-                        let is_output = has_playback || !has_capture;
 
                         self.devices.push(AudioDevice {
                             id: format!("hw:{}", card_num),
                             name: full_name,
                             device_type,
                             state: None,
-                            is_default: Some(card_num == 0),
-                            is_output,
+                            // Set below from the PulseAudio/PipeWire default sink, where
+                            // one is reported. This used to be `card_num == 0`, which
+                            // named card 0 the default whether or not it was.
+                            is_default: None,
+                            is_output: has_playback,
                             // ALSA's card list has no enable state. This used to be `true`.
                             is_enabled: None,
                             volume: None,
@@ -615,23 +623,20 @@ impl AudioMonitor {
             }
         }
 
-        // Try PulseAudio/PipeWire for default device info
-        if let Ok(output) = std::process::Command::new("pactl").args(["info"]).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.starts_with("Default Sink:") {
-                        if let Some(name) = line.split(':').nth(1) {
-                            // Mark matching device as default
-                            let sink_name = name.trim();
-                            if let Some(dev) = self.devices.iter_mut().find(|d| d.is_output) {
-                                dev.is_default = Some(true);
-                                if dev.name == format!("hw:{}", 0) {
-                                    dev.name = sink_name.to_string();
-                                }
-                            }
-                        }
-                    }
+        // The default sink is named by PulseAudio/PipeWire. Its card is the one
+        // its own `alsa.card` property names. A sink that is not ALSA, or a
+        // machine with no pactl, leaves every card's default unknown.
+        if let Some(default_card) = pactl_stdout(&["info"])
+            .zip(pactl_stdout(&["list", "sinks"]))
+            .and_then(|(info, sinks)| default_sink_alsa_card(&info, &sinks))
+        {
+            for dev in &mut self.devices {
+                if let Some(card) = dev
+                    .id
+                    .strip_prefix("hw:")
+                    .and_then(|n| n.parse::<u32>().ok())
+                {
+                    dev.is_default = Some(card == default_card);
                 }
             }
         }
@@ -709,6 +714,47 @@ impl AudioMonitor {
         // Windows path above.
         Ok(())
     }
+}
+
+/// Standard output of a `pactl` call, or `None` where pactl is absent or fails.
+#[cfg(target_os = "linux")]
+fn pactl_stdout(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("pactl")
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The ALSA card number of the default sink, from `pactl info` and
+/// `pactl list sinks`.
+///
+/// `None` where the default sink is not named, is missing from the sink list,
+/// or carries no `alsa.card` property (a Bluetooth or network sink).
+#[cfg(any(target_os = "linux", test))]
+fn default_sink_alsa_card(info: &str, sinks: &str) -> Option<u32> {
+    let default_sink = info
+        .lines()
+        .find_map(|line| line.strip_prefix("Default Sink:"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    // `pactl list sinks` separates its sinks with "Sink #N" headers.
+    sinks
+        .split("\nSink #")
+        .find(|block| {
+            block
+                .lines()
+                .any(|line| line.trim().strip_prefix("Name:").map(str::trim) == Some(default_sink))
+        })
+        .and_then(|block| {
+            block.lines().find_map(|line| {
+                let value = line.trim().strip_prefix("alsa.card = \"")?;
+                value.strip_suffix('"')?.parse::<u32>().ok()
+            })
+        })
 }
 
 impl Default for AudioMonitor {
@@ -817,6 +863,36 @@ mod tests {
     /// asserted `is_ok()`, which was true by construction while `refresh` could
     /// not fail. A failure must carry a reason, because a reason is the whole
     /// difference between "this machine has none" and "nobody looked".
+    #[test]
+    fn the_default_sink_names_its_alsa_card_and_nothing_else_is_guessed() {
+        let info = "Server Version: 15.0.0\nDefault Sink: alsa_output.pci-0000_00_1f.3.analog-stereo\nDefault Source: x\n";
+        let sinks = concat!(
+            "Sink #0\n",
+            "\tState: SUSPENDED\n",
+            "\tName: alsa_output.pci-0000_01_00.1.hdmi-stereo\n",
+            "\tProperties:\n",
+            "\t\talsa.card = \"1\"\n",
+            "Sink #1\n",
+            "\tState: RUNNING\n",
+            "\tName: alsa_output.pci-0000_00_1f.3.analog-stereo\n",
+            "\tProperties:\n",
+            "\t\talsa.card = \"0\"\n",
+            "\t\talsa.card_name = \"HDA Intel PCH\"\n",
+        );
+        assert_eq!(default_sink_alsa_card(info, sinks), Some(0));
+
+        // A Bluetooth default sink has no ALSA card, so no card is the default.
+        let bluez = "Default Sink: bluez_output.AA_BB.1\n";
+        let bluez_sinks =
+            "Sink #2\n\tName: bluez_output.AA_BB.1\n\tProperties:\n\t\tdevice.api = \"bluez\"\n";
+        assert_eq!(default_sink_alsa_card(bluez, bluez_sinks), None);
+
+        // A default that is not in the sink list is not guessed at.
+        assert_eq!(default_sink_alsa_card("Default Sink: gone\n", sinks), None);
+        // No default reported at all.
+        assert_eq!(default_sink_alsa_card("Server Version: 15\n", sinks), None);
+    }
+
     #[test]
     fn test_audio_monitor_creation() {
         match AudioMonitor::new() {

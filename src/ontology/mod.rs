@@ -1677,7 +1677,8 @@ impl Ontology {
             K::Identity,
             Some(U::Text),
             P::Measured,
-            false,
+            // Nullable: a macOS controller with no chipset name has none to give.
+            true,
             "Adapter name as the platform reports it.",
         ));
         add(Entity::new(
@@ -2657,7 +2658,8 @@ impl Ontology {
             K::Identity,
             None,
             P::Measured,
-            false,
+            // Nullable: the DRM path reports no primary flag.
+            true,
             "Whether the platform treats this as the primary display.",
         ));
 

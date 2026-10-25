@@ -31,7 +31,10 @@ pub struct DisplayInfo {
     pub name: Option<String>,
     pub manufacturer: Option<String>,
     pub connection: DisplayConnection,
-    pub is_primary: bool,
+    /// Whether the platform reports this display as the primary one, or `None`
+    /// where it was not read. The DRM sysfs path has no primary flag: it used
+    /// to answer `idx == 0`, which named whichever connector enumerated first.
+    pub is_primary: Option<bool>,
     /// Horizontal pixels of the current mode, or `None` when the display is
     /// attached and its mode was not readable. Zero is not a resolution — the
     /// ontology already refused to publish one and said so in as many words,
@@ -317,7 +320,7 @@ impl DisplayMonitor {
         &self.displays
     }
     pub fn primary(&self) -> Option<&DisplayInfo> {
-        self.displays.iter().find(|d| d.is_primary)
+        self.displays.iter().find(|d| d.is_primary == Some(true))
     }
     pub fn count(&self) -> usize {
         self.displays.len()
@@ -471,7 +474,7 @@ impl DisplayMonitor {
                 connection: meta
                     .map(|m| m.connection)
                     .unwrap_or(DisplayConnection::Unknown),
-                is_primary: adapter.StateFlags & PRIMARY_DEVICE != 0,
+                is_primary: Some(adapter.StateFlags & PRIMARY_DEVICE != 0),
                 // Zero is not a resolution, and `EnumDisplaySettings` fills the
                 // struct with zeroes when it fails.
                 width: has_mode.then_some(mode.dmPelsWidth).filter(|v| *v > 0),
@@ -667,7 +670,9 @@ impl DisplayMonitor {
                         name: mon_name.or(Some(connector.clone())),
                         manufacturer,
                         connection,
-                        is_primary: idx == 0,
+                        // DRM connectors carry no primary flag. This used to be
+                        // `idx == 0`, which named the first connector to enumerate.
+                        is_primary: None,
                         width,
                         height,
                         // The DRM modes file does not always carry a rate, and this
@@ -762,7 +767,7 @@ impl DisplayMonitor {
                                 name: Some(conn_name.to_string()),
                                 manufacturer: None,
                                 connection,
-                                is_primary,
+                                is_primary: Some(is_primary),
                                 width: w,
                                 height: h,
                                 // xrandr's rate is not parsed here.
@@ -857,10 +862,11 @@ impl DisplayMonitor {
                                             .and_then(|v| v.as_str())
                                             .map(|s| s.to_string()),
                                         connection,
+                                        // An absent `spdisplays_main` is not "not primary".
                                         is_primary: display
                                             .get("spdisplays_main")
                                             .and_then(|v| v.as_str())
-                                            == Some("spdisplays_yes"),
+                                            .map(|s| s == "spdisplays_yes"),
                                         width: w,
                                         height: h,
                                         // system_profiler's rate is not parsed here.
@@ -874,18 +880,10 @@ impl DisplayMonitor {
                                         scale_factor: None,
                                         physical_width_mm: None,
                                         physical_height_mm: None,
-                                        bits_per_pixel: display
-                                            .get("spdisplays_pixelresolution")
-                                            .and_then(|v| v.as_str())
-                                            .and_then(|s| {
-                                                if s.contains("32") {
-                                                    Some(32u8)
-                                                } else if s.contains("30") {
-                                                    Some(30)
-                                                } else {
-                                                    None
-                                                }
-                                            }),
+                                        // This used to be read off `spdisplays_pixelresolution`
+                                        // by substring, so a width such as "3072" reported 30
+                                        // bits. Only an exact depth field is read now.
+                                        bits_per_pixel: macos_bits_per_pixel(display),
                                     });
                                     idx += 1;
                                 }
@@ -900,6 +898,20 @@ impl DisplayMonitor {
         // asserted `DisplayConnection::Internal`, claiming a built-in panel on
         // hardware that may well be a Mac mini or Mac Pro.
         Ok(())
+    }
+}
+
+/// Colour depth from one `SPDisplaysDataType` display record, or `None`.
+///
+/// Only the exact depth field is read. The reader used to search
+/// `spdisplays_pixelresolution` for the substrings "32" and "30", so a width
+/// such as "3072" reported 30 bits per pixel.
+#[cfg(any(target_os = "macos", test))]
+fn macos_bits_per_pixel(display: &serde_json::Value) -> Option<u8> {
+    match display.get("spdisplays_depth").and_then(|v| v.as_str())? {
+        "CGSThirtyBitColor" => Some(30),
+        "CGSThirtytwoBitColor" => Some(32),
+        _ => None,
     }
 }
 
@@ -1038,13 +1050,29 @@ mod tests {
     }
 
     #[test]
+    fn macos_depth_is_read_from_the_depth_field_only() {
+        let exact = serde_json::json!({
+            "_spdisplays_resolution": "3072 x 1920",
+            "spdisplays_depth": "CGSThirtyBitColor",
+        });
+        assert_eq!(macos_bits_per_pixel(&exact), Some(30));
+        let thirty_two = serde_json::json!({"spdisplays_depth": "CGSThirtytwoBitColor"});
+        assert_eq!(macos_bits_per_pixel(&thirty_two), Some(32));
+        // A width containing "30" must not be read as a depth.
+        let width_only = serde_json::json!({"spdisplays_pixelresolution": "3072 x 1920"});
+        assert_eq!(macos_bits_per_pixel(&width_only), None);
+        let unknown_token = serde_json::json!({"spdisplays_depth": "CGSSixteenBitColor"});
+        assert_eq!(macos_bits_per_pixel(&unknown_token), None);
+    }
+
+    #[test]
     fn test_display_aspect_ratio() {
         let display = DisplayInfo {
             id: "test".to_string(),
             name: Some("Test".to_string()),
             manufacturer: None,
             connection: DisplayConnection::Hdmi,
-            is_primary: true,
+            is_primary: Some(true),
             width: Some(1920),
             height: Some(1080),
             refresh_rate: Some(60.0),
@@ -1068,7 +1096,7 @@ mod tests {
             name: None,
             manufacturer: None,
             connection: DisplayConnection::DisplayPort,
-            is_primary: false,
+            is_primary: Some(false),
             width: Some(3840),
             height: Some(2160),
             refresh_rate: Some(144.0),
@@ -1092,7 +1120,7 @@ mod tests {
             name: Some("Test Display".to_string()),
             manufacturer: Some("Acme".to_string()),
             connection: DisplayConnection::Hdmi,
-            is_primary: true,
+            is_primary: Some(true),
             width: Some(1920),
             height: Some(1080),
             refresh_rate: Some(60.0),

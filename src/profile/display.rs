@@ -38,7 +38,7 @@ impl ProfileProvider for DisplayProfileProvider {
             let mut g = ProfileGroup::new(
                 Subsystem::Display,
                 &label,
-                if d.is_primary {
+                if d.is_primary == Some(true) {
                     "Primary display"
                 } else {
                     "Display"
@@ -158,11 +158,15 @@ impl ProfileProvider for DisplayProfileProvider {
                     SettingValue::Text(format!("{}×{} mm", w, h)),
                 ));
             }
-            g.push(Setting::info(
-                "is_primary",
-                "Primary",
-                SettingValue::Bool(d.is_primary),
-            ));
+            // Only a read answer becomes a setting. An unread flag is left out
+            // rather than shown as "false".
+            if let Some(primary) = d.is_primary {
+                g.push(Setting::info(
+                    "is_primary",
+                    "Primary",
+                    SettingValue::Bool(primary),
+                ));
+            }
             groups.push(g);
         }
         groups

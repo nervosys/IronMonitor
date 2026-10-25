@@ -1188,7 +1188,7 @@ fn handle_cli_command(
                     for adapter in monitor.adapters() {
                         println!(
                             "    {} ({})",
-                            adapter.name,
+                            adapter.name.as_deref().unwrap_or("name not read"),
                             adapter.address.as_deref().unwrap_or("address not read")
                         );
                     }

@@ -15,7 +15,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found {} display(s):\n", displays.len());
 
     for display in displays {
-        let primary = if display.is_primary { " (Primary)" } else { "" };
+        let primary = if display.is_primary == Some(true) {
+            " (Primary)"
+        } else {
+            ""
+        };
         let connection_icon = match display.connection {
             DisplayConnection::Hdmi => "📺",
             DisplayConnection::DisplayPort => "🖥️",
@@ -69,7 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|d| Some((d.width? as u64, d.height? as u64)))
             .collect();
         let total_pixels: u64 = measured.iter().map(|(w, h)| w * h).sum();
-        let primary_count = displays.iter().filter(|d| d.is_primary).count();
+        let primary_count = displays
+            .iter()
+            .filter(|d| d.is_primary == Some(true))
+            .count();
 
         println!("Summary:");
         println!("  Total Displays: {}", displays.len());

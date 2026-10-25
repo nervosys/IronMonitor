@@ -19,6 +19,11 @@ pub enum BluetoothState {
     Paired,
     Discovered,
     Disconnected,
+    /// Known to the system, connection state not established. Used where the
+    /// probe that answers it failed. This used to be `Paired`, which says the
+    /// device is known and not connected, so a failed probe read as a
+    /// disconnection.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +41,10 @@ pub struct BluetoothDevice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BluetoothAdapter {
     pub id: String,
-    pub name: String,
+    /// The adapter's name as the platform reports it, or `None` where it
+    /// reports none. macOS used to fall back to the literal "Bluetooth" when
+    /// `controller_chipset` was absent, which named a product nobody had read.
+    pub name: Option<String>,
     /// The radio's own hardware address as `aa:bb:cc:dd:ee:ff`, or `None`
     /// where the platform did not report one.
     ///
@@ -331,7 +339,7 @@ impl BluetoothMonitor {
                     let idx = self.adapters.len();
                     self.adapters.push(BluetoothAdapter {
                         id: format!("bt{idx}"),
-                        name: name.to_string(),
+                        name: (!name.is_empty()).then(|| name.to_string()),
                         address: radio_address(id),
                         // PnP status is not radio state; nothing here reads it.
                         powered: None,
@@ -400,7 +408,7 @@ impl BluetoothMonitor {
 
                     self.adapters.push(BluetoothAdapter {
                         id: name.clone(),
-                        name: format!("Bluetooth Adapter ({})", name),
+                        name: Some(format!("Bluetooth Adapter ({})", name)),
                         address,
                         powered,
                     });
@@ -447,18 +455,13 @@ impl BluetoothMonitor {
                         // disconnection.
                         let info =
                             crate::core::command::capture("bluetoothctl", &["info", &address]);
-                        let state = match &info {
-                            Ok(text) if text.contains("Connected: yes") => {
-                                BluetoothState::Connected
-                            }
-                            Ok(_) => BluetoothState::Paired,
-                            Err(e) => {
-                                self.record_note(format!(
-                                    "connection state for {address} is unknown: {e}"
-                                ));
-                                BluetoothState::Paired
-                            }
-                        };
+                        if let Err(e) = &info {
+                            self.record_note(format!(
+                                "connection state for {address} is unknown: {e}"
+                            ));
+                        }
+                        let state =
+                            connection_state_from_info(info.as_ref().ok().map(String::as_str));
 
                         let dtype = classify_bt_device(&name);
 
@@ -499,11 +502,12 @@ impl BluetoothMonitor {
                                     .get("controller_address")
                                     .and_then(|v| v.as_str())
                                     .and_then(normalise_bd_address);
+                                // No chipset name is `None`, not a fallback label.
                                 let name = ctrl
                                     .get("controller_chipset")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or("Bluetooth")
-                                    .to_string();
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_string);
                                 // A missing or unrecognised state is `None`. It used to
                                 // compare equal to "attrib_on" or not, so a missing
                                 // field read as the radio being off.
@@ -659,6 +663,17 @@ impl BluetoothMonitor {
     }
 }
 
+/// Connection state from the text of a `bluetoothctl info` call, or `Unknown`
+/// when the call failed and there is no text to read.
+#[cfg(any(target_os = "linux", test))]
+fn connection_state_from_info(info: Option<&str>) -> BluetoothState {
+    match info {
+        Some(text) if text.contains("Connected: yes") => BluetoothState::Connected,
+        Some(_) => BluetoothState::Paired,
+        None => BluetoothState::Unknown,
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn classify_bt_device(name: &str) -> BluetoothDeviceType {
     let lower = name.to_lowercase();
@@ -781,7 +796,7 @@ mod tests {
         let mut monitor = BluetoothMonitor {
             adapters: vec![BluetoothAdapter {
                 id: "bt0".into(),
-                name: "Test".into(),
+                name: Some("Test".into()),
                 address: None,
                 powered: Some(true),
             }],
@@ -794,6 +809,19 @@ mod tests {
             Some(true),
             "nothing was switched"
         );
+    }
+
+    #[test]
+    fn a_failed_info_probe_is_an_unknown_state_not_a_paired_one() {
+        assert_eq!(
+            connection_state_from_info(Some("Device AA:BB\n\tConnected: yes\n")),
+            BluetoothState::Connected
+        );
+        assert_eq!(
+            connection_state_from_info(Some("Device AA:BB\n\tConnected: no\n")),
+            BluetoothState::Paired
+        );
+        assert_eq!(connection_state_from_info(None), BluetoothState::Unknown);
     }
 
     #[test]
@@ -822,7 +850,7 @@ mod tests {
     fn test_bluetooth_adapter_serialization() {
         let adapter = BluetoothAdapter {
             id: "hci0".to_string(),
-            name: "Test Adapter".to_string(),
+            name: Some("Test Adapter".to_string()),
             address: Some("11:22:33:44:55:66".to_string()),
             powered: Some(true),
         };

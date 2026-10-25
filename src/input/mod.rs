@@ -359,9 +359,8 @@ impl InputMonitor {
             if name.is_empty() {
                 return;
             }
-            let device_type = Self::classify_linux(
-                name, handlers, bitmap_ev, bitmap_key, bitmap_rel, bitmap_abs,
-            );
+            let device_type =
+                classify_linux(handlers, bitmap_ev, bitmap_key, bitmap_rel, bitmap_abs);
             let interface = Self::infer_interface_linux(phys, sysfs);
             let mut caps = Vec::new();
             if !bitmap_key.is_empty() && bitmap_key != "0" {
@@ -471,65 +470,6 @@ impl InputMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn classify_linux(
-        name: &str,
-        handlers: &str,
-        _ev: &str,
-        _key: &str,
-        rel: &str,
-        abs: &str,
-    ) -> InputDeviceType {
-        let lower = name.to_lowercase();
-        if lower.contains("keyboard") || lower.contains("kbd") {
-            return InputDeviceType::Keyboard;
-        }
-        if lower.contains("touchpad") || lower.contains("trackpad") || lower.contains("clickpad") {
-            return InputDeviceType::Touchpad;
-        }
-        if lower.contains("touchscreen") || lower.contains("touch screen") {
-            return InputDeviceType::Touchscreen;
-        }
-        if lower.contains("trackpoint") || lower.contains("pointing stick") {
-            return InputDeviceType::Trackpoint;
-        }
-        if lower.contains("trackball") {
-            return InputDeviceType::Trackball;
-        }
-        if lower.contains("tablet") || lower.contains("wacom") || lower.contains("digitizer") {
-            return InputDeviceType::Tablet;
-        }
-        if lower.contains("stylus") || lower.contains("pen") {
-            return InputDeviceType::Stylus;
-        }
-        if lower.contains("gamepad")
-            || lower.contains("joystick")
-            || lower.contains("controller")
-            || lower.contains("xbox")
-            || lower.contains("playstation")
-            || lower.contains("dualshock")
-            || lower.contains("dualsense")
-            || lower.contains("nintendo")
-            || handlers.contains("js")
-        {
-            return InputDeviceType::GameController;
-        }
-        if lower.contains("fingerprint") || lower.contains("biometric") {
-            return InputDeviceType::Biometric;
-        }
-        if lower.contains("remote") || lower.contains("consumer control") || lower.contains("media")
-        {
-            return InputDeviceType::Remote;
-        }
-        if lower.contains("mouse") || (!rel.is_empty() && rel != "0") {
-            return InputDeviceType::Mouse;
-        }
-        if !abs.is_empty() && abs != "0" {
-            return InputDeviceType::Touchscreen;
-        }
-        InputDeviceType::Other
-    }
-
-    #[cfg(target_os = "linux")]
     fn infer_interface_linux(phys: &str, _sysfs: &str) -> InputInterface {
         let p = phys.to_lowercase();
         if p.contains("usb") {
@@ -544,9 +484,11 @@ impl InputMonitor {
             InputInterface::SPI
         } else if p.contains("serial") || p.contains("tty") {
             InputInterface::Serial
-        } else if p.is_empty() || p.contains("virtual") || p.contains("input") {
+        } else if p.contains("virtual") || p.contains("input") {
             InputInterface::Virtual
         } else {
+            // An empty `P:` line names no path, so it says nothing about the
+            // transport. This used to be `Virtual`.
             InputInterface::Unknown
         }
     }
@@ -588,7 +530,10 @@ impl InputMonitor {
                     product: device_product(&device_id),
                     physical_path: device_id,
                     is_active: Some(item["Status"].as_str() == Some("OK")),
-                    capabilities: vec!["keys".into()],
+                    // No capability is read here. This used to be the literal
+                    // "keys", which every keyboard was given whether or not the
+                    // platform said so.
+                    capabilities: Vec::new(),
                 });
             }
         }
@@ -621,7 +566,9 @@ impl InputMonitor {
                 // See the keyboard branch above.
                 let iface = interface_from_device_tree(&device_id);
                 let buttons = item["NumberOfButtons"].as_u64().unwrap_or(0);
-                let mut caps = vec!["relative-axes".into()];
+                // "relative-axes" used to be a literal on every pointing device.
+                // Only the button count is read.
+                let mut caps = Vec::new();
                 if buttons > 0 {
                     caps.push(format!("buttons:{}", buttons));
                 }
@@ -890,6 +837,95 @@ mod windows_vendor_tests {
     }
 }
 
+// Event codes from the kernel's `input-event-codes.h`.
+#[cfg(any(target_os = "linux", test))]
+const EV_KEY: usize = 0x01;
+#[cfg(any(target_os = "linux", test))]
+const EV_REL: usize = 0x02;
+#[cfg(any(target_os = "linux", test))]
+const EV_ABS: usize = 0x03;
+#[cfg(any(target_os = "linux", test))]
+const REL_X: usize = 0x00;
+#[cfg(any(target_os = "linux", test))]
+const REL_Y: usize = 0x01;
+#[cfg(any(target_os = "linux", test))]
+const ABS_X: usize = 0x00;
+#[cfg(any(target_os = "linux", test))]
+const ABS_Y: usize = 0x01;
+#[cfg(any(target_os = "linux", test))]
+const KEY_A: usize = 30;
+#[cfg(any(target_os = "linux", test))]
+const KEY_SPACE: usize = 57;
+#[cfg(any(target_os = "linux", test))]
+const BTN_LEFT: usize = 0x110;
+#[cfg(any(target_os = "linux", test))]
+const BTN_GAMEPAD: usize = 0x130;
+#[cfg(any(target_os = "linux", test))]
+const BTN_TOOL_PEN: usize = 0x140;
+#[cfg(any(target_os = "linux", test))]
+const BTN_TOOL_FINGER: usize = 0x145;
+#[cfg(any(target_os = "linux", test))]
+const BTN_TOUCH: usize = 0x14a;
+
+/// Whether bit `bit` is set in a kernel capability bitmap such as `KEY=`.
+///
+/// The kernel prints each bitmap as hexadecimal machine words, most significant
+/// word first, so the last word holds bits 0 to word-size-1. The word size is
+/// the pointer width, which is the kernel's `long` on the targets this crate
+/// builds for. A bitmap too short to reach `bit` does not have it.
+#[cfg(any(target_os = "linux", test))]
+fn bitmap_has(bitmap: &str, bit: usize) -> bool {
+    let word_bits = usize::BITS as usize;
+    let words: Vec<&str> = bitmap.split_whitespace().collect();
+    let Some(index) = words.len().checked_sub(bit / word_bits + 1) else {
+        return false;
+    };
+    u64::from_str_radix(words[index], 16)
+        .map(|word| (word >> (bit % word_bits)) & 1 == 1)
+        .unwrap_or(false)
+}
+
+/// Device type from the kernel's capability bitmaps in `/proc/bus/input/devices`.
+///
+/// The device name is not consulted: a name containing "pen" or "media" says
+/// nothing about what the device can do. A device the bitmaps do not identify
+/// is `Other`.
+#[cfg(any(target_os = "linux", test))]
+fn classify_linux(handlers: &str, ev: &str, key: &str, rel: &str, abs: &str) -> InputDeviceType {
+    let has_abs_xy = bitmap_has(ev, EV_ABS) && bitmap_has(abs, ABS_X) && bitmap_has(abs, ABS_Y);
+    // Absolute-position devices, told apart by the tool button they report.
+    if has_abs_xy {
+        if bitmap_has(key, BTN_TOOL_FINGER) {
+            return InputDeviceType::Touchpad;
+        }
+        if bitmap_has(key, BTN_TOOL_PEN) {
+            return InputDeviceType::Tablet;
+        }
+        if bitmap_has(key, BTN_TOUCH) {
+            return InputDeviceType::Touchscreen;
+        }
+    }
+    if bitmap_has(ev, EV_KEY) && bitmap_has(key, KEY_A) && bitmap_has(key, KEY_SPACE) {
+        return InputDeviceType::Keyboard;
+    }
+    // The joystick handler is `js` followed by its index, as in `js0`.
+    let joystick = handlers.split_whitespace().any(|h| {
+        h.strip_prefix("js")
+            .is_some_and(|index| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+    });
+    if joystick || bitmap_has(key, BTN_GAMEPAD) {
+        return InputDeviceType::GameController;
+    }
+    if bitmap_has(ev, EV_REL)
+        && bitmap_has(rel, REL_X)
+        && bitmap_has(rel, REL_Y)
+        && bitmap_has(key, BTN_LEFT)
+    {
+        return InputDeviceType::Mouse;
+    }
+    InputDeviceType::Other
+}
+
 /// Bluetooth input devices from `system_profiler SPBluetoothDataType`.
 ///
 /// A `Vendor ID:` line belongs to the device whose block contains it: the
@@ -958,6 +994,73 @@ mod tests {
     /// weaker and more useful: **whatever happens, the caller can tell which
     /// happened.** A failure has to carry a reason, because a reason is the
     /// whole difference between "this machine has none" and "nobody looked".
+    #[test]
+    fn a_capability_bit_is_read_from_the_word_that_holds_it() {
+        assert!(bitmap_has("2", 1));
+        assert!(!bitmap_has("2", 0));
+        // A bit beyond the end of the bitmap is not set.
+        assert!(!bitmap_has("2", 200));
+        // With two words, the less significant one holds bits 0 to word-size-1.
+        let word = usize::BITS as usize;
+        assert!(bitmap_has("1 0", word));
+        assert!(!bitmap_has("1 0", word - 1));
+    }
+
+    // Captured shapes from `/proc/bus/input/devices` on a 64-bit kernel.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_linux_input_device_is_classified_by_capability_not_by_name() {
+        // AT keyboard: EV_KEY, with KEY_A and KEY_SPACE in the last KEY word.
+        let keyboard_keys = "402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe";
+        assert_eq!(
+            classify_linux("sysrq kbd event0", "120013", keyboard_keys, "", ""),
+            InputDeviceType::Keyboard
+        );
+        // Optical mouse: EV_REL with REL_X, REL_Y and BTN_LEFT. No name says so.
+        assert_eq!(
+            classify_linux("event4", "17", "10000 0 0 0 0", "903", ""),
+            InputDeviceType::Mouse
+        );
+        // Touchpad: absolute X/Y and BTN_TOOL_FINGER.
+        assert_eq!(
+            classify_linux("event3", "b", "20 0 0 0 0 0", "", "3"),
+            InputDeviceType::Touchpad
+        );
+        // Touchscreen: absolute X/Y and BTN_TOUCH, without a pen tool.
+        assert_eq!(
+            classify_linux("event5", "b", "400 0 0 0 0 0", "", "3"),
+            InputDeviceType::Touchscreen
+        );
+        // Pen tablet: absolute X/Y and BTN_TOOL_PEN.
+        assert_eq!(
+            classify_linux("event6", "b", "1 0 0 0 0 0", "", "3"),
+            InputDeviceType::Tablet
+        );
+        // A joystick is identified by the kernel's js handler.
+        assert_eq!(
+            classify_linux("event7 js0", "1b", "", "", ""),
+            InputDeviceType::GameController
+        );
+        // Only EV_SYN: no capability identifies it, so it is not given a type.
+        assert_eq!(
+            classify_linux("event8", "1", "", "", ""),
+            InputDeviceType::Other
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_empty_physical_path_names_no_transport() {
+        assert_eq!(
+            InputMonitor::infer_interface_linux("", ""),
+            InputInterface::Unknown
+        );
+        assert_eq!(
+            InputMonitor::infer_interface_linux("usb-0000:00:14.0-1/input0", ""),
+            InputInterface::USB
+        );
+    }
+
     #[test]
     fn test_input_monitor_creation() {
         match InputMonitor::new() {

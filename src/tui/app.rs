@@ -415,7 +415,7 @@ impl PeripheralCache {
                 for a in adapters {
                     lines.push(format!(
                         "Adapter: {} ({})",
-                        a.name,
+                        a.name.as_deref().unwrap_or("name not read"),
                         match a.powered {
                             Some(true) => "ON",
                             Some(false) => "OFF",
@@ -432,6 +432,7 @@ impl PeripheralCache {
                             crate::bluetooth::BluetoothState::Paired => "paired",
                             crate::bluetooth::BluetoothState::Discovered => "discovered",
                             crate::bluetooth::BluetoothState::Disconnected => "disconnected",
+                            crate::bluetooth::BluetoothState::Unknown => "state not read",
                         };
                         let name = dev.name.as_deref().unwrap_or("Unknown");
                         let batt = dev
@@ -460,7 +461,11 @@ impl PeripheralCache {
                     .map(|d| {
                         let name = d.name.as_deref().unwrap_or("Display");
                         let conn = format!("{:?}", d.connection);
-                        let primary = if d.is_primary { " [primary]" } else { "" };
+                        let primary = if d.is_primary == Some(true) {
+                            " [primary]"
+                        } else {
+                            ""
+                        };
                         let brightness = d
                             .brightness
                             .map(|b| format!(" | Brightness: {:.0}%", b * 100.0))

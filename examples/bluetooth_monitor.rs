@@ -23,7 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found {} Bluetooth adapter(s):\n", adapters.len());
 
     for adapter in adapters {
-        println!("  📡 {}", adapter.name);
+        println!(
+            "  📡 {}",
+            adapter.name.as_deref().unwrap_or("name not read")
+        );
         println!("    ID: {}", adapter.id);
         println!(
             "    Address: {}",
@@ -60,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             BluetoothState::Paired => "Paired",
             BluetoothState::Discovered => "Discovered",
             BluetoothState::Disconnected => "Disconnected",
+            BluetoothState::Unknown => "State not read",
         };
 
         let name = device.name.as_deref().unwrap_or("Unknown Device");

@@ -2634,11 +2634,13 @@ fn resolve_displays(out: &mut Vec<Reading>) {
             Some(Unit::Hertz),
             NOT_A_MODE,
         );
-        out.push(Reading::measured(
+        push_opt(
+            out,
             format!("{base}.primary"),
-            serde_json::json!(d.is_primary),
+            d.is_primary.map(|p| serde_json::json!(p)),
             None,
-        ));
+            "the platform reports no primary flag for this display",
+        );
     }
 }
 
@@ -3596,7 +3598,13 @@ fn resolve_bluetooth(out: &mut Vec<Reading>) {
 
     for (i, a) in adapters.iter().enumerate() {
         let base = format!("network.bluetooth.{i}");
-        push_text(out, format!("{base}.name"), &a.name);
+        push_opt(
+            out,
+            format!("{base}.name"),
+            a.name.as_ref().map(|n| serde_json::json!(n)),
+            Some(Unit::Text),
+            "the platform reported no name for this adapter",
+        );
         push_opt(
             out,
             format!("{base}.powered"),

@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ironmonitor::audio::AudioDeviceType::Output => "Output",
             ironmonitor::audio::AudioDeviceType::Input => "Input",
             ironmonitor::audio::AudioDeviceType::Duplex => "Duplex",
+            ironmonitor::audio::AudioDeviceType::Unknown => "Unknown",
         };
         let default = match device.is_default {
             Some(true) => " (Default)",
