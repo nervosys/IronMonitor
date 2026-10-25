@@ -4155,11 +4155,15 @@ fn resolve_rapl(out: &mut Vec<Reading>) {
             Some(Unit::Watts),
             "this RAPL domain publishes no power constraint",
         );
-        out.push(Reading::measured(
+        // `push_opt`, not `Reading::measured`: `enabled` used to default to `true`
+        // when its attribute was unreadable, and was published as a measurement.
+        push_opt(
+            out,
             format!("{base}.enabled"),
-            serde_json::json!(r.enabled),
+            r.enabled.map(|e| serde_json::json!(e)),
             None,
-        ));
+            "the domain's enabled attribute could not be read",
+        );
     }
 }
 

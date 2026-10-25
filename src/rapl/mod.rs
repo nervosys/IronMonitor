@@ -72,8 +72,12 @@ pub struct EnergyReading {
     pub max_energy_range_uj: Option<u64>,
     /// Current power limit (constraint) in microwatts, if available.
     pub power_limit_uw: Option<u64>,
-    /// Whether this domain is enabled.
-    pub enabled: bool,
+    /// Whether this domain is enabled, or `None` where its `enabled` attribute
+    /// was not read or did not hold `0` or `1`.
+    ///
+    /// **This was `bool`, and an unread attribute became `true` through
+    /// `unwrap_or(true)`.** The resolver then published that as a measurement.
+    pub enabled: Option<bool>,
 }
 
 /// Power snapshot with computed wattage between two readings.
@@ -93,6 +97,12 @@ pub struct PowerSnapshot {
     pub total_core_watts: Option<f64>,
     /// Total DRAM power in watts, `None` as for the package total.
     pub total_dram_watts: Option<f64>,
+    /// Platform (PSys) power in watts, `None` as for the package total.
+    ///
+    /// Kept apart from `total_package_watts`: PSys is whole-platform power and
+    /// already includes the package, so adding it to the package total counted
+    /// the package twice and inflated `efficiency()`.
+    pub total_platform_watts: Option<f64>,
     /// Duration of measurement in seconds.
     pub measurement_duration_secs: f64,
     /// Per-domain energy delta in microjoules.
@@ -106,8 +116,14 @@ pub struct PowerEfficiency {
     pub avg_package_watts: f64,
     /// Peak package power observed (in watts).
     pub peak_package_watts: f64,
-    /// Power efficiency ratio: useful work / total power (inferred).
-    pub efficiency_ratio: f64,
+    /// Fraction of the caller-supplied TDP not drawn by the package:
+    /// `1 - min(package_watts / tdp, 1)`, in `0.0..=1.0`, or `0.0` when the TDP
+    /// is not positive.
+    ///
+    /// This is headroom against a TDP the caller supplied. It is not useful work
+    /// per watt. The field used to be named `efficiency_ratio` and documented as
+    /// useful work over total power, which the computation never measured.
+    pub tdp_headroom_fraction: f64,
     /// Whether the system is within its TDP envelope.
     pub within_tdp: bool,
     /// Estimated TDP in watts.
@@ -205,7 +221,7 @@ impl RaplMonitor {
         let within_tdp = current_watts <= estimated_tdp;
         let headroom = (estimated_tdp - current_watts).max(0.0);
 
-        let efficiency_ratio = if estimated_tdp > 0.0 {
+        let tdp_headroom_fraction = if estimated_tdp > 0.0 {
             (1.0 - (current_watts / estimated_tdp).min(1.0)).max(0.0)
         } else {
             0.0
@@ -232,7 +248,7 @@ impl RaplMonitor {
         Some(PowerEfficiency {
             avg_package_watts: self.avg_watts,
             peak_package_watts: self.peak_watts,
-            efficiency_ratio,
+            tdp_headroom_fraction,
             within_tdp,
             estimated_tdp,
             headroom_watts: headroom,
@@ -251,6 +267,7 @@ impl RaplMonitor {
         let mut total_package: Option<f64> = None;
         let mut total_core: Option<f64> = None;
         let mut total_dram: Option<f64> = None;
+        let mut total_platform: Option<f64> = None;
 
         for c in curr {
             // Find matching previous reading
@@ -277,7 +294,10 @@ impl RaplMonitor {
                 energy_delta_uj.insert(key, delta);
 
                 let total = match c.domain {
-                    PowerDomain::Package | PowerDomain::Platform => &mut total_package,
+                    PowerDomain::Package => &mut total_package,
+                    // PSys includes the package, so it is kept out of the
+                    // package total rather than added to it.
+                    PowerDomain::Platform => &mut total_platform,
                     PowerDomain::Core => &mut total_core,
                     PowerDomain::Dram => &mut total_dram,
                     _ => continue,
@@ -291,6 +311,7 @@ impl RaplMonitor {
             total_package_watts: total_package,
             total_core_watts: total_core,
             total_dram_watts: total_dram,
+            total_platform_watts: total_platform,
             measurement_duration_secs: secs,
             energy_delta_uj,
         }
@@ -298,45 +319,55 @@ impl RaplMonitor {
 
     #[cfg(target_os = "linux")]
     fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
-        let mut readings = Vec::new();
         let powercap = std::path::Path::new("/sys/class/powercap");
 
+        // A missing powercap class means this kernel exposes no RAPL interface.
+        // That is an unsupported host, not one with zero energy domains, so it is
+        // an error and the resolver reports it as such.
         if !powercap.exists() {
-            return Ok(readings);
+            return Err(IronError::UnsupportedPlatform(
+                "/sys/class/powercap does not exist: this kernel exposes no powercap (RAPL) interface"
+                    .into(),
+            ));
         }
 
+        // A directory that exists but cannot be listed is a failed read, not an
+        // empty interface.
+        let entries = std::fs::read_dir(powercap)
+            .map_err(|e| IronError::System(format!("failed to read /sys/class/powercap: {e}")))?;
+
+        let mut readings = Vec::new();
+
         // Read top-level RAPL domains (intel-rapl:0, intel-rapl:1, ...)
-        if let Ok(entries) = std::fs::read_dir(powercap) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with("intel-rapl:") {
-                    continue;
-                }
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("intel-rapl:") {
+                continue;
+            }
 
-                let path = entry.path();
-                // A domain whose suffix does not parse cannot be attributed to a
-                // socket. It is skipped with its sub-domains, which share its
-                // socket, rather than reported as socket 0.
-                let Some(socket) = name
-                    .strip_prefix("intel-rapl:")
-                    .and_then(|s| s.parse::<u32>().ok())
-                else {
-                    continue;
-                };
+            let path = entry.path();
+            // A domain whose suffix does not parse cannot be attributed to a
+            // socket. It is skipped with its sub-domains, which share its
+            // socket, rather than reported as socket 0.
+            let Some(socket) = name
+                .strip_prefix("intel-rapl:")
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
 
-                // Read the top-level domain
-                if let Some(reading) = Self::read_domain(&path, socket) {
-                    readings.push(reading);
-                }
+            // Read the top-level domain
+            if let Some(reading) = Self::read_domain(&path, socket) {
+                readings.push(reading);
+            }
 
-                // Read sub-domains (intel-rapl:0:0, intel-rapl:0:1, ...)
-                if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub in sub_entries.flatten() {
-                        let sub_name = sub.file_name().to_string_lossy().to_string();
-                        if sub_name.starts_with("intel-rapl:") {
-                            if let Some(reading) = Self::read_domain(&sub.path(), socket) {
-                                readings.push(reading);
-                            }
+            // Read sub-domains (intel-rapl:0:0, intel-rapl:0:1, ...)
+            if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    let sub_name = sub.file_name().to_string_lossy().to_string();
+                    if sub_name.starts_with("intel-rapl:") {
+                        if let Some(reading) = Self::read_domain(&sub.path(), socket) {
+                            readings.push(reading);
                         }
                     }
                 }
@@ -344,6 +375,18 @@ impl RaplMonitor {
         }
 
         Ok(readings)
+    }
+
+    /// The sysfs `enabled` attribute holds `0` or `1`. Anything else is not a
+    /// reading of it, so it is `None`. This used to read as `true` both when the
+    /// file was missing and when it held something unexpected.
+    #[cfg(any(target_os = "linux", test))]
+    fn parse_enabled(raw: &str) -> Option<bool> {
+        match raw.trim() {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -363,8 +406,7 @@ impl RaplMonitor {
 
         let enabled = std::fs::read_to_string(path.join("enabled"))
             .ok()
-            .map(|s| s.trim() == "1")
-            .unwrap_or(true);
+            .and_then(|s| Self::parse_enabled(&s));
 
         // Try to read power limit
         let power_limit_uw = std::fs::read_to_string(path.join("constraint_0_power_limit_uw"))
@@ -412,7 +454,9 @@ impl RaplMonitor {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn read_energy() -> Result<Vec<EnergyReading>, IronError> {
-        Ok(Vec::new())
+        Err(IronError::UnsupportedPlatform(
+            "RAPL energy monitoring is not implemented for this platform".into(),
+        ))
     }
 }
 
@@ -443,7 +487,7 @@ mod tests {
             energy_uj: 1_000_000, // 1 joule
             max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
-            enabled: true,
+            enabled: Some(true),
         }];
         let curr = vec![EnergyReading {
             domain: PowerDomain::Package,
@@ -452,7 +496,7 @@ mod tests {
             energy_uj: 11_000_000, // 11 joules (10J delta)
             max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
-            enabled: true,
+            enabled: Some(true),
         }];
         let elapsed = Duration::from_secs(1);
         let snap = RaplMonitor::compute_power(&prev, &curr, elapsed);
@@ -469,7 +513,7 @@ mod tests {
             energy_uj: 90_000_000,
             max_energy_range_uj: Some(100_000_000),
             power_limit_uw: None,
-            enabled: true,
+            enabled: Some(true),
         }];
         let curr = vec![EnergyReading {
             domain: PowerDomain::Core,
@@ -478,7 +522,7 @@ mod tests {
             energy_uj: 5_000_000, // Wrapped around
             max_energy_range_uj: Some(100_000_000),
             power_limit_uw: None,
-            enabled: true,
+            enabled: Some(true),
         }];
         let elapsed = Duration::from_secs(1);
         let snap = RaplMonitor::compute_power(&prev, &curr, elapsed);
@@ -502,7 +546,7 @@ mod tests {
             energy_uj,
             max_energy_range_uj: None,
             power_limit_uw: None,
-            enabled: true,
+            enabled: Some(true),
         };
         let prev = vec![reading(90_000_000)];
         let curr = vec![reading(5_000_000)]; // wrapped, range unknown
@@ -523,6 +567,43 @@ mod tests {
         );
     }
 
+    /// PSys is whole-platform power and already includes the package, so it must
+    /// not be added to the package total. Before, it was, and a 60 W package
+    /// under a 90 W PSys read as 150 W of package power.
+    #[test]
+    fn platform_domain_is_kept_out_of_the_package_total() {
+        let reading = |domain, name: &str, energy_uj| EnergyReading {
+            domain,
+            name: name.into(),
+            socket: 0,
+            energy_uj,
+            max_energy_range_uj: Some(u64::MAX),
+            power_limit_uw: None,
+            enabled: Some(true),
+        };
+        let prev = vec![
+            reading(PowerDomain::Package, "package-0", 0),
+            reading(PowerDomain::Platform, "psys", 0),
+        ];
+        let curr = vec![
+            reading(PowerDomain::Package, "package-0", 60_000_000),
+            reading(PowerDomain::Platform, "psys", 90_000_000),
+        ];
+
+        let snap = RaplMonitor::compute_power(&prev, &curr, Duration::from_secs(1));
+
+        assert!((snap.total_package_watts.unwrap() - 60.0).abs() < 0.1);
+        assert!((snap.total_platform_watts.unwrap() - 90.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn enabled_attribute_is_none_unless_it_reads_zero_or_one() {
+        assert_eq!(RaplMonitor::parse_enabled("1\n"), Some(true));
+        assert_eq!(RaplMonitor::parse_enabled("0"), Some(false));
+        assert_eq!(RaplMonitor::parse_enabled(""), None);
+        assert_eq!(RaplMonitor::parse_enabled("yes"), None);
+    }
+
     #[test]
     fn test_efficiency_analysis() {
         let monitor = RaplMonitor {
@@ -534,6 +615,7 @@ mod tests {
                 total_package_watts: Some(85.0),
                 total_core_watts: Some(60.0),
                 total_dram_watts: Some(8.0),
+                total_platform_watts: None,
                 measurement_duration_secs: 1.0,
                 energy_delta_uj: HashMap::new(),
             }),
@@ -588,7 +670,7 @@ mod tests {
             energy_uj: 12345678,
             max_energy_range_uj: Some(u64::MAX),
             power_limit_uw: Some(125_000_000),
-            enabled: true,
+            enabled: Some(true),
         };
         let json = serde_json::to_string(&reading).unwrap();
         assert!(json.contains("package-0"));

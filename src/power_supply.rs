@@ -273,10 +273,14 @@ impl PowerSupplyInfo {
         self.supply_type == PowerSupplyType::Battery
     }
 
-    /// Check if AC power is connected
+    /// Check if AC power is connected.
+    ///
+    /// Only a mains supply answers this. A battery or USB port says nothing about
+    /// AC from its type, so for those this is `None`. It used to return
+    /// `Some(false)`, which read as "not on AC" for every non-mains supply.
     pub fn is_on_ac_power(&self) -> Option<bool> {
         if self.supply_type != PowerSupplyType::Mains {
-            return Some(false);
+            return None;
         }
         self.online
     }
@@ -362,12 +366,23 @@ impl PowerSupplyMonitor {
         Some(!self.on_ac_power()? && has_battery)
     }
 
-    /// Get total system power consumption in watts (if available)
+    /// Total system power draw in watts, or `None` unless a battery is discharging.
+    ///
+    /// The system's draw is what its discharging battery supplies. Summing every
+    /// supply counted USB and USB-PD ports, which are inputs, and a charging
+    /// battery: on Windows `wmi_rate` reports the charge rate as the battery's
+    /// rate, so power flowing into a battery was counted as draw. With no
+    /// discharging battery there is no reading of draw, so this is `None` and not
+    /// a sum of whatever happened to be reported.
     pub fn total_power_w(&self) -> Option<f32> {
         let mut total = 0.0f32;
         let mut found = false;
 
-        for supply in &self.supplies {
+        let discharging_batteries = self.supplies.iter().filter(|s| {
+            s.supply_type == PowerSupplyType::Battery
+                && s.status == Some(ChargingStatus::Discharging)
+        });
+        for supply in discharging_batteries {
             if let Some(power) = supply.power_w() {
                 total += power;
                 found = true;
@@ -751,7 +766,8 @@ pub struct PowerSummary {
     pub battery_health: Option<BatteryHealth>,
     /// Estimated time remaining on battery (minutes)
     pub time_remaining_min: Option<u32>,
-    /// Total system power draw (watts)
+    /// System power draw in watts, read from the discharging battery. `None` when
+    /// no battery is discharging, including on AC power.
     pub power_draw_w: Option<f32>,
     /// Battery wear level (100% = like new)
     pub battery_wear_percent: Option<f32>,
@@ -816,7 +832,7 @@ fn read_wmi_batteries() -> Vec<PowerSupplyInfo> {
         "Full = @(Get-CimInstance -Namespace $ns -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | ",
         "Select-Object InstanceName, FullChargedCapacity); ",
         "Status = @(Get-CimInstance -Namespace $ns -ClassName BatteryStatus -ErrorAction SilentlyContinue | ",
-        "Select-Object InstanceName, RemainingCapacity, Voltage, ChargeRate, DischargeRate); ",
+        "Select-Object InstanceName, RemainingCapacity, Voltage, ChargeRate, DischargeRate, Charging, Discharging); ",
         "Cycle = @(Get-CimInstance -Namespace $ns -ClassName BatteryCycleCount -ErrorAction SilentlyContinue | ",
         "Select-Object InstanceName, CycleCount) ",
         "} | ConvertTo-Json -Depth 4 -Compress"
@@ -943,6 +959,19 @@ fn batteries_from_wmi(json: &serde_json::Value) -> Vec<PowerSupplyInfo> {
         info.voltage_now_mv = status.and_then(|s| wmi_u32(s.get("Voltage")));
         info.power_now_mw =
             status.and_then(|s| wmi_rate(s.get("DischargeRate"), s.get("ChargeRate")));
+        // The battery's own `Discharging` flag is what makes its rate a system
+        // draw. It is read here, not inferred from the rate. Neither flag set is
+        // left as `None`, since the API does not say more than that.
+        info.status = status.and_then(|s| {
+            let flag = |name| s.get(name).and_then(serde_json::Value::as_bool);
+            if flag("Discharging") == Some(true) {
+                Some(ChargingStatus::Discharging)
+            } else if flag("Charging") == Some(true) {
+                Some(ChargingStatus::Charging)
+            } else {
+                None
+            }
+        });
         info.cycle_count = cycle.and_then(|c| wmi_u32(c.get("CycleCount")));
         batteries.push(info);
     }
@@ -1084,6 +1113,92 @@ mod tests {
         assert!(info.capacity_percent.is_none());
     }
 
+    /// A battery's type says nothing about AC, and a USB port's says nothing
+    /// about it either. Only mains answers, so the others are `None`, not
+    /// `Some(false)`.
+    #[test]
+    fn only_a_mains_supply_answers_whether_ac_is_connected() {
+        let with = |supply_type, online| {
+            let mut info = PowerSupplyInfo::new("x");
+            info.supply_type = supply_type;
+            info.online = online;
+            info
+        };
+        assert_eq!(
+            with(PowerSupplyType::Mains, Some(true)).is_on_ac_power(),
+            Some(true)
+        );
+        assert_eq!(
+            with(PowerSupplyType::Mains, Some(false)).is_on_ac_power(),
+            Some(false)
+        );
+        assert_eq!(with(PowerSupplyType::Mains, None).is_on_ac_power(), None);
+        assert_eq!(
+            with(PowerSupplyType::Battery, Some(false)).is_on_ac_power(),
+            None
+        );
+        assert_eq!(
+            with(PowerSupplyType::UsbPd, Some(false)).is_on_ac_power(),
+            None
+        );
+    }
+
+    /// Only a discharging battery is system draw. A charging battery, a USB port
+    /// and mains each carry power, and none of it is the system's draw.
+    #[test]
+    fn system_draw_counts_only_a_discharging_battery() {
+        let supply = |name: &str, supply_type, status, mw| {
+            let mut info = PowerSupplyInfo::new(name);
+            info.supply_type = supply_type;
+            info.status = status;
+            info.power_now_mw = mw;
+            info
+        };
+        let monitor = |supplies| PowerSupplyMonitor { supplies };
+
+        let discharging = monitor(vec![
+            supply("AC", PowerSupplyType::Mains, None, None),
+            supply(
+                "BAT0",
+                PowerSupplyType::Battery,
+                Some(ChargingStatus::Discharging),
+                Some(12_000),
+            ),
+            supply("ucsi", PowerSupplyType::UsbPd, None, Some(65_000)),
+        ]);
+        assert_eq!(discharging.total_power_w(), Some(12.0));
+
+        let charging = monitor(vec![
+            supply("AC", PowerSupplyType::Mains, None, None),
+            supply(
+                "BAT0",
+                PowerSupplyType::Battery,
+                Some(ChargingStatus::Charging),
+                Some(40_000),
+            ),
+            supply("ucsi", PowerSupplyType::UsbPd, None, Some(65_000)),
+        ]);
+        assert_eq!(
+            charging.total_power_w(),
+            None,
+            "charge current is not system draw"
+        );
+
+        let on_ac_no_battery = monitor(vec![
+            supply("AC", PowerSupplyType::Mains, None, None),
+            supply("ucsi", PowerSupplyType::UsbPd, None, Some(65_000)),
+        ]);
+        assert_eq!(on_ac_no_battery.total_power_w(), None);
+
+        let discharging_unread = monitor(vec![supply(
+            "BAT0",
+            PowerSupplyType::Battery,
+            Some(ChargingStatus::Discharging),
+            None,
+        )]);
+        assert_eq!(discharging_unread.total_power_w(), None);
+    }
+
     #[test]
     fn test_is_battery() {
         let mut info = PowerSupplyInfo::new("BAT0");
@@ -1193,14 +1308,18 @@ mod wmi_battery_tests {
                     "RemainingCapacity": 20000,
                     "Voltage": 12450,
                     "ChargeRate": 0,
-                    "DischargeRate": 8000
+                    "DischargeRate": 8000,
+                    "Charging": false,
+                    "Discharging": true
                 },
                 {
                     "InstanceName": "ACPI\\PNP0C0A\\1_0",
                     "RemainingCapacity": 40000,
                     "Voltage": 12600,
                     "ChargeRate": 0,
-                    "DischargeRate": 15000
+                    "DischargeRate": 15000,
+                    "Charging": false,
+                    "Discharging": true
                 }
             ],
             "Cycle": [
@@ -1223,6 +1342,7 @@ mod wmi_battery_tests {
         assert_eq!(a.energy_now_uwh, Some(40_000_000));
         assert_eq!(a.voltage_now_mv, Some(12600));
         assert_eq!(a.power_now_mw, Some(15000));
+        assert_eq!(a.status, Some(ChargingStatus::Discharging));
         assert_eq!(a.cycle_count, Some(213));
         assert_eq!(a.manufacturer.as_deref(), Some("SMP"));
         assert_eq!(a.serial_number.as_deref(), Some("1234"));
@@ -1235,6 +1355,32 @@ mod wmi_battery_tests {
         assert_eq!(b.cycle_count, Some(4));
         assert_eq!(b.technology.as_deref(), Some("LiPo"));
         assert_eq!(b.manufacturer, None, "a blank manufacturer is not a name");
+    }
+
+    /// `DischargeRate` and `ChargeRate` are both battery rates, and on a charging
+    /// battery the one that matters is the charge current. It must not be counted
+    /// as the system's draw, so only the discharging battery's rate is summed.
+    #[test]
+    fn a_charging_battery_does_not_add_to_system_draw() {
+        // `Status[0]` is instance 2_0, which the output lists second.
+        let mut json = two_pack_laptop();
+        json["Status"][0]["Charging"] = json!(true);
+        json["Status"][0]["Discharging"] = json!(false);
+        json["Status"][0]["ChargeRate"] = json!(40000);
+        json["Status"][0]["DischargeRate"] = json!(0);
+
+        let batteries = batteries_from_wmi(&json);
+        assert_eq!(batteries[0].status, Some(ChargingStatus::Discharging));
+        assert_eq!(batteries[1].status, Some(ChargingStatus::Charging));
+
+        let monitor = PowerSupplyMonitor {
+            supplies: batteries,
+        };
+        assert_eq!(
+            monitor.total_power_w(),
+            Some(15.0),
+            "only the discharging pack's 15 W is system draw, not the 40 W charge"
+        );
     }
 
     #[test]

@@ -2763,8 +2763,8 @@ impl Ontology {
             K::Identity,
             None,
             P::Specification,
-            false,
-            "Whether the platform reports this domain as enabled. A disabled domain still has a counter and it does not advance.",
+            true,
+            "Whether the platform reports this domain as enabled. Nullable: unavailable when the domain's enabled attribute was not read, and never assumed true. A disabled domain still has a counter and it does not advance.",
         ));
 
         // ── Memory bandwidth ─────────────────────────────────────
