@@ -3,7 +3,7 @@
 //! This module provides functionality to maximize Jetson performance by setting
 //! all frequencies (CPU, GPU, EMC, engines) to their maximum values.
 
-use super::verify_sudo_available;
+use super::{sudo_command, sudo_failure, verify_sudo_available};
 use crate::error::{IronError, Result};
 use std::fs;
 use std::path::Path;
@@ -41,17 +41,13 @@ pub fn enable() -> Result<()> {
 
     let jetson_clocks = find_jetson_clocks()?;
 
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg(&jetson_clocks)
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to enable jetson_clocks: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "enable jetson_clocks"));
     }
 
     Ok(())
@@ -64,18 +60,14 @@ pub fn disable() -> Result<()> {
 
     let jetson_clocks = find_jetson_clocks()?;
 
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg(&jetson_clocks)
         .arg("--restore")
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to disable jetson_clocks: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "disable jetson_clocks"));
     }
 
     Ok(())
@@ -172,18 +164,14 @@ pub fn store() -> Result<()> {
 
     let jetson_clocks = find_jetson_clocks()?;
 
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg(&jetson_clocks)
         .arg("--store")
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to store jetson_clocks config: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "store jetson_clocks config"));
     }
 
     Ok(())

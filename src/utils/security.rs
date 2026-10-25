@@ -65,6 +65,39 @@ pub fn verify_sudo_available() -> Result<()> {
     }
 }
 
+/// Build a `sudo` invocation that never prompts.
+///
+/// `-n` makes sudo fail instead of reading a password from the terminal. A
+/// state-changing call then either runs on cached or passwordless credentials,
+/// or returns an error that [`sudo_failure`] turns into an instruction.
+pub(crate) fn sudo_command() -> Command {
+    let mut cmd = Command::new("sudo");
+    cmd.arg("-n");
+    cmd
+}
+
+/// Turn a failed `sudo -n` run into an error that says what to do.
+///
+/// `action` names the operation for the message, e.g. `"enable jetson_clocks"`.
+/// When sudo refused to prompt, the error is a `PermissionDenied` telling the
+/// user to run the command as root or authenticate sudo first. Any other
+/// failure is the command's own error.
+pub(crate) fn sudo_failure(output: &std::process::Output, action: &str) -> IronError {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("a password is required") || stderr.contains("a terminal is required") {
+        IronError::PermissionDenied(format!(
+            concat!(
+                "Cannot {action}: sudo needs a password and was not allowed to prompt. ",
+                "Run this command as root (for example `sudo ironmon ...`), or authenticate ",
+                "sudo first with `sudo -v` and run it again."
+            ),
+            action = action
+        ))
+    } else {
+        IronError::CommandFailed(format!("Failed to {action}: {stderr}"))
+    }
+}
+
 /// Log a privileged operation attempt
 ///
 /// # Security

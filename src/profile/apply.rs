@@ -318,6 +318,41 @@ pub fn audit_log_path() -> PathBuf {
         .clone()
 }
 
+/// Record an attempt made outside [`apply_setting`] in the same audit log.
+///
+/// The Jetson clock, power-mode and swap controls write system state but are
+/// not profile settings, so they have no [`ApplyHandler`]. An attempt at them
+/// is still written to the log in the same shape, so one file holds every
+/// write this crate was asked to make. `setting_id` names the operation (for
+/// example `"jetson.clocks"`). `subsystem` is the nearest profile subsystem and
+/// is coarse for platform-wide operations; the id is the precise record.
+///
+/// `previous` is always `None` here: these operations do not read back the
+/// value they replace, so they cannot be reverted through [`revert_setting`].
+pub fn record_attempt(
+    setting_id: &str,
+    subsystem: Subsystem,
+    requested: SettingValue,
+    status: ApplyStatus,
+    message: &str,
+) -> ApplyOutcome {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let outcome = ApplyOutcome {
+        setting_id: setting_id.into(),
+        subsystem,
+        requested,
+        status,
+        message: message.into(),
+        timestamp,
+        previous: None,
+    };
+    audit_log(&outcome);
+    outcome
+}
+
 fn audit_log(outcome: &ApplyOutcome) {
     let path = audit_log_path();
     if let Some(parent) = path.parent() {

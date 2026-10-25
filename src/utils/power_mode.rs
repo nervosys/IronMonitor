@@ -3,7 +3,7 @@
 //! NVPModel controls voltage regulators and power tree to optimize power efficiency.
 //! It supports various power budgets with different CPU/GPU configurations.
 
-use super::verify_sudo_available;
+use super::{sudo_command, sudo_failure, verify_sudo_available};
 use crate::error::{IronError, Result};
 use std::process::Command;
 
@@ -146,7 +146,7 @@ pub fn set_mode(mode_id: u32, force: bool) -> Result<()> {
     // Security: Verify sudo is available
     verify_sudo_available()?;
 
-    let mut cmd = Command::new("sudo");
+    let mut cmd = sudo_command();
     cmd.arg("nvpmodel").arg("-m").arg(mode_id.to_string());
 
     let output = if force {
@@ -157,11 +157,7 @@ pub fn set_mode(mode_id: u32, force: bool) -> Result<()> {
     .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to set power mode: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "set power mode"));
     }
 
     // Check for errors in output

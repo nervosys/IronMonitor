@@ -531,14 +531,26 @@ enum JetsonSubcommand {
 #[cfg(feature = "cli")]
 #[derive(Subcommand)]
 enum JetsonClocksAction {
-    /// Enable jetson_clocks (maximize performance)
-    Enable,
-    /// Disable jetson_clocks (restore settings)
-    Disable,
+    /// Enable jetson_clocks (maximize performance). Requires --confirm.
+    Enable {
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Disable jetson_clocks (restore settings). Requires --confirm.
+    Disable {
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Show jetson_clocks status
     Status,
-    /// Store current configuration
-    Store,
+    /// Store current configuration. Requires --confirm.
+    Store {
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[cfg(feature = "cli")]
@@ -548,21 +560,27 @@ enum NvpmodelAction {
     Show,
     /// List all available power modes
     List,
-    /// Set power mode by ID
+    /// Set power mode by ID. Requires --confirm.
     Set {
         /// Mode ID
         mode_id: u32,
         /// Force mode change
         #[arg(short, long)]
         force: bool,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
-    /// Set power mode by name
+    /// Set power mode by name. Requires --confirm.
     SetName {
         /// Mode name
         name: String,
         /// Force mode change
         #[arg(short, long)]
         force: bool,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -571,7 +589,7 @@ enum NvpmodelAction {
 enum SwapAction {
     /// Show current swap status
     Status,
-    /// Create a new swap file
+    /// Create a new swap file. Requires --confirm.
     Create {
         /// Swap file path
         #[arg(short, long, default_value = "/swapfile")]
@@ -582,21 +600,33 @@ enum SwapAction {
         /// Enable on boot
         #[arg(short, long)]
         auto: bool,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
-    /// Enable swap file
+    /// Enable swap file. Requires --confirm.
     Enable {
         /// Swap file path
         path: PathBuf,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
-    /// Disable swap file
+    /// Disable swap file. Requires --confirm.
     Disable {
         /// Swap file path
         path: PathBuf,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
-    /// Remove swap file
+    /// Remove swap file. Requires --confirm.
     Remove {
         /// Swap file path
         path: PathBuf,
+        /// Required to actually perform the write. Without it, nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -2430,8 +2460,64 @@ fn handle_jetson_command(cmd: &JetsonSubcommand) -> Result<(), Box<dyn std::erro
     }
 }
 
+/// Run a Jetson write behind `--confirm`, and audit the attempt either way.
+///
+/// This is the gate `ironmon profile set` uses. Without `--confirm` the
+/// operation is described, nothing is written, the refusal is audited as
+/// `needs_confirm`, and the command fails. With it, the operation runs and its
+/// outcome (applied, refused by sudo, or failed) is audited in the same log.
+#[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
+fn run_jetson_write<T>(
+    setting_id: &str,
+    subsystem: ironmonitor::profile::Subsystem,
+    requested: &str,
+    description: &str,
+    confirm: bool,
+    action: impl FnOnce() -> ironmonitor::Result<T>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    use ironmonitor::profile::apply::{record_attempt, ApplyStatus};
+    use ironmonitor::profile::SettingValue;
+    use ironmonitor::IronError;
+
+    let requested = SettingValue::Text(requested.to_string());
+    if !confirm {
+        println!("Would {}. Nothing was written.", description);
+        let message = "Apply rejected: explicit confirmation required (pass --confirm).";
+        record_attempt(
+            setting_id,
+            subsystem,
+            requested,
+            ApplyStatus::NeedsConfirm,
+            message,
+        );
+        return Err(message.into());
+    }
+
+    match action() {
+        Ok(value) => {
+            record_attempt(
+                setting_id,
+                subsystem,
+                requested,
+                ApplyStatus::Applied,
+                "applied",
+            );
+            Ok(value)
+        }
+        Err(err) => {
+            let status = match err {
+                IronError::PermissionDenied(_) => ApplyStatus::Refused,
+                _ => ApplyStatus::Failed,
+            };
+            record_attempt(setting_id, subsystem, requested, status, &err.to_string());
+            Err(err.into())
+        }
+    }
+}
+
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::error::Error>> {
+    use ironmonitor::profile::Subsystem;
     use ironmonitor::utils::clocks;
 
     if !clocks::is_available() {
@@ -2440,14 +2526,32 @@ fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::
     }
 
     match action {
-        JetsonClocksAction::Enable => {
-            println!("Enabling jetson_clocks (maximizing performance)...");
-            clocks::enable()?;
+        JetsonClocksAction::Enable { confirm } => {
+            run_jetson_write(
+                "jetson.clocks",
+                Subsystem::Cpu,
+                "enable",
+                "enable jetson_clocks (maximize performance)",
+                *confirm,
+                || {
+                    println!("Enabling jetson_clocks (maximizing performance)...");
+                    clocks::enable()
+                },
+            )?;
             println!("jetson_clocks enabled successfully");
         }
-        JetsonClocksAction::Disable => {
-            println!("Disabling jetson_clocks (restoring settings)...");
-            clocks::disable()?;
+        JetsonClocksAction::Disable { confirm } => {
+            run_jetson_write(
+                "jetson.clocks",
+                Subsystem::Cpu,
+                "disable",
+                "disable jetson_clocks (restore settings)",
+                *confirm,
+                || {
+                    println!("Disabling jetson_clocks (restoring settings)...");
+                    clocks::disable()
+                },
+            )?;
             println!("jetson_clocks disabled successfully");
         }
         JetsonClocksAction::Status => {
@@ -2459,9 +2563,18 @@ fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::
                 println!("  - {}", engine);
             }
         }
-        JetsonClocksAction::Store => {
-            println!("Storing current configuration...");
-            clocks::store()?;
+        JetsonClocksAction::Store { confirm } => {
+            run_jetson_write(
+                "jetson.clocks",
+                Subsystem::Cpu,
+                "store",
+                "store the current jetson_clocks configuration",
+                *confirm,
+                || {
+                    println!("Storing current configuration...");
+                    clocks::store()
+                },
+            )?;
             println!("Configuration stored successfully");
         }
     }
@@ -2471,6 +2584,7 @@ fn handle_jetson_clocks(action: &JetsonClocksAction) -> Result<(), Box<dyn std::
 
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_nvpmodel(action: &NvpmodelAction) -> Result<(), Box<dyn std::error::Error>> {
+    use ironmonitor::profile::Subsystem;
     use ironmonitor::utils::power_mode;
 
     if !power_mode::is_available() {
@@ -2513,18 +2627,44 @@ fn handle_nvpmodel(action: &NvpmodelAction) -> Result<(), Box<dyn std::error::Er
             println!("\nDefault Mode:");
             println!("  ID: {} - {}", status.default.id, status.default.name);
         }
-        NvpmodelAction::Set { mode_id, force } => {
-            println!("Setting power mode to ID {}...", mode_id);
-            power_mode::set_mode(*mode_id, *force)?;
+        NvpmodelAction::Set {
+            mode_id,
+            force,
+            confirm,
+        } => {
+            run_jetson_write(
+                "jetson.powermode",
+                Subsystem::Cpu,
+                &format!("set mode ID {} force={}", mode_id, force),
+                &format!("set the power mode to ID {}", mode_id),
+                *confirm,
+                || {
+                    println!("Setting power mode to ID {}...", mode_id);
+                    power_mode::set_mode(*mode_id, *force)
+                },
+            )?;
             println!("Power mode set successfully");
 
             // Show new mode
             let mode = power_mode::query()?;
             println!("New mode: {} ({})", mode.name, mode.id);
         }
-        NvpmodelAction::SetName { name, force } => {
-            println!("Setting power mode to '{}'...", name);
-            power_mode::set_mode_by_name(name, *force)?;
+        NvpmodelAction::SetName {
+            name,
+            force,
+            confirm,
+        } => {
+            run_jetson_write(
+                "jetson.powermode",
+                Subsystem::Cpu,
+                &format!("set name '{}' force={}", name, force),
+                &format!("set the power mode to '{}'", name),
+                *confirm,
+                || {
+                    println!("Setting power mode to '{}'...", name);
+                    power_mode::set_mode_by_name(name, *force)
+                },
+            )?;
             println!("Power mode set successfully");
 
             // Show new mode
@@ -2538,6 +2678,7 @@ fn handle_nvpmodel(action: &NvpmodelAction) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(all(feature = "cli", feature = "jetson-utils", target_os = "linux"))]
 fn handle_swap(action: &SwapAction) -> Result<(), Box<dyn std::error::Error>> {
+    use ironmonitor::profile::Subsystem;
     use ironmonitor::utils::swap;
 
     match action {
@@ -2566,24 +2707,65 @@ fn handle_swap(action: &SwapAction) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        SwapAction::Create { path, size, auto } => {
-            println!("This operation requires sudo privileges");
-            swap::create(path, *size, *auto)?;
+        SwapAction::Create {
+            path,
+            size,
+            auto,
+            confirm,
+        } => {
+            run_jetson_write(
+                "jetson.swap",
+                Subsystem::Memory,
+                &format!("create {} {}G auto={}", path.display(), size, auto),
+                &format!("create a {} GB swap file at {}", size, path.display()),
+                *confirm,
+                || {
+                    println!("This operation requires sudo privileges");
+                    swap::create(path, *size, *auto)
+                },
+            )?;
         }
-        SwapAction::Enable { path } => {
-            println!("Enabling swap: {}", path.display());
-            swap::enable(path)?;
+        SwapAction::Enable { path, confirm } => {
+            run_jetson_write(
+                "jetson.swap",
+                Subsystem::Memory,
+                &format!("enable {}", path.display()),
+                &format!("enable swap file {}", path.display()),
+                *confirm,
+                || {
+                    println!("Enabling swap: {}", path.display());
+                    swap::enable(path)
+                },
+            )?;
             println!("Swap enabled successfully");
         }
-        SwapAction::Disable { path } => {
-            println!("Disabling swap: {}", path.display());
-            swap::disable(path)?;
+        SwapAction::Disable { path, confirm } => {
+            run_jetson_write(
+                "jetson.swap",
+                Subsystem::Memory,
+                &format!("disable {}", path.display()),
+                &format!("disable swap file {}", path.display()),
+                *confirm,
+                || {
+                    println!("Disabling swap: {}", path.display());
+                    swap::disable(path)
+                },
+            )?;
             println!("Swap disabled successfully");
         }
-        SwapAction::Remove { path } => {
-            println!("Removing swap file: {}", path.display());
-            println!("This operation requires sudo privileges");
-            swap::remove(path)?;
+        SwapAction::Remove { path, confirm } => {
+            run_jetson_write(
+                "jetson.swap",
+                Subsystem::Memory,
+                &format!("remove {}", path.display()),
+                &format!("disable and delete swap file {}", path.display()),
+                *confirm,
+                || {
+                    println!("Removing swap file: {}", path.display());
+                    println!("This operation requires sudo privileges");
+                    swap::remove(path)
+                },
+            )?;
         }
     }
 

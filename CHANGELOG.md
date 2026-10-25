@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paired Bluetooth devices were deliberately withheld.
 - The ontology's per-area resolvers run in parallel; on Windows the added
   inventory costs about 8 s of the snapshot rather than 25 s.
+- Jetson clock, power-mode and swap writes (`ironmon cli jetson clocks`,
+  `powermode` and `swap`) now require `--confirm`, as `ironmon profile set`
+  does. Without it they print what they would do, write nothing, and exit with
+  an error. They run `sudo -n`, so they never prompt for a password; when sudo
+  needs one, the error says to run as root or authenticate sudo first. Every
+  attempt is appended to the profile apply audit log.
 
 ### Fixed
 

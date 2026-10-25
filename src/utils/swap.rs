@@ -2,7 +2,7 @@
 //!
 //! Create, enable, disable, and manage swap files.
 
-use super::verify_sudo_available;
+use super::{sudo_command, sudo_failure, verify_sudo_available};
 use crate::error::{IronError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -186,7 +186,7 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
     let block_count = size_gb * 1024;
 
     // Create swap file with dd
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg("dd")
         .arg("if=/dev/zero")
         .arg(format!("of={}", validated_path.display()))
@@ -197,34 +197,30 @@ pub fn create(path: &Path, size_gb: u32, enable_on_boot: bool) -> Result<()> {
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to create swap file: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "create swap file"));
     }
 
     // Set permissions
-    Command::new("sudo")
+    let output = sudo_command()
         .arg("chmod")
         .arg("600")
         .arg(&validated_path)
         .output()
         .map_err(IronError::Io)?;
 
+    if !output.status.success() {
+        return Err(sudo_failure(&output, "set permissions on swap file"));
+    }
+
     // Make swap
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg("mkswap")
         .arg(&validated_path)
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to make swap: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "make swap"));
     }
 
     // Enable swap
@@ -244,18 +240,14 @@ pub fn enable(path: &Path) -> Result<()> {
     // Security: Verify sudo is available
     verify_sudo_available()?;
 
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg("swapon")
         .arg(path)
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to enable swap: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "enable swap"));
     }
 
     Ok(())
@@ -266,18 +258,14 @@ pub fn disable(path: &Path) -> Result<()> {
     // Security: Verify sudo is available
     verify_sudo_available()?;
 
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg("swapoff")
         .arg(path)
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to disable swap: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "disable swap"));
     }
 
     Ok(())
@@ -301,12 +289,13 @@ fn add_to_fstab(path: &Path) -> Result<()> {
     }
 
     // Use tee to append (more secure than shell, no command injection possible)
-    let mut child = Command::new("sudo")
+    let mut child = sudo_command()
         .arg("tee")
         .arg("-a")
         .arg("/etc/fstab")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(IronError::Io)?;
 
@@ -320,11 +309,7 @@ fn add_to_fstab(path: &Path) -> Result<()> {
     let output = child.wait_with_output().map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to add to fstab: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "add swap to /etc/fstab"));
     }
 
     println!("Added swap to /etc/fstab for automatic enable on boot");
@@ -342,18 +327,14 @@ pub fn remove(path: &Path) -> Result<()> {
     }
 
     // Remove file
-    let output = Command::new("sudo")
+    let output = sudo_command()
         .arg("rm")
         .arg(path)
         .output()
         .map_err(IronError::Io)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(IronError::CommandFailed(format!(
-            "Failed to remove swap file: {}",
-            stderr
-        )));
+        return Err(sudo_failure(&output, "remove swap file"));
     }
 
     println!("Swap file removed: {}", path.display());

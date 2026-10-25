@@ -62,8 +62,11 @@ fn no_reader_spawns_sudo() {
 }
 
 /// The control: the scan does see a `sudo` spawn where one exists.
+///
+/// The utilities reach sudo through `sudo_command()` in `security.rs`, the one
+/// place that spawns it, so that is the file that still holds the literal.
 #[test]
 fn the_scan_sees_the_utils_it_excludes() {
-    let text = std::fs::read_to_string("src/utils/swap.rs").expect("swap utility exists");
+    let text = std::fs::read_to_string("src/utils/security.rs").expect("sudo helper exists");
     assert!(text.contains("Command::new(\"sudo\")"));
 }
