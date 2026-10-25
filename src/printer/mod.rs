@@ -363,23 +363,13 @@ impl PrinterMonitor {
                 }
 
                 // Parse: "printer NAME is idle."  or "printer NAME disabled since ..."
-                let name_end = rest
-                    .find(" is ")
-                    .or_else(|| rest.find(" disabled"))
-                    .unwrap_or(rest.len());
-                current_name = rest[..name_end].to_string();
+                // The state is read from the text after the queue name, so a
+                // queue called "idle_room" or "printing_bay" cannot set it.
+                let (name, status) = Self::parse_lpstat_printer_line(rest);
+                current_name = name;
                 current_desc = String::new();
                 in_printer = true;
-
-                if rest.contains("idle") {
-                    current_status = PrinterStatus::Idle;
-                } else if rest.contains("printing") {
-                    current_status = PrinterStatus::Printing;
-                } else if rest.contains("disabled") || rest.contains("stopped") {
-                    current_status = PrinterStatus::Paused;
-                } else {
-                    current_status = PrinterStatus::Unknown;
-                }
+                current_status = status;
             } else if in_printer && line.starts_with("\tDescription:") {
                 current_desc = line
                     .strip_prefix("\tDescription:")
@@ -415,6 +405,46 @@ impl PrinterMonitor {
             });
         }
         Ok(())
+    }
+
+    /// Splits one `lpstat -p` header line, without its leading "printer ",
+    /// into the queue name and its state.
+    ///
+    /// CUPS queue names contain no whitespace, so the name is the first word.
+    /// The state is matched only against the text that follows it. Matching
+    /// the whole line let a queue named `idle_room` or `printing_bay` set the
+    /// state, and let the job name in "now printing JOB" do the same.
+    ///
+    /// Not gated on the platform: the parser is pure text, and the tests run on
+    /// every host. Only the CUPS path calls it, hence the `allow`.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    fn parse_lpstat_printer_line(rest: &str) -> (String, PrinterStatus) {
+        let rest = rest.trim_start();
+        let (name, after) = match rest.split_once(char::is_whitespace) {
+            Some((name, after)) => (name, after.trim_start()),
+            None => (rest, ""),
+        };
+        let status = if after.starts_with("is idle") {
+            PrinterStatus::Idle
+        } else if after.starts_with("now printing") {
+            PrinterStatus::Printing
+        } else if after.starts_with("disabled") || after.starts_with("is stopped") {
+            PrinterStatus::Paused
+        } else {
+            PrinterStatus::Unknown
+        };
+        (name.to_string(), status)
+    }
+
+    /// Whether a Windows port name is one of the port monitors that exists only
+    /// to produce output: Microsoft Print to PDF, the XPS writer, the discard
+    /// port, and the OneNote virtual printer. `port_lower` must be lowercased.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn is_virtual_port_win(port_lower: &str) -> bool {
+        port_lower.starts_with("portprompt:")
+            || port_lower.starts_with("xpsport:")
+            || port_lower == "nul:"
+            || port_lower.contains("onenote")
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -491,11 +521,11 @@ impl PrinterMonitor {
                     PrinterConnection::Network
                 } else if port_lower.contains("usb") {
                     PrinterConnection::USB
-                } else if name.to_lowercase().contains("pdf")
-                    || name.to_lowercase().contains("xps")
-                    || name.to_lowercase().contains("onenote")
-                    || name.to_lowercase().contains("fax")
-                {
+                } else if Self::is_virtual_port_win(&port_lower) {
+                    // The port monitor is what makes a queue virtual: PORTPROMPT:
+                    // is Microsoft Print to PDF, XPSPort: the XPS writer, and nul:
+                    // a discard port. A queue's name is not evidence -- a printer
+                    // called "Office PDF Scanner" on a USB port is not virtual.
                     PrinterConnection::Virtual
                 } else {
                     PrinterConnection::Unknown
@@ -661,6 +691,69 @@ mod tests {
         );
         assert_eq!(PrinterMonitor::parse_lpstat_accepting("garbage"), None);
         assert_eq!(PrinterMonitor::parse_lpstat_accepting(""), None);
+    }
+
+    /// Captured `lpstat -p` headers. The state comes from the words after the
+    /// queue name, so a name that spells a state does not set it.
+    #[test]
+    fn lpstat_state_comes_from_after_the_name() {
+        let parse = PrinterMonitor::parse_lpstat_printer_line;
+
+        let (name, status) = parse("HP_Laser is idle.  enabled since Mon 05 Oct 2026");
+        assert_eq!(name, "HP_Laser");
+        assert_eq!(status, PrinterStatus::Idle);
+
+        let (name, status) = parse("HP_Laser now printing HP_Laser-42.  enabled since Mon");
+        assert_eq!(name, "HP_Laser");
+        assert_eq!(status, PrinterStatus::Printing);
+
+        let (name, status) = parse("Office_MFP disabled since Tue 06 Oct 2026 11:02:47 AM BST");
+        assert_eq!(name, "Office_MFP");
+        assert_eq!(status, PrinterStatus::Paused);
+
+        // Queue names that contain the state words.
+        let (name, status) = parse("idle_room is printing_bay.  enabled since Mon");
+        assert_eq!(name, "idle_room");
+        assert_eq!(status, PrinterStatus::Unknown);
+
+        let (name, status) = parse("idle_room is idle.  enabled since Mon");
+        assert_eq!(name, "idle_room");
+        assert_eq!(status, PrinterStatus::Idle);
+
+        let (name, status) = parse("printing_bay now printing printing_bay-7.  enabled since Mon");
+        assert_eq!(name, "printing_bay");
+        assert_eq!(status, PrinterStatus::Printing);
+
+        // A queue named "stopped" that is disabled is paused by its state,
+        // and a queue named "disabled" that is idle is idle by its state.
+        let (name, status) = parse("stopped disabled since Mon");
+        assert_eq!(name, "stopped");
+        assert_eq!(status, PrinterStatus::Paused);
+
+        let (name, status) = parse("disabled is idle.");
+        assert_eq!(name, "disabled");
+        assert_eq!(status, PrinterStatus::Idle);
+
+        // A state the parser does not know is Unknown, not a nearest match.
+        let (_, status) = parse("Lab is processing something unusual");
+        assert_eq!(status, PrinterStatus::Unknown);
+    }
+
+    /// A queue named for a PDF writer on a USB port is a USB printer. The
+    /// port monitor is the evidence; the name is not.
+    #[test]
+    fn windows_virtual_ports_are_recognised_by_port_only() {
+        assert!(PrinterMonitor::is_virtual_port_win("portprompt:"));
+        assert!(PrinterMonitor::is_virtual_port_win("xpsport:"));
+        assert!(PrinterMonitor::is_virtual_port_win("nul:"));
+        assert!(PrinterMonitor::is_virtual_port_win(
+            "microsoft.office.onenotevirtualprinter_8wekyb3d8bbwe_onenote-psa:print-to-onenote_s-1"
+        ));
+        assert!(!PrinterMonitor::is_virtual_port_win("usb001"));
+        assert!(!PrinterMonitor::is_virtual_port_win(
+            "wsd-89a9ad78-3c8f-4d2b-92fe-edb15cb2c4b1"
+        ));
+        assert!(!PrinterMonitor::is_virtual_port_win(""));
     }
 
     #[test]

@@ -30,11 +30,12 @@ pub struct IpmiSensor {
     pub upper_critical: Option<f64>,
 }
 
-/// BMC (Baseboard Management Controller) information
+/// BMC (Baseboard Management Controller) information. A field is `None` when
+/// `bmc info` did not print a non-empty value for it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BmcInfo {
-    pub firmware_version: String,
-    pub manufacturer: String,
+    pub firmware_version: Option<String>,
+    pub manufacturer: Option<String>,
     pub ip_address: Option<String>,
     pub mac_address: Option<String>,
 }
@@ -196,27 +197,43 @@ impl IpmiController {
 
     pub fn bmc_info(&self) -> Result<BmcInfo, super::DatacenterError> {
         let stdout = self.run(&["bmc", "info"])?;
-        let mut firmware = String::new();
-        let mut manufacturer = String::new();
-
-        for line in stdout.lines() {
-            if line.contains("Firmware Revision") {
-                firmware = line.split(':').nth(1).unwrap_or("").trim().to_string();
-            } else if line.contains("Manufacturer Name") {
-                manufacturer = line.split(':').nth(1).unwrap_or("").trim().to_string();
-            }
-        }
-
-        Ok(BmcInfo {
-            firmware_version: firmware,
-            manufacturer,
-            ip_address: None,
-            mac_address: None,
-        })
+        Ok(parse_bmc_info(&stdout))
     }
 
     pub fn power_reading(&self) -> Result<PowerReading, super::DatacenterError> {
         parse_power_reading(&self.run(&["dcmi", "power", "reading"])?)
+    }
+}
+
+/// `ipmitool bmc info`, read for the two fields it names. A line with no value
+/// after the colon is no value: it gives `None`, not an empty string.
+fn parse_bmc_info(stdout: &str) -> BmcInfo {
+    let field = |label: &str| -> Option<String> {
+        stdout
+            .lines()
+            .find(|l| l.contains(label))
+            .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+            .filter(|v| !v.is_empty())
+    };
+    BmcInfo {
+        firmware_version: field("Firmware Revision"),
+        manufacturer: field("Manufacturer Name"),
+        ip_address: None,
+        mac_address: None,
+    }
+}
+
+/// Maps the status column of `ipmitool sensor list`. The codes are fixed:
+/// `ok`; `nc` non-critical; `cr` critical; `nr` non-recoverable; `ns` and `na`
+/// for a sensor with no state to report. Anything else is not a state either,
+/// so it is `Unknown`.
+fn parse_sensor_status(code: &str) -> super::SensorStatus {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "ok" => super::SensorStatus::Ok,
+        "nc" => super::SensorStatus::Warning,
+        "cr" => super::SensorStatus::Critical,
+        "nr" => super::SensorStatus::NonRecoverable,
+        _ => super::SensorStatus::Unknown,
     }
 }
 
@@ -247,13 +264,10 @@ fn parse_sensor_list(stdout: &str) -> Vec<IpmiSensor> {
             _ => IpmiSensorType::Other,
         };
 
-        let status = match status_str.to_lowercase().as_str() {
-            "ok" => super::SensorStatus::Ok,
-            s if s.contains("warn") => super::SensorStatus::Warning,
-            s if s.contains("crit") => super::SensorStatus::Critical,
-            s if s.contains("nr") => super::SensorStatus::NonRecoverable,
-            _ => super::SensorStatus::Unknown,
-        };
+        // Matched exactly. `contains("crit")` never matched ipmitool's `cr`, and
+        // `contains("warn")` matched no code ipmitool prints, so a critical
+        // sensor read as Unknown.
+        let status = parse_sensor_status(status_str);
 
         let lower_critical = parts.get(5).and_then(|s| s.parse().ok());
         let upper_critical = parts.get(8).and_then(|s| s.parse().ok());
@@ -326,6 +340,63 @@ mod tests {
         assert_eq!(sensors[0].upper_critical, Some(95.0));
         assert_eq!(sensors[1].value, None, "`na` is not 0 RPM");
         assert_eq!(sensors[1].sensor_type, IpmiSensorType::Fan);
+    }
+
+    /// Every status code `ipmitool sensor list` prints maps to the state it
+    /// names. A critical sensor was reported as Unknown before.
+    #[test]
+    fn sensor_status_codes_map_exactly() {
+        use super::super::SensorStatus as S;
+        assert_eq!(parse_sensor_status("ok"), S::Ok);
+        assert_eq!(parse_sensor_status("nc"), S::Warning);
+        assert_eq!(parse_sensor_status("cr"), S::Critical);
+        assert_eq!(parse_sensor_status("nr"), S::NonRecoverable);
+        assert_eq!(parse_sensor_status("ns"), S::Unknown);
+        assert_eq!(parse_sensor_status("na"), S::Unknown);
+        assert_eq!(parse_sensor_status(""), S::Unknown);
+        // Case is not a state either.
+        assert_eq!(parse_sensor_status("CR"), S::Critical);
+    }
+
+    #[test]
+    fn sensors_carry_their_status_from_the_table() {
+        let sensors = parse_sensor_list(concat!(
+            "CPU Temp         | 96.000     | degrees C  | cr    | na        | na        | na        | 90.000    | 95.000    | 100.000\n",
+            "PSU2 Temp        | 41.000     | degrees C  | nc    | na        | na        | na        | 40.000    | 45.000    | 50.000\n",
+            "Fan 3            | 0.000      | RPM        | nr    | 300.000   | na        | na        | na        | na        | na\n",
+            "Drive Bay 9      | na         | discrete   | ns    | na        | na        | na        | na        | na        | na\n",
+        ));
+        let statuses: Vec<_> = sensors.iter().map(|s| s.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                super::super::SensorStatus::Critical,
+                super::super::SensorStatus::Warning,
+                super::super::SensorStatus::NonRecoverable,
+                super::super::SensorStatus::Unknown,
+            ]
+        );
+    }
+
+    /// `bmc info` lines with a value give it; a line with nothing after the
+    /// colon gives `None`, not "".
+    #[test]
+    fn bmc_info_empty_fields_are_none() {
+        let info = parse_bmc_info(concat!(
+            "Device ID                 : 32\n",
+            "Firmware Revision         : 6.10\n",
+            "Manufacturer Name         : \n",
+        ));
+        assert_eq!(info.firmware_version.as_deref(), Some("6.10"));
+        assert_eq!(info.manufacturer, None);
+
+        let blank = parse_bmc_info("Firmware Revision         :\nManufacturer Name         :   \n");
+        assert_eq!(blank.firmware_version, None);
+        assert_eq!(blank.manufacturer, None);
+
+        let absent = parse_bmc_info("Device ID                 : 32\n");
+        assert_eq!(absent.firmware_version, None);
+        assert_eq!(absent.manufacturer, None);
     }
 
     #[test]

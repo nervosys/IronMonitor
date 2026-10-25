@@ -12,6 +12,7 @@ pub mod chassis;
 pub mod ipmi;
 pub mod rack;
 
+pub(crate) use chassis::is_firmware_placeholder;
 pub use chassis::{ChassisInfo, ChassisType, FormFactor, ServerLocation};
 pub use ipmi::{BmcInfo, IpmiController, IpmiSensor, IpmiSensorType, PowerReading, SelEntry};
 pub use rack::{CoolingStatus, CoolingZone, PduInfo, PduOutlet, PowerPhase, RackInfo};

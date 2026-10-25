@@ -29,9 +29,12 @@ use serde::{Deserialize, Serialize};
 pub struct WslInfo {
     /// Whether we're running inside WSL
     pub is_wsl: bool,
-    /// WSL version (1 or 2), None if not WSL
+    /// WSL version, `Some(2)` only where WSL2 is evidenced. `None` when WSL is
+    /// present but the version is not evidenced, and when this is not WSL.
     pub version: Option<u8>,
-    /// Windows build number (from /proc/version)
+    /// Windows build number. Always `None` today: `/proc/version` carries the
+    /// Linux kernel release, not the Windows build, and no Windows build is
+    /// read from the guest.
     pub windows_build: Option<String>,
     /// Whether GPU passthrough is available
     pub gpu_passthrough: bool,
@@ -53,15 +56,21 @@ pub struct WslInfo {
     pub distro_name: Option<String>,
     /// Windows host filesystem mount point
     pub windows_mount: Option<String>,
-    /// Virtual GPU adapter names from dxinfo
+    /// Virtual GPU adapters, one per `/sys/class/drm` card whose PCI IDs were read
     pub virtual_adapters: Vec<VirtualGpuAdapter>,
 }
 
 /// A virtual GPU adapter visible through WSL2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualGpuAdapter {
-    /// Adapter name
-    pub name: String,
+    /// Adapter name, `None` where the PCI vendor is not one this module names.
+    /// It used to be `"Unknown GPU (<empty>:<empty>)"` for an adapter whose IDs
+    /// were never read.
+    pub name: Option<String>,
+    /// PCI vendor ID as read from sysfs, e.g. `0x10de`. `None` where unread.
+    pub vendor_id: Option<String>,
+    /// PCI device ID as read from sysfs. `None` where unread.
+    pub device_id: Option<String>,
     /// Driver version
     pub driver_version: Option<String>,
     /// Dedicated video memory in bytes
@@ -76,6 +85,8 @@ pub struct WslDetector;
 impl WslDetector {
     /// Detect WSL environment and GPU passthrough capabilities
     pub fn detect() -> WslInfo {
+        // Only Linux and Windows fill it in, so `mut` is unused elsewhere.
+        #[allow(unused_mut)]
         let mut info = WslInfo {
             is_wsl: false,
             version: None,
@@ -114,26 +125,18 @@ impl WslDetector {
             if lower.contains("microsoft") || lower.contains("wsl") {
                 info.is_wsl = true;
 
-                // Determine WSL version
-                // The kernel string and /run/WSL are independent evidence of the
-                // same thing; either one is sufficient.
-                if lower.contains("wsl2")
-                    || lower.contains("microsoft-standard-wsl2")
-                    || Path::new("/run/WSL").exists()
-                {
+                // Determine WSL version. Only WSL2 is evidenced: the kernel
+                // string names it, and /run/WSL is the other independent sign.
+                // Nothing here evidences WSL1, so a Microsoft kernel without
+                // either sign reports no version rather than 1. It used to
+                // assert 1 by elimination.
+                if Self::wsl2_evidenced(&lower, Path::new("/run/WSL").exists()) {
                     info.version = Some(2);
-                } else {
-                    // WSL1 doesn't have full Linux kernel
-                    info.version = Some(1);
                 }
 
-                // Extract Windows build number
-                // Format: "... Microsoft ... #1 SMP ... 5.15.133.1-microsoft-standard-WSL2"
-                for part in version.split_whitespace() {
-                    if part.contains("microsoft") && part.contains('.') {
-                        info.windows_build = Some(part.to_string());
-                    }
-                }
+                // `windows_build` is not set here. The dotted token that used to
+                // fill it, "5.15.133.1-microsoft-standard-WSL2", is the Linux
+                // kernel release, not a Windows build number.
             }
         }
 
@@ -141,7 +144,8 @@ impl WslDetector {
             // Also check /proc/sys/fs/binfmt_misc/WSLInterop
             if Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
                 info.is_wsl = true;
-                info.version = Some(2); // WSLInterop implies WSL2
+                // The interop binfmt marks WSL, not its version: it does not
+                // by itself say WSL2, so no version is set here.
             }
         }
 
@@ -200,30 +204,61 @@ impl WslDetector {
                     let vendor_path = path.join("device/vendor");
                     let device_path = path.join("device/device");
                     if vendor_path.exists() {
-                        let vendor = fs::read_to_string(&vendor_path)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
-                        let device = fs::read_to_string(&device_path)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
-                        let vendor_name = match vendor.as_str() {
-                            "0x10de" => "NVIDIA",
-                            "0x1002" => "AMD",
-                            "0x8086" => "Intel",
-                            _ => "Unknown",
+                        let read_id = |p: &std::path::Path| {
+                            fs::read_to_string(p)
+                                .ok()
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
                         };
-                        info.virtual_adapters.push(VirtualGpuAdapter {
-                            name: format!("{} GPU ({}:{})", vendor_name, vendor, device),
-                            driver_version: None,
-                            dedicated_memory: None,
-                            shared_memory: None,
-                        });
+                        if let Some(adapter) =
+                            Self::adapter_from_ids(read_id(&vendor_path), read_id(&device_path))
+                        {
+                            info.virtual_adapters.push(adapter);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Whether WSL2 is evidenced. `proc_version_lower` is `/proc/version`,
+    /// lowercased; `run_wsl_exists` is whether `/run/WSL` is present. Either is
+    /// sufficient; neither is evidence of WSL1.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn wsl2_evidenced(proc_version_lower: &str, run_wsl_exists: bool) -> bool {
+        proc_version_lower.contains("wsl2") || run_wsl_exists
+    }
+
+    /// Builds an adapter from PCI IDs as sysfs read them. A card with neither
+    /// ID read yields nothing: there is no adapter to describe. A vendor this
+    /// module does not name keeps its ID and gets no name.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn adapter_from_ids(
+        vendor: Option<String>,
+        device: Option<String>,
+    ) -> Option<VirtualGpuAdapter> {
+        if vendor.is_none() && device.is_none() {
+            return None;
+        }
+        let vendor_label = match vendor.as_deref() {
+            Some("0x10de") => Some("NVIDIA"),
+            Some("0x1002") => Some("AMD"),
+            Some("0x8086") => Some("Intel"),
+            _ => None,
+        };
+        let name = vendor_label.map(|label| match (&vendor, &device) {
+            (Some(v), Some(d)) => format!("{label} GPU ({v}:{d})"),
+            (Some(v), None) => format!("{label} GPU ({v})"),
+            _ => format!("{label} GPU"),
+        });
+        Some(VirtualGpuAdapter {
+            name,
+            vendor_id: vendor,
+            device_id: device,
+            driver_version: None,
+            dedicated_memory: None,
+            shared_memory: None,
+        })
     }
 
     #[cfg(windows)]
@@ -300,5 +335,41 @@ mod tests {
     #[test]
     fn test_has_gpu_passthrough() {
         let _ = WslDetector::has_gpu_passthrough();
+    }
+
+    /// Captured sysfs IDs. An NVIDIA card is named; a vendor this module does
+    /// not name keeps its ID and no name.
+    #[test]
+    fn adapter_names_come_from_read_ids_only() {
+        let nvidia = WslDetector::adapter_from_ids(Some("0x10de".into()), Some("0x2204".into()))
+            .expect("both IDs read");
+        assert_eq!(nvidia.name.as_deref(), Some("NVIDIA GPU (0x10de:0x2204)"));
+        assert_eq!(nvidia.vendor_id.as_deref(), Some("0x10de"));
+        assert_eq!(nvidia.device_id.as_deref(), Some("0x2204"));
+
+        let other =
+            WslDetector::adapter_from_ids(Some("0x1af4".into()), None).expect("vendor read");
+        assert_eq!(other.name, None);
+        assert_eq!(other.vendor_id.as_deref(), Some("0x1af4"));
+        assert_eq!(other.device_id, None);
+    }
+
+    /// A card whose IDs were not read is not an adapter. The old output here was
+    /// "Unknown GPU ( : )".
+    #[test]
+    fn unread_ids_yield_no_adapter() {
+        assert!(WslDetector::adapter_from_ids(None, None).is_none());
+    }
+
+    /// A Microsoft kernel without a WSL2 marker is WSL with no evidenced
+    /// version: it is not asserted as WSL1. The WSL2 marker and /run/WSL are
+    /// each sufficient.
+    #[test]
+    fn wsl2_needs_evidence() {
+        let wsl2_kernel = "linux version 5.15.133.1-microsoft-standard-wsl2 (root@x) #1 smp";
+        let plain_microsoft = "linux version 4.4.0-19041-microsoft (oe-user@oe-host) #1 smp";
+        assert!(WslDetector::wsl2_evidenced(wsl2_kernel, false));
+        assert!(WslDetector::wsl2_evidenced(plain_microsoft, true));
+        assert!(!WslDetector::wsl2_evidenced(plain_microsoft, false));
     }
 }

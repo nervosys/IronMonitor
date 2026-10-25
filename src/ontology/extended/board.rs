@@ -161,22 +161,25 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         "Number of platform configuration register banks the TPM exposes. Null where it was not read.",
     ));
 
-    // ── Chassis, from SMBIOS on Windows and DMI on Linux ────────────────────
+    // ── Chassis, read live from SMBIOS on Windows and DMI on Linux ──────────
+    // Every field is read from the running system's tables (or, on macOS, from
+    // `system_profiler`), so each is a measurement of this machine. A placeholder
+    // the firmware left in a field is reported as absent.
     add(Entity::new(
         "board.chassis.serial",
         D::Board,
         K::Identity,
         Some(U::Identifier),
-        P::Specification,
+        P::Measured,
         true,
-        "Serial number of the chassis, from the firmware's system enclosure table. Null where it is unset or unreadable.",
+        "Serial number of the chassis, read from the firmware's system enclosure table. Null where it is unset, a placeholder, or unreadable.",
     ));
     add(Entity::new(
         "board.chassis.asset_tag",
         D::Board,
         K::Identity,
         Some(U::Identifier),
-        P::Specification,
+        P::Measured,
         true,
         "Asset tag the owner or vendor wrote into the chassis firmware. Null where none is set.",
     ));
@@ -185,7 +188,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         D::Board,
         K::Identity,
         Some(U::Identifier),
-        P::Specification,
+        P::Measured,
         true,
         "Stock-keeping unit code the vendor assigned to this system. Null where the firmware reports none.",
     ));
@@ -194,27 +197,27 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         D::Board,
         K::Identity,
         Some(U::Text),
-        P::Specification,
+        P::Measured,
         true,
-        "Version string of the chassis, from the firmware's enclosure table. Null where none is reported.",
+        "Version string of the chassis, read from the firmware's enclosure table. Null where none is reported.",
     ));
     add(Entity::new(
         "board.chassis.manufacturer",
         D::Board,
         K::Identity,
         Some(U::Text),
-        P::Specification,
+        P::Measured,
         true,
-        "Manufacturer of the chassis, from the firmware's enclosure table.",
+        "Manufacturer of the chassis, read from the firmware's system tables. Null where the firmware reports none, and on macOS, where no manufacturer is read.",
     ));
     add(Entity::new(
         "board.chassis.product_name",
         D::Board,
         K::Identity,
         Some(U::Text),
-        P::Specification,
+        P::Measured,
         true,
-        "Product name of the chassis, from the firmware's enclosure table.",
+        "Product name of the chassis, read from the firmware's system tables. Null where the firmware reports none or a placeholder.",
     ));
 
     // ── Motherboard voltage rails and fans ──────────────────────────────────
@@ -636,18 +639,9 @@ pub(super) fn resolve(out: &mut Vec<Reading>) {
 /// stand-ins, not identities: an all-zero or all-F UUID is the SMBIOS "not set"
 /// value, and "To Be Filled By O.E.M." is what boards ship with in serial fields.
 fn is_standin(value: &str) -> bool {
-    const STAND_INS: [&str; 6] = [
-        "to be filled by o.e.m.",
-        "default string",
-        "system serial number",
-        "not specified",
-        "invalid",
-        "123456789",
-    ];
-    let lower = value.to_ascii_lowercase();
-    STAND_INS.contains(&lower.as_str())
-        || lower.chars().all(|c| c == '0' || c == '-')
-        || lower.chars().all(|c| c == 'f' || c == '-')
+    // One list for the reader and the ontology. It used to live only here, so
+    // the chassis reader passed these strings through.
+    crate::datacenter::is_firmware_placeholder(value)
 }
 
 /// A text reading. A blank or absent value is unavailable with `why`. A
@@ -945,15 +939,20 @@ fn resolve_chassis(out: &mut Vec<Reading>) {
         }
     };
 
-    let why = "the chassis reader did not report this field on this platform";
-    let spec = P::Specification;
+    // Read live by the chassis reader, so Measured. The reader has already
+    // dropped placeholders; `text_reading` only checks the empty case here.
+    // The reader returns `None` for an absent field and for a firmware
+    // placeholder ("System Product Name" on this board), so the reason names both.
+    let why =
+        "the chassis reader obtained no value: the field is absent or holds a firmware placeholder";
+    let measured = P::Measured;
     text_reading(
         out,
         "board.chassis.serial",
         chassis.serial_number.as_deref(),
         U::Identifier,
         why,
-        spec,
+        measured,
     );
     text_reading(
         out,
@@ -961,7 +960,7 @@ fn resolve_chassis(out: &mut Vec<Reading>) {
         chassis.asset_tag.as_deref(),
         U::Identifier,
         why,
-        spec,
+        measured,
     );
     text_reading(
         out,
@@ -969,7 +968,7 @@ fn resolve_chassis(out: &mut Vec<Reading>) {
         chassis.sku.as_deref(),
         U::Identifier,
         why,
-        spec,
+        measured,
     );
     text_reading(
         out,
@@ -977,23 +976,23 @@ fn resolve_chassis(out: &mut Vec<Reading>) {
         chassis.version.as_deref(),
         U::Text,
         why,
-        spec,
+        measured,
     );
     text_reading(
         out,
         "board.chassis.manufacturer",
-        Some(chassis.manufacturer.as_str()),
+        chassis.manufacturer.as_deref(),
         U::Text,
         why,
-        spec,
+        measured,
     );
     text_reading(
         out,
         "board.chassis.product_name",
-        Some(chassis.product_name.as_str()),
+        chassis.product_name.as_deref(),
         U::Text,
         why,
-        spec,
+        measured,
     );
 }
 

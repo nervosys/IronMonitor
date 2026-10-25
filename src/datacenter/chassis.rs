@@ -71,15 +71,57 @@ pub struct ServerLocation {
     pub room: Option<String>,
 }
 
-/// Complete chassis info
+/// Whether a firmware-supplied string is a template or an empty slot rather
+/// than a value someone entered. OEM boards ship these in their DMI/SMBIOS
+/// tables ("To Be Filled By O.E.M.", "Default string"), and a reader that
+/// passes them through reports the template as the machine's identity.
+///
+/// Empty strings and all-zero or all-F strings count too, since that is how an
+/// unset field reads. Shared with the ontology, which applies the same test to
+/// firmware identity fields it reads elsewhere.
+pub(crate) fn is_firmware_placeholder(value: &str) -> bool {
+    const PLACEHOLDERS: [&str; 13] = [
+        "to be filled by o.e.m.",
+        "default string",
+        "system serial number",
+        "system product name",
+        "system version",
+        "chassis serial number",
+        "chassis asset tag",
+        "base board serial number",
+        "not specified",
+        "not applicable",
+        "undefined",
+        "invalid",
+        "123456789",
+    ];
+    let lower = value.trim().to_ascii_lowercase();
+    lower.is_empty()
+        || PLACEHOLDERS.contains(&lower.as_str())
+        || lower.chars().all(|c| c == '0' || c == '-')
+        || lower.chars().all(|c| c == 'f' || c == '-')
+}
+
+/// A firmware string as a reading: trimmed, and `None` when it is empty or a
+/// placeholder.
+fn firmware_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !is_firmware_placeholder(v))
+}
+
+/// Complete chassis info. Every identity field is `None` unless a reader
+/// obtained a real value; a placeholder is never reported as one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChassisInfo {
     pub chassis_type: ChassisType,
     /// `None` where the form factor was not read. Used to report Desktop for
     /// every Mac, and Unknown where no source named one.
     pub form_factor: Option<FormFactor>,
-    pub manufacturer: String,
-    pub product_name: String,
+    /// `None` where nothing was read. Used to report "Apple" on every Mac,
+    /// which was never read from the machine.
+    pub manufacturer: Option<String>,
+    pub product_name: Option<String>,
     pub serial_number: Option<String>,
     pub asset_tag: Option<String>,
     pub version: Option<String>,
@@ -116,14 +158,10 @@ impl ChassisInfo {
                 .trim()
                 .to_string()
         };
-        let read_opt = |name: &str| -> Option<String> {
-            let v = read(name);
-            if v.is_empty() || v == "Not Specified" || v == "Default string" {
-                None
-            } else {
-                Some(v)
-            }
-        };
+        // Every field goes through the placeholder filter. The manufacturer and
+        // product name used to be read raw, so a board that shipped
+        // "To Be Filled By O.E.M." reported exactly that as its identity.
+        let read_opt = |name: &str| -> Option<String> { firmware_value(Some(read(name))) };
 
         let chassis_type_byte: u8 = fs::read_to_string(format!("{}/chassis_type", dmi))
             .unwrap_or_default()
@@ -139,8 +177,8 @@ impl ChassisInfo {
         Ok(ChassisInfo {
             chassis_type,
             form_factor,
-            manufacturer: read("sys_vendor"),
-            product_name: read("product_name"),
+            manufacturer: read_opt("sys_vendor"),
+            product_name: read_opt("product_name"),
             serial_number: read_opt("product_serial"),
             asset_tag: read_opt("chassis_asset_tag"),
             version: read_opt("product_version"),
@@ -163,8 +201,11 @@ impl ChassisInfo {
         // subprocess failed to spawn and every field came back an empty string, so a
         // named chassis was indistinguishable from an unnamed one.
         const BIOS_KEY: &str = r"HARDWARE\DESCRIPTION\System\BIOS";
-        let smbios = |value: &str| -> String {
-            crate::platform::windows::read_registry_string(BIOS_KEY, value).unwrap_or_default()
+        // A missing value and a placeholder are both `None`; neither is passed on.
+        let smbios = |value: &str| -> Option<String> {
+            firmware_value(crate::platform::windows::read_registry_string(
+                BIOS_KEY, value,
+            ))
         };
 
         // The registry carries system make and model but not the serial, which lives
@@ -177,10 +218,7 @@ impl ChassisInfo {
             form_factor: None,
             manufacturer: smbios("SystemManufacturer"),
             product_name: smbios("SystemProductName"),
-            serial_number: wmi_info
-                .as_ref()
-                .and_then(|i| i.serial_number.clone())
-                .filter(|s| !s.trim().is_empty()),
+            serial_number: firmware_value(wmi_info.as_ref().and_then(|i| i.serial_number.clone())),
             asset_tag: None,
             version: None,
             sku: None,
@@ -214,12 +252,14 @@ impl ChassisInfo {
             chassis_type: ChassisType::Unknown,
             // Not read. Used to report Desktop for every Mac, laptops included.
             form_factor: None,
-            manufacturer: "Apple".into(),
-            product_name: get("Model Name"),
-            serial_number: Some(get("Serial Number")).filter(|s| !s.is_empty()),
+            // `system_profiler` names no manufacturer line, so none is reported.
+            // The literal "Apple" used to stand here for every Mac.
+            manufacturer: None,
+            product_name: firmware_value(Some(get("Model Name"))),
+            serial_number: firmware_value(Some(get("Serial Number"))),
             asset_tag: None,
             version: None,
-            sku: Some(get("Model Identifier")).filter(|s| !s.is_empty()),
+            sku: firmware_value(Some(get("Model Identifier"))),
             location: ServerLocation {
                 rack_id: None,
                 rack_unit: None,
@@ -292,5 +332,44 @@ impl ChassisInfo {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Strings OEM firmware writes into unset identity fields. None of them is
+    /// a value, so none may reach a reading.
+    #[test]
+    fn firmware_templates_are_placeholders() {
+        for template in [
+            "To Be Filled By O.E.M.",
+            "Default string",
+            "System Product Name",
+            "System Version",
+            "Not Specified",
+            "",
+            "   ",
+            "0000000000",
+            "FFFFFFFFFFFFFFFF",
+        ] {
+            assert!(is_firmware_placeholder(template), "{template:?}");
+            assert_eq!(firmware_value(Some(template.into())), None, "{template:?}");
+        }
+    }
+
+    /// Real identity strings pass through, trimmed. A serial that happens to
+    /// contain a placeholder word is still a serial.
+    #[test]
+    fn real_identity_strings_are_kept() {
+        assert!(!is_firmware_placeholder("Dell Inc."));
+        assert!(!is_firmware_placeholder("PowerEdge R750"));
+        assert!(!is_firmware_placeholder("MXL1234ABC"));
+        assert_eq!(
+            firmware_value(Some("  ASUSTeK COMPUTER INC.\n".into())).as_deref(),
+            Some("ASUSTeK COMPUTER INC.")
+        );
+        assert_eq!(firmware_value(None), None);
     }
 }

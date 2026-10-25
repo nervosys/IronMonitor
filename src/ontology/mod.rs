@@ -1602,8 +1602,7 @@ impl Ontology {
             P::Measured,
             true,
             "How the printer is reached - USB, network, virtual. Nullable because \
-             the classification is drawn from the port string and the device name, \
-             and a local printer on a port shape neither recognises is a real \
+             the classification is drawn from the port alone, and a local printer on a port shape neither recognises is a real \
              configuration rather than a failed read.",
         ));
         add(Entity::new(
