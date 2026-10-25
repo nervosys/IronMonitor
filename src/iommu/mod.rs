@@ -79,8 +79,14 @@ pub struct IommuOverview {
     pub total_groups: u32,
     /// Number of groups suitable for passthrough.
     pub passthrough_groups: u32,
-    /// Whether interrupt remapping is enabled.
-    pub interrupt_remapping: bool,
+    /// Whether interrupt remapping is enabled, or `None` where it was not read.
+    ///
+    /// This was `/sys/class/iommu` existing, which says an IOMMU driver is
+    /// loaded and nothing about remapping, and a `false` recommendation
+    /// ("interrupt remapping may not be active") was derived from it. Remapping
+    /// is only readable from the IOMMU's own registers or the kernel log, which
+    /// this reader does not consult, so the field is unknown.
+    pub interrupt_remapping: Option<bool>,
     /// DMAR/IVRS table present.
     pub dmar_present: bool,
     /// Recommendations.
@@ -144,7 +150,8 @@ impl IommuMonitor {
                 groups: Vec::new(),
                 total_groups: 0,
                 passthrough_groups: 0,
-                interrupt_remapping: false,
+                // No IOMMU, so there is no remapping state to read.
+                interrupt_remapping: None,
                 dmar_present: false,
                 recommendations: vec![
                     "IOMMU not enabled; add intel_iommu=on or amd_iommu=on to kernel cmdline"
@@ -173,13 +180,17 @@ impl IommuMonitor {
         let total = groups.len() as u32;
         let passthrough = groups.iter().filter(|g| g.passthrough_candidate).count() as u32;
 
-        let interrupt_remapping = std::path::Path::new("/sys/class/iommu").exists();
+        // Not read. See the field's doc: `/sys/class/iommu` existing is not
+        // evidence of remapping, so no value is inferred from it.
+        let interrupt_remapping: Option<bool> = None;
 
         let dmar_present = std::path::Path::new("/sys/firmware/acpi/tables/DMAR").exists()
             || std::path::Path::new("/sys/firmware/acpi/tables/IVRS").exists();
 
         let mut recommendations = Vec::new();
-        if !interrupt_remapping {
+        // Only a reading of `false` can say remapping is off, so only that
+        // reading produces this advice.
+        if interrupt_remapping == Some(false) {
             recommendations
                 .push("Interrupt remapping may not be active; needed for secure VFIO".into());
         }
@@ -204,22 +215,29 @@ impl IommuMonitor {
 
     #[cfg(target_os = "linux")]
     fn detect_type() -> IommuType {
-        // Check DMAR (Intel) vs IVRS (AMD)
+        // The ACPI tables name the technology directly: DMAR is Intel, IVRS is AMD.
         if std::path::Path::new("/sys/firmware/acpi/tables/DMAR").exists() {
-            IommuType::IntelVtd
-        } else if std::path::Path::new("/sys/firmware/acpi/tables/IVRS").exists() {
-            IommuType::AmdVi
-        } else {
-            // Check dmesg or iommu driver
-            let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
-            if cmdline.contains("intel_iommu") {
-                IommuType::IntelVtd
-            } else if cmdline.contains("amd_iommu") {
-                IommuType::AmdVi
-            } else {
-                IommuType::Unknown
+            return IommuType::IntelVtd;
+        }
+        if std::path::Path::new("/sys/firmware/acpi/tables/IVRS").exists() {
+            return IommuType::AmdVi;
+        }
+
+        // With no table, the driver that bound each IOMMU unit publishes its own
+        // attribute directory under /sys/class/iommu/<unit>/. The kernel command
+        // line was matched here before, which also matched `intel_iommu=off`
+        // and so named a technology from a setting that turns it off.
+        let mut driver_dirs: Vec<&str> = Vec::new();
+        if let Ok(units) = std::fs::read_dir("/sys/class/iommu") {
+            for unit in units.flatten() {
+                for name in ["intel-iommu", "amd-iommu"] {
+                    if unit.path().join(name).is_dir() {
+                        driver_dirs.push(name);
+                    }
+                }
             }
         }
+        iommu_type_from_driver_dirs(&driver_dirs)
     }
 
     #[cfg(target_os = "linux")]
@@ -313,26 +331,65 @@ impl IommuMonitor {
     }
 }
 
-impl Default for IommuMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: IommuOverview {
-                enabled: false,
-                iommu_type: IommuType::Unknown,
-                groups: Vec::new(),
-                total_groups: 0,
-                passthrough_groups: 0,
-                interrupt_remapping: false,
-                dmar_present: false,
-                recommendations: Vec::new(),
-            },
-        })
+/// The technology named by the IOMMU driver directories under
+/// `/sys/class/iommu/<unit>/`, given as their names.
+///
+/// `Unknown` unless exactly one technology's directory is present. Both present
+/// is not a case a single-vendor machine produces, so it is not guessed at.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn iommu_type_from_driver_dirs(names: &[&str]) -> IommuType {
+    let intel = names.contains(&"intel-iommu");
+    let amd = names.contains(&"amd-iommu");
+    match (intel, amd) {
+        (true, false) => IommuType::IntelVtd,
+        (false, true) => IommuType::AmdVi,
+        _ => IommuType::Unknown,
     }
 }
+
+// There is no `Default` for `IommuMonitor`. Its `Default` built an overview that
+// said `enabled: false` and no IOMMU type, which reads as "no IOMMU" when the
+// reader simply failed. Callers use `new()` and see the error.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_single_driver_directory_names_its_technology() {
+        assert_eq!(
+            iommu_type_from_driver_dirs(&["intel-iommu"]),
+            IommuType::IntelVtd
+        );
+        assert_eq!(
+            iommu_type_from_driver_dirs(&["amd-iommu"]),
+            IommuType::AmdVi
+        );
+    }
+
+    #[test]
+    fn no_driver_directory_is_unknown_not_a_guess() {
+        assert_eq!(iommu_type_from_driver_dirs(&[]), IommuType::Unknown);
+    }
+
+    #[test]
+    fn two_technologies_are_unknown() {
+        assert_eq!(
+            iommu_type_from_driver_dirs(&["intel-iommu", "amd-iommu"]),
+            IommuType::Unknown
+        );
+    }
+
+    /// `intel_iommu=off` in the kernel command line is not an Intel IOMMU. The
+    /// command line is no longer consulted at all; this pins that the names
+    /// the driver directories use are the only ones that count.
+    #[test]
+    fn a_name_that_only_resembles_a_driver_is_not_one() {
+        assert_eq!(
+            iommu_type_from_driver_dirs(&["intel_iommu", "amd_iommu"]),
+            IommuType::Unknown
+        );
+    }
 
     #[test]
     fn test_iommu_type_display() {
@@ -380,12 +437,6 @@ mod tests {
             passthrough_candidate: false,
         };
         assert!(!group.isolated);
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = IommuMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]

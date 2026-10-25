@@ -1035,11 +1035,20 @@ fn resolve_cache_detail(out: &mut Vec<Reading>) {
     // Same index as `cpu.cache.{i}.level` and the other per-instance rows.
     for (i, cache) in caches.iter().enumerate() {
         let base = format!("cpu.cache.{i}");
-        push_id(
-            out,
-            format!("{base}.type"),
-            &format!("{:?}", cache.cache_type).to_lowercase(),
-        );
+        // `Unknown` is what a reader reports when the platform named no type,
+        // so it is absent here rather than published as a measured "unknown".
+        match cache.cache_type {
+            crate::cpu_cache::CacheType::Unknown => out.push(Reading::unavailable(
+                format!("{base}.type"),
+                Some(U::Identifier),
+                "the platform did not say whether this cache is data, instruction or unified",
+            )),
+            ref other => push_id(
+                out,
+                format!("{base}.type"),
+                &format!("{other:?}").to_lowercase(),
+            ),
+        }
         push_opt(
             out,
             format!("{base}.associativity"),

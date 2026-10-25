@@ -975,11 +975,15 @@ fn resolve_numa(out: &mut Vec<Reading>) {
 
     for node in monitor.nodes() {
         let base = format!("memory.numa.{}", node.id);
-        out.push(Reading::measured(
+        // `None` is not a node with no processors. A count of zero is published
+        // only when the reader established there are none.
+        push_opt(
+            out,
             format!("{base}.cpus"),
-            serde_json::json!(node.cpus.len()),
+            node.cpus.as_ref().map(|c| serde_json::json!(c.len())),
             Some(Unit::Count),
-        ));
+            "this node's processor list was not read: this platform's reader does not map processors to NUMA nodes here, or the node's cpulist could not be read",
+        );
         push_opt(
             out,
             format!("{base}.memory"),

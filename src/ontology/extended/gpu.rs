@@ -196,13 +196,12 @@ const PCI_POWER_STATE_WHY: &str = concat!(
 const IOMMU_DISABLED_WHY: &str =
     "no IOMMU is enabled on this machine, so there is no IOMMU type to report";
 const IOMMU_TYPE_WHY: &str = concat!(
-    "an IOMMU is enabled but neither the ACPI DMAR and IVRS tables nor the kernel ",
-    "command line identify its type"
+    "an IOMMU is enabled but neither the ACPI DMAR and IVRS tables nor an IOMMU ",
+    "driver directory under /sys/class/iommu identifies its type"
 );
 const INTERRUPT_REMAP_WHY: &str = concat!(
-    "interrupt remapping is not published. The reader checks only whether ",
-    "/sys/class/iommu exists, and that path existing does not show that remapping ",
-    "is active"
+    "interrupt remapping was not read. Its state is not in any sysfs file this ",
+    "reader consults, and the presence of /sys/class/iommu does not show it"
 );
 
 // ── Schema ───────────────────────────────────────────────────────────────────
@@ -1134,6 +1133,18 @@ fn resolve_iommu(out: &mut Vec<Reading>) {
                 serde_json::json!(overview.enabled),
                 None,
             ));
+            match overview.interrupt_remapping {
+                Some(on) => out.push(Reading::measured(
+                    "system.iommu.interrupt_remapping",
+                    serde_json::json!(on),
+                    None,
+                )),
+                None => out.push(Reading::unavailable(
+                    "system.iommu.interrupt_remapping",
+                    None,
+                    INTERRUPT_REMAP_WHY,
+                )),
+            }
             if overview.enabled {
                 let kind = match overview.iommu_type {
                     crate::iommu::IommuType::IntelVtd => Some("intel_vtd"),
@@ -1172,15 +1183,15 @@ fn resolve_iommu(out: &mut Vec<Reading>) {
             out.push(Reading::unavailable(
                 "system.iommu.type",
                 Some(U::Identifier),
+                why.clone(),
+            ));
+            out.push(Reading::unavailable(
+                "system.iommu.interrupt_remapping",
+                None,
                 why,
             ));
         }
     }
-    out.push(Reading::unavailable(
-        "system.iommu.interrupt_remapping",
-        None,
-        INTERRUPT_REMAP_WHY,
-    ));
 }
 
 fn resolve_pci_extras(out: &mut Vec<Reading>) {

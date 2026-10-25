@@ -404,8 +404,8 @@ impl CpuCacheMonitor {
     #[cfg(target_os = "windows")]
     fn refresh_windows_logical_processor_info(&mut self) -> Result<bool, IronError> {
         use windows::Win32::System::SystemInformation::{
-            CacheData, CacheInstruction, GetLogicalProcessorInformationEx, RelationCache,
-            LOGICAL_PROCESSOR_RELATIONSHIP, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+            CacheData, CacheInstruction, CacheUnified, GetLogicalProcessorInformationEx,
+            RelationCache, LOGICAL_PROCESSOR_RELATIONSHIP, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         };
 
         // Ask for the size, then fill a buffer of it. The records are
@@ -474,10 +474,13 @@ impl CpuCacheMonitor {
                     }
                 };
 
+                // `CacheTrace` and any value this build does not name are
+                // Unknown, not Unified: Unified is a claim that has to be read.
                 let cache_type = match cache.Type {
                     t if t == CacheData => CacheType::Data,
                     t if t == CacheInstruction => CacheType::Instruction,
-                    _ => CacheType::Unified,
+                    t if t == CacheUnified => CacheType::Unified,
+                    _ => CacheType::Unknown,
                 };
 
                 // 0xFF is the documented marker for fully associative, which is
@@ -544,35 +547,10 @@ impl CpuCacheMonitor {
         for (i, item) in crate::core::command::json_items(&val).iter().enumerate() {
             let purpose = item["Purpose"].as_str().unwrap_or("");
             let wmi_level = item["Level"].as_u64().unwrap_or(0);
-            // WMI Level: 3=L1, 4=L2, 5=L3 (CIM enumeration)
-            let level = match wmi_level {
-                3 => CacheLevel::L1,
-                4 => CacheLevel::L2,
-                5 => CacheLevel::L3,
-                _ => {
-                    // Infer from purpose string
-                    let p = purpose.to_lowercase();
-                    if p.contains("l1") {
-                        CacheLevel::L1
-                    } else if p.contains("l2") {
-                        CacheLevel::L2
-                    } else if p.contains("l3") {
-                        CacheLevel::L3
-                    } else {
-                        CacheLevel::L2
-                    }
-                }
-            };
-
-            let cache_type = {
-                let p = purpose.to_lowercase();
-                if p.contains("data") {
-                    CacheType::Data
-                } else if p.contains("instruction") || p.contains("code") {
-                    CacheType::Instruction
-                } else {
-                    CacheType::Unified
-                }
+            // A row whose level cannot be determined is skipped. It used to be
+            // filed as L2, so an unrecognised cache inflated the L2 total.
+            let Some((level, cache_type)) = wmi_level_and_type(wmi_level, purpose) else {
+                continue;
             };
 
             let size_kb = item["InstalledSize"].as_u64();
@@ -728,6 +706,42 @@ impl std::fmt::Display for CacheType {
 /// Direct mapped is 1 way. Fully associative is `Some(0)`, the value the
 /// `CpuCacheInfo::associativity` field documents for it. Other, Unknown and
 /// any code not listed here are `None`, because they name no way count.
+/// The level and type of one `Win32_CacheMemory` row.
+///
+/// `Level` is the CIM enumeration (3 = L1, 4 = L2, 5 = L3). When it is not one
+/// of those, the `Purpose` text is the only other source, and a row that names
+/// neither level is `None`: the caller skips it. The type is `Unknown` unless
+/// the purpose says data or instruction; it used to default to `Unified`,
+/// which the platform never stated.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn wmi_level_and_type(wmi_level: u64, purpose: &str) -> Option<(CacheLevel, CacheType)> {
+    let p = purpose.to_lowercase();
+    let level = match wmi_level {
+        3 => CacheLevel::L1,
+        4 => CacheLevel::L2,
+        5 => CacheLevel::L3,
+        _ => {
+            if p.contains("l1") {
+                CacheLevel::L1
+            } else if p.contains("l2") {
+                CacheLevel::L2
+            } else if p.contains("l3") {
+                CacheLevel::L3
+            } else {
+                return None;
+            }
+        }
+    };
+    let cache_type = if p.contains("data") {
+        CacheType::Data
+    } else if p.contains("instruction") || p.contains("code") {
+        CacheType::Instruction
+    } else {
+        CacheType::Unknown
+    };
+    Some((level, cache_type))
+}
+
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn wmi_associativity_ways(code: u64) -> Option<u32> {
     match code {
@@ -744,6 +758,61 @@ fn wmi_associativity_ways(code: u64) -> Option<u32> {
         13 => Some(64),
         14 => Some(20),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod wmi_level_tests {
+    use super::{wmi_level_and_type, CacheLevel, CacheType};
+
+    /// The CIM enumeration is the primary source for level.
+    #[test]
+    fn cim_level_codes_map_to_levels() {
+        assert!(matches!(
+            wmi_level_and_type(3, "L1 Cache"),
+            Some((CacheLevel::L1, _))
+        ));
+        assert!(matches!(
+            wmi_level_and_type(4, "L2 Cache"),
+            Some((CacheLevel::L2, _))
+        ));
+        assert!(matches!(
+            wmi_level_and_type(5, "L3 Cache"),
+            Some((CacheLevel::L3, _))
+        ));
+    }
+
+    /// An unrecognised level with no level word in the purpose is not an L2.
+    #[test]
+    fn an_undeterminable_level_is_none_not_l2() {
+        assert!(wmi_level_and_type(0, "").is_none());
+        assert!(wmi_level_and_type(9, "Unified").is_none());
+    }
+
+    /// The purpose text supplies the level when the code does not.
+    #[test]
+    fn purpose_text_supplies_a_missing_level() {
+        assert!(matches!(
+            wmi_level_and_type(0, "L3 Cache"),
+            Some((CacheLevel::L3, _))
+        ));
+    }
+
+    /// A type the purpose does not name is Unknown, not Unified.
+    #[test]
+    fn an_unnamed_type_is_unknown_not_unified() {
+        assert_eq!(
+            wmi_level_and_type(4, "L2 Cache").map(|(_, t)| t),
+            Some(CacheType::Unknown)
+        );
+        assert_eq!(
+            wmi_level_and_type(3, "L1 Data Cache").map(|(_, t)| t),
+            Some(CacheType::Data)
+        );
+        assert_eq!(
+            wmi_level_and_type(3, "L1 Instruction Cache").map(|(_, t)| t),
+            Some(CacheType::Instruction)
+        );
     }
 }
 

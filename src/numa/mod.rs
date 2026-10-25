@@ -16,13 +16,17 @@
 //!
 //! let monitor = NumaMonitor::new().unwrap();
 //! for node in monitor.nodes() {
-//!     // `memory_total_bytes` is `Option`: a node whose `meminfo` could not be
-//!     // read reports no size rather than a size of zero.
+//!     // `cpus` and `memory_total_bytes` are `Option`: a value that was not
+//!     // read is `None`, never an empty list or a size of zero.
+//!     let cpus = node
+//!         .cpus
+//!         .as_ref()
+//!         .map_or_else(|| "unknown".to_string(), |c| c.len().to_string());
 //!     match node.memory_total_bytes {
 //!         Some(bytes) => println!("Node {}: {} CPUs, {:.1} GB total memory",
-//!             node.id, node.cpus.len(), bytes as f64 / 1e9),
+//!             node.id, cpus, bytes as f64 / 1e9),
 //!         None => println!("Node {}: {} CPUs, memory size not readable",
-//!             node.id, node.cpus.len()),
+//!             node.id, cpus),
 //!     }
 //! }
 //! if let Some(dist) = monitor.distance_matrix() {
@@ -38,8 +42,16 @@ use serde::{Deserialize, Serialize};
 pub struct NumaNode {
     /// NUMA node ID (0-based)
     pub id: u32,
-    /// CPUs (logical processor IDs) belonging to this node
-    pub cpus: Vec<u32>,
+    /// CPUs (logical processor IDs) belonging to this node, or `None` where
+    /// they were not read.
+    ///
+    /// This was a `Vec` that was empty both when the node had no processors
+    /// and when the reader never asked which processors it had. Windows
+    /// multi-node machines and the Linux single-node fallback both produced
+    /// `[]`, and `memory.numa.N.cpus` published that as a measured `0`.
+    /// `Some(vec![])` is the reading "this node has no processors", which a
+    /// memory-only node on Linux genuinely has.
+    pub cpus: Option<Vec<u32>>,
     /// Total memory in bytes, or `None` where the node's `meminfo` was not
     /// read.
     ///
@@ -98,8 +110,9 @@ impl NumaDistanceMatrix {
 pub struct NumaSummary {
     /// Number of NUMA nodes
     pub node_count: usize,
-    /// Total CPUs across all nodes
-    pub total_cpus: usize,
+    /// Total CPUs across all nodes, or `None` if any node's processor list was
+    /// not read. A sum over the readable nodes would understate the machine.
+    pub total_cpus: Option<usize>,
     /// Total memory across all nodes (bytes), or `None` if any node's total
     /// was unread.
     ///
@@ -125,7 +138,8 @@ pub struct NumaSummary {
     /// sizes could not be read asserted even memory distribution, which is a
     /// conclusion the absence cannot support.
     pub memory_imbalance_ratio: Option<f64>,
-    /// CPU imbalance ratio, or `None` where fewer than two nodes reported CPUs.
+    /// CPU imbalance ratio, or `None` where fewer than two nodes reported CPUs
+    /// or any node's processor list was not read.
     pub cpu_imbalance_ratio: Option<f64>,
 }
 
@@ -186,7 +200,12 @@ impl NumaMonitor {
 
     /// Get a summary of the NUMA topology.
     pub fn summary(&self) -> NumaSummary {
-        let total_cpus: usize = self.nodes.iter().map(|n| n.cpus.len()).sum();
+        // Same rule as memory: one unread node makes the machine total unknown.
+        let total_cpus: Option<usize> = self
+            .nodes
+            .iter()
+            .map(|n| n.cpus.as_ref().map(Vec::len))
+            .sum();
         // `Option` sum: one node with no reading makes the machine total
         // unknown rather than quietly short by that node.
         let total_memory: Option<u64> = self.nodes.iter().map(|n| n.memory_total_bytes).sum();
@@ -217,18 +236,22 @@ impl NumaMonitor {
             _ => None,
         };
 
-        let cpu_vals: Vec<usize> = self
+        // Any unread processor list makes the ratio unknown: the nodes that
+        // were read would otherwise stand in for the ones that were not.
+        let cpu_counts: Option<Vec<usize>> = self
             .nodes
             .iter()
-            .map(|n| n.cpus.len())
-            .filter(|&c| c > 0)
+            .map(|n| n.cpus.as_ref().map(Vec::len))
             .collect();
-        let cpu_imbalance = match (cpu_vals.iter().max(), cpu_vals.iter().min()) {
-            (Some(&max), Some(&min)) if cpu_vals.len() >= 2 && min > 0 => {
-                Some(max as f64 / min as f64)
+        let cpu_imbalance = cpu_counts.and_then(|counts| {
+            let vals: Vec<usize> = counts.into_iter().filter(|&c| c > 0).collect();
+            match (vals.iter().max(), vals.iter().min()) {
+                (Some(&max), Some(&min)) if vals.len() >= 2 && min > 0 => {
+                    Some(max as f64 / min as f64)
+                }
+                _ => None,
             }
-            _ => None,
-        };
+        });
 
         NumaSummary {
             node_count: self.nodes.len(),
@@ -245,7 +268,7 @@ impl NumaMonitor {
     pub fn cpu_to_node(&self, cpu_id: u32) -> Option<u32> {
         self.nodes
             .iter()
-            .find(|n| n.cpus.contains(&cpu_id))
+            .find(|n| n.cpus.as_ref().is_some_and(|c| c.contains(&cpu_id)))
             .map(|n| n.id)
     }
 
@@ -259,22 +282,35 @@ impl NumaMonitor {
         let node_base = std::path::Path::new("/sys/devices/system/node");
         if !node_base.exists() {
             // A kernel built without NUMA exposes no node directory, and that
-            // is a reading: one node, all of it local.
-            self.single_node_fallback();
+            // is a reading: one node, all of it local. Its processors are the
+            // online ones.
+            self.single_node_fallback(Self::online_cpus());
             return Ok(());
         }
 
-        let mut node_ids: Vec<u32> = Vec::new();
+        // The directory exists, so it must be listable. A directory that exists
+        // but cannot be read used to produce a monitor with zero nodes, which
+        // published `memory.numa.nodes = 0` and `is_numa = false` as readings.
+        let entries = std::fs::read_dir(node_base)
+            .map_err(|e| IronError::System(format!("cannot list {}: {e}", node_base.display())))?;
 
-        if let Ok(entries) = std::fs::read_dir(node_base) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(id_str) = name.strip_prefix("node") {
-                    if let Ok(id) = id_str.parse::<u32>() {
-                        node_ids.push(id);
-                    }
+        let mut node_ids: Vec<u32> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(id_str) = name.strip_prefix("node") {
+                if let Ok(id) = id_str.parse::<u32>() {
+                    node_ids.push(id);
                 }
             }
+        }
+
+        if node_ids.is_empty() {
+            // The kernel always exposes node0 when this directory exists, so an
+            // empty listing is a failed read, not a machine with no nodes.
+            return Err(IronError::System(format!(
+                "{} lists no nodeN entries",
+                node_base.display()
+            )));
         }
 
         node_ids.sort();
@@ -282,10 +318,11 @@ impl NumaMonitor {
         for id in &node_ids {
             let node_path = node_base.join(format!("node{}", id));
 
-            // Parse cpulist
+            // An unreadable cpulist is `None`, not an empty processor list. An
+            // empty file is a real `Some(vec![])` for a memory-only node.
             let cpus = std::fs::read_to_string(node_path.join("cpulist"))
-                .map(|s| Self::parse_cpu_list(s.trim()))
-                .unwrap_or_default();
+                .ok()
+                .map(|s| Self::parse_cpu_list(s.trim()));
 
             // Parse meminfo. `unwrap_or((0, 0, 0))` made an unreadable node
             // look like a node with no memory at all.
@@ -359,6 +396,15 @@ impl NumaMonitor {
             }
         }
         Ok(())
+    }
+
+    /// The online processors, from `/sys/devices/system/cpu/online`, or `None`
+    /// where that file cannot be read.
+    #[cfg(target_os = "linux")]
+    fn online_cpus() -> Option<Vec<u32>> {
+        std::fs::read_to_string("/sys/devices/system/cpu/online")
+            .ok()
+            .map(|s| Self::parse_cpu_list(s.trim()))
     }
 
     #[cfg(target_os = "linux")]
@@ -435,10 +481,12 @@ impl NumaMonitor {
             .ok()
             .map(|m| m.ram.total.saturating_mul(1024));
 
-        // Logical processors, likewise.
+        // Logical processors, likewise. `None` when the count was not read,
+        // rather than the `0` this used to fall back to, which read as a node
+        // with no processors.
         let logical = std::thread::available_parallelism()
-            .map(|p| p.get() as u32)
-            .unwrap_or(0);
+            .ok()
+            .map(|p| p.get() as u32);
 
         for id in 0..=highest {
             // `GetNumaAvailableMemoryNodeEx` reports *available* bytes, which is
@@ -457,12 +505,14 @@ impl NumaMonitor {
             }
 
             let (memory_total_bytes, cpus) = if node_count == 1 {
-                (total_bytes, (0..logical).collect::<Vec<u32>>())
+                (total_bytes, logical.map(|n| (0..n).collect::<Vec<u32>>()))
             } else {
                 // Which processors belong to which node needs
                 // `GetLogicalProcessorInformationEx(RelationNumaNode)`, which
-                // this reader does not call yet.
-                (None, Vec::new())
+                // this reader does not call yet. Until it does, a multi-node
+                // machine's processors are not known; `[]` used to stand here,
+                // reading as a node with none.
+                (None, None)
             };
 
             self.nodes.push(NumaNode {
@@ -494,7 +544,7 @@ impl NumaMonitor {
         // same correction this commit's sibling made to the Linux and Windows
         // readers, in the one path neither of those compiles.
         let mut total_mem = None;
-        let mut total_cpus = 0u32;
+        let mut total_cpus: Option<u32> = None;
 
         if let Ok(output) = std::process::Command::new("sysctl")
             .args(["-n", "hw.memsize"])
@@ -518,13 +568,14 @@ impl NumaMonitor {
                 .trim()
                 .parse::<u32>()
             {
-                total_cpus = cpus;
+                total_cpus = Some(cpus);
             }
         }
 
         self.nodes.push(NumaNode {
             id: 0,
-            cpus: (0..total_cpus).collect(),
+            // `None` until sysctl answers; it was `0..0`, a node with no CPUs.
+            cpus: total_cpus.map(|n| (0..n).collect()),
             memory_total_bytes: total_mem,
             // Neither is read, and both now say so. `memory_used_bytes` was
             // `total_mem` -- every byte on the machine in use -- then `0`,
@@ -546,11 +597,13 @@ impl NumaMonitor {
     /// partitioning, so the distance matrix of `[10]` below describes a
     /// topology someone looked at.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn single_node_fallback(&mut self) {
-        // Try to get basic CPU/memory info
+    fn single_node_fallback(&mut self, cpus: Option<Vec<u32>>) {
         self.nodes.push(NumaNode {
             id: 0,
-            cpus: Vec::new(),
+            // The processors the kernel reports online, or `None` when that
+            // file was not read. It used to be `Vec::new()`, which read as a
+            // node with no processors.
+            cpus,
             // Nothing was read here; `0` claimed a node with no memory.
             memory_total_bytes: None,
             memory_free_bytes: None,
@@ -632,7 +685,7 @@ mod tests {
     fn test_serialization() {
         let node = NumaNode {
             id: 0,
-            cpus: vec![0, 1, 2, 3],
+            cpus: Some(vec![0, 1, 2, 3]),
             memory_total_bytes: Some(16_000_000_000),
             memory_free_bytes: Some(8_000_000_000),
             memory_used_bytes: Some(8_000_000_000),
@@ -681,7 +734,7 @@ mod absent_slit_tests {
     fn node(id: u32) -> NumaNode {
         NumaNode {
             id,
-            cpus: vec![],
+            cpus: None,
             // Nothing was read here; `0` claimed a node with no memory.
             memory_total_bytes: None,
             memory_free_bytes: None,
@@ -690,6 +743,51 @@ mod absent_slit_tests {
             hugepages_free: None,
             pci_devices: vec![],
         }
+    }
+
+    fn node_with_cpus(id: u32, cpus: Vec<u32>) -> NumaNode {
+        NumaNode {
+            cpus: Some(cpus),
+            ..node(id)
+        }
+    }
+
+    #[test]
+    fn an_unread_processor_list_is_not_an_empty_one() {
+        // One node's processors were read and one was not. The total and the
+        // ratio must both be unknown, not the sum or ratio of the readable one.
+        let monitor = NumaMonitor {
+            nodes: vec![node_with_cpus(0, vec![0, 1, 2, 3]), node(1)],
+            distance_matrix: None,
+        };
+        let summary = monitor.summary();
+        assert_eq!(summary.total_cpus, None);
+        assert_eq!(summary.cpu_imbalance_ratio, None);
+        assert_eq!(monitor.cpu_to_node(2), Some(0));
+    }
+
+    #[test]
+    fn read_processor_lists_total_and_balance() {
+        let monitor = NumaMonitor {
+            nodes: vec![
+                node_with_cpus(0, vec![0, 1]),
+                node_with_cpus(1, vec![2, 3, 4, 5]),
+            ],
+            distance_matrix: None,
+        };
+        let summary = monitor.summary();
+        assert_eq!(summary.total_cpus, Some(6));
+        assert_eq!(summary.cpu_imbalance_ratio, Some(2.0));
+    }
+
+    #[test]
+    fn a_memory_only_node_with_no_processors_is_a_reading() {
+        // `Some(vec![])` is what a CPU-less node reports; it is not `None`.
+        let monitor = NumaMonitor {
+            nodes: vec![node_with_cpus(0, vec![0, 1]), node_with_cpus(1, vec![])],
+            distance_matrix: None,
+        };
+        assert_eq!(monitor.summary().total_cpus, Some(2));
     }
 
     #[test]
