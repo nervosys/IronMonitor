@@ -12,6 +12,11 @@
 use crate::error::IronError;
 use serde::{Deserialize, Serialize};
 
+/// Most trip points read from one zone. Real zones expose a handful; this bound
+/// only stops a runaway tree. Reaching it sets `trip_points_truncated`.
+#[cfg(target_os = "linux")]
+const MAX_TRIP_POINTS: u32 = 256;
+
 /// Thermal zone type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThermalZoneType {
@@ -129,10 +134,14 @@ impl CoolingDeviceInfo {
 pub struct ThermalZoneInfo {
     /// Zone name (e.g. "thermal_zone0").
     pub name: String,
-    /// Zone type.
-    pub zone_type: ThermalZoneType,
-    /// Raw type string.
-    pub type_string: String,
+    /// Zone type, or `None` where the zone's `type` file was unreadable or empty.
+    ///
+    /// This was `ThermalZoneType::Other("unknown")` in that case, a type the
+    /// driver never declared.
+    pub zone_type: Option<ThermalZoneType>,
+    /// Raw type string, verbatim, or `None` where the `type` file was unreadable
+    /// or empty. This is the evidence `zone_type` was classified from.
+    pub type_string: Option<String>,
     /// Current temperature in millidegrees Celsius, or `None` where the
     /// zone's `temp` file could not be read.
     ///
@@ -149,6 +158,10 @@ pub struct ThermalZoneInfo {
     pub available_policies: Option<Vec<String>>,
     /// Trip points.
     pub trip_points: Vec<TripPoint>,
+    /// True when the zone has more trip points than `trip_points` holds, because
+    /// the read stopped at the safety bound. The list is then not the zone's
+    /// full set. Read from the file tree, so it is never a guess.
+    pub trip_points_truncated: bool,
     /// Mode (enabled/disabled), or `None` where the zone has no readable
     /// `mode`. A missing `mode` used to read as enabled.
     pub enabled: Option<bool>,
@@ -270,8 +283,13 @@ impl ThermalZoneMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan() -> Result<ThermalZoneOverview, IronError> {
-        let thermal_path = std::path::Path::new("/sys/class/thermal");
+        Self::scan_root(std::path::Path::new("/sys/class/thermal"))
+    }
 
+    /// Read the thermal zones and cooling devices under `thermal_path`,
+    /// normally `/sys/class/thermal`.
+    #[cfg(target_os = "linux")]
+    fn scan_root(thermal_path: &std::path::Path) -> Result<ThermalZoneOverview, IronError> {
         // A missing directory means the kernel exposes no thermal zones to
         // read. That is a failed read of the source, not a machine with none.
         if !thermal_path.exists() {
@@ -349,9 +367,12 @@ impl ThermalZoneMonitor {
 
     #[cfg(target_os = "linux")]
     fn read_zone(path: &std::path::Path, name: &str) -> Option<ThermalZoneInfo> {
-        let type_string = Self::read_sysfs(&path.join("type")).unwrap_or_default();
+        // An unreadable or empty `type` is no type. The raw string is kept as
+        // evidence, and the classification is `None` rather than a made-up
+        // `Other("unknown")`.
+        let type_string = Self::read_sysfs(&path.join("type")).filter(|s| !s.is_empty());
 
-        let zone_type = match type_string.as_str() {
+        let zone_type = type_string.as_deref().map(|s| match s {
             "acpitz" | "ACPI\\_THM" => ThermalZoneType::Acpi,
             s if s.starts_with("x86_pkg") => ThermalZoneType::X86Pkg,
             "pch_cannonlake" | "pch_skylake" | "pch_alderlake" | "pch_raptorlake" => {
@@ -363,9 +384,8 @@ impl ThermalZoneMonitor {
             s if s.starts_with("nvme") => ThermalZoneType::Nvme,
             "iwlwifi_1" | "iwlwifi" => ThermalZoneType::Iwlwifi,
             s if s.contains("iwlwifi") => ThermalZoneType::Iwlwifi,
-            other if !other.is_empty() => ThermalZoneType::Other(other.to_string()),
-            _ => ThermalZoneType::Other("unknown".to_string()),
-        };
+            other => ThermalZoneType::Other(other.to_string()),
+        });
 
         // A zone whose `temp` file cannot be read has no temperature, not a
         // temperature of zero.
@@ -381,9 +401,11 @@ impl ThermalZoneMonitor {
         // No `mode` file is no answer about enablement, not an enabled zone.
         let enabled = Self::read_sysfs(&path.join("mode")).map(|mode| mode != "disabled");
 
-        // Read trip points
+        // Read trip points until `trip_point_{i}_temp` is absent. The bound is a
+        // safety net, not the list's length: a zone with more trips than it
+        // holds is reported as truncated instead of quietly cut at 20.
         let mut trip_points = Vec::new();
-        for i in 0..20 {
+        for i in 0..MAX_TRIP_POINTS {
             let tp_temp_path = path.join(format!("trip_point_{}_temp", i));
             let tp_type_path = path.join(format!("trip_point_{}_type", i));
 
@@ -425,6 +447,12 @@ impl ThermalZoneMonitor {
             _ => None,
         };
 
+        // The loop above stops at the first absent trip or at the bound. If the
+        // trip at the bound still exists, the list was cut short there.
+        let trip_points_truncated = path
+            .join(format!("trip_point_{}_temp", MAX_TRIP_POINTS))
+            .exists();
+
         Some(ThermalZoneInfo {
             name: name.to_string(),
             zone_type,
@@ -433,6 +461,7 @@ impl ThermalZoneMonitor {
             policy,
             available_policies,
             trip_points,
+            trip_points_truncated,
             enabled,
             passive_active,
         })
@@ -542,8 +571,8 @@ mod tests {
     fn test_throttle_detection() {
         let zone = ThermalZoneInfo {
             name: "thermal_zone0".into(),
-            zone_type: ThermalZoneType::X86Pkg,
-            type_string: "x86_pkg_temp".into(),
+            zone_type: Some(ThermalZoneType::X86Pkg),
+            type_string: Some("x86_pkg_temp".into()),
             temp_mc: Some(95_000),
             policy: Some("step_wise".into()),
             available_policies: Some(vec!["step_wise".into()]),
@@ -561,6 +590,7 @@ mod tests {
                     hysteresis_mc: Some(0),
                 },
             ],
+            trip_points_truncated: false,
             enabled: Some(true),
             passive_active: Some(true),
         };
@@ -578,8 +608,8 @@ mod tests {
     fn an_unread_zone_does_not_report_that_it_is_not_throttling() {
         let zone = ThermalZoneInfo {
             name: "thermal_zone0".into(),
-            zone_type: ThermalZoneType::X86Pkg,
-            type_string: "x86_pkg_temp".into(),
+            zone_type: Some(ThermalZoneType::X86Pkg),
+            type_string: Some("x86_pkg_temp".into()),
             temp_mc: None,
             policy: Some("step_wise".into()),
             available_policies: Some(vec!["step_wise".into()]),
@@ -589,6 +619,7 @@ mod tests {
                 temp_mc: Some(90_000),
                 hysteresis_mc: Some(2_000),
             }],
+            trip_points_truncated: false,
             enabled: Some(true),
             passive_active: None,
         };
@@ -630,17 +661,142 @@ mod tests {
     fn test_serialization() {
         let zone = ThermalZoneInfo {
             name: "thermal_zone0".into(),
-            zone_type: ThermalZoneType::Acpi,
-            type_string: "acpitz".into(),
+            zone_type: Some(ThermalZoneType::Acpi),
+            type_string: Some("acpitz".into()),
             temp_mc: Some(45_000),
             policy: Some("step_wise".into()),
             available_policies: Some(Vec::new()),
             trip_points: Vec::new(),
+            trip_points_truncated: false,
             enabled: Some(true),
             passive_active: Some(false),
         };
         let json = serde_json::to_string(&zone).unwrap();
         assert!(json.contains("acpitz"));
         let _: ThermalZoneInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    /// A throwaway `/sys/class/thermal` tree holding one `thermal_zone0`
+    /// directory, for the caller to fill. Callers remove it.
+    #[cfg(target_os = "linux")]
+    fn thermal_tree(tag: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-thermal-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("thermal_zone0")).unwrap();
+        root
+    }
+
+    /// Write `count` passive trip points, each a temperature and a type file.
+    #[cfg(target_os = "linux")]
+    fn write_passive_trips(zone: &std::path::Path, count: u32) {
+        for i in 0..count {
+            std::fs::write(
+                zone.join(format!("trip_point_{}_temp", i)),
+                format!("{}\n", 40_000 + i * 1_000),
+            )
+            .unwrap();
+            std::fs::write(zone.join(format!("trip_point_{}_type", i)), "passive\n").unwrap();
+        }
+    }
+
+    /// A missing thermal tree is a failed read, not an empty list.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_thermal_tree_is_an_error_not_zero_zones() {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-thermal-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(ThermalZoneMonitor::scan_root(&root).is_err());
+    }
+
+    /// An unreadable `type` is no zone type, and the raw string is absent too.
+    /// It used to be `Other("unknown")`, a type the driver never declared.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_zone_type_is_none_not_other_unknown() {
+        let root = thermal_tree("no-type");
+        std::fs::write(root.join("thermal_zone0/temp"), "40000\n").unwrap();
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let zone = &overview.zones[0];
+        assert_eq!(zone.zone_type, None);
+        assert_eq!(zone.type_string, None);
+        assert_eq!(zone.temp_mc, Some(40_000));
+    }
+
+    /// An empty `type` file is no type either, not a type called "".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn empty_zone_type_is_none() {
+        let root = thermal_tree("empty-type");
+        std::fs::write(root.join("thermal_zone0/type"), "\n").unwrap();
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(overview.zones[0].zone_type, None);
+        assert_eq!(overview.zones[0].type_string, None);
+    }
+
+    /// A read `type` is classified and its raw string kept verbatim.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_zone_type_is_classified_with_raw_string_kept() {
+        let root = thermal_tree("x86");
+        std::fs::write(root.join("thermal_zone0/type"), "x86_pkg_temp\n").unwrap();
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(overview.zones[0].zone_type, Some(ThermalZoneType::X86Pkg));
+        assert_eq!(
+            overview.zones[0].type_string.as_deref(),
+            Some("x86_pkg_temp")
+        );
+    }
+
+    /// The old reader stopped at 20 trip points without saying so. A zone with
+    /// 25 is read in full and is not marked truncated.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trip_points_beyond_twenty_are_read_not_dropped() {
+        let root = thermal_tree("trips-25");
+        write_passive_trips(&root.join("thermal_zone0"), 25);
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let zone = &overview.zones[0];
+        assert_eq!(zone.trip_points.len(), 25);
+        assert_eq!(zone.trip_points[24].index, 24);
+        assert!(!zone.trip_points_truncated);
+    }
+
+    /// More trip points than the safety bound is reported as truncation, not
+    /// as a complete list of exactly the bound's length.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trip_points_past_the_bound_are_marked_truncated() {
+        let root = thermal_tree("trips-over");
+        write_passive_trips(&root.join("thermal_zone0"), MAX_TRIP_POINTS + 1);
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let zone = &overview.zones[0];
+        assert_eq!(zone.trip_points.len(), MAX_TRIP_POINTS as usize);
+        assert!(zone.trip_points_truncated);
+    }
+
+    /// Exactly the bound's worth of trip points is complete, not truncated.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trip_points_at_the_bound_are_not_truncated() {
+        let root = thermal_tree("trips-exact");
+        write_passive_trips(&root.join("thermal_zone0"), MAX_TRIP_POINTS);
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let zone = &overview.zones[0];
+        assert_eq!(zone.trip_points.len(), MAX_TRIP_POINTS as usize);
+        assert!(!zone.trip_points_truncated);
     }
 }

@@ -69,8 +69,10 @@ pub enum RegulatorType {
 pub struct VoltageRegulatorInfo {
     /// Regulator identifier (e.g. "regulator.0").
     pub id: String,
-    /// Regulator supply name.
-    pub name: String,
+    /// Regulator supply name (the `name` attribute), or `None` where it was not
+    /// read. The sysfs id used to be substituted here, so an unread name looked
+    /// like a supply called `regulator.0`.
+    pub name: Option<String>,
     /// Current state.
     pub state: RegulatorState,
     /// Operating mode.
@@ -145,8 +147,14 @@ pub struct VoltageRegulatorOverview {
     pub enabled_count: u32,
     /// Regulators with out-of-range voltage.
     pub out_of_range_count: u32,
-    /// Total estimated power in microwatts.
-    pub total_power_uw: u64,
+    /// Estimated power in microwatts: the sum of `power_uw` over enabled
+    /// regulators whose voltage and current were both read. A lower bound, since
+    /// an enabled regulator missing either reading contributes nothing. `None`
+    /// when no regulator contributed.
+    ///
+    /// This was named `total_power_uw` and summed every regulator regardless of
+    /// state, so a disabled rail's last-set voltage counted as draw.
+    pub estimated_power_uw: Option<u64>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -181,7 +189,10 @@ impl VoltageRegulatorMonitor {
 
     /// Get regulator by name.
     pub fn regulator_by_name(&self, name: &str) -> Option<&VoltageRegulatorInfo> {
-        self.overview.regulators.iter().find(|r| r.name == name)
+        self.overview
+            .regulators
+            .iter()
+            .find(|r| r.name.as_deref() == Some(name))
     }
 
     /// Get enabled regulators.
@@ -195,10 +206,19 @@ impl VoltageRegulatorMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan() -> Result<VoltageRegulatorOverview, IronError> {
-        let reg_path = std::path::Path::new("/sys/class/regulator");
+        Self::scan_root(std::path::Path::new("/sys/class/regulator"))
+    }
 
+    /// Read the regulators under `reg_path`, normally `/sys/class/regulator`.
+    #[cfg(target_os = "linux")]
+    fn scan_root(reg_path: &std::path::Path) -> Result<VoltageRegulatorOverview, IronError> {
+        // A missing directory means the framework exposes nothing to read. That
+        // is a failed read, not a machine with zero regulators.
         if !reg_path.exists() {
-            return Ok(Self::empty_overview());
+            return Err(IronError::NotFound(format!(
+                "{} does not exist, so voltage regulators cannot be read",
+                reg_path.display()
+            )));
         }
 
         let entries = std::fs::read_dir(reg_path).map_err(IronError::Io)?;
@@ -208,7 +228,8 @@ impl VoltageRegulatorMonitor {
             let path = entry.path();
             let id = entry.file_name().to_string_lossy().to_string();
 
-            let name = Self::read_sysfs_string(&path.join("name")).unwrap_or_else(|| id.clone());
+            // An unread name stays `None`; the sysfs id is not a supply name.
+            let name = Self::read_sysfs_string(&path.join("name")).filter(|s| !s.is_empty());
 
             let state = match Self::read_sysfs_string(&path.join("state")).as_deref() {
                 Some("enabled") => RegulatorState::Enabled,
@@ -277,7 +298,14 @@ impl VoltageRegulatorMonitor {
             .iter()
             .filter(|r| r.voltage_in_range() == Some(false))
             .count() as u32;
-        let total_power = regulators.iter().filter_map(|r| r.power_uw).sum();
+        // Only enabled regulators draw power. A disabled rail's voltage is the
+        // level it would use if switched on, not a draw.
+        let contributing: Vec<u64> = regulators
+            .iter()
+            .filter(|r| r.state == RegulatorState::Enabled)
+            .filter_map(|r| r.power_uw)
+            .collect();
+        let estimated_power = (!contributing.is_empty()).then(|| contributing.iter().sum());
 
         let mut recommendations = Vec::new();
         if out_of_range > 0 {
@@ -292,7 +320,7 @@ impl VoltageRegulatorMonitor {
             total_count: total,
             enabled_count: enabled,
             out_of_range_count: out_of_range,
-            total_power_uw: total_power,
+            estimated_power_uw: estimated_power,
             recommendations,
         })
     }
@@ -336,7 +364,7 @@ impl VoltageRegulatorMonitor {
             total_count: 0,
             enabled_count: 0,
             out_of_range_count: 0,
-            total_power_uw: 0,
+            estimated_power_uw: None,
             recommendations: Vec::new(),
         }
     }
@@ -364,7 +392,7 @@ mod tests {
     fn test_voltage_conversion() {
         let info = VoltageRegulatorInfo {
             id: "regulator.0".into(),
-            name: "vdd_cpu".into(),
+            name: Some("vdd_cpu".into()),
             state: RegulatorState::Enabled,
             mode: RegulatorMode::Normal,
             regulator_type: RegulatorType::Adjustable,
@@ -386,7 +414,7 @@ mod tests {
     fn test_out_of_range() {
         let info = VoltageRegulatorInfo {
             id: "regulator.1".into(),
-            name: "vdd_mem".into(),
+            name: Some("vdd_mem".into()),
             state: RegulatorState::Enabled,
             mode: RegulatorMode::Normal,
             regulator_type: RegulatorType::Adjustable,
@@ -412,7 +440,7 @@ mod tests {
     fn test_serialization() {
         let info = VoltageRegulatorInfo {
             id: "regulator.0".into(),
-            name: "vdd_soc".into(),
+            name: Some("vdd_soc".into()),
             state: RegulatorState::Enabled,
             mode: RegulatorMode::Fast,
             regulator_type: RegulatorType::Voltage,
@@ -428,5 +456,136 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("vdd_soc"));
         let _: VoltageRegulatorInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    /// A throwaway `/sys/class/regulator` tree. Each regulator is a directory
+    /// holding the given attribute files. Callers remove it.
+    #[cfg(target_os = "linux")]
+    fn regulator_root(tag: &str, regs: &[(&str, &[(&str, &str)])]) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-regulator-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (id, files) in regs {
+            let dir = root.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (file, body) in files.iter() {
+                std::fs::write(dir.join(file), body).unwrap();
+            }
+        }
+        root
+    }
+
+    /// Scan a fixture tree and remove it afterwards.
+    #[cfg(target_os = "linux")]
+    fn scan_fixture(root: &std::path::Path) -> VoltageRegulatorOverview {
+        let overview = VoltageRegulatorMonitor::scan_root(root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        overview
+    }
+
+    /// A missing regulator tree is a failed read, not an empty list.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_regulator_tree_is_an_error_not_zero_regulators() {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-regulator-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(VoltageRegulatorMonitor::scan_root(&root).is_err());
+    }
+
+    /// An unread `name` is `None`, not the sysfs id `regulator.0`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_name_is_none_not_the_sysfs_id() {
+        let root = regulator_root(
+            "name",
+            &[
+                ("regulator.0", &[("state", "enabled\n")]),
+                (
+                    "regulator.1",
+                    &[("name", "vdd_cpu\n"), ("state", "enabled\n")],
+                ),
+            ],
+        );
+        let overview = scan_fixture(&root);
+
+        let unnamed = overview
+            .regulators
+            .iter()
+            .find(|r| r.id == "regulator.0")
+            .unwrap();
+        assert_eq!(unnamed.name, None);
+        let named = overview
+            .regulators
+            .iter()
+            .find(|r| r.id == "regulator.1")
+            .unwrap();
+        assert_eq!(named.name.as_deref(), Some("vdd_cpu"));
+    }
+
+    /// Power is summed over enabled regulators only. The disabled regulator's
+    /// readings and the enabled one missing a current contribute nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn estimated_power_counts_only_enabled_regulators() {
+        let root = regulator_root(
+            "power",
+            &[
+                // Enabled, both readings: 1.1 V * 5 A = 5.5 W.
+                (
+                    "regulator.0",
+                    &[
+                        ("name", "vdd_cpu\n"),
+                        ("state", "enabled\n"),
+                        ("microvolts", "1100000\n"),
+                        ("microamps", "5000000\n"),
+                    ],
+                ),
+                // Disabled: its last-set voltage and a current must not count.
+                (
+                    "regulator.1",
+                    &[
+                        ("name", "vdd_mem\n"),
+                        ("state", "disabled\n"),
+                        ("microvolts", "1200000\n"),
+                        ("microamps", "3000000\n"),
+                    ],
+                ),
+                // Enabled but no current read: contributes nothing.
+                (
+                    "regulator.2",
+                    &[
+                        ("name", "vdd_io\n"),
+                        ("state", "enabled\n"),
+                        ("microvolts", "1800000\n"),
+                    ],
+                ),
+            ],
+        );
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.estimated_power_uw, Some(5_500_000));
+    }
+
+    /// No contributing regulator is no estimate, not a zero draw.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn estimated_power_is_none_when_no_regulator_contributes() {
+        let root = regulator_root(
+            "power-none",
+            &[(
+                "regulator.0",
+                &[
+                    ("name", "vdd_mem\n"),
+                    ("state", "disabled\n"),
+                    ("microvolts", "1200000\n"),
+                    ("microamps", "3000000\n"),
+                ],
+            )],
+        );
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.estimated_power_uw, None);
     }
 }

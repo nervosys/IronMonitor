@@ -41,13 +41,13 @@ pub struct WatchdogStatus {
     /// `"active"`, so an unreadable `state` reported a watchdog that is not
     /// running -- the reassuring answer, asserted from nothing.
     pub active: Option<bool>,
-    /// Watchdog has triggered at least once.
+    /// Watchdog has triggered at least once. Always `None`: no sysfs attribute
+    /// reports this, so no reader can obtain it.
     ///
-    /// Always `false`: no sysfs attribute reports this, and the field has
-    /// never been fed by a reader. It is `bool` rather than `Option` because
-    /// that is a fact about this crate, not about the device -- see the
-    /// constructor, which is the only place it is set.
-    pub triggered: bool,
+    /// This was a literal `false` under a doc admitting nothing reports it,
+    /// so every device answered "has not triggered". The only trigger evidence
+    /// sysfs offers is `bootstatus`, reported as `boot_triggered`.
+    pub triggered: Option<bool>,
     /// Did the watchdog cause the last reboot? `None` where `bootstatus` was
     /// not read.
     ///
@@ -88,8 +88,12 @@ impl std::fmt::Display for PreTimeoutGovernor {
 pub struct WatchdogInfo {
     /// Device name (e.g. "watchdog0").
     pub name: String,
-    /// Device identity (driver name, e.g. "iTCO_wdt").
-    pub identity: String,
+    /// Device identity (driver name, e.g. "iTCO_wdt"), or `None` where the
+    /// `identity` attribute was not read or was empty.
+    ///
+    /// This was `"unknown"` when unread, and that literal then classified the
+    /// device's type by string comparison.
+    pub identity: Option<String>,
     /// Watchdog type.
     pub watchdog_type: WatchdogType,
     /// Timeout in seconds.
@@ -107,8 +111,12 @@ pub struct WatchdogInfo {
     /// that the administrator had turned the pre-timeout off -- about a device
     /// whose `pretimeout` attribute was never read.
     pub pretimeout_secs: Option<u32>,
-    /// Pre-timeout governor.
-    pub pretimeout_governor: PreTimeoutGovernor,
+    /// Pre-timeout governor, or `None` where the `pretimeout_governor`
+    /// attribute was not read. An empty attribute is `Some(PreTimeoutGovernor::None)`.
+    ///
+    /// An unread attribute used to become `PreTimeoutGovernor::None`, which
+    /// reads as a configuration ("no pre-timeout") that no one set.
+    pub pretimeout_governor: Option<PreTimeoutGovernor>,
     /// Minimum timeout in seconds, where it was read.
     ///
     /// Not every driver exposes `min_timeout`/`max_timeout`; those that do not
@@ -182,7 +190,16 @@ impl WatchdogMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan() -> Result<WatchdogOverview, IronError> {
-        let wdt_path = std::path::Path::new("/sys/class/watchdog");
+        Self::scan_root(std::path::Path::new("/sys/class/watchdog"))
+    }
+
+    /// Read the watchdog devices under `wdt_path`, normally `/sys/class/watchdog`.
+    #[cfg(target_os = "linux")]
+    fn scan_root(wdt_path: &std::path::Path) -> Result<WatchdogOverview, IronError> {
+        // The softdog driver registers exactly this identity. Matched in full:
+        // a substring match would also catch any hardware driver whose name
+        // happens to contain "soft".
+        const SOFTDOG_IDENTITY: &str = "Software Watchdog";
 
         if !wdt_path.exists() {
             return Ok(Self::empty_overview());
@@ -195,15 +212,16 @@ impl WatchdogMonitor {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
 
-            let identity =
-                Self::read_sysfs(&path.join("identity")).unwrap_or_else(|| "unknown".into());
+            // An empty attribute is no identity, so it is `None` like an
+            // unreadable one. Neither is classified as hardware.
+            let identity = Self::read_sysfs(&path.join("identity")).filter(|s| !s.is_empty());
 
-            let watchdog_type = if identity.contains("soft") || identity.contains("Soft") {
-                WatchdogType::Software
-            } else if identity != "unknown" {
-                WatchdogType::Hardware
-            } else {
-                WatchdogType::Unknown
+            // Anything read that is not softdog is a hardware driver. No
+            // identity means no claim about the device's type.
+            let watchdog_type = match identity.as_deref() {
+                Some(SOFTDOG_IDENTITY) => WatchdogType::Software,
+                Some(_) => WatchdogType::Hardware,
+                None => WatchdogType::Unknown,
             };
 
             let timeout_secs = Self::read_sysfs_u32(&path.join("timeout"));
@@ -216,13 +234,15 @@ impl WatchdogMonitor {
             let max_timeout_secs = Self::read_sysfs_u32(&path.join("max_timeout"));
             let firmware_version = Self::read_sysfs_u32(&path.join("fw_version"));
 
+            // An unread attribute stays `None`. An empty one is the kernel's own
+            // "no governor", a real `PreTimeoutGovernor::None`.
             let pretimeout_governor =
-                match Self::read_sysfs(&path.join("pretimeout_governor")).as_deref() {
-                    Some("noop") => PreTimeoutGovernor::Noop,
-                    Some("panic") => PreTimeoutGovernor::Panic,
-                    Some("") | None => PreTimeoutGovernor::None,
-                    Some(other) => PreTimeoutGovernor::Custom(other.to_string()),
-                };
+                Self::read_sysfs(&path.join("pretimeout_governor")).map(|g| match g.as_str() {
+                    "noop" => PreTimeoutGovernor::Noop,
+                    "panic" => PreTimeoutGovernor::Panic,
+                    "" => PreTimeoutGovernor::None,
+                    other => PreTimeoutGovernor::Custom(other.to_string()),
+                });
 
             let available_governors =
                 Self::read_sysfs(&path.join("pretimeout_available_governors"))
@@ -235,9 +255,10 @@ impl WatchdogMonitor {
             let active = Self::read_sysfs(&path.join("state")).map(|s| s == "active");
             let boot_triggered = Self::read_sysfs_u32(&path.join("bootstatus")).map(|b| b != 0);
 
+            // No sysfs attribute reports a trigger, so this is never obtained.
             let status = WatchdogStatus {
                 active,
-                triggered: false,
+                triggered: None,
                 boot_triggered,
             };
 
@@ -272,8 +293,20 @@ impl WatchdogMonitor {
             .count() as u32;
 
         let mut recs = Vec::new();
-        if hw == 0 && total > 0 {
+        // Claimed only when every device's type is known to be software. A
+        // device with an unread identity is not evidence of "no hardware".
+        if total > 0
+            && devices
+                .iter()
+                .all(|d| d.watchdog_type == WatchdogType::Software)
+        {
             recs.push("No hardware watchdog detected; software watchdog only".into());
+        }
+        for dev in devices.iter().filter(|d| d.identity.is_none()) {
+            recs.push(format!(
+                "{}: identity could not be read, so its watchdog type is unknown",
+                dev.name
+            ));
         }
         for dev in &devices {
             match dev.status.boot_triggered {
@@ -371,17 +404,17 @@ mod tests {
     fn test_default_timeout() {
         let info = WatchdogInfo {
             name: "watchdog0".into(),
-            identity: "iTCO_wdt".into(),
+            identity: Some("iTCO_wdt".into()),
             watchdog_type: WatchdogType::Hardware,
             timeout_secs: Some(30),
             pretimeout_secs: Some(0),
-            pretimeout_governor: PreTimeoutGovernor::None,
+            pretimeout_governor: Some(PreTimeoutGovernor::None),
             min_timeout_secs: Some(2),
             max_timeout_secs: Some(614),
             firmware_version: Some(0),
             status: WatchdogStatus {
                 active: Some(false),
-                triggered: false,
+                triggered: None,
                 boot_triggered: Some(false),
             },
             available_governors: Vec::new(),
@@ -407,23 +440,174 @@ mod tests {
     fn test_serialization() {
         let info = WatchdogInfo {
             name: "watchdog0".into(),
-            identity: "softdog".into(),
+            identity: Some("Software Watchdog".into()),
             watchdog_type: WatchdogType::Software,
             timeout_secs: Some(60),
             pretimeout_secs: Some(10),
-            pretimeout_governor: PreTimeoutGovernor::Panic,
+            pretimeout_governor: Some(PreTimeoutGovernor::Panic),
             min_timeout_secs: Some(1),
             max_timeout_secs: Some(65535),
             firmware_version: Some(0),
             status: WatchdogStatus {
                 active: Some(true),
-                triggered: false,
+                triggered: None,
                 boot_triggered: Some(false),
             },
             available_governors: vec!["noop".into(), "panic".into()],
         };
         let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("softdog"));
+        assert!(json.contains("Software Watchdog"));
         let _: WatchdogInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    /// A throwaway `/sys/class/watchdog` tree. Each device is a directory
+    /// holding the given attribute files. Callers remove it.
+    #[cfg(target_os = "linux")]
+    fn watchdog_root(tag: &str, devices: &[(&str, &[(&str, &str)])]) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-watchdog-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (dev, files) in devices {
+            let dir = root.join(dev);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (file, body) in files.iter() {
+                std::fs::write(dir.join(file), body).unwrap();
+            }
+        }
+        root
+    }
+
+    /// An attribute set for a device that exposes every file a real driver
+    /// would, so only the attributes a test removes are missing.
+    #[cfg(target_os = "linux")]
+    const FULL_DEVICE: &[(&str, &str)] = &[
+        ("identity", "iTCO_wdt\n"),
+        ("state", "inactive\n"),
+        ("timeout", "30\n"),
+        ("pretimeout", "0\n"),
+        ("min_timeout", "2\n"),
+        ("max_timeout", "614\n"),
+        ("fw_version", "2\n"),
+        ("bootstatus", "0\n"),
+        ("pretimeout_governor", "noop\n"),
+        ("pretimeout_available_governors", "noop panic\n"),
+    ];
+
+    #[cfg(target_os = "linux")]
+    fn without(
+        attrs: &[(&'static str, &'static str)],
+        drop: &str,
+    ) -> Vec<(&'static str, &'static str)> {
+        attrs.iter().copied().filter(|(f, _)| *f != drop).collect()
+    }
+
+    /// Scan a fixture tree and remove it afterwards.
+    #[cfg(target_os = "linux")]
+    fn scan_fixture(root: &std::path::Path) -> WatchdogOverview {
+        let overview = WatchdogMonitor::scan_root(root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        overview
+    }
+
+    /// An unreadable identity is no identity, and the device's type is not
+    /// claimed. The old reader turned it into "unknown", and the software-only
+    /// recommendation then fired on a device nobody had identified.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_identity_claims_no_device_type() {
+        let attrs = without(FULL_DEVICE, "identity");
+        let root = watchdog_root("no-identity", &[("watchdog0", &attrs)]);
+        let overview = scan_fixture(&root);
+
+        let dev = &overview.devices[0];
+        assert_eq!(dev.identity, None);
+        assert_eq!(dev.watchdog_type, WatchdogType::Unknown);
+        assert_eq!(overview.hardware_count, 0);
+        assert!(
+            !overview
+                .recommendations
+                .iter()
+                .any(|r| r.contains("software watchdog only")),
+            "an unread identity must not produce a software-only claim: {:?}",
+            overview.recommendations
+        );
+        assert!(overview
+            .recommendations
+            .iter()
+            .any(|r| r.starts_with("watchdog0: identity could not be read")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn softdog_identity_is_software_and_only_then_claimed_software_only() {
+        let mut attrs = without(FULL_DEVICE, "identity");
+        attrs.push(("identity", "Software Watchdog\n"));
+        let root = watchdog_root("softdog", &[("watchdog0", &attrs)]);
+        let overview = scan_fixture(&root);
+
+        assert_eq!(
+            overview.devices[0].identity.as_deref(),
+            Some("Software Watchdog")
+        );
+        assert_eq!(overview.devices[0].watchdog_type, WatchdogType::Software);
+        assert!(overview
+            .recommendations
+            .iter()
+            .any(|r| r == "No hardware watchdog detected; software watchdog only"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hardware_identity_is_hardware_and_not_software_only() {
+        let root = watchdog_root("hardware", &[("watchdog0", FULL_DEVICE)]);
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.devices[0].watchdog_type, WatchdogType::Hardware);
+        assert_eq!(overview.hardware_count, 1);
+        assert!(!overview
+            .recommendations
+            .iter()
+            .any(|r| r.contains("software watchdog only")));
+    }
+
+    /// An identity that merely contains "soft" is not the softdog driver.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn identity_matching_is_strict_not_substring() {
+        let mut attrs = without(FULL_DEVICE, "identity");
+        attrs.push(("identity", "softlock_wdt\n"));
+        let root = watchdog_root("strict", &[("watchdog0", &attrs)]);
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.devices[0].watchdog_type, WatchdogType::Hardware);
+    }
+
+    /// A missing `pretimeout_governor` is not "no pre-timeout"; an empty one is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_pretimeout_governor_is_none_and_empty_is_no_governor() {
+        let unread = without(FULL_DEVICE, "pretimeout_governor");
+        let mut empty = without(FULL_DEVICE, "pretimeout_governor");
+        empty.push(("pretimeout_governor", "\n"));
+        let root = watchdog_root("governor", &[("watchdog0", &unread), ("watchdog1", &empty)]);
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.devices[0].pretimeout_governor, None);
+        assert_eq!(
+            overview.devices[1].pretimeout_governor,
+            Some(PreTimeoutGovernor::None)
+        );
+    }
+
+    /// No sysfs attribute reports a trigger, so `triggered` is never a value.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn triggered_is_never_reported_as_false() {
+        let root = watchdog_root("triggered", &[("watchdog0", FULL_DEVICE)]);
+        let overview = scan_fixture(&root);
+
+        assert_eq!(overview.devices[0].status.triggered, None);
+        assert_eq!(overview.devices[0].status.boot_triggered, Some(false));
     }
 }
