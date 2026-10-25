@@ -175,6 +175,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - OS info: an unread Windows build is no version rather than "10.0.0";
     user count, uptime and boot time are unread rather than 0; macOS boot mode
     is unknown rather than UEFI, which Apple silicon does not use.
+  - Crypto acceleration on Windows is read from the CPU. Every Windows machine
+    used to report AES-NI, PCLMULQDQ, RDRAND and RDSEED without a read; a TPM
+    RNG quality of 1000 and per-primitive throughput constants are no longer
+    published as readings, and an unread flags source is not "no crypto".
+  - NUMA nodes no longer report 0 CPUs as measured where the CPU list was not
+    read; an undetermined cache level is not L2; the IOMMU type is not guessed
+    from a kernel command line that may say `intel_iommu=off`.
+  - Codec and compute tables match exact model numbers. Overlapping substrings
+    gave an RTX 4070 the RTX 4090's figures and an RX 570 RDNA 3 with AV1
+    encode; a GPU no rule places gets no codec rows and says so.
+  - Health no longer reads "Healthy, 100/100" when checks failed to run; fleet
+    scores and anomaly summaries no longer count an unreported value as 0;
+    prediction ETAs are labelled as samples, which is what they count.
+  - macOS no longer invents four fans; a Linux fan at full speed with no
+    control is not controllable; every Mac camera is not Apple and built-in;
+    the first display connector is not the primary display, nor card 0 the
+    default audio device; a failed Bluetooth query is not paired.
+  - DMA engine type is detected (a path bug meant it never was), the DRM boot
+    GPU comes from `boot_vga`, systemd sessions and services are not counted
+    as containers, an unreadable interrupt affinity is not "all CPUs,
+    balanced", and unread kernel parameters do not count as non-recommended.
 
 - The whole-CPU user/system/idle split on Linux is the kernel's own aggregate
   `cpu` line from `/proc/stat`. It was the mean over every online core, so a
