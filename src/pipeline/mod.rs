@@ -336,21 +336,27 @@ impl Snapshot {
     }
 
     /// Aggregate receive rate across all interfaces, in bytes/sec.
-    /// Receive rate summed over the interfaces that have one.
     ///
-    /// `None` while no interface has established a rate yet, rather than `0.0`:
-    /// a total over nothing measured is not a measurement of nothing.
+    /// `None` unless every interface has an established rate, and `None` when there
+    /// are no interfaces. A sum over only the interfaces that happened to have one
+    /// was published as the machine's total, so a link still establishing its
+    /// rate, or one that never will, silently dropped out of the figure.
     pub fn total_rx_rate(&self) -> Option<f64> {
-        let rates: Vec<f64> = self.network.iter().filter_map(|n| n.rx_rate).collect();
-        (!rates.is_empty()).then(|| rates.iter().sum())
+        self.sum_rates(|n| n.rx_rate)
     }
 
-    /// Aggregate transmit rate across the interfaces that have one.
-    ///
-    /// `None` while none has been established. See [`Self::total_rx_rate`].
+    /// Aggregate transmit rate across all interfaces, in bytes/sec. See
+    /// [`Self::total_rx_rate`].
     pub fn total_tx_rate(&self) -> Option<f64> {
-        let rates: Vec<f64> = self.network.iter().filter_map(|n| n.tx_rate).collect();
-        (!rates.is_empty()).then(|| rates.iter().sum())
+        self.sum_rates(|n| n.tx_rate)
+    }
+
+    /// Sum one rate over every interface, or `None` if any interface lacks it.
+    fn sum_rates(&self, rate: impl Fn(&NetSnapshot) -> Option<f64>) -> Option<f64> {
+        if self.network.is_empty() {
+            return None;
+        }
+        self.network.iter().map(rate).sum::<Option<f64>>()
     }
 }
 
@@ -1290,10 +1296,11 @@ mod tests {
         assert_eq!(snap.total_tx_rate(), Some(2.0));
     }
 
-    /// An interface with no established rate contributes nothing, and a
-    /// snapshot where none has one totals to an absence rather than to zero.
+    /// A total is a measurement of the machine only when every interface has
+    /// contributed one. A partial sum, and a snapshot where none has a rate, are
+    /// both absences rather than figures.
     #[test]
-    fn snapshot_totals_skip_interfaces_with_no_rate_yet() {
+    fn snapshot_totals_need_every_interface_to_have_a_rate() {
         let partial = Snapshot {
             network: vec![
                 NetSnapshot {
@@ -1309,7 +1316,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(partial.total_rx_rate(), Some(3.0));
+        assert_eq!(
+            partial.total_rx_rate(),
+            None,
+            "one interface has no rate yet"
+        );
         assert_eq!(partial.total_tx_rate(), None);
 
         let none_yet = Snapshot {
@@ -1317,6 +1328,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(none_yet.total_rx_rate(), None);
+
+        let no_interfaces = Snapshot::default();
+        assert_eq!(no_interfaces.total_rx_rate(), None);
+        assert_eq!(no_interfaces.total_tx_rate(), None);
     }
 
     #[test]

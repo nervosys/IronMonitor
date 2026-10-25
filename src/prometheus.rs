@@ -395,10 +395,13 @@ impl PrometheusExporter {
                 cpu.cores.len() as f64,
             ));
 
-            // Queried by the bundled dashboards, and available from the reading
-            // already in hand. Emitted only when a clock was actually read --
-            // `CpuFrequency::current` is `Option` for the reason set out on it,
-            // and a gauge of 0 MHz is a claim that the cores have stopped.
+            // `cpu_frequency_mhz` is the clock of core 0 (the first core enumerated),
+            // and says so in its help text. It is kept under this name because the
+            // bundled dashboards query it; it used to read as the CPU's clock. Every
+            // core's clock is in `cpu_core_frequency_mhz`. Emitted only when a clock
+            // was actually read: `CpuFrequency::current` is `Option` for the reason
+            // set out on it, and a gauge of 0 MHz is a claim that the cores have
+            // stopped.
             if let Some(mhz) = cpu
                 .cores
                 .first()
@@ -407,9 +410,34 @@ impl PrometheusExporter {
             {
                 self.add(MetricFamily::gauge(
                     &self.prefixed("cpu_frequency_mhz"),
-                    "Current CPU clock frequency in MHz",
+                    concat!(
+                        "Current clock frequency in MHz of CPU core 0 (the first core ",
+                        "enumerated), not of the CPU package"
+                    ),
                     mhz as f64,
                 ));
+            }
+
+            let mut per_core_freq = MetricFamily {
+                name: self.prefixed("cpu_core_frequency_mhz"),
+                help: "Current clock frequency in MHz of each CPU core, by core id".into(),
+                metric_type: MetricType::Gauge,
+                samples: Vec::new(),
+            };
+            for core in &cpu.cores {
+                let Some(mhz) = core.frequency.as_ref().and_then(|f| f.current) else {
+                    continue;
+                };
+                let mut labels = BTreeMap::new();
+                labels.insert("core".into(), core.id.to_string());
+                per_core_freq.samples.push(MetricSample {
+                    suffix: String::new(),
+                    labels,
+                    value: mhz as f64,
+                });
+            }
+            if !per_core_freq.samples.is_empty() {
+                self.add(per_core_freq);
             }
         }
     }

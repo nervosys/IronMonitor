@@ -260,7 +260,6 @@ struct Win32OperatingSystem {
 struct Win32ComputerSystem {
     manufacturer: Option<String>,
     model: Option<String>,
-    system_type: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -586,7 +585,7 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
     // Query Win32_ComputerSystem
     let cs_info: Option<Win32ComputerSystem> = wmi_conn
         .raw_query::<Win32ComputerSystem>(
-            "SELECT Manufacturer, Model, SystemType FROM Win32_ComputerSystem",
+            "SELECT Manufacturer, Model FROM Win32_ComputerSystem",
         )
         .ok()
         .and_then(|v: Vec<Win32ComputerSystem>| v.into_iter().next());
@@ -639,12 +638,11 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
         secure_boot: detect_secure_boot(),
     };
 
-    // Build architecture from Win32_OperatingSystem or Win32_ComputerSystem
-    let architecture = os_info
-        .as_ref()
-        .and_then(|o| o.os_architecture.clone())
-        .or_else(|| cs_info.as_ref().and_then(|c| c.system_type.clone()))
-        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    // Win32_OperatingSystem.OSArchitecture, as WMI reports it (e.g. "64-bit").
+    // Absent when that query failed. This used to fall through to
+    // Win32_ComputerSystem.SystemType, which is "x64-based PC" and so is a
+    // different thing, and then to the compile-time architecture of the binary.
+    let architecture = os_info.as_ref().and_then(|o| o.os_architecture.clone());
 
     // Build OS version string
     let os_version = os_info
@@ -657,10 +655,9 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
         .filter(|v| !v.is_empty());
 
     Ok(SystemInfo {
-        os_name: os_info
-            .as_ref()
-            .and_then(|o| o.caption.clone())
-            .unwrap_or_else(|| "Windows".to_string()),
+        // Absent when the query failed. This used to fall back to the literal
+        // "Windows".
+        os_name: os_info.as_ref().and_then(|o| o.caption.clone()),
         os_version,
         kernel_version: os_info.as_ref().and_then(|o| o.version.clone()),
         architecture,
@@ -681,33 +678,19 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
     })
 }
 
-/// Detect firmware type (UEFI vs Legacy BIOS)
+/// Detect firmware type (UEFI vs Legacy BIOS), from `GetFirmwareType`.
+///
+/// When that call fails this is `Unknown`. This used to answer UEFI for any machine
+/// where the environment variable, registry key and `C:\EFI` probes all missed,
+/// which was every machine that did not match them, so Legacy BIOS was never
+/// reported. The SecureBoot registry key is not evidence of firmware type either.
 fn detect_firmware_type() -> FirmwareType {
-    // Check for EFI system partition via environment variable
-    if std::env::var("EFI_SYSTEM_PARTITION").is_ok() {
-        return FirmwareType::Uefi;
+    use crate::boot_config::BootType;
+    match crate::platform::windows::firmware_type() {
+        Some(BootType::Uefi | BootType::SecureBoot) => FirmwareType::Uefi,
+        Some(BootType::Legacy) => FirmwareType::Bios,
+        Some(BootType::Unknown) | None => FirmwareType::Unknown,
     }
-
-    // Check via registry (more reliable)
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    if RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey("SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State")
-        .is_ok()
-    {
-        // If SecureBoot key exists, it's UEFI
-        return FirmwareType::Uefi;
-    }
-
-    // Alternative check: look for EFI partition
-    if std::path::Path::new("C:\\EFI").exists() {
-        return FirmwareType::Uefi;
-    }
-
-    // Another method: check for EFI in bcdedit output (would require admin)
-    // For now, assume UEFI on modern Windows as it's most common
-    FirmwareType::Uefi
 }
 
 /// Detect Secure Boot status

@@ -186,14 +186,14 @@ pub struct SystemInfoDetails {
     /// or a freshly imaged host may genuinely have none set, and an empty
     /// string does not say that.
     pub hostname: Option<String>,
-    /// OS name
-    pub os_name: String,
+    /// OS name. `None` when it was not read.
+    pub os_name: Option<String>,
     /// OS version. `None` when the version was not read.
     pub os_version: Option<String>,
     /// Kernel version. `None` when it could not be read, rather than empty.
     pub kernel_version: Option<String>,
-    /// Architecture
-    pub architecture: String,
+    /// Architecture. `None` when it was not read.
+    pub architecture: Option<String>,
     /// BIOS vendor
     pub bios_vendor: Option<String>,
     /// BIOS version

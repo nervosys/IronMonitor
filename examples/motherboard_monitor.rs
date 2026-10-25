@@ -30,14 +30,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match motherboard::get_system_info() {
         Ok(info) => {
             println!("[OS] Operating System:");
-            println!("  Name:         {}", info.os_name);
+            println!(
+                "  Name:         {}",
+                info.os_name.as_deref().unwrap_or("unknown")
+            );
             if let Some(version) = &info.os_version {
                 println!("  Version:      {}", version);
             }
             if let Some(kernel) = &info.kernel_version {
                 println!("  Kernel:       {}", kernel);
             }
-            println!("  Architecture: {}", info.architecture);
+            println!(
+                "  Architecture: {}",
+                info.architecture.as_deref().unwrap_or("unknown")
+            );
             if let Some(hostname) = &info.hostname {
                 println!("  Hostname:     {}", hostname);
             }

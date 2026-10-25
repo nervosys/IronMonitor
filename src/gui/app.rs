@@ -5750,10 +5750,12 @@ impl IronMonitorApp {
                             RichText::new("Operating System:")
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
-                        // Without a version the row shows the name alone.
+                        // Without a version the row shows the name alone. A name
+                        // that was not read is shown as unknown, not left blank.
+                        let os_name = info.os_name.as_deref().unwrap_or("Unknown");
                         let os_label = match &info.os_version {
-                            Some(version) => format!("{} {}", info.os_name, version),
-                            None => info.os_name.clone(),
+                            Some(version) => format!("{} {}", os_name, version),
+                            None => os_name.to_string(),
                         };
                         ui.label(
                             RichText::new(os_label)

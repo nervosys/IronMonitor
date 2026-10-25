@@ -188,9 +188,11 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
     let kernel_version = run_cmd("uname", &["-r"]).map(|s| s.trim().to_string());
 
     // Architecture
+    // Absent when `uname` failed. This used to fall back to the architecture the
+    // binary was compiled for.
     let architecture = run_cmd("uname", &["-m"])
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+        .filter(|s| !s.is_empty());
 
     // Hostname
     let hostname = run_cmd("hostname", &[]).map(|s| s.trim().to_string());
@@ -224,7 +226,10 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
     let boot_rom = extract_profiler_field(&hw_text, "Boot ROM Version").or(firmware_version);
 
     Ok(SystemInfo {
-        os_name: "macOS".to_string(),
+        // Read from sw_vers rather than written as a literal.
+        os_name: run_cmd("sw_vers", &["-productName"])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         os_version: os_version_full,
         kernel_version,
         architecture,
@@ -234,7 +239,10 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
             version: boot_rom,
             release_date: None,
             revision: None,
-            firmware_type: FirmwareType::Uefi,
+            // Not read. Apple firmware is not Legacy BIOS, but nothing here
+            // distinguishes the firmware generation, so this is Unknown rather
+            // than the UEFI that was written for every Mac.
+            firmware_type: FirmwareType::Unknown,
             // `None`: the old `Some(true)` was asserted for every Mac. Intel Macs
             // without a T2 chip have no Secure Boot, and the chip family says nothing
             // about the firmware's own setting, so nothing here reads it.

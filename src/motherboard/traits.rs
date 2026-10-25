@@ -127,11 +127,16 @@ pub struct SensorReading {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
     // Operating System
-    pub os_name: String,
+    /// `None` when the name was not read. This used to fall back to a
+    /// compile-time platform label ("Windows", "Linux"), which is not a reading.
+    pub os_name: Option<String>,
     /// `None` when the version was not read.
     pub os_version: Option<String>,
     pub kernel_version: Option<String>,
-    pub architecture: String, // x86_64, aarch64, etc.
+    /// x86_64, aarch64, etc. `None` when it was not read. This used to fall back
+    /// to the architecture the binary was compiled for, which is not necessarily
+    /// the architecture of the machine it is running on.
+    pub architecture: Option<String>,
     pub hostname: Option<String>,
 
     // BIOS/UEFI

@@ -518,16 +518,13 @@ impl ObservabilityApi {
 
         SystemIdentity {
             hostname,
-            os_name: sys_info
-                .as_ref()
-                .map(|s| s.os_name.clone())
-                .unwrap_or_else(|| std::env::consts::OS.to_string()),
+            // `None` when the reader failed. These used to fall back to
+            // `std::env::consts::{OS, ARCH}`, which name the platform the binary
+            // was built for and were published as if they had been read.
+            os_name: sys_info.as_ref().and_then(|s| s.os_name.clone()),
             os_version,
             kernel_version,
-            architecture: sys_info
-                .as_ref()
-                .map(|s| s.architecture.clone())
-                .unwrap_or_else(|| std::env::consts::ARCH.to_string()),
+            architecture: sys_info.as_ref().and_then(|s| s.architecture.clone()),
             machine_id: sys_info.as_ref().and_then(|s| s.uuid.clone()),
             boot_time: None,
             uptime_seconds,
@@ -657,8 +654,12 @@ impl ObservabilityApi {
             .check_permission(ctx, Capability::Services, Scope::Read)
             .is_ok()
         {
+            // Permitted, but there is no enumerator, so nothing was read. This used
+            // to be listed as included with an empty list.
             sw.services = self.collect_services();
-            included.push("services".to_string());
+            excluded.push(
+                "services (permitted, not collected: no enumerator on any platform)".to_string(),
+            );
         } else {
             excluded.push("services".to_string());
         }
@@ -917,7 +918,12 @@ impl ObservabilityApi {
         if let Ok(disks) = disk::enumerate_disks() {
             for d in &disks {
                 let info = d.info().ok();
-                let fs_info = d.filesystem_info().ok().unwrap_or_default();
+                // A failed filesystem query used to be an empty list, which read as a
+                // disk with no mount. The disk is still listed; the error says why its
+                // mount and filesystem are absent.
+                let fs_read = d.filesystem_info();
+                let filesystem_error = fs_read.as_ref().err().map(|e| e.to_string());
+                let fs_info = fs_read.unwrap_or_default();
                 let first_fs = fs_info.first();
                 result.push(DiskContext {
                     device: d.name().to_string(),
@@ -938,6 +944,7 @@ impl ObservabilityApi {
                             Some(f.fs_type.clone())
                         }
                     }),
+                    filesystem_error,
                     serial: info
                         .as_ref()
                         .and_then(|i| i.serial.as_ref().filter(|s| !s.is_empty()).cloned()),
@@ -1182,8 +1189,26 @@ impl ObservabilityApi {
         let mut result = Vec::new();
         if let Ok(disks) = disk::enumerate_disks() {
             for d in &disks {
-                let fs_list = d.filesystem_info().ok().unwrap_or_default();
                 let io = d.io_stats().ok();
+                let fs_list = match d.filesystem_info() {
+                    Ok(list) => list,
+                    Err(e) => {
+                        // The disk is reported, with the reason its filesystems are
+                        // absent. This used to be dropped without a row.
+                        result.push(DiskMetrics {
+                            device: d.name().to_string(),
+                            used_gb: None,
+                            free_gb: None,
+                            total_gb: None,
+                            read_bps: io.as_ref().and_then(|i| i.read_throughput),
+                            write_bps: io.as_ref().and_then(|i| i.write_throughput),
+                            iops_read: io.as_ref().and_then(|i| i.read_ops),
+                            iops_write: io.as_ref().and_then(|i| i.write_ops),
+                            error: Some(e.to_string()),
+                        });
+                        continue;
+                    }
+                };
                 for fs in &fs_list {
                     result.push(DiskMetrics {
                         device: format!("{} ({})", d.name(), fs.mount_point.display()),
@@ -1196,6 +1221,7 @@ impl ObservabilityApi {
                         write_bps: io.as_ref().and_then(|i| i.write_throughput),
                         iops_read: io.as_ref().and_then(|i| i.read_ops),
                         iops_write: io.as_ref().and_then(|i| i.write_ops),
+                        error: None,
                     });
                 }
             }
@@ -1251,9 +1277,10 @@ impl ObservabilityApi {
         result
     }
 
-    fn collect_services(&self) -> Vec<ServiceContext> {
-        // Service enumeration is platform-specific and expensive; return empty for now
-        Vec::new()
+    fn collect_services(&self) -> Option<Vec<ServiceContext>> {
+        // Service enumeration is not implemented on any platform. `None`, not an
+        // empty list: an empty list is a reading that the machine has no services.
+        None
     }
 
     fn collect_drivers(&self) -> Vec<DriverContext> {
@@ -1277,10 +1304,19 @@ impl ObservabilityApi {
         if let Ok(sys_info) = motherboard::get_system_info() {
             {
                 let bios = &sys_info.bios;
+                // `Unknown` is the reader saying the firmware type was not determined,
+                // so it is absent here. This used to be the string "Unknown".
+                use crate::motherboard::traits::FirmwareType;
+                let boot_mode = match bios.firmware_type {
+                    FirmwareType::Bios => Some("Bios".to_string()),
+                    FirmwareType::Uefi => Some("Uefi".to_string()),
+                    FirmwareType::Unknown => None,
+                };
                 return Some(BootConfigContext {
-                    boot_mode: format!("{:?}", bios.firmware_type),
+                    boot_mode,
                     secure_boot: bios.secure_boot,
-                    boot_entries: Vec::new(),
+                    // Not enumerated. An empty list would say there are no entries.
+                    boot_entries: None,
                 });
             }
         }

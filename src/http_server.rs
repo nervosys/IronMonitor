@@ -378,6 +378,9 @@ impl HttpServer {
             collector.record("ironmon_cpu_usage_percent", (100.0 - cpu.total.idle) as f64);
             // Omit the series rather than record 0 MHz, the same way the
             // Prometheus exporter omits an absent GPU temperature.
+            // This is the clock of core 0 (the first core enumerated), not of the
+            // CPU. The name is kept for existing scrapers; the Prometheus exporter
+            // carries every core's clock as `cpu_core_frequency_mhz`.
             if let Some(mhz) = cpu
                 .cores
                 .first()

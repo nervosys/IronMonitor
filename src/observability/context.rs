@@ -77,7 +77,8 @@ pub struct MinimalContext {
     pub timestamp: u64,
     /// `None` when the hostname was not read
     pub hostname: Option<String>,
-    pub os: String,
+    /// `None` where the OS name was not read.
+    pub os: Option<String>,
     /// `None` where the CPU was not read: a zero would say the machine has none.
     pub cpu_count: Option<usize>,
     pub gpu_count: usize,
@@ -91,14 +92,14 @@ pub struct MinimalContext {
 pub struct SystemIdentity {
     /// Hostname; `None` when it was not read
     pub hostname: Option<String>,
-    /// Operating system name
-    pub os_name: String,
+    /// Operating system name; `None` when it was not read
+    pub os_name: Option<String>,
     /// OS version; `None` when it was not read
     pub os_version: Option<String>,
     /// Kernel version; `None` when it was not read
     pub kernel_version: Option<String>,
-    /// Architecture (x86_64, aarch64, etc.)
-    pub architecture: String,
+    /// Architecture (x86_64, aarch64, etc.); `None` when it was not read
+    pub architecture: Option<String>,
     /// Machine ID (unique system identifier)
     pub machine_id: Option<String>,
     /// Boot time
@@ -148,7 +149,8 @@ pub struct CpuContext {
     /// Base (nominal) frequency in MHz, or `None` where it was not read. This is
     /// never the current clock.
     pub base_frequency_mhz: Option<u32>,
-    /// Max boost frequency in MHz
+    /// Max boost frequency in MHz, as reported for CPU core 0 (the first core
+    /// enumerated). Cores are not guaranteed to share a limit on hybrid CPUs.
     pub max_frequency_mhz: Option<u32>,
     /// L1 cache size
     pub l1_cache_kb: Option<u32>,
@@ -222,10 +224,15 @@ pub struct DiskContext {
     pub disk_type: String,
     /// Total size in GB, or `None` where the capacity was not read.
     pub size_gb: Option<f64>,
-    /// Mount point (if mounted)
+    /// Mount point (if mounted). `None` when the disk has none, or when its
+    /// filesystems could not be read; `filesystem_error` says which.
     pub mount_point: Option<String>,
     /// Filesystem type
     pub filesystem: Option<String>,
+    /// Why the filesystem list could not be read, or `None` when it was read
+    /// (an empty list is a reading too). Without this, a disk whose filesystem
+    /// query failed looked like one with no mount.
+    pub filesystem_error: Option<String>,
     /// Serial number (if available)
     pub serial: Option<String>,
 }
@@ -326,7 +333,9 @@ pub struct SoftwareContext {
     /// Running processes count
     pub process_count: usize,
     /// Running services
-    pub services: Vec<ServiceContext>,
+    /// Running services. `None` because service enumeration is not implemented on
+    /// any platform; an empty list would say the machine has no services.
+    pub services: Option<Vec<ServiceContext>>,
     /// Installed drivers
     pub drivers: Vec<DriverContext>,
     /// Boot configuration
@@ -364,12 +373,14 @@ pub struct DriverContext {
 /// Boot configuration context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootConfigContext {
-    /// Boot mode (UEFI, Legacy)
-    pub boot_mode: String,
+    /// Boot mode (UEFI, Legacy), or `None` where the firmware type was not
+    /// determined. This was the string "Unknown" in that case.
+    pub boot_mode: Option<String>,
     /// Secure boot enabled
     pub secure_boot: Option<bool>,
-    /// Boot entries
-    pub boot_entries: Vec<String>,
+    /// Boot entries. `None` because they are not enumerated; an empty list would
+    /// say the machine has no boot entries.
+    pub boot_entries: Option<Vec<String>>,
 }
 
 /// Current metrics snapshot
@@ -402,7 +413,8 @@ pub struct CpuMetrics {
     /// A core that reported nothing used to arrive here as `100.0 - 100.0`, a
     /// measured 0% busy. See `agent::state::CpuState::per_core_usage`.
     pub per_core_utilization: Vec<Option<f32>>,
-    /// Current frequency in MHz
+    /// Current clock in MHz of CPU core 0 (the first core enumerated), not of the
+    /// package or of every core. Per-core clocks are not in this struct.
     pub frequency_mhz: Option<u32>,
     /// Temperature in Celsius
     pub temperature_c: Option<f32>,
@@ -488,6 +500,9 @@ pub struct DiskMetrics {
     pub iops_read: Option<u64>,
     /// IOPS write
     pub iops_write: Option<u64>,
+    /// Why this disk's filesystem could not be read, or `None` when it was. A disk
+    /// whose filesystem query failed used to produce no row at all.
+    pub error: Option<String>,
 }
 
 /// Network metrics
@@ -594,7 +609,8 @@ pub struct ContextMeta {
     pub size_bytes: usize,
     /// Which capabilities were included
     pub included_capabilities: Vec<String>,
-    /// Which capabilities were filtered out (due to permissions)
+    /// Which capabilities were not included. Either filtered out by permissions,
+    /// or permitted but not collected, in which case the entry says why.
     pub excluded_capabilities: Vec<String>,
 }
 

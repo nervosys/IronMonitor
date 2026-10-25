@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   internal panels, monitor names are EDID names (connectors move to
   `connector`), unmatched ARP rows and failed nmap DNS lookups no longer invent
   results, and link speed is `link_speed_bps` rather than throughput.
+- Readers no longer report values they did not obtain: the motherboard OS name, architecture and firmware type (Windows, macOS, Linux) are `None` when unread instead of compile-time or assumed values, the observability API drops the same fallbacks, a disk whose filesystem query failed is reported with the reason, unenumerated services and boot entries are absent rather than empty, `cpu_frequency_mhz` is documented as core 0 with a new `cpu_core_frequency_mhz` per-core series, zero swap and used memory are kept in the fleet table, and the pipeline network totals are `None` unless every interface has a rate.
 - RAPL: an unread `enabled` attribute is no longer published as a measured
   `true`; a missing powercap tree is an error, not "present with no domains";
   PSys is reported separately instead of being added to the package total; and

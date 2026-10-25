@@ -65,19 +65,25 @@ pub struct MetricRow {
     pub collect_us: Option<i64>,
 }
 
-/// Kibibytes to bytes, refusing to invent a total.
-///
-/// `RamInfo::total` and `used` are bare `u64` rather than `Option`, so a failed
-/// read is not expressible at the field level — only at the `Option<MemoryStats>`
-/// above it. A total of zero is not a plausible reading from a machine that is
-/// running this program, so it is treated as the absence of one rather than
-/// passed through as a measurement. That is a judgement, and it is made here
-/// rather than left to every consumer of the table.
+/// Kibibytes to bytes. Zero is a value and stays `Some(0)`.
 fn kib_to_bytes(kib: u64) -> Option<i64> {
+    i64::try_from(kib.saturating_mul(1024)).ok()
+}
+
+/// RAM total in kibibytes to bytes, refusing to invent a total.
+///
+/// `RamInfo::total` is a bare `u64` rather than `Option`, so a failed read is not
+/// expressible at the field level, only at the `Option<MemoryStats>` above it. A
+/// total of zero is not a plausible reading from a machine that is running this
+/// program, so it is treated as the absence of one rather than passed through as a
+/// measurement. That is a judgement, and it is made here rather than left to every
+/// consumer of the table. It applies to the total only: a zero swap figure is a
+/// real reading (nothing paged out), and used bytes pass through as read.
+fn ram_total_to_bytes(kib: u64) -> Option<i64> {
     if kib == 0 {
         return None;
     }
-    i64::try_from(kib.saturating_mul(1024)).ok()
+    kib_to_bytes(kib)
 }
 
 /// Project one snapshot into the rows it contributes.
@@ -115,7 +121,7 @@ pub fn rows_from_snapshot(snapshot: &Snapshot, host: &HostId) -> Vec<MetricRow> 
         memory_total_bytes: snapshot
             .memory
             .as_ref()
-            .and_then(|m| kib_to_bytes(m.ram.total)),
+            .and_then(|m| ram_total_to_bytes(m.ram.total)),
         swap_used_bytes: snapshot
             .memory
             .as_ref()
@@ -437,11 +443,43 @@ mod tests {
         assert_eq!(rows[0].memory_total_bytes, Some(1024 * 1024));
         assert_eq!(rows[0].memory_used_bytes, Some(512 * 1024));
         assert_eq!(rows[0].swap_total_bytes, Some(2048 * 1024));
-        assert_eq!(
-            rows[0].swap_used_bytes, None,
-            "zero swap used is indistinguishable from unread at this field and is \
-             not asserted as a measurement"
-        );
+        // Zero swap in use is a reading (nothing paged out), not an absence.
+        assert_eq!(rows[0].swap_used_bytes, Some(0));
+    }
+
+    /// Only the RAM total refuses zero. Swap and used memory report what was read.
+    #[test]
+    fn zero_is_a_reading_except_for_ram_total() {
+        use crate::core::memory::{MemoryStats, RamInfo, SwapInfo};
+
+        let snapshot = Snapshot {
+            collected_at: Some(1_700_000_000),
+            memory: Some(MemoryStats {
+                ram: RamInfo {
+                    total: 0,
+                    used: 0,
+                    free: None,
+                    buffers: None,
+                    cached: None,
+                    shared: None,
+                    lfb: None,
+                },
+                swap: SwapInfo {
+                    total: Some(0),
+                    used: Some(0),
+                    cached: None,
+                },
+                emc: None,
+                iram: None,
+            }),
+            ..Default::default()
+        };
+
+        let rows = rows_from_snapshot(&snapshot, &host());
+        assert_eq!(rows[0].memory_total_bytes, None);
+        assert_eq!(rows[0].memory_used_bytes, Some(0));
+        assert_eq!(rows[0].swap_total_bytes, Some(0));
+        assert_eq!(rows[0].swap_used_bytes, Some(0));
     }
 
     /// Memory that was never read must not become zero bytes of RAM.

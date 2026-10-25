@@ -272,12 +272,36 @@ fn read_dmi(path: &str) -> Option<String> {
 }
 
 /// Detect firmware type (BIOS or UEFI)
+///
+/// `/sys/firmware/efi` existing is UEFI. Its absence is Legacy only when the
+/// firmware directory itself is there to say so. Without `/sys/firmware` (sysfs
+/// not mounted, as in some containers) the question was not answered, and this
+/// used to report Legacy BIOS regardless.
 fn detect_firmware_type() -> FirmwareType {
     if Path::new("/sys/firmware/efi").exists() {
         FirmwareType::Uefi
-    } else {
+    } else if Path::new("/sys/firmware").exists() {
         FirmwareType::Bios
+    } else {
+        FirmwareType::Unknown
     }
+}
+
+/// Machine hardware name from `uname(2)`, e.g. "x86_64" or "aarch64".
+fn machine_architecture() -> Option<String> {
+    // SAFETY: `utsname` is plain old data, all-zero is a valid value, and
+    // `uname` fills the struct it is given.
+    let mut buf: libc::utsname = unsafe { std::mem::zeroed() };
+    if unsafe { libc::uname(&mut buf) } != 0 {
+        return None;
+    }
+    let bytes: Vec<u8> = buf
+        .machine
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8(bytes).ok().filter(|s| !s.is_empty())
 }
 
 /// Get system information
@@ -294,11 +318,13 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
         }
     }
 
+    // Absent from os-release means the name was not read. This used to fall back
+    // to the literal "Linux", a platform label rather than a reading.
     let os_name = os_info
         .get("PRETTY_NAME")
         .or_else(|| os_info.get("NAME"))
-        .cloned()
-        .unwrap_or_else(|| "Linux".to_string());
+        .filter(|s| !s.is_empty())
+        .cloned();
 
     // Absent or empty in os-release means the version was not read.
     let os_version = ["VERSION", "VERSION_ID"]
@@ -312,8 +338,9 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
         .ok()
         .and_then(|v| v.split_whitespace().nth(2).map(String::from));
 
-    // Architecture
-    let architecture = std::env::consts::ARCH.to_string();
+    // Architecture, from uname(2)'s `machine` field. This used to be
+    // `std::env::consts::ARCH`, the architecture the binary was compiled for.
+    let architecture = machine_architecture();
 
     // Hostname
     let hostname = fs::read_to_string("/etc/hostname")
