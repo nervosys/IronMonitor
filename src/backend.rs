@@ -67,8 +67,8 @@ pub struct FullSystemState {
 /// CPU state for AI context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuState {
-    /// CPU model name
-    pub name: String,
+    /// CPU model name, or `None` where it was not read.
+    pub name: Option<String>,
 
     /// Physical cores, or `None` where the platform reported no count
     /// distinct from the logical one.
@@ -328,11 +328,7 @@ impl FullSystemState {
         if let Some(ref cpu) = self.cpu {
             ctx.push_str(&format!(
                 "CPU: {} ({})\n  Utilization: {:.1}%",
-                if cpu.name.is_empty() {
-                    "unknown"
-                } else {
-                    cpu.name.as_str()
-                },
+                cpu.name.as_deref().unwrap_or("unknown"),
                 // Physical and logical named separately, and the physical count
                 // left out rather than guessed when the platform gave none.
                 match cpu.cores {
@@ -1355,13 +1351,9 @@ impl MonitoringBackend {
         // CPU state
         if let Some(ref cpu) = self.cpu_stats {
             state.cpu = Some(CpuState {
-                // Empty when the model string was not read. This was the
-                // literal "CPU", a name no processor has.
-                name: cpu
-                    .cores
-                    .first()
-                    .map(|c| c.model.clone())
-                    .unwrap_or_default(),
+                // `None` when the model string was not read. This was the
+                // literal "CPU", a name no processor has, and later an empty string.
+                name: cpu.cores.first().and_then(|c| c.model.clone()),
                 cores: crate::cpu_microarch::physical_cores(),
                 threads: cpu.cores.len(),
                 utilization: 100.0 - cpu.total.idle,
@@ -1789,7 +1781,7 @@ mod tests {
     #[test]
     fn the_ai_context_names_physical_and_logical_cores_separately() {
         let cpu = |cores| CpuState {
-            name: "AMD Ryzen 9 9900X 12-Core Processor".into(),
+            name: Some("AMD Ryzen 9 9900X 12-Core Processor".into()),
             cores,
             threads: 24,
             utilization: 10.0,

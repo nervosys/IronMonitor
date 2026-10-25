@@ -222,6 +222,13 @@ pub struct AiDataApi {
     last_update: Instant,
     /// Historical data context (injected from GUI)
     historical_context: Option<String>,
+    /// Why GPU detection failed, when it did. `gpus` is `None` in that case and
+    /// no GPU was ever enumerated, so the two must not read alike.
+    gpu_error: Option<String>,
+    /// Why the process monitor could not be created, when it could not.
+    process_monitor_error: Option<String>,
+    /// Why the network monitor could not be created, when it could not.
+    network_monitor_error: Option<String>,
 }
 
 /// Cache for API data
@@ -249,16 +256,27 @@ impl AiDataApi {
     /// Create a new AI Data API instance
     pub fn new() -> Result<Self> {
         // Try to initialize components, but don't fail if some aren't available
-        let gpus = GpuCollection::auto_detect().ok();
+        // A failure is kept with its reason rather than dropped. Dropping it made
+        // the component look as if it had been found absent.
+        let (gpus, gpu_error) = match GpuCollection::auto_detect() {
+            Ok(gpus) => (Some(gpus), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
 
         // Create process monitor (without GPU integration for now, as GpuCollection doesn't implement Clone)
         // Primed here, so the first tool call reports CPU% over the interval
         // since startup rather than each process's lifetime average.
-        let process_monitor = ProcessMonitor::new().ok().map(|mut m| {
-            let _ = m.sample_cpu_times();
-            m
-        });
-        let network_monitor = NetworkMonitor::new().ok();
+        let (process_monitor, process_monitor_error) = match ProcessMonitor::new() {
+            Ok(mut m) => {
+                let _ = m.sample_cpu_times();
+                (Some(m), None)
+            }
+            Err(e) => (None, Some(e.to_string())),
+        };
+        let (network_monitor, network_monitor_error) = match NetworkMonitor::new() {
+            Ok(m) => (Some(m), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
 
         Ok(Self {
             observations: None,
@@ -268,7 +286,22 @@ impl AiDataApi {
             cache: Arc::new(Mutex::new(ApiCache::new())),
             last_update: Instant::now(),
             historical_context: None,
+            gpu_error,
+            process_monitor_error,
+            network_monitor_error,
         })
+    }
+
+    /// The error for a GPU tool when GPU detection did not succeed. It names the
+    /// detection failure. It used to say "No GPUs detected", which was a claim
+    /// about the machine that nothing had established.
+    fn gpu_unavailable(&self) -> IronError {
+        IronError::HardwareError(format!(
+            "GPU detection failed: {}",
+            self.gpu_error
+                .as_deref()
+                .unwrap_or("no GPU monitor was created")
+        ))
     }
 
     /// Create API with pre-initialized components
@@ -285,6 +318,9 @@ impl AiDataApi {
             cache: Arc::new(Mutex::new(ApiCache::new())),
             last_update: Instant::now(),
             historical_context: None,
+            gpu_error: None,
+            process_monitor_error: None,
+            network_monitor_error: None,
         }
     }
 
@@ -456,147 +492,233 @@ impl AiDataApi {
     /// Generate a fresh system summary
     fn generate_system_summary(&mut self) -> Result<SystemSummary> {
         let mut summary = SystemSummary::default();
+        // Every section that could not be read is named here with its reason.
+        // Its list is `None` (not empty) in the summary, so an agent cannot
+        // mistake a failed read for a machine with nothing in that section.
+        let mut errors: Vec<String> = Vec::new();
 
         // GPU info
-        if let Some(ref gpus) = self.gpus {
-            if let Ok(snapshots) = gpus.snapshot_all() {
-                summary.gpu_count = Some(snapshots.len());
-                for snapshot in snapshots {
-                    summary.gpus.push(GpuSummary {
-                        name: snapshot.static_info.name.clone(),
-                        vendor: format!("{:?}", snapshot.static_info.vendor),
-                        utilization_percent: snapshot.dynamic_info.utilization.map(f32::from),
-                        memory_used_mb: snapshot.dynamic_info.memory.used.map(|v| v / 1024 / 1024),
-                        memory_total_mb: snapshot
-                            .dynamic_info
-                            .memory
-                            .total
-                            .map(|v| v / 1024 / 1024),
-                        temperature_c: snapshot.dynamic_info.thermal.temperature,
-                        power_watts: snapshot.dynamic_info.power.draw.map(|p| p as f32 / 1000.0),
-                    });
+        match self.gpus.as_ref() {
+            None => errors.push(format!(
+                "gpus: {}",
+                self.gpu_error
+                    .as_deref()
+                    .unwrap_or("GPU detection did not run")
+            )),
+            Some(gpus) => match gpus.snapshot_all() {
+                Err(e) => errors.push(format!("gpus: {e}")),
+                Ok(snapshots) => {
+                    summary.gpu_count = Some(snapshots.len());
+                    let mut gpu_list = Vec::with_capacity(snapshots.len());
+                    for snapshot in snapshots {
+                        gpu_list.push(GpuSummary {
+                            name: snapshot.static_info.name.clone(),
+                            vendor: format!("{:?}", snapshot.static_info.vendor),
+                            utilization_percent: snapshot.dynamic_info.utilization.map(f32::from),
+                            memory_used_mb: snapshot
+                                .dynamic_info
+                                .memory
+                                .used
+                                .map(|v| v / 1024 / 1024),
+                            memory_total_mb: snapshot
+                                .dynamic_info
+                                .memory
+                                .total
+                                .map(|v| v / 1024 / 1024),
+                            temperature_c: snapshot.dynamic_info.thermal.temperature,
+                            power_watts: snapshot
+                                .dynamic_info
+                                .power
+                                .draw
+                                .map(|p| p as f32 / 1000.0),
+                        });
+                    }
+                    summary.gpus = Some(gpu_list);
                 }
-            }
+            },
         }
 
         // Process info
-        if let Some(ref mut proc_mon) = self.process_monitor {
-            if let Ok(procs) = proc_mon.processes() {
-                summary.process_count = Some(procs.len());
+        match self.process_monitor.as_mut() {
+            None => errors.push(format!(
+                "processes: {}",
+                self.process_monitor_error
+                    .as_deref()
+                    .unwrap_or("process monitor did not start")
+            )),
+            Some(proc_mon) => {
+                match proc_mon.processes() {
+                    Err(e) => errors.push(format!("processes: {e}")),
+                    Ok(procs) => {
+                        summary.process_count = Some(procs.len());
 
-                // Calculate total CPU usage
-                summary.total_cpu_percent =
-                    procs.iter().map(|p| p.cpu_percent).sum::<Option<f32>>();
+                        // Calculate total CPU usage. `None` if any process's figure is unknown.
+                        summary.total_cpu_percent =
+                            procs.iter().map(|p| p.cpu_percent).sum::<Option<f32>>();
 
-                // Get top CPU consumers
-                let mut by_cpu = procs.clone();
-                by_cpu.sort_by(|a, b| {
-                    b.cpu_percent
-                        .partial_cmp(&a.cpu_percent)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                summary.top_cpu_processes = by_cpu
-                    .iter()
-                    .take(5)
-                    .map(|p| ProcessSummary {
-                        pid: p.pid,
-                        name: p.name.clone(),
-                        cpu_percent: p.cpu_percent,
-                        memory_mb: (p.memory_bytes / 1024 / 1024),
-                        gpu_memory_mb: p.total_gpu_memory_bytes.map(|b| b / 1024 / 1024),
-                    })
-                    .collect();
+                        // Get top CPU consumers
+                        let mut by_cpu = procs.clone();
+                        by_cpu.sort_by(|a, b| {
+                            b.cpu_percent
+                                .partial_cmp(&a.cpu_percent)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        summary.top_cpu_processes = Some(
+                            by_cpu
+                                .iter()
+                                .take(5)
+                                .map(|p| ProcessSummary {
+                                    pid: p.pid,
+                                    name: p.name.clone(),
+                                    cpu_percent: p.cpu_percent,
+                                    memory_mb: (p.memory_bytes / 1024 / 1024),
+                                    gpu_memory_mb: p
+                                        .total_gpu_memory_bytes
+                                        .map(|b| b / 1024 / 1024),
+                                })
+                                .collect(),
+                        );
 
-                // Get top memory consumers
-                let mut by_mem = procs.clone();
-                by_mem.sort_by_key(|p| std::cmp::Reverse(p.memory_bytes));
-                summary.top_memory_processes = by_mem
-                    .iter()
-                    .take(5)
-                    .map(|p| ProcessSummary {
-                        pid: p.pid,
-                        name: p.name.clone(),
-                        cpu_percent: p.cpu_percent,
-                        memory_mb: (p.memory_bytes / 1024 / 1024),
-                        gpu_memory_mb: p.total_gpu_memory_bytes.map(|b| b / 1024 / 1024),
-                    })
-                    .collect();
-            }
+                        // Get top memory consumers
+                        let mut by_mem = procs.clone();
+                        by_mem.sort_by_key(|p| std::cmp::Reverse(p.memory_bytes));
+                        summary.top_memory_processes = Some(
+                            by_mem
+                                .iter()
+                                .take(5)
+                                .map(|p| ProcessSummary {
+                                    pid: p.pid,
+                                    name: p.name.clone(),
+                                    cpu_percent: p.cpu_percent,
+                                    memory_mb: (p.memory_bytes / 1024 / 1024),
+                                    gpu_memory_mb: p
+                                        .total_gpu_memory_bytes
+                                        .map(|b| b / 1024 / 1024),
+                                })
+                                .collect(),
+                        );
+                    }
+                }
 
-            // GPU processes
-            if let Ok(gpu_procs) = proc_mon.gpu_processes() {
-                summary.gpu_process_count = Some(gpu_procs.len());
-                summary.top_gpu_processes = gpu_procs
-                    .iter()
-                    .take(5)
-                    .map(|p| ProcessSummary {
-                        pid: p.pid,
-                        name: p.name.clone(),
-                        cpu_percent: p.cpu_percent,
-                        memory_mb: (p.memory_bytes / 1024 / 1024),
-                        gpu_memory_mb: p.total_gpu_memory_bytes.map(|b| b / 1024 / 1024),
-                    })
-                    .collect();
+                // GPU processes
+                match proc_mon.gpu_processes() {
+                    Err(e) => errors.push(format!("gpu_processes: {e}")),
+                    Ok(gpu_procs) => {
+                        summary.gpu_process_count = Some(gpu_procs.len());
+                        summary.top_gpu_processes = Some(
+                            gpu_procs
+                                .iter()
+                                .take(5)
+                                .map(|p| ProcessSummary {
+                                    pid: p.pid,
+                                    name: p.name.clone(),
+                                    cpu_percent: p.cpu_percent,
+                                    memory_mb: (p.memory_bytes / 1024 / 1024),
+                                    gpu_memory_mb: p
+                                        .total_gpu_memory_bytes
+                                        .map(|b| b / 1024 / 1024),
+                                })
+                                .collect(),
+                        );
+                    }
+                }
             }
         }
 
         // Network info
-        if let Some(ref mut net_mon) = self.network_monitor {
-            if let Ok(interfaces) = net_mon.active_interfaces() {
-                summary.active_network_interfaces = Some(interfaces.len());
-                for iface in interfaces {
-                    let rate = net_mon.bandwidth_rate(&iface.name, &iface);
-                    summary.network_interfaces.push(NetworkSummary {
-                        name: iface.name.clone(),
-                        rx_bytes_per_sec: rate.map(|(rx, _)| rx as u64),
-                        tx_bytes_per_sec: rate.map(|(_, tx)| tx as u64),
-                        rx_total_mb: (iface.rx_bytes / 1024 / 1024),
-                        tx_total_mb: (iface.tx_bytes / 1024 / 1024),
-                        is_up: iface.is_up,
-                    });
+        match self.network_monitor.as_mut() {
+            None => errors.push(format!(
+                "network: {}",
+                self.network_monitor_error
+                    .as_deref()
+                    .unwrap_or("network monitor did not start")
+            )),
+            Some(net_mon) => match net_mon.active_interfaces() {
+                Err(e) => errors.push(format!("network: {e}")),
+                Ok(interfaces) => {
+                    summary.active_network_interfaces = Some(interfaces.len());
+                    let mut net_list = Vec::with_capacity(interfaces.len());
+                    for iface in interfaces {
+                        let rate = net_mon.bandwidth_rate(&iface.name, &iface);
+                        net_list.push(NetworkSummary {
+                            name: iface.name.clone(),
+                            rx_bytes_per_sec: rate.map(|(rx, _)| rx as u64),
+                            tx_bytes_per_sec: rate.map(|(_, tx)| tx as u64),
+                            rx_total_mb: (iface.rx_bytes / 1024 / 1024),
+                            tx_total_mb: (iface.tx_bytes / 1024 / 1024),
+                            is_up: iface.is_up,
+                        });
+                    }
+                    summary.network_interfaces = Some(net_list);
                 }
-            }
+            },
         }
 
         // Memory info (platform-specific)
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::memory;
-            if let Ok(mem) = memory::read_memory_stats() {
-                summary.memory = Some(MemorySummary {
-                    total_mb: (mem.ram.total / 1024),
-                    used_mb: (mem.ram.used / 1024),
-                    free_mb: mem.ram.free.map(|v| v / 1024),
-                    cached_mb: mem.ram.cached.map(|v| v / 1024),
-                    swap_total_mb: mem.swap.total.map(|v| v / 1024),
-                    swap_used_mb: mem.swap.used.map(|v| v / 1024),
-                    usage_percent: mem.ram_usage_percent(),
-                });
-            }
-        }
-
-        // Disk info
-        if let Ok(disks) = crate::disk::enumerate_disks() {
-            summary.disk_count = Some(disks.len());
-            for disk in &disks {
-                if let Ok(info) = disk.info() {
-                    summary.disks.push(DiskSummary {
-                        name: info.name.clone(),
-                        model: info.model.clone(),
-                        // Integer division truncated every drive under a
-                        // gibibyte to 0 GB, which reads as a zero-size disk.
-                        size_gb: info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
-                        disk_type: format!("{:?}", info.disk_type),
-                        temperature_c: disk.temperature().ok().flatten(),
+            match memory::read_memory_stats() {
+                Ok(mem) => {
+                    summary.memory = Some(MemorySummary {
+                        total_mb: (mem.ram.total / 1024),
+                        used_mb: (mem.ram.used / 1024),
+                        free_mb: mem.ram.free.map(|v| v / 1024),
+                        cached_mb: mem.ram.cached.map(|v| v / 1024),
+                        swap_total_mb: mem.swap.total.map(|v| v / 1024),
+                        swap_used_mb: mem.swap.used.map(|v| v / 1024),
+                        usage_percent: mem.ram_usage_percent(),
                     });
                 }
+                Err(e) => errors.push(format!("memory: {e}")),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            errors.push("memory: this summary reads memory on Linux only".to_string());
+        }
+
+        // Disk info. `disk_count` and `disks` cover the disks that were read;
+        // a disk whose info failed is counted in `unreadable_disk_count` and its
+        // error goes to `errors`. It used to be counted in `disk_count` and then
+        // silently left out of the list.
+        match crate::disk::enumerate_disks() {
+            Err(e) => errors.push(format!("disks: {e}")),
+            Ok(disks) => {
+                let mut disk_list = Vec::with_capacity(disks.len());
+                let mut unreadable = 0usize;
+                for (index, disk) in disks.iter().enumerate() {
+                    match disk.info() {
+                        Ok(info) => disk_list.push(DiskSummary {
+                            name: info.name.clone(),
+                            model: info.model.clone(),
+                            // Integer division truncated every drive under a
+                            // gibibyte to 0 GB, which reads as a zero-size disk.
+                            size_gb: info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
+                            // `Unknown` is null, not the word "Unknown".
+                            disk_type: (info.disk_type != crate::disk::DiskType::Unknown)
+                                .then(|| format!("{:?}", info.disk_type)),
+                            temperature_c: disk.temperature().ok().flatten(),
+                        }),
+                        Err(e) => {
+                            unreadable += 1;
+                            errors.push(format!("disk {index}: {e}"));
+                        }
+                    }
+                }
+                summary.disk_count = Some(disk_list.len());
+                summary.unreadable_disk_count = Some(unreadable);
+                summary.disks = Some(disk_list);
             }
         }
 
+        summary.errors = errors;
         summary.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_err(|e| {
+                IronError::HardwareError(format!("system clock is before the Unix epoch: {e}"))
+            })?
+            .as_secs();
 
         Ok(summary)
     }

@@ -13,6 +13,40 @@ use serde_json::json;
 /// zero when unreadable, so an agent asking about displays was told a monitor
 /// was `"0x0"` — a resolution no display has, indistinguishable from a measured
 /// one.
+/// The display connection as text, or `None` for `Unknown`. The `Debug` form
+/// used to reach agents as "Unknown" for a connection nobody identified.
+fn connection_text(connection: crate::display::DisplayConnection) -> Option<String> {
+    use crate::display::DisplayConnection;
+    (connection != DisplayConnection::Unknown).then(|| format!("{connection:?}"))
+}
+
+/// The HDR mode as text, or `None` where it was not read or is `Unknown`.
+fn hdr_text(hdr: Option<crate::display::HdrMode>) -> Option<String> {
+    use crate::display::HdrMode;
+    hdr.filter(|mode| *mode != HdrMode::Unknown)
+        .map(|mode| format!("{mode:?}"))
+}
+
+/// The USB class as text, or `None` for `Unknown`, which the reader uses for
+/// "no class was declared" and which agents received as the word "Unknown".
+fn usb_class_text(class: crate::usb::UsbDeviceClass) -> Option<String> {
+    use crate::usb::UsbDeviceClass;
+    (class != UsbDeviceClass::Unknown).then(|| format!("{class:?}"))
+}
+
+/// The USB negotiated speed as text, or `None` where no hub reported one.
+fn usb_speed_text(speed: crate::usb::UsbSpeed) -> Option<String> {
+    use crate::usb::UsbSpeed;
+    (speed != UsbSpeed::Unknown).then(|| format!("{speed:?}"))
+}
+
+/// The disk type as text, or `None` for `Unknown`. The `Debug` form of
+/// `Unknown` used to reach agents as the string "Unknown", a classification
+/// nobody made.
+fn disk_type_text(disk_type: crate::disk::DiskType) -> Option<String> {
+    (disk_type != crate::disk::DiskType::Unknown).then(|| format!("{disk_type:?}"))
+}
+
 fn resolution_text(d: &crate::display::DisplayInfo) -> Option<String> {
     match (d.width, d.height) {
         (Some(w), Some(h)) => Some(format!("{w}x{h}")),
@@ -824,7 +858,14 @@ impl AiDataApi {
         capabilities.insert("gpu_apple".to_string(), json!(cfg!(feature = "apple")));
 
         // Check what's actually available
-        capabilities.insert("gpus_detected".to_string(), json!(self.gpus.is_some()));
+        // Each of these is `true` when the component exists, and null when it
+        // does not, with the reason beside it. `false` used to be published for
+        // a component whose creation had failed, which says it is absent.
+        capabilities.insert(
+            "gpus_detected".to_string(),
+            json!(self.gpus.is_some().then_some(true)),
+        );
+        capabilities.insert("gpu_detection_error".to_string(), json!(self.gpu_error));
         capabilities.insert(
             "gpu_count".to_string(),
             // `null` when no GPU monitor exists. `0` here said the machine
@@ -833,11 +874,19 @@ impl AiDataApi {
         );
         capabilities.insert(
             "process_monitor".to_string(),
-            json!(self.process_monitor.is_some()),
+            json!(self.process_monitor.is_some().then_some(true)),
+        );
+        capabilities.insert(
+            "process_monitor_error".to_string(),
+            json!(self.process_monitor_error),
         );
         capabilities.insert(
             "network_monitor".to_string(),
-            json!(self.network_monitor.is_some()),
+            json!(self.network_monitor.is_some().then_some(true)),
+        );
+        capabilities.insert(
+            "network_monitor_error".to_string(),
+            json!(self.network_monitor_error),
         );
 
         Ok(json!(capabilities))
@@ -849,10 +898,7 @@ impl AiDataApi {
         &mut self,
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -895,10 +941,7 @@ impl AiDataApi {
         &mut self,
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -930,10 +973,7 @@ impl AiDataApi {
             .ok_or_else(|| IronError::InvalidArgument("gpu_index is required".to_string()))?
             as usize;
 
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -1057,10 +1097,7 @@ impl AiDataApi {
     ) -> Result<serde_json::Value> {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -1089,10 +1126,7 @@ impl AiDataApi {
     ) -> Result<serde_json::Value> {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -1127,10 +1161,7 @@ impl AiDataApi {
     ) -> Result<serde_json::Value> {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -1163,10 +1194,7 @@ impl AiDataApi {
     ) -> Result<serde_json::Value> {
         let gpu_index = params.get("gpu_index").and_then(|v| v.as_u64());
 
-        let gpus = self
-            .gpus
-            .as_ref()
-            .ok_or_else(|| IronError::NotImplemented("No GPUs detected".to_string()))?;
+        let gpus = self.gpus.as_ref().ok_or_else(|| self.gpu_unavailable())?;
 
         let snapshots = gpus
             .snapshot_all()
@@ -1211,7 +1239,7 @@ impl AiDataApi {
                     "idle_percent": stats.total.idle,
                     "usage_percent": 100.0 - stats.total.idle,
                 },
-                "model": stats.cores.first().map(|c| &c.model).cloned(),
+                "model": stats.cores.first().and_then(|c| c.model.clone()),
             }))
         }
 
@@ -1230,7 +1258,7 @@ impl AiDataApi {
                     "idle_percent": stats.total.idle,
                     "usage_percent": 100.0 - stats.total.idle,
                 },
-                "model": stats.cores.first().map(|c| &c.model).cloned(),
+                "model": stats.cores.first().and_then(|c| c.model.clone()),
             }))
         }
 
@@ -1260,7 +1288,7 @@ impl AiDataApi {
                     "idle_percent": stats.total.idle,
                     "usage_percent": 100.0 - stats.total.idle,
                 },
-                "model": stats.cores.first().map(|c| &c.model).cloned(),
+                "model": stats.cores.first().and_then(|c| c.model.clone()),
             }))
         }
     }
@@ -1764,7 +1792,8 @@ impl AiDataApi {
                     // never rounded away.
                     "size_bytes": info.capacity,
                     "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
-                    "disk_type": format!("{:?}", info.disk_type),
+                    // `Unknown` is a classification nobody made, so it is null.
+                    "disk_type": disk_type_text(info.disk_type),
                 }),
                 Err(e) => json!({
                     "index": index,
@@ -1811,7 +1840,7 @@ impl AiDataApi {
             // figure that would otherwise truncate small media to zero.
             "size_bytes": info.capacity,
             "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
-            "disk_type": format!("{:?}", info.disk_type),
+            "disk_type": disk_type_text(info.disk_type),
             "temperature_c": disk.temperature().ok().flatten(),
         }))
     }
@@ -1899,7 +1928,8 @@ impl AiDataApi {
                 Some(match d.health() {
                     Ok(h) => json!({
                         "name": info.name,
-                        "overall_health": format!("{:?}", h),
+                        // `Unknown` means the health was not determined, so it is null.
+                        "overall_health": (h != crate::disk::DiskHealth::Unknown).then(|| format!("{:?}", h)),
                         "temperature_c": d.temperature().ok().flatten(),
                     }),
                     Err(e) => json!({
@@ -2514,7 +2544,10 @@ impl AiDataApi {
         let monitor = AudioMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let devices: Vec<_> = monitor.devices().iter()
             .filter(|d| device_type == "all" || matches!((&d.device_type, device_type), (AudioDeviceType::Output, "output") | (AudioDeviceType::Input, "input") | (AudioDeviceType::Duplex, "output") | (AudioDeviceType::Duplex, "input")))
-            .map(|d| json!({"id": d.id, "name": d.name, "type": format!("{:?}", d.device_type), "state": format!("{:?}", d.state), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
+            // `state` is `Option` and was formatted with `{:?}` directly, so an
+            // unread state reached agents as the text "None" and a read one as
+            // "Some(Active)". Both are null now when not read.
+            .map(|d| json!({"id": d.id, "name": d.name, "type": (d.device_type != AudioDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": d.state.map(|s| format!("{s:?}")), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
             .collect();
         Ok(json!(devices))
     }
@@ -2543,20 +2576,30 @@ impl AiDataApi {
                 |a| json!({"id": a.id, "name": a.name, "address": a.address, "powered": a.powered}),
             )
             .collect();
-        Ok(json!({"available": monitor.is_available(), "adapters": adapters}))
+        // `available` is null where the adapter walk did not run, with the reason
+        // beside it. It was `false` in that case, which says there is no radio.
+        let unavailable_reason = (!monitor.adapters_read()).then(|| {
+            monitor
+                .note()
+                .unwrap_or("no Bluetooth reader runs on this platform")
+                .to_string()
+        });
+        Ok(
+            json!({"available": monitor.is_available(), "unavailable_reason": unavailable_reason, "adapters": adapters}),
+        )
     }
     pub(crate) fn tool_get_bluetooth_devices(
         &mut self,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        use crate::bluetooth::{BluetoothMonitor, BluetoothState};
+        use crate::bluetooth::{BluetoothDeviceType, BluetoothMonitor, BluetoothState};
         let connected_only = params
             .get("connected_only")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let monitor =
             BluetoothMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
-        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": format!("{:?}", d.device_type), "state": format!("{:?}", d.state), "battery_percent": d.battery_percent})).collect();
+        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": (d.device_type != BluetoothDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": (d.state != BluetoothState::Unknown).then(|| format!("{:?}", d.state)), "battery_percent": d.battery_percent})).collect();
         Ok(json!(devices))
     }
     // ============== Display Tools ==============
@@ -2578,14 +2621,14 @@ impl AiDataApi {
                     "id": d.id,
                     "name": d.name,
                     "manufacturer": d.manufacturer,
-                    "connection": format!("{:?}", d.connection),
+                    "connection": connection_text(d.connection),
                     "is_primary": d.is_primary,
                     "resolution": resolution_text(d),
                     "aspect_ratio": d.aspect_ratio(),
                     "refresh_rate": d.refresh_rate,
                     "brightness": d.brightness,
                     // Null where HDR state was not read, never a mode.
-                    "hdr": d.hdr.map(|mode| format!("{mode:?}")),
+                    "hdr": hdr_text(d.hdr),
                 })
             })
             .collect();
@@ -2612,7 +2655,7 @@ impl AiDataApi {
             "id": display.id,
             "name": display.name,
             "manufacturer": display.manufacturer,
-            "connection": format!("{:?}", display.connection),
+            "connection": connection_text(display.connection),
             "is_primary": display.is_primary,
             "width": display.width,
             "height": display.height,
@@ -2620,7 +2663,7 @@ impl AiDataApi {
             "aspect_ratio": display.aspect_ratio(),
             "refresh_rate": display.refresh_rate,
             "brightness": display.brightness,
-            "hdr": display.hdr.map(|mode| format!("{mode:?}")),
+            "hdr": hdr_text(display.hdr),
         }))
     }
     // ============== USB Tools ==============
@@ -2634,7 +2677,7 @@ impl AiDataApi {
             .and_then(|v| v.as_str())
             .unwrap_or("all");
         let monitor = UsbMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
-        let devices: Vec<_> = monitor.devices().iter().filter(|d| class_filter == "all" || matches!((&d.class, class_filter), (UsbDeviceClass::Audio, "audio") | (UsbDeviceClass::Hid, "hid") | (UsbDeviceClass::MassStorage, "storage") | (UsbDeviceClass::Hub, "hub") | (UsbDeviceClass::Video, "video"))).map(|d| json!({"address": d.address, "vendor_id": d.vendor_id.map(|v| format!("{v:04x}")), "product_id": d.product_id.map(|p| format!("{p:04x}")), "vendor_name": d.manufacturer, "product_name": d.product, "class": format!("{:?}", d.class), "speed": format!("{:?}", d.speed)})).collect();
+        let devices: Vec<_> = monitor.devices().iter().filter(|d| class_filter == "all" || matches!((&d.class, class_filter), (UsbDeviceClass::Audio, "audio") | (UsbDeviceClass::Hid, "hid") | (UsbDeviceClass::MassStorage, "storage") | (UsbDeviceClass::Hub, "hub") | (UsbDeviceClass::Video, "video"))).map(|d| json!({"address": d.address, "vendor_id": d.vendor_id.map(|v| format!("{v:04x}")), "product_id": d.product_id.map(|p| format!("{p:04x}")), "vendor_name": d.manufacturer, "product_name": d.product, "class": usb_class_text(d.class), "speed": usb_speed_text(d.speed)})).collect();
         Ok(json!(devices))
     }
     pub(crate) fn tool_get_usb_device_details(
@@ -2677,7 +2720,7 @@ impl AiDataApi {
                 IronError::DeviceNotFound(format!("no USB device with address {address}"))
             })?;
         Ok(
-            json!({"address": device.address, "vendor_id": device.vendor_id.map(|v| format!("{v:04x}")), "product_id": device.product_id.map(|p| format!("{p:04x}")), "vendor_name": device.manufacturer, "product_name": device.product, "class": format!("{:?}", device.class), "speed": format!("{:?}", device.speed)}),
+            json!({"address": device.address, "vendor_id": device.vendor_id.map(|v| format!("{v:04x}")), "product_id": device.product_id.map(|p| format!("{p:04x}")), "vendor_name": device.manufacturer, "product_name": device.product, "class": usb_class_text(device.class), "speed": usb_speed_text(device.speed)}),
         )
     }
 

@@ -75,7 +75,11 @@ impl AgentManifest {
             ExportFormat::DeepSeek => self.to_deepseek(),
             ExportFormat::JsonLd => self.to_json_ld(),
             ExportFormat::Mcp => self.to_mcp(),
-            ExportFormat::SimpleJson => serde_json::to_value(self).unwrap_or(json!({})),
+            // A serialisation failure is returned as an error object. It used to
+            // be `{}`, a valid-looking empty manifest.
+            ExportFormat::SimpleJson => serde_json::to_value(self).unwrap_or_else(
+                |e| json!({"error": format!("manifest could not be serialised: {e}")}),
+            ),
         }
     }
 

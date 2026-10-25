@@ -16,8 +16,9 @@ pub struct SystemSummary {
     /// available or failed. Every count here defaulted to 0, which read as
     /// "this machine has none".
     pub gpu_count: Option<usize>,
-    /// Summary for each GPU
-    pub gpus: Vec<GpuSummary>,
+    /// Summary for each GPU, or `None` when GPU enumeration failed. It used to
+    /// be an empty list in that case, which read as "no GPUs".
+    pub gpus: Option<Vec<GpuSummary>>,
 
     // Process Summary
     /// Total number of processes, or `None` when enumeration failed
@@ -27,12 +28,12 @@ pub struct SystemSummary {
     pub total_cpu_percent: Option<f32>,
     /// Number of processes using GPU, or `None` when not enumerated
     pub gpu_process_count: Option<usize>,
-    /// Top 5 CPU-consuming processes
-    pub top_cpu_processes: Vec<ProcessSummary>,
-    /// Top 5 memory-consuming processes
-    pub top_memory_processes: Vec<ProcessSummary>,
-    /// Top 5 GPU memory-consuming processes
-    pub top_gpu_processes: Vec<ProcessSummary>,
+    /// Top 5 CPU-consuming processes, or `None` when processes were not read.
+    pub top_cpu_processes: Option<Vec<ProcessSummary>>,
+    /// Top 5 memory-consuming processes, or `None` when processes were not read.
+    pub top_memory_processes: Option<Vec<ProcessSummary>>,
+    /// Top 5 GPU memory-consuming processes, or `None` when not enumerated.
+    pub top_gpu_processes: Option<Vec<ProcessSummary>>,
 
     // Memory Summary
     /// Memory information
@@ -41,14 +42,22 @@ pub struct SystemSummary {
     // Network Summary
     /// Number of active network interfaces, or `None` when not enumerated
     pub active_network_interfaces: Option<usize>,
-    /// Network interface summaries
-    pub network_interfaces: Vec<NetworkSummary>,
+    /// Network interface summaries, or `None` when interfaces were not read.
+    pub network_interfaces: Option<Vec<NetworkSummary>>,
 
     // Disk Summary
-    /// Number of disks, or `None` when enumeration failed
+    /// Number of disks that were read, or `None` when enumeration failed
     pub disk_count: Option<usize>,
-    /// Disk summaries
-    pub disks: Vec<DiskSummary>,
+    /// Number of enumerated disks whose details could not be read. Those disks
+    /// are absent from `disks` and their errors are in `errors`.
+    pub unreadable_disk_count: Option<usize>,
+    /// Disk summaries for the disks that were read, or `None` when enumeration
+    /// failed.
+    pub disks: Option<Vec<DiskSummary>>,
+
+    /// One entry per section that could not be read, naming the section and
+    /// why. An empty list means every section above was read.
+    pub errors: Vec<String>,
 }
 
 /// GPU summary information
@@ -154,8 +163,8 @@ pub struct DiskSummary {
     /// of unknown size is not a disk of zero size. Fractional, so a sub-GiB
     /// device is not rounded to zero.
     pub size_gb: Option<f64>,
-    /// Disk type (NVMe, SATA, etc.)
-    pub disk_type: String,
+    /// Disk type (NVMe, SATA, etc.), or `None` where it was not classified.
+    pub disk_type: Option<String>,
     /// Temperature in Celsius
     pub temperature_c: Option<f32>,
 }

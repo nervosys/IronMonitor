@@ -1212,7 +1212,11 @@ fn handle_cli_command(
                     println!("{}", "═══ Bluetooth ═══".cyan().bold());
                     println!(
                         "  Available: {}",
-                        if monitor.is_available() { "Yes" } else { "No" }
+                        match monitor.is_available() {
+                            Some(true) => "Yes",
+                            Some(false) => "No",
+                            None => "unknown (adapters not read on this platform)",
+                        }
                     );
                     println!("  Adapters: {}", monitor.adapters().len());
                     for adapter in monitor.adapters() {
@@ -1481,9 +1485,13 @@ fn print_cpu_identity(cpu: &ironmonitor::core::cpu::CpuStats) {
     let Some(core) = cpu.cores.first() else {
         return;
     };
-    if !core.model.is_empty() {
-        println!("  {} {}", "Model:".white().bold(), core.model.green());
-    }
+    // An unread model renders as unknown rather than being left out.
+    let model = core
+        .model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or("unknown");
+    println!("  {} {}", "Model:".white().bold(), model.green());
     if let Some(freq) = &core.frequency {
         // "Clock: 0 MHz" was this line, reading a sentinel the Windows reader
         // wrote and only the ontology resolver understood.
@@ -1515,7 +1523,9 @@ fn print_cpu_info(cpu: &ironmonitor::core::cpu::CpuStats) {
         // Processor", the same contradiction `ironmon status` carried.
         "Threads:".white().bold(),
         cpu.core_count().to_string().green(),
-        cpu.online_count().to_string().green()
+        cpu.online_count()
+            .map_or_else(|| "unknown".to_string(), |n| n.to_string())
+            .green()
     );
 
     let usage = 100.0 - cpu.total.idle;
@@ -1546,7 +1556,9 @@ fn print_cpu_info(cpu: &ironmonitor::core::cpu::CpuStats) {
     for chunk in cpu.cores.chunks(cores_per_row) {
         print!("    ");
         for core in chunk {
-            if core.online {
+            // Only an explicit offline flag takes the offline path. An unread
+            // flag is unknown, and the usage below renders that as unknown too.
+            if core.online != Some(false) {
                 // An unread core renders as unknown ("--%", no bar), never as
                 // 100% busy: `idle` is None when the source gave no figure.
                 let (bar, usage_colored) = match core.idle {
@@ -2071,7 +2083,9 @@ fn print_cpu_info_backend(backend: &ironmonitor::backend::MonitoringBackend) {
             // See the note in print_cpu_info: this is the logical count.
             "Threads:".white().bold(),
             cpu.core_count().to_string().green(),
-            cpu.online_count().to_string().green()
+            cpu.online_count()
+                .map_or_else(|| "unknown".to_string(), |n| n.to_string())
+                .green()
         );
 
         let usage = 100.0 - cpu.total.idle;
@@ -2101,7 +2115,7 @@ fn print_cpu_info_backend(backend: &ironmonitor::backend::MonitoringBackend) {
         for chunk in cpu.cores.chunks(cores_per_row) {
             print!("    ");
             for core in chunk {
-                if core.online {
+                if core.online != Some(false) {
                     // An unread core renders as unknown ("--%", no bar), never as
                     // 100% busy: `idle` is None when the source gave no figure.
                     let (bar, usage_colored) = match core.idle {

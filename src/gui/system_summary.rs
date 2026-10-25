@@ -19,7 +19,7 @@ fn rows(snapshot: &Snapshot) -> [(&'static str, String); 7] {
         .unwrap_or_else(|| unavailable("OS uptime was not reported"));
     let processor = cpu
         .and_then(|cpu| {
-            let model = &cpu.cores.first()?.model;
+            let model = cpu.cores.first()?.model.as_deref()?;
             (!model.trim().is_empty())
                 .then(|| format!("{model} · {} logical CPUs", cpu.cores.len()))
         })
@@ -130,14 +130,14 @@ mod tests {
             cpu: Some(CpuStats {
                 cores: vec![CpuCore {
                     id: 0,
-                    online: true,
+                    online: Some(true),
                     governor: None,
                     frequency: None,
                     user: Some(20.0),
                     nice: None,
                     system: Some(5.0),
                     idle: Some(75.0),
-                    model: "Example CPU".into(),
+                    model: Some("Example CPU".into()),
                 }],
                 total: CpuTotal {
                     user: 20.0,

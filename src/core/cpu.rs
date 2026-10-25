@@ -40,8 +40,11 @@ pub struct CpuFrequency {
 pub struct CpuCore {
     /// Core ID
     pub id: usize,
-    /// Online status
-    pub online: bool,
+    /// Online status, or `None` where it was not read. Windows and macOS have
+    /// no reader for it, and the Linux reader leaves it `None` when a core's
+    /// `online` file is missing. These used to be a literal `true`, which
+    /// reported every core online whether or not anything had checked.
+    pub online: Option<bool>,
     /// Governor type, or `None` where the kernel's governor was not read. A driver
     /// name is not a governor, so no reader fills this with one.
     pub governor: Option<String>,
@@ -55,8 +58,10 @@ pub struct CpuCore {
     pub system: Option<f32>,
     /// Idle percentage
     pub idle: Option<f32>,
-    /// CPU model name
-    pub model: String,
+    /// CPU model name, or `None` where the platform did not report one. This
+    /// was `"Unknown"` or an empty string on the failure path, which is a name
+    /// some reader made up rather than a reading.
+    pub model: Option<String>,
 }
 
 /// Aggregate CPU totals
@@ -110,9 +115,14 @@ impl CpuStats {
         self.cores.len()
     }
 
-    /// Get number of online cores
-    pub fn online_count(&self) -> usize {
-        self.cores.iter().filter(|c| c.online).count()
+    /// Number of online cores, or `None` when any core's online state was not
+    /// read. A count that left out unread cores would be short, and reporting
+    /// zero online on Windows, where no reader fills the flag, was wrong.
+    pub fn online_count(&self) -> Option<usize> {
+        if self.cores.iter().any(|c| c.online.is_none()) {
+            return None;
+        }
+        Some(self.cores.iter().filter(|c| c.online == Some(true)).count())
     }
 }
 

@@ -419,7 +419,7 @@ fn resolve_cpu(out: &mut Vec<Reading>) {
         )),
     }
 
-    match stats.cores.first().map(|c| c.model.as_str()) {
+    match stats.cores.first().and_then(|c| c.model.as_deref()) {
         // An empty model string is a failed read, not a CPU without a name.
         Some(model) if !model.trim().is_empty() => push_text(out, "cpu.model", model),
         _ => out.push(Reading::unavailable(

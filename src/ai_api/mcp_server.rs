@@ -174,9 +174,15 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         match self.api.call_tool(name, arguments) {
-            Ok(result) => Ok(json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| "".to_string()) }]
-            })),
+            // A result that cannot be rendered is reported as an error. It used
+            // to be sent as empty text, which an agent reads as an empty answer.
+            Ok(result) => match serde_json::to_string_pretty(&result) {
+                Ok(text) => Ok(json!({ "content": [{ "type": "text", "text": text }] })),
+                Err(e) => Ok(json!({
+                    "content": [{ "type": "text", "text": format!("Error: result could not be rendered: {e}") }],
+                    "isError": true
+                })),
+            },
             Err(e) => Ok(
                 json!({ "content": [{ "type": "text", "text": format!("Error: {}", e) }], "isError": true }),
             ),

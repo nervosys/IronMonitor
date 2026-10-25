@@ -210,10 +210,16 @@ fn read_cpu_core(cpu_id: usize, cpu_times: &[(String, Vec<u64>)]) -> Result<CpuC
     let online_path = format!("{}/online", cpu_path);
 
     // Check if CPU is online
+    // Only the boot processor lacks an `online` file, and the kernel does not
+    // allow it to be taken offline, so `true` there is that rule rather than a
+    // read. Any other core without the file is unknown. This used to be `true`
+    // for every such core.
     let online = if Path::new(&online_path).exists() {
-        read_file_u32(&online_path)? == 1
+        Some(read_file_u32(&online_path)? == 1)
+    } else if cpu_id == 0 {
+        Some(true)
     } else {
-        true // CPU0 doesn't have online file
+        None
     };
 
     // Read governor
@@ -222,7 +228,7 @@ fn read_cpu_core(cpu_id: usize, cpu_times: &[(String, Vec<u64>)]) -> Result<CpuC
     let governor = read_file_string(&governor_path).ok();
 
     // Read frequency
-    let frequency = if online {
+    let frequency = if online != Some(false) {
         read_cpu_frequency(&cpu_path).ok()
     } else {
         None
@@ -387,20 +393,46 @@ fn read_cpu_frequency(cpu_path: &str) -> Result<CpuFrequency> {
     })
 }
 
-fn read_cpu_model() -> String {
-    fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|content| {
-            for line in content.lines() {
-                if line.starts_with("model name") || line.starts_with("Processor") {
-                    if let Some(pos) = line.find(':') {
-                        return Some(line[pos + 1..].trim().to_string());
-                    }
-                }
-            }
+/// The model name from `/proc/cpuinfo`, or `None` when the file is unreadable or
+/// names no model. This used to return the literal "Unknown", which is a name
+/// the reader made up.
+fn read_cpu_model() -> Option<String> {
+    parse_cpuinfo_model(&fs::read_to_string("/proc/cpuinfo").ok()?)
+}
+
+fn parse_cpuinfo_model(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        if line.starts_with("model name") || line.starts_with("Processor") {
+            let (_, value) = line.split_once(':')?;
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        } else {
             None
-        })
-        .unwrap_or_else(|| "Unknown".to_string())
+        }
+    })
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::parse_cpuinfo_model;
+
+    #[test]
+    fn reads_model_name_from_x86_cpuinfo() {
+        let content = "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: 12th Gen Intel(R) Core(TM) i7-12700K\n";
+        assert_eq!(
+            parse_cpuinfo_model(content).as_deref(),
+            Some("12th Gen Intel(R) Core(TM) i7-12700K")
+        );
+    }
+
+    #[test]
+    fn absent_or_empty_model_is_none_not_a_placeholder() {
+        assert_eq!(
+            parse_cpuinfo_model("processor\t: 0\nvendor_id\t: ARM\n"),
+            None
+        );
+        assert_eq!(parse_cpuinfo_model("model name\t: \n"), None);
+    }
 }
 
 fn parse_proc_stat(content: &str) -> Result<Vec<(String, Vec<u64>)>> {
@@ -477,7 +509,9 @@ fn calculate_total(cpu_times: &[(String, Vec<u64>)], cores: &[CpuCore]) -> Optio
 
     let read: Vec<(f32, f32, f32, f32)> = cores
         .iter()
-        .filter(|c| c.online)
+        // A core with a split was read from `/proc/stat`, which lists only online
+        // CPUs, so only an explicit offline flag excludes it.
+        .filter(|c| c.online != Some(false))
         .filter_map(|c| Some((c.user?, c.nice?, c.system?, c.idle?)))
         .collect();
     if read.is_empty() {

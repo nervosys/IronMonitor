@@ -562,7 +562,7 @@ mod macos_stats {
         // Only the CPU brand string. This fell back to `hw.model`, the machine
         // identifier ("Mac14,2"), which is not a CPU model; the platform reader
         // dropped that fallback for the same reason. Empty is unread.
-        let model = macos::sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
+        let model = macos::sysctl_string("machdep.cpu.brand_string").filter(|s| !s.is_empty());
 
         // `host_processor_info` is preferred over parsing `top`: it is the only
         // source of per-core figures and of nice time. Its whole-CPU and per-core
@@ -574,7 +574,7 @@ mod macos_stats {
                 .enumerate()
                 .map(|(id, usage)| CpuCore {
                     id,
-                    online: true,
+                    online: None,
                     // macOS exposes no governor.
                     governor: None,
                     frequency: None,
@@ -613,7 +613,7 @@ mod macos_stats {
         let cores = (0..count)
             .map(|id| CpuCore {
                 id,
-                online: true,
+                online: None,
                 governor: None,
                 frequency: None,
                 // One aggregate copied into every core would present an average as

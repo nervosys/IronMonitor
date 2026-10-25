@@ -3524,8 +3524,11 @@ impl IronMonitorApp {
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.label(
-                            RichText::new(format!("{}", cpu.online_count()))
-                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                            RichText::new(
+                                cpu.online_count()
+                                    .map_or_else(|| "unknown".to_string(), |n| n.to_string()),
+                            )
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
                         );
                         ui.end_row();
 
@@ -3545,17 +3548,21 @@ impl IronMonitorApp {
                                 ui.end_row();
                             }
 
-                            if !core.model.is_empty() {
-                                ui.label(RichText::new("Model:").color(theme::color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )));
-                                ui.label(
-                                    RichText::new(&core.model)
-                                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
-                                );
-                                ui.end_row();
-                            }
+                            // An unread model is shown as unknown, not left out.
+                            ui.label(
+                                RichText::new("Model:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    core.model
+                                        .as_deref()
+                                        .filter(|m| !m.trim().is_empty())
+                                        .unwrap_or("unknown"),
+                                )
+                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                            );
+                            ui.end_row();
                         }
                     });
             } else {

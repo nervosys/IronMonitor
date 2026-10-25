@@ -110,7 +110,9 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
 
         let core = CpuCore {
             id: cpu_id,
-            online: true,
+            // No Windows reader fills this. It was a literal `true` for every
+            // logical processor, which reported them online without checking.
+            online: None,
             // Windows has no cpufreq governor. This was the literal "windows".
             governor: None,
             frequency: get_cpu_frequency(power.as_ref(), cpu_id, delivered.as_ref()),
@@ -706,17 +708,17 @@ fn get_cpu_frequency(
 /// `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString` is what
 /// the firmware published at boot — the same string WMI reports, without the COM
 /// connection or the (now absent) `wmic` subprocess.
-fn get_cpu_model_name() -> String {
-    static MODEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+///
+/// `None` when the value is missing or empty. It used to be `""`, which the
+/// resolver published as unavailable and the displays turned into "unknown".
+fn get_cpu_model_name() -> Option<String> {
+    static MODEL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     MODEL
         .get_or_init(|| {
             read_registry_string(
                 r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
                 "ProcessorNameString",
             )
-            // Empty, not a stand-in name: the resolver publishes an empty model
-            // as unavailable, and the display falls back to "unknown".
-            .unwrap_or_default()
         })
         .clone()
 }

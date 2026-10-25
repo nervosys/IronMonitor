@@ -25,8 +25,8 @@ pub const GPU_TEMP_CRITICAL_C: u32 = 90;
 /// Condensed CPU state for agent context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuState {
-    /// CPU model name
-    pub name: String,
+    /// CPU model name, or `None` where it was not read.
+    pub name: Option<String>,
     /// Physical cores, or `None` where the platform reported no count
     /// distinct from the logical one.
     ///
@@ -252,11 +252,9 @@ impl SystemState {
                 let utilization = 100.0 - stats.total.idle;
                 let num_cpus = stats.cores.len();
                 return Some(CpuState {
-                    name: stats
-                        .cores
-                        .first()
-                        .map(|c| c.model.clone())
-                        .unwrap_or_else(|| "CPU".to_string()),
+                    // `None` when the model was not read. The model receives
+                    // this as text, so it is rendered as unknown, not as a name.
+                    name: stats.cores.first().and_then(|c| c.model.clone()),
                     cores: crate::cpu_microarch::physical_cores(),
                     threads: num_cpus,
                     utilization: Some(utilization),
@@ -281,11 +279,9 @@ impl SystemState {
                 let utilization = 100.0 - stats.total.idle;
                 let num_cpus = stats.cores.len();
                 return Some(CpuState {
-                    name: stats
-                        .cores
-                        .first()
-                        .map(|c| c.model.clone())
-                        .unwrap_or_else(|| "CPU".to_string()),
+                    // `None` when the model was not read. The model receives
+                    // this as text, so it is rendered as unknown, not as a name.
+                    name: stats.cores.first().and_then(|c| c.model.clone()),
                     cores: crate::cpu_microarch::physical_cores(),
                     threads: num_cpus,
                     utilization: Some(utilization),
@@ -314,10 +310,7 @@ impl SystemState {
             // read on this path and is absent.
             let identity = crate::cpu_microarch::cpu_identity();
             return Some(CpuState {
-                name: identity
-                    .model_name
-                    .clone()
-                    .unwrap_or_else(|| "CPU".to_string()),
+                name: identity.model_name.clone(),
                 cores: identity.physical_cores,
                 threads: num_cpus::get(),
                 utilization: None,
@@ -390,7 +383,8 @@ impl SystemState {
                 Some(cores) => format!("{cores} cores, {} threads", cpu.threads),
                 None => format!("{} threads", cpu.threads),
             };
-            context.push_str(&format!("\nCPU: {} ({})\n", cpu.name, counts));
+            let name = cpu.name.as_deref().unwrap_or("model not read");
+            context.push_str(&format!("\nCPU: {} ({})\n", name, counts));
             match cpu.utilization {
                 Some(u) => context.push_str(&format!("  Utilization: {:.1}%\n", u)),
                 None => context.push_str("  Utilization: not read on this platform\n"),
@@ -915,7 +909,7 @@ mod tests {
     #[test]
     fn the_model_is_told_physical_and_logical_cores_and_no_invented_utilisation() {
         let cpu = |cores, utilization| CpuState {
-            name: "AMD Ryzen 9 9900X 12-Core Processor".to_string(),
+            name: Some("AMD Ryzen 9 9900X 12-Core Processor".to_string()),
             cores,
             threads: 24,
             utilization,
@@ -983,7 +977,7 @@ mod tests {
     fn test_system_state_aggregations() {
         let state = SystemState {
             cpu: Some(CpuState {
-                name: "Test CPU".to_string(),
+                name: Some("Test CPU".to_string()),
                 cores: Some(8),
                 threads: 16,
                 utilization: Some(45.0),

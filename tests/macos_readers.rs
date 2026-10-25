@@ -116,10 +116,12 @@ fn every_logical_core_is_enumerated() {
         cpu.core_count() > 0,
         "hw.logicalcpu should report at least one core"
     );
+    // No macOS reader fills the per-core online flag, so the count is unknown
+    // rather than the core count.
     assert_eq!(
         cpu.online_count(),
-        cpu.core_count(),
-        "macOS does not offline cores"
+        None,
+        "macOS has no online reader, so the online count must be unknown"
     );
 }
 

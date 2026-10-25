@@ -12,10 +12,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitor = BluetoothMonitor::new()?;
 
     // Check availability
-    if !monitor.is_available() {
-        println!("Bluetooth is not available on this system.");
-        println!("(This is expected on platforms without Bluetooth monitoring support)");
-        return Ok(());
+    match monitor.is_available() {
+        Some(true) => {}
+        Some(false) => {
+            println!("No Bluetooth adapter was found on this system.");
+            return Ok(());
+        }
+        None => {
+            println!("Bluetooth adapters were not read on this platform.");
+            println!("(No Bluetooth monitoring reader runs here)");
+            return Ok(());
+        }
     }
 
     // List adapters

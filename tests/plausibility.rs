@@ -619,9 +619,9 @@ fn windows_cpu_reader_reports_measured_identity_and_clock() {
         return;
     };
 
-    assert_ne!(
-        core.model, "Unknown CPU",
-        "CPU model fell back to its placeholder; every Windows machine publishes \
+    assert!(
+        core.model.as_deref().is_some_and(|m| !m.trim().is_empty()),
+        "CPU model was not read; every Windows machine publishes \
          ProcessorNameString in the registry, so this means the reader failed"
     );
 

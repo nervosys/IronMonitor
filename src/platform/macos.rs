@@ -509,10 +509,10 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
     // two sysctls had answered, so `cpu.model` might have been a processor name
     // or a chassis code and nothing distinguished them.
     //
-    // Empty when the key is missing, which the resolver turns into an
+    // `None` when the key is missing, which the resolver turns into an
     // unavailable reading carrying a reason. That is the honest outcome and the
-    // one this crate's ontology asks for.
-    let model = sysctl_string("machdep.cpu.brand_string").unwrap_or_default();
+    // one this crate's ontology asks for. It used to be `""`.
+    let model = sysctl_string("machdep.cpu.brand_string").filter(|s| !s.is_empty());
 
     // Each core's split is the difference between its own two readings over the same
     // window as the total. A core with no split (it did not move, or the core count
@@ -523,7 +523,8 @@ pub fn read_cpu_stats() -> crate::error::Result<crate::core::cpu::CpuStats> {
         .enumerate()
         .map(|(id, usage)| CpuCore {
             id,
-            online: true,
+            // No macOS reader fills this. It was a literal `true`.
+            online: None,
             // macOS exposes no governor. `None`, not a placeholder.
             governor: None,
             // No unelevated source of live per-core frequency on macOS.

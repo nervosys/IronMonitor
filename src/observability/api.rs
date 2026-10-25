@@ -794,7 +794,7 @@ impl ObservabilityApi {
             if let Ok(stats) = cpu::read_cpu_stats() {
                 let first_core = stats.cores.first();
                 let model = first_core
-                    .map(|c| c.model.clone())
+                    .and_then(|c| c.model.clone())
                     .filter(|m| !m.trim().is_empty());
                 let freq = first_core.and_then(|c| c.frequency.as_ref());
                 // The base (nominal) clock is cpufreq's `base_frequency`, in kHz, where
@@ -827,7 +827,7 @@ impl ObservabilityApi {
             if let Ok(stats) = windows::read_cpu_stats() {
                 let first_core = stats.cores.first();
                 let model = first_core
-                    .map(|c| c.model.clone())
+                    .and_then(|c| c.model.clone())
                     .filter(|m| !m.trim().is_empty());
                 let freq = first_core.and_then(|c| c.frequency.as_ref());
                 return Some(CpuContext {

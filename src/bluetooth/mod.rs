@@ -249,6 +249,8 @@ pub struct BluetoothMonitor {
     /// is a reading. An empty list *with* a note means nobody could look, which
     /// is not.
     last_note: Option<String>,
+    /// Whether the adapter walk ran. See [`Self::adapters_read`].
+    adapters_read: bool,
 }
 
 impl BluetoothMonitor {
@@ -282,6 +284,7 @@ impl BluetoothMonitor {
             adapters: Vec::new(),
             devices: Vec::new(),
             last_note: None,
+            adapters_read: false,
         };
         monitor.refresh()?;
         Ok(monitor)
@@ -289,6 +292,7 @@ impl BluetoothMonitor {
     pub fn refresh(&mut self) -> Result<(), crate::error::IronError> {
         self.adapters.clear();
         self.devices.clear();
+        self.adapters_read = false;
         #[cfg(target_os = "windows")]
         self.refresh_windows()?;
         #[cfg(target_os = "linux")]
@@ -324,8 +328,12 @@ impl BluetoothMonitor {
         let Some(json) =
             crate::core::command::capture_json("powershell", &["-NoProfile", "-Command", QUERY])?
         else {
+            // Not read, so `adapters_read` stays false and the adapter list is
+            // reported as unknown rather than as no adapters.
+            self.record_note("Bluetooth PnP query returned no data; adapters were not read");
             return Ok(());
         };
+        self.adapters_read = true;
         // A single match is serialised as an object rather than a one-element
         // array.
         let entries = crate::core::command::json_items(&json);
@@ -377,6 +385,7 @@ impl BluetoothMonitor {
         // is a reading -- this kernel has no Bluetooth stack -- and a directory
         // that will not open is not.
         let bt_path = Path::new("/sys/class/bluetooth");
+        self.adapters_read = true;
         if bt_path.exists() {
             {
                 let entries = fs::read_dir(bt_path).map_err(|e| {
@@ -493,6 +502,7 @@ impl BluetoothMonitor {
         // failure rather than an absent optional tool.
         let stdout =
             crate::core::command::capture("system_profiler", &["SPBluetoothDataType", "-json"])?;
+        self.adapters_read = true;
         {
             {
                 let stdout = stdout.as_str();
@@ -571,8 +581,16 @@ impl BluetoothMonitor {
     pub fn devices(&self) -> &[BluetoothDevice] {
         &self.devices
     }
-    pub fn is_available(&self) -> bool {
-        !self.adapters.is_empty()
+    /// Whether the adapter walk ran on this platform. `false` where no reader
+    /// exists or the platform query returned nothing, in which case an empty
+    /// adapter list is not a claim that there are no adapters.
+    pub fn adapters_read(&self) -> bool {
+        self.adapters_read
+    }
+    /// Whether an adapter is present, or `None` when the adapter walk did not
+    /// run and so nothing can be said.
+    pub fn is_available(&self) -> Option<bool> {
+        self.adapters_read.then_some(!self.adapters.is_empty())
     }
 
     // ==================== Hardware Control APIs ====================
@@ -807,6 +825,7 @@ mod tests {
             }],
             devices: Vec::new(),
             last_note: None,
+            adapters_read: true,
         };
         assert!(monitor.set_adapter_power("bt0", false).is_err());
         assert_eq!(

@@ -410,7 +410,8 @@ impl PeripheralCache {
         self.bluetooth_info = if let Ok(monitor) = BluetoothMonitor::new() {
             let adapters = monitor.adapters();
             let devices = monitor.devices();
-            if monitor.is_available() {
+            // `None` when the adapter walk did not run, which is not "no adapters".
+            if monitor.is_available() == Some(true) {
                 let mut lines: Vec<String> = Vec::new();
                 for a in adapters {
                     lines.push(format!(
@@ -434,7 +435,7 @@ impl PeripheralCache {
                             crate::bluetooth::BluetoothState::Disconnected => "disconnected",
                             crate::bluetooth::BluetoothState::Unknown => "state not read",
                         };
-                        let name = dev.name.as_deref().unwrap_or("Unknown");
+                        let name = dev.name.as_deref().unwrap_or("name not read");
                         let batt = dev
                             .battery_percent
                             .map(|b| format!(" [{}%]", b))
@@ -443,6 +444,8 @@ impl PeripheralCache {
                     }
                 }
                 lines.join("\n")
+            } else if monitor.is_available().is_none() {
+                "Bluetooth adapters not read on this platform".to_string()
             } else {
                 "Bluetooth not available".to_string()
             }
@@ -1474,13 +1477,13 @@ impl App {
         let num_cpus = stats.cores.len();
 
         self.cpu_info = CpuInfo {
+            // An unread model says so rather than drawing a blank or invented title.
             name: stats
                 .cores
                 .first()
-                .map(|c| c.model.clone())
-                // An unread model is empty; say so rather than draw a blank title.
+                .and_then(|c| c.model.clone())
                 .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "CPU (model not read)".to_string()),
+                .unwrap_or_else(|| "CPU (model unknown)".to_string()),
             // Physical cores come from the microarchitecture reader, which is
             // the same source `cpu.cores.physical` resolves from, and is read
             // once because the count cannot change. `threads` is the logical
