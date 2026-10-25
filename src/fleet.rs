@@ -52,13 +52,16 @@ pub struct FleetAlert {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostMetrics {
     pub cpu_usage_percent: f64,
-    pub memory_usage_percent: f64,
+    /// `None` when the host did not report memory. A caller must not pass 0.0:
+    /// that scores as a host with all its memory free.
+    pub memory_usage_percent: Option<f64>,
     pub gpu_temperature_max: Option<f64>,
     pub gpu_utilization_max: Option<f64>,
-    pub disk_usage_percent: f64,
-    pub network_rx_bytes_sec: f64,
-    pub network_tx_bytes_sec: f64,
-    pub process_count: u32,
+    /// `None` when the host did not report disk usage, as for `memory_usage_percent`.
+    pub disk_usage_percent: Option<f64>,
+    pub network_rx_bytes_sec: Option<f64>,
+    pub network_tx_bytes_sec: Option<f64>,
+    pub process_count: Option<u32>,
     pub uptime_seconds: u64,
     pub timestamp: u64,
 }
@@ -226,22 +229,23 @@ impl FleetManager {
             });
         }
 
-        if m.memory_usage_percent >= t.memory_critical {
+        // An unreported value raises no alert, the same as one below threshold.
+        if let Some(mem) = m.memory_usage_percent.filter(|&p| p >= t.memory_critical) {
             alerts.push(FleetAlert {
                 host_id: host_id.into(),
                 severity: AlertSeverity::Critical,
                 category: AlertCategory::MemoryPressure,
-                message: format!("Memory at {:.1}%", m.memory_usage_percent),
+                message: format!("Memory at {:.1}%", mem),
                 timestamp: now_secs(),
             });
         }
 
-        if m.disk_usage_percent >= t.disk_critical {
+        if let Some(disk) = m.disk_usage_percent.filter(|&p| p >= t.disk_critical) {
             alerts.push(FleetAlert {
                 host_id: host_id.into(),
                 severity: AlertSeverity::Critical,
                 category: AlertCategory::DiskFull,
-                message: format!("Disk at {:.1}%", m.disk_usage_percent),
+                message: format!("Disk at {:.1}%", disk),
                 timestamp: now_secs(),
             });
         }
@@ -281,22 +285,27 @@ impl FleetManager {
             HostStatus::Unknown => None,
             _ => {
                 let m = host.latest_metrics.as_ref()?;
-                let cpu_score = 100.0 - m.cpu_usage_percent;
-                let mem_score = 100.0 - m.memory_usage_percent;
-                let disk_score = 100.0 - m.disk_usage_percent;
-
-                // The GPU term is weighted in only when there is a temperature
-                // to weigh.
+                // Each term is weighted in only when the host reported it, and the
+                // mean is taken over the weight actually used.
                 //
                 // `unwrap_or(100.0)` gave a host with no GPU reading the full
                 // twenty points for being cool -- so an unread sensor and a
                 // perfectly cool card scored identically, and a host whose
                 // thermal probe had failed looked *better* than one reporting
-                // 85 C. Rescaling by the weight actually used scores a host on
-                // what is known about it rather than crediting it for what is
-                // not.
-                let mut weighted = cpu_score * 0.3 + mem_score * 0.3 + disk_score * 0.2;
-                let mut weight = 0.8;
+                // 85 C. Memory and disk had the same fault in the other
+                // direction: an unreported 0.0 usage scored as fully free. Rescaling
+                // by the weight actually used scores a host on what is known about
+                // it rather than crediting it for what is not.
+                let mut weighted = (100.0 - m.cpu_usage_percent) * 0.3;
+                let mut weight = 0.3;
+                if let Some(mem) = m.memory_usage_percent {
+                    weighted += (100.0 - mem) * 0.3;
+                    weight += 0.3;
+                }
+                if let Some(disk) = m.disk_usage_percent {
+                    weighted += (100.0 - disk) * 0.2;
+                    weight += 0.2;
+                }
                 if let Some(t) = m.gpu_temperature_max {
                     let gpu_score = if t < 80.0 {
                         100.0
@@ -339,14 +348,16 @@ impl FleetManager {
             .into_iter()
             .map(|(val, hosts)| {
                 let count = hosts.len();
-                let mean = |pick: fn(&HostMetrics) -> f64| {
+                // Averages only the hosts that reported the metric: an unreported
+                // memory figure is not a 0% host.
+                let mean = |pick: fn(&HostMetrics) -> Option<f64>| {
                     let values: Vec<f64> = hosts
                         .iter()
-                        .filter_map(|h| h.latest_metrics.as_ref().map(pick))
+                        .filter_map(|h| h.latest_metrics.as_ref().and_then(pick))
                         .collect();
                     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
                 };
-                let avg_cpu = mean(|m| m.cpu_usage_percent);
+                let avg_cpu = mean(|m| Some(m.cpu_usage_percent));
                 let avg_mem = mean(|m| m.memory_usage_percent);
                 let gpu_temps: Vec<f64> = hosts
                     .iter()
@@ -407,6 +418,19 @@ impl FleetManager {
             .filter(|h| h.status == HostStatus::Online)
             .count();
 
+        // Every tag key any host carries, each grouped the way `hosts_by_tag`
+        // groups it. Sorted so the snapshot is stable across calls.
+        let tag_keys: std::collections::BTreeSet<&str> = self
+            .hosts
+            .values()
+            .flat_map(|h| h.tags.keys().map(String::as_str))
+            .collect();
+        let mut tag_groups: Vec<TagGroupMetrics> = tag_keys
+            .into_iter()
+            .flat_map(|key| self.hosts_by_tag(key))
+            .collect();
+        tag_groups.sort_by(|a, b| (&a.tag_key, &a.tag_value).cmp(&(&b.tag_key, &b.tag_value)));
+
         FleetSnapshot {
             fleet_name: self.config.fleet_name.clone(),
             host_count: self.hosts.len(),
@@ -414,7 +438,7 @@ impl FleetManager {
             health_score: self.fleet_health(),
             hosts,
             alerts: self.alerts.clone(),
-            tag_groups: Vec::new(),
+            tag_groups,
             timestamp: now,
         }
     }
@@ -446,17 +470,83 @@ mod tests {
             last_seen: 0,
             latest_metrics: Some(HostMetrics {
                 cpu_usage_percent: 20.0,
-                memory_usage_percent: 20.0,
+                memory_usage_percent: Some(20.0),
                 gpu_temperature_max,
                 gpu_utilization_max: None,
-                disk_usage_percent: 20.0,
-                network_rx_bytes_sec: 0.0,
-                network_tx_bytes_sec: 0.0,
-                process_count: 0,
+                disk_usage_percent: Some(20.0),
+                network_rx_bytes_sec: Some(0.0),
+                network_tx_bytes_sec: Some(0.0),
+                process_count: Some(0),
                 uptime_seconds: 0,
                 timestamp: 0,
             }),
         }
+    }
+
+    /// A host with CPU and GPU data but no memory or disk report. The score must
+    /// come from the terms that were reported, not from zeroed ones.
+    #[test]
+    fn missing_memory_and_disk_are_rescaled_out_not_scored_as_zero() {
+        let mut h = host(Some(40.0));
+        if let Some(m) = h.latest_metrics.as_mut() {
+            m.memory_usage_percent = None;
+            m.disk_usage_percent = None;
+        }
+        // CPU at 20% (score 80, weight 0.3) and a cool GPU (100, weight 0.2):
+        // (80*0.3 + 100*0.2) / 0.5 = 88.
+        let score = FleetManager::host_health_score(&h).expect("scored");
+        assert!((score - 88.0).abs() < 0.001, "expected 88, got {score}");
+    }
+
+    /// A host reporting memory at 100% scores lower than one reporting none. An
+    /// unreported memory figure is not fully free memory.
+    #[test]
+    fn unreported_memory_is_not_scored_as_free_memory() {
+        let mut unreported = host(None);
+        if let Some(m) = unreported.latest_metrics.as_mut() {
+            m.memory_usage_percent = None;
+        }
+        let mut full = host(None);
+        if let Some(m) = full.latest_metrics.as_mut() {
+            m.memory_usage_percent = Some(100.0);
+        }
+        let none = FleetManager::host_health_score(&unreported).expect("scored");
+        let at_full = FleetManager::host_health_score(&full).expect("scored");
+        assert!(
+            at_full < none,
+            "a full host must not outscore an unreported one by treating it as 0%: {at_full} vs {none}"
+        );
+    }
+
+    /// Tag groups are computed, not left empty, and the mean of a metric skips
+    /// hosts that did not report it.
+    #[test]
+    fn snapshot_groups_hosts_by_tag_and_skips_unreported_memory() {
+        let mut fleet = FleetManager::new(FleetConfig {
+            fleet_name: "f".into(),
+            thresholds: FleetThresholds::default(),
+        });
+        fleet
+            .register_host("a", "a")
+            .tags
+            .insert("role".into(), "web".into());
+        fleet
+            .register_host("b", "b")
+            .tags
+            .insert("role".into(), "web".into());
+        fleet.record_metrics("a", host(None).latest_metrics.unwrap());
+        let mut b = host(None).latest_metrics.unwrap();
+        b.memory_usage_percent = None;
+        fleet.record_metrics("b", b);
+
+        let snap = fleet.snapshot();
+        assert_eq!(snap.tag_groups.len(), 1);
+        let group = &snap.tag_groups[0];
+        assert_eq!(group.tag_key, "role");
+        assert_eq!(group.tag_value, "web");
+        assert_eq!(group.host_count, 2);
+        // Memory was reported by one host only: its 20% is the mean, not 10%.
+        assert_eq!(group.avg_memory, Some(20.0));
     }
 
     /// An unread GPU temperature must not earn the points a cool one does.

@@ -177,6 +177,12 @@ impl MetricWindow {
         }
     }
 
+    /// Mean of the window, or `None` when it holds no samples. `mean()` returns
+    /// 0.0 for an empty window, which is a value, not a reading.
+    fn known_mean(&self) -> Option<f64> {
+        (!self.values.is_empty()).then(|| self.sum / self.values.len() as f64)
+    }
+
     fn std_dev(&self) -> f64 {
         let n = self.values.len() as f64;
         if n < 2.0 {
@@ -184,6 +190,13 @@ impl MetricWindow {
         }
         let variance = (self.sum_sq - (self.sum * self.sum) / n) / (n - 1.0);
         variance.max(0.0).sqrt()
+    }
+
+    /// Sample standard deviation, or `None` with fewer than two samples. The
+    /// `std_dev()` helper answers 0.0 there, which says "no spread" when the
+    /// truth is "not measured".
+    fn known_std_dev(&self) -> Option<f64> {
+        (self.values.len() >= 2).then(|| self.std_dev())
     }
 
     fn z_score(&self, value: f64) -> f64 {
@@ -225,6 +238,11 @@ pub struct AnomalyDetector {
     memory_window: MetricWindow,
     gpu_temp_window: MetricWindow,
     gpu_util_window: MetricWindow,
+    /// Latest GPU temperature, `None` when the last call reported it unread. Kept
+    /// apart from the window so an unread cycle does not reuse an older sample.
+    gpu_temp_latest: Option<f64>,
+    /// Latest GPU utilization, with the same meaning as `gpu_temp_latest`.
+    gpu_util_latest: Option<f64>,
     disk_usage_window: MetricWindow,
     network_rx_window: MetricWindow,
     network_tx_window: MetricWindow,
@@ -242,6 +260,8 @@ impl AnomalyDetector {
             memory_window: MetricWindow::new(ws),
             gpu_temp_window: MetricWindow::new(ws),
             gpu_util_window: MetricWindow::new(ws),
+            gpu_temp_latest: None,
+            gpu_util_latest: None,
             disk_usage_window: MetricWindow::new(ws),
             network_rx_window: MetricWindow::new(ws),
             network_tx_window: MetricWindow::new(ws),
@@ -260,14 +280,23 @@ impl AnomalyDetector {
         self.memory_window.push(percent);
     }
 
-    /// Record a GPU temperature sample (°C)
-    pub fn record_gpu_temp(&mut self, celsius: f64) {
-        self.gpu_temp_window.push(celsius);
+    /// Record a GPU temperature sample (°C). `None` means the temperature was not
+    /// read this cycle: nothing is added to the window, and no GPU thermal rule
+    /// runs on an older value. A caller must not pass 0.0 for an unread sensor.
+    pub fn record_gpu_temp(&mut self, celsius: Option<f64>) {
+        self.gpu_temp_latest = celsius;
+        if let Some(c) = celsius {
+            self.gpu_temp_window.push(c);
+        }
     }
 
-    /// Record GPU utilization (0–100%)
-    pub fn record_gpu_util(&mut self, percent: f64) {
-        self.gpu_util_window.push(percent);
+    /// Record GPU utilization (0–100%). `None` means not read this cycle, with the
+    /// same handling as [`Self::record_gpu_temp`].
+    pub fn record_gpu_util(&mut self, percent: Option<f64>) {
+        self.gpu_util_latest = percent;
+        if let Some(p) = percent {
+            self.gpu_util_window.push(p);
+        }
     }
 
     /// Record disk usage percentage
@@ -385,7 +414,7 @@ impl AnomalyDetector {
         }
 
         // GPU temperature anomalies
-        if let Some(temp) = self.gpu_temp_window.last() {
+        if let Some(temp) = self.gpu_temp_latest {
             if temp >= self.config.gpu_temp_critical {
                 self.maybe_alert(
                     &mut anomalies,
@@ -528,7 +557,7 @@ impl AnomalyDetector {
         }
 
         // GPU thermal recommendations
-        if let Some(temp) = self.gpu_temp_window.last() {
+        if let Some(temp) = self.gpu_temp_latest {
             if temp > 75.0 {
                 recs.push(Recommendation {
                     category: "GPU Thermal".into(),
@@ -543,9 +572,7 @@ impl AnomalyDetector {
         }
 
         // GPU utilization recommendations
-        if let (Some(gpu_util), Some(gpu_temp)) =
-            (self.gpu_util_window.last(), self.gpu_temp_window.last())
-        {
+        if let (Some(gpu_util), Some(gpu_temp)) = (self.gpu_util_latest, self.gpu_temp_latest) {
             if gpu_util < 30.0 && gpu_temp > 60.0 {
                 recs.push(Recommendation {
                     category: "GPU Power".into(),
@@ -579,12 +606,12 @@ impl AnomalyDetector {
     /// Get a summary string of detector state
     pub fn summary(&self) -> AnomalySummary {
         AnomalySummary {
-            cpu_mean: self.cpu_window.mean(),
-            cpu_std: self.cpu_window.std_dev(),
-            memory_mean: self.memory_window.mean(),
-            memory_std: self.memory_window.std_dev(),
-            gpu_temp_mean: self.gpu_temp_window.mean(),
-            gpu_temp_std: self.gpu_temp_window.std_dev(),
+            cpu_mean: self.cpu_window.known_mean(),
+            cpu_std: self.cpu_window.known_std_dev(),
+            memory_mean: self.memory_window.known_mean(),
+            memory_std: self.memory_window.known_std_dev(),
+            gpu_temp_mean: self.gpu_temp_window.known_mean(),
+            gpu_temp_std: self.gpu_temp_window.known_std_dev(),
             samples_collected: self.cpu_window.len(),
             uptime_secs: self.start_time.elapsed().as_secs(),
         }
@@ -594,18 +621,18 @@ impl AnomalyDetector {
 /// Summary of anomaly detector statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnomalySummary {
-    /// Mean CPU utilization
-    pub cpu_mean: f64,
-    /// CPU standard deviation
-    pub cpu_std: f64,
-    /// Mean memory utilization
-    pub memory_mean: f64,
-    /// Memory standard deviation
-    pub memory_std: f64,
-    /// Mean GPU temperature
-    pub gpu_temp_mean: f64,
-    /// GPU temperature standard deviation
-    pub gpu_temp_std: f64,
+    /// Mean CPU utilization, `None` with no samples
+    pub cpu_mean: Option<f64>,
+    /// CPU standard deviation, `None` with fewer than two samples
+    pub cpu_std: Option<f64>,
+    /// Mean memory utilization, `None` with no samples
+    pub memory_mean: Option<f64>,
+    /// Memory standard deviation, `None` with fewer than two samples
+    pub memory_std: Option<f64>,
+    /// Mean GPU temperature, `None` with no samples
+    pub gpu_temp_mean: Option<f64>,
+    /// GPU temperature standard deviation, `None` with fewer than two samples
+    pub gpu_temp_std: Option<f64>,
     /// Number of samples collected
     pub samples_collected: usize,
     /// Seconds since detector started
@@ -668,12 +695,64 @@ mod tests {
         let mut detector = AnomalyDetector::new(AnomalyConfig::default());
         detector.record_cpu(92.0);
         detector.record_memory(88.0);
-        detector.record_gpu_temp(85.0);
+        detector.record_gpu_temp(Some(85.0));
         let recs = detector.recommendations();
         assert!(
             recs.len() >= 2,
             "Should have recommendations for high usage"
         );
+    }
+
+    /// An unread GPU sensor must not fire the GPU rules. Recording it as 0% util
+    /// with a warm card used to produce "warm but underutilized".
+    #[test]
+    fn an_unread_gpu_does_not_fire_gpu_rules() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        detector.record_gpu_temp(Some(70.0));
+        detector.record_gpu_util(Some(10.0));
+        assert!(detector
+            .recommendations()
+            .iter()
+            .any(|r| r.category == "GPU Power"));
+
+        // The utilization read failed this cycle: the old 10% must not be reused,
+        // and no 0% is invented in its place.
+        detector.record_gpu_util(None);
+        assert!(!detector
+            .recommendations()
+            .iter()
+            .any(|r| r.category == "GPU Power"));
+        assert_eq!(detector.gpu_util_window.len(), 1, "unread is not a sample");
+    }
+
+    /// Unread GPU temperature is not a 0 C reading and is not the last sample.
+    #[test]
+    fn an_unread_gpu_temperature_is_not_a_sample() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        detector.record_gpu_temp(Some(90.0));
+        detector.record_gpu_temp(None);
+        assert!(!detector
+            .recommendations()
+            .iter()
+            .any(|r| r.category == "GPU Thermal"));
+        assert_eq!(detector.gpu_temp_window.len(), 1);
+    }
+
+    /// An empty window has no mean, and one sample has no spread. Neither is
+    /// reported as 0.0.
+    #[test]
+    fn summary_reports_no_mean_or_spread_without_samples() {
+        let detector = AnomalyDetector::new(AnomalyConfig::default());
+        let empty = detector.summary();
+        assert_eq!(empty.cpu_mean, None);
+        assert_eq!(empty.gpu_temp_mean, None);
+        assert_eq!(empty.memory_std, None);
+
+        let mut one = AnomalyDetector::new(AnomalyConfig::default());
+        one.record_cpu(40.0);
+        let s = one.summary();
+        assert_eq!(s.cpu_mean, Some(40.0));
+        assert_eq!(s.cpu_std, None, "one sample has no spread");
     }
 
     #[test]
@@ -693,5 +772,6 @@ mod tests {
         detector.record_memory(60.0);
         let summary = detector.summary();
         assert_eq!(summary.samples_collected, 1);
+        assert_eq!(summary.memory_mean, Some(60.0));
     }
 }

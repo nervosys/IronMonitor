@@ -21,8 +21,8 @@
 //! // Get predictions
 //! for alert in engine.predict() {
 //!     println!("[{}] {}: {}", alert.urgency, alert.component, alert.message);
-//!     if let Some(eta) = alert.eta_hours {
-//!         println!("  Estimated time to issue: {:.0} hours", eta);
+//!     if let Some(eta) = alert.eta_samples {
+//!         println!("  Estimated samples until issue: {:.0}", eta);
 //!     }
 //! }
 //! ```
@@ -106,8 +106,11 @@ pub struct MaintenanceAlert {
     pub urgency: Urgency,
     /// Human-readable message
     pub message: String,
-    /// Estimated time to issue in hours (None if cannot predict)
-    pub eta_hours: Option<f64>,
+    /// Estimated number of samples until the metric crosses its threshold, at the
+    /// trend the window shows (None if it cannot be predicted). Samples, not
+    /// hours: the engine is given samples and does not know their interval, so it
+    /// cannot convert them to time without inventing one.
+    pub eta_samples: Option<f64>,
     /// Current degradation rate
     pub degradation_rate: Option<f64>,
     /// Most recent sampled value the rule evaluated, in the metric's own unit.
@@ -362,6 +365,7 @@ impl MaintenanceEngine {
                 if slope > 0.1 {
                     // Temperature is rising
                     let confidence = ts.r_squared().clamp(0.0, 1.0);
+                    // Urgency cut-offs are in samples, the unit of `eta_samples`.
                     let urgency = if eta < 10.0 {
                         Urgency::Critical
                     } else if eta < 50.0 {
@@ -381,7 +385,7 @@ impl MaintenanceEngine {
                              Rate: +{:.2}°C/sample",
                             gpu_idx, current, self.config.gpu_thermal_limit, slope
                         ),
-                        eta_hours: Some(eta),
+                        eta_samples: Some(eta),
                         degradation_rate: Some(slope),
                         current_value: current,
                         threshold: self.config.gpu_thermal_limit,
@@ -423,7 +427,7 @@ impl MaintenanceEngine {
                                 decline,
                                 ts.len()
                             ),
-                            eta_hours: None,
+                            eta_samples: None,
                             degradation_rate: Some(slope),
                             current_value: current,
                             threshold: self.config.clock_degradation_mhz,
@@ -467,7 +471,7 @@ impl MaintenanceEngine {
                         "Disk {} SMART health at {:.0}% (threshold: {:.0}%)",
                         disk_idx, current, self.config.disk_health_warning
                     ),
-                    eta_hours: eta,
+                    eta_samples: eta,
                     degradation_rate: ts.linear_regression().map(|(s, _)| s),
                     current_value: current,
                     threshold: self.config.disk_health_warning,
@@ -514,7 +518,7 @@ impl MaintenanceEngine {
                             "Fan {} RPM declining (currently {:.0} RPM, rate: {:.1} RPM/sample)",
                             fan_idx, current, slope
                         ),
-                        eta_hours: eta,
+                        eta_samples: eta,
                         degradation_rate: Some(slope),
                         current_value: current,
                         threshold: self.config.fan_min_rpm,
@@ -554,7 +558,7 @@ impl MaintenanceEngine {
                             "Memory errors increasing ({:.0} errors, rate: +{:.2}/sample)",
                             current, slope
                         ),
-                        eta_hours: None,
+                        eta_samples: None,
                         degradation_rate: Some(slope),
                         current_value: current,
                         threshold: self.config.memory_error_threshold,
