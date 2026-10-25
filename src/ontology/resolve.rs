@@ -2769,10 +2769,15 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
             Some(Unit::Identifier),
             "the platform reports no driver for this controller",
         );
-        push_id(
+        // `Unknown` means no evidence matched the controller, which is an
+        // absence, not an interface named "Unknown".
+        push_opt(
             out,
             format!("{base}.interface"),
-            &format!("{:?}", c.interface),
+            (c.interface != crate::storage_controller::StorageInterface::Unknown)
+                .then(|| serde_json::json!(format!("{:?}", c.interface))),
+            Some(Unit::Identifier),
+            "no evidence in the platform's controller data identifies this controller's interface",
         );
         // Windows fills this field with a device instance path --
         // `ROOT\\SPACEPORT\\0000` for a Storage Spaces controller -- which is

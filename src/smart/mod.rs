@@ -520,7 +520,11 @@ impl SmartMonitor {
         }
 
         // SATA/SCSI drives from /sys/block
-        if let Ok(entries) = std::fs::read_dir("/sys/block") {
+        // A listing that fails is an error. It used to be skipped, which read
+        // as a host with no SATA or SCSI drives.
+        let entries = std::fs::read_dir("/sys/block")
+            .map_err(|e| IronError::System(format!("cannot read /sys/block: {e}")))?;
+        {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if !name.starts_with("sd") && !name.starts_with("hd") {
@@ -727,7 +731,7 @@ impl SmartMonitor {
                 "-NoProfile",
                 "-Command",
                 r#"
-Get-PhysicalDisk | ForEach-Object {
+Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
     $disk = $_
     $rel = $_ | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
     [PSCustomObject]@{
@@ -751,8 +755,14 @@ Get-PhysicalDisk | ForEach-Object {
 "#,
             ],
         )?;
+        // PowerShell prints nothing for an empty result, and it also prints
+        // nothing when the query failed without a non-zero exit. From here those
+        // cannot be told apart, so empty output is an error. It used to return
+        // Ok with no disks, which read as "no drives to worry about".
         let Some(val) = json else {
-            return Ok(());
+            return Err(IronError::System(
+                "Get-PhysicalDisk printed no output, so the disk list is unknown".to_string(),
+            ));
         };
         {
             {
@@ -1046,50 +1056,75 @@ Get-PhysicalDisk | ForEach-Object {
             {
                 // Basic enumeration — just record device names
                 let text = crate::core::command::capture("diskutil", &["list", "-plist"])?;
-                for line in text.lines() {
-                    if line.contains("/dev/disk") {
-                        let device = line.trim().to_string();
-                        if !device.contains("s")
-                            || device.ends_with("disk0")
-                            || device.ends_with("disk1")
-                        {
-                            self.disks.push(SmartDiskInfo {
-                                device,
-                                model: String::new(),
-                                serial: String::new(),
-                                firmware: String::new(),
-                                media_type: DriveMediaType::Unknown,
-                                capacity_bytes: None,
-                                smart_passed: None,
-                                health: DiskHealth::Unknown,
-                                temperature_celsius: None,
-                                power_on_hours: None,
-                                power_cycle_count: None,
-                                reallocated_sectors: None,
-                                pending_sectors: None,
-                                uncorrectable_errors: None,
-                                wear_leveling_percent: None,
-                                total_bytes_written: None,
-                                total_bytes_read: None,
-                                nvme_percentage_used: None,
-                                nvme_available_spare: None,
-                                nvme_available_spare_threshold: None,
-                                nvme_controller_busy_time_minutes: None,
-                                nvme_unsafe_shutdowns: None,
-                                nvme_critical_warning: None,
-                                nvme_host_read_commands: None,
-                                nvme_host_write_commands: None,
-                                attributes: Vec::new(),
-                                estimated_life_remaining: None,
-                                estimated_days_remaining: None,
-                            });
-                        }
-                    }
+                // Whole disks only. A slice (`diskNsM`) is not a device of its
+                // own. The old filter matched the raw XML line, so `<string>`
+                // tags stayed in the name, and the `disk0`/`disk1` clauses could
+                // never match a line that ended in `</string>`.
+                for device in whole_disks_in_plist(&text) {
+                    self.disks.push(SmartDiskInfo {
+                        device,
+                        model: String::new(),
+                        serial: String::new(),
+                        firmware: String::new(),
+                        media_type: DriveMediaType::Unknown,
+                        capacity_bytes: None,
+                        smart_passed: None,
+                        health: DiskHealth::Unknown,
+                        temperature_celsius: None,
+                        power_on_hours: None,
+                        power_cycle_count: None,
+                        reallocated_sectors: None,
+                        pending_sectors: None,
+                        uncorrectable_errors: None,
+                        wear_leveling_percent: None,
+                        total_bytes_written: None,
+                        total_bytes_read: None,
+                        nvme_percentage_used: None,
+                        nvme_available_spare: None,
+                        nvme_available_spare_threshold: None,
+                        nvme_controller_busy_time_minutes: None,
+                        nvme_unsafe_shutdowns: None,
+                        nvme_critical_warning: None,
+                        nvme_host_read_commands: None,
+                        nvme_host_write_commands: None,
+                        attributes: Vec::new(),
+                        estimated_life_remaining: None,
+                        estimated_days_remaining: None,
+                    });
                 }
             }
         }
         Ok(())
     }
+}
+
+/// The whole-disk devices named in the text of `diskutil list -plist`.
+///
+/// The output is an XML plist, and each name is the text between a `<string>`
+/// and its `</string>`. A whole disk is `diskN`, optionally written with a
+/// `/dev/` prefix; a slice is `diskNsM` and is not a device of its own. A disk
+/// is named in more than one array, so each device is returned once.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn whole_disks_in_plist(plist: &str) -> Vec<String> {
+    let mut disks: Vec<String> = Vec::new();
+    for value in plist.split("<string>").skip(1) {
+        let Some((name, _)) = value.split_once("</string>") else {
+            continue;
+        };
+        let name = name.trim();
+        let bare = name.strip_prefix("/dev/").unwrap_or(name);
+        let Some(digits) = bare.strip_prefix("disk") else {
+            continue;
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let device = format!("/dev/{bare}");
+        if !disks.contains(&device) {
+            disks.push(device);
+        }
+    }
+    disks
 }
 
 impl Default for SmartMonitor {
@@ -1478,5 +1513,60 @@ mod tests {
         assert_eq!(disk.nvme_critical_warning, None);
         assert_eq!(disk.nvme_host_read_commands, None);
         assert_eq!(disk.nvme_host_write_commands, None);
+    }
+
+    /// The fallback used to match raw XML lines, so the `<string>` tags stayed
+    /// in the name and no clause could match. The names are the text between
+    /// the tags, and a slice is left out.
+    #[test]
+    fn diskutil_plist_names_whole_disks_only() {
+        let plist = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
+            "<plist version=\"1.0\">\n",
+            "<dict>\n",
+            "<key>AllDisks</key>\n",
+            "<array>\n",
+            "<string>disk0</string>\n",
+            "<string>disk0s1</string>\n",
+            "<string>disk1</string>\n",
+            "<string>disk1s1</string>\n",
+            "</array>\n",
+            "<key>WholeDisks</key>\n",
+            "<array>\n",
+            "<string>disk0</string>\n",
+            "<string>disk1</string>\n",
+            "</array>\n",
+            "<key>AllDisksAndPartitions</key>\n",
+            "<array>\n",
+            "<dict>\n",
+            "<key>DeviceIdentifier</key>\n",
+            "<string>disk0</string>\n",
+            "</dict>\n",
+            "</array>\n",
+            "</dict>\n",
+            "</plist>\n",
+        );
+        assert_eq!(
+            whole_disks_in_plist(plist),
+            vec!["/dev/disk0".to_string(), "/dev/disk1".to_string()]
+        );
+    }
+
+    #[test]
+    fn diskutil_plist_accepts_dev_prefixed_names_and_rejects_others() {
+        let plist = concat!(
+            "<string>/dev/disk2</string>\n",
+            "<string>/dev/disk2s1</string>\n",
+            "<string>disk</string>\n",
+            "<string>diskimage</string>\n",
+            "<string>/dev/disk12</string>\n",
+            "<key>DiskUUID</key>\n",
+        );
+        assert_eq!(
+            whole_disks_in_plist(plist),
+            vec!["/dev/disk2".to_string(), "/dev/disk12".to_string()]
+        );
+        assert!(whole_disks_in_plist("<plist version=\"1.0\"></plist>").is_empty());
     }
 }

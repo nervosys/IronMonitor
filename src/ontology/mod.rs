@@ -1751,8 +1751,8 @@ impl Ontology {
             K::Identity,
             Some(U::Identifier),
             P::Measured,
-            false,
-            "Interface the controller speaks - NVMe, SATA, SAS, USB, RAID.",
+            true,
+            "Interface the controller speaks - NVMe, AHCI/SATA, SAS, USB, RAID. Absent where no evidence identifies it.",
         ));
         add(Entity::new(
             "disk.controller.{n}.pci_address",

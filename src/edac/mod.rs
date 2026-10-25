@@ -61,8 +61,10 @@ impl std::fmt::Display for EdacMemType {
 pub struct EdacCsRow {
     /// CSROW index.
     pub index: u32,
-    /// DIMM label.
-    pub label: String,
+    /// DIMM label EDAC reports, or `None` where the label file is absent or
+    /// empty. The csrow or dimm directory index is not a label, and used to be
+    /// published as one.
+    pub label: Option<String>,
     /// Memory type.
     pub mem_type: EdacMemType,
     /// Size in MB, or `None` where sysfs did not report it.
@@ -200,12 +202,10 @@ impl EdacMonitor {
 
         let mut controllers = Vec::new();
 
-        // Scan mc0, mc1, ... directories
-        for i in 0..16 {
+        // Every mc<n> the kernel lists, in index order. A fixed range used to
+        // stop at controller 15 while the totals still read as complete.
+        for i in Self::indexed_entries(&mc_base.join("mc"), "mc")? {
             let mc_path = mc_base.join(format!("mc/mc{}", i));
-            if !mc_path.exists() {
-                continue;
-            }
 
             let mc_name =
                 Self::read_sysfs(&mc_path.join("mc_name")).unwrap_or_else(|| format!("mc{}", i));
@@ -220,16 +220,12 @@ impl EdacMonitor {
 
             let mut csrows = Vec::new();
 
-            // Scan csrow0, csrow1, ...
-            for j in 0..32 {
+            // Every csrow<n> the controller lists, in index order.
+            for j in Self::indexed_entries(&mc_path, "csrow")? {
                 let csrow_path = mc_path.join(format!("csrow{}", j));
-                if !csrow_path.exists() {
-                    continue;
-                }
 
-                let label = Self::read_sysfs(&csrow_path.join("ch0_dimm_label"))
-                    .or_else(|| Self::read_sysfs(&csrow_path.join("dimm_label")))
-                    .unwrap_or_else(|| format!("csrow{}", j));
+                let label = Self::read_label(&csrow_path.join("ch0_dimm_label"))
+                    .or_else(|| Self::read_label(&csrow_path.join("dimm_label")));
 
                 let mem_type_str =
                     Self::read_sysfs(&csrow_path.join("mem_type")).unwrap_or_default();
@@ -254,15 +250,11 @@ impl EdacMonitor {
                 });
             }
 
-            // Also scan dimmN directories (newer EDAC layout)
-            for j in 0..64 {
+            // Also every dimm<n> directory (newer EDAC layout), in index order.
+            for j in Self::indexed_entries(&mc_path, "dimm")? {
                 let dimm_path = mc_path.join(format!("dimm{}", j));
-                if !dimm_path.exists() {
-                    continue;
-                }
 
-                let label = Self::read_sysfs(&dimm_path.join("dimm_label"))
-                    .unwrap_or_else(|| format!("dimm{}", j));
+                let label = Self::read_label(&dimm_path.join("dimm_label"));
 
                 let mem_type_str =
                     Self::read_sysfs(&dimm_path.join("dimm_mem_type")).unwrap_or_default();
@@ -386,6 +378,39 @@ impl EdacMonitor {
         }
     }
 
+    /// The `<prefix><n>` entries of a directory, as their indices in ascending
+    /// order. A directory that does not exist has none. One that exists but
+    /// cannot be listed is an error, not an empty controller.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn indexed_entries(dir: &std::path::Path, prefix: &str) -> Result<Vec<u32>, IronError> {
+        let listing = match std::fs::read_dir(dir) {
+            Ok(listing) => listing,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(IronError::System(format!(
+                    "cannot read {}: {e}",
+                    dir.display()
+                )))
+            }
+        };
+        let mut indices: Vec<u32> = listing
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                name.to_str()?.strip_prefix(prefix)?.parse::<u32>().ok()
+            })
+            .collect();
+        indices.sort_unstable();
+        Ok(indices)
+    }
+
+    /// A DIMM label file, or `None` when it is absent or empty. An empty file
+    /// names nothing, so it is not published as a label.
+    #[cfg(target_os = "linux")]
+    fn read_label(path: &std::path::Path) -> Option<String> {
+        Self::read_sysfs(path).filter(|label| !label.is_empty())
+    }
+
     #[cfg(target_os = "linux")]
     fn read_sysfs(path: &std::path::Path) -> Option<String> {
         std::fs::read_to_string(path)
@@ -483,7 +508,7 @@ mod tests {
                 csrows: vec![
                     EdacCsRow {
                         index: 0,
-                        label: "DIMM_A1".into(),
+                        label: Some("DIMM_A1".into()),
                         mem_type: EdacMemType::Ddr4,
                         size_mb: Some(16384),
                         ce_count: Some(5),
@@ -493,7 +518,7 @@ mod tests {
                     },
                     EdacCsRow {
                         index: 1,
-                        label: "DIMM_A2".into(),
+                        label: None,
                         mem_type: EdacMemType::Ddr4,
                         size_mb: Some(16384),
                         ce_count: Some(0),
@@ -513,7 +538,29 @@ mod tests {
         let monitor = EdacMonitor { overview };
         let errored = monitor.dimms_with_errors();
         assert_eq!(errored.len(), 1);
-        assert_eq!(errored[0].label, "DIMM_A1");
+        assert_eq!(errored[0].label.as_deref(), Some("DIMM_A1"));
+    }
+
+    /// Controllers and csrows are enumerated from the directory, not from a
+    /// fixed range, so index 16 and above are found. The result is sorted, and
+    /// names that merely start with the prefix are skipped.
+    #[test]
+    fn test_indexed_entries_lists_every_index() {
+        let dir = std::env::temp_dir().join(format!("ironmon-edac-idx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for name in ["mc16", "mc0", "mc_name", "mc1", "mcx", "csrow3"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        let found = EdacMonitor::indexed_entries(&dir, "mc").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, vec![0, 1, 16]);
+    }
+
+    #[test]
+    fn test_indexed_entries_absent_directory_is_empty() {
+        let dir = std::env::temp_dir().join("ironmon-edac-no-such-dir-exists");
+        let found = EdacMonitor::indexed_entries(&dir, "mc").unwrap();
+        assert!(found.is_empty());
     }
 
     #[test]
@@ -526,7 +573,7 @@ mod tests {
     fn test_serialization() {
         let cs = EdacCsRow {
             index: 0,
-            label: "DIMM0".into(),
+            label: Some("DIMM0".into()),
             mem_type: EdacMemType::Ddr5,
             size_mb: Some(32768),
             ce_count: Some(3),

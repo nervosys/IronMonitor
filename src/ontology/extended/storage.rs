@@ -185,9 +185,9 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
     e(add, "disk.controller.{n}.pcie_width", D::Disk, K::Limit, Some(U::Text), P::Measured, true,
       "PCIe link width the NVMe controller trained to, such as x4. Absent for controllers that are not NVMe.");
     e(add, "disk.controller.{n}.transport", D::Disk, K::Identity, Some(U::Identifier), P::Measured, true,
-      "Transport the NVMe controller uses, such as pcie or tcp. Absent for controllers that are not NVMe.");
+      "Transport the NVMe controller uses, such as pcie or tcp, from its sysfs transport file. Absent where that file is not present, and for controllers that are not NVMe.");
     e(add, "disk.controller.{n}.namespace_count", D::Disk, K::Measurement, Some(U::Count), P::Measured, true,
-      "Number of namespaces the NVMe controller reports. Absent for controllers that are not NVMe.");
+      "Number of namespaces the NVMe controller reports, counted from its sysfs directory. Absent where that directory could not be listed, and for controllers that are not NVMe.");
 
     // ── RAID arrays (RaidArrayInfo, software RAID on Linux) ─────────────────
     e(
@@ -228,7 +228,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Identifier),
         P::Measured,
         true,
-        "Status of the array: active, degraded, rebuilding or failed, as the kernel reports it.",
+        "Status of the array: active, degraded, rebuilding, inactive or failed, as the kernel reports it. Inactive means listed but not started.",
     );
     e(
         add,
@@ -795,12 +795,20 @@ fn resolve_controllers(out: &mut Vec<Reading>, monitor: &StorageControllerMonito
                 push_id(out, format!("{base}.serial"), &n.serial);
                 push_text(out, format!("{base}.pcie_speed"), &n.pcie_speed);
                 push_text(out, format!("{base}.pcie_width"), &n.pcie_width);
-                push_id(out, format!("{base}.transport"), &n.transport);
-                out.push(Reading::measured(
+                push_opt(
+                    out,
+                    format!("{base}.transport"),
+                    n.transport.as_deref().map(|t| serde_json::json!(t)),
+                    Some(U::Identifier),
+                    "the kernel exposes no transport file for this controller, so none was read",
+                );
+                push_opt(
+                    out,
                     format!("{base}.namespace_count"),
-                    serde_json::json!(n.namespace_count),
+                    n.namespace_count.map(|v| serde_json::json!(v)),
                     Some(U::Count),
-                ));
+                    "the controller's sysfs directory could not be listed, so its namespaces were not counted",
+                );
             }
             None => {
                 let why = "this controller is not NVMe, so NVMe identity fields do not apply";
@@ -844,6 +852,7 @@ fn raid_status_name(status: &RaidStatus) -> &'static str {
         RaidStatus::Degraded => "degraded",
         RaidStatus::Rebuilding => "rebuilding",
         RaidStatus::Failed => "failed",
+        RaidStatus::Inactive => "inactive",
         RaidStatus::Unknown => "unknown",
     }
 }
@@ -862,7 +871,13 @@ fn resolve_raid(out: &mut Vec<Reading>, arrays: &[RaidArrayInfo]) {
     for (n, a) in arrays.iter().enumerate() {
         let base = format!("disk.raid.{n}");
         push_id(out, format!("{base}.name"), &a.name);
-        push_id(out, format!("{base}.level"), &raid_level_name(&a.level));
+        push_opt(
+            out,
+            format!("{base}.level"),
+            a.level.as_ref().map(|l| serde_json::json!(raid_level_name(l))),
+            Some(U::Identifier),
+            "the kernel's state line names no RAID level for this array, which is what an inactive array looks like",
+        );
         push_id(out, format!("{base}.status"), raid_status_name(&a.status));
         out.push(Reading::measured(
             format!("{base}.active_devices"),

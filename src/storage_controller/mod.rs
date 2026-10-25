@@ -21,7 +21,7 @@
 //!     );
 //! }
 //! for array in monitor.raid_arrays() {
-//!     println!("RAID {}: {} - {:?}", array.level, array.name, array.status);
+//!     println!("RAID {:?}: {} - {:?}", array.level, array.name, array.status);
 //! }
 //! ```
 
@@ -78,8 +78,12 @@ pub enum RaidStatus {
     Degraded,
     /// Rebuilding / resyncing
     Rebuilding,
-    /// Failed / inactive
+    /// Failed
     Failed,
+    /// Inactive: the kernel lists the array but has not started it. Not the
+    /// same as `Failed`, which is an array that is running and broken. This
+    /// used to be mapped to `Failed`.
+    Inactive,
     /// Unknown status
     Unknown,
 }
@@ -99,10 +103,10 @@ pub struct NvmeControllerInfo {
     pub pcie_speed: String,
     /// PCIe link width (e.g., "x4")
     pub pcie_width: String,
-    /// Number of namespaces
-    pub namespace_count: u32,
-    /// Transport type (e.g., "pcie", "tcp")
-    pub transport: String,
+    /// Number of namespaces, or `None` where it was not read.
+    pub namespace_count: Option<u32>,
+    /// Transport type (e.g., "pcie", "tcp"), or `None` where it was not read.
+    pub transport: Option<String>,
 }
 
 /// Storage controller information
@@ -132,8 +136,10 @@ pub struct StorageControllerInfo {
 pub struct RaidArrayInfo {
     /// Array name (e.g., "md0")
     pub name: String,
-    /// RAID level
-    pub level: RaidLevel,
+    /// RAID level, or `None` when the array's state line names no personality.
+    /// An inactive array names none, so this is `None` there rather than a
+    /// member device or a guessed level.
+    pub level: Option<RaidLevel>,
     /// Current status
     pub status: RaidStatus,
     /// Members neither failed, spare nor journal, counted from the member list.
@@ -227,11 +233,15 @@ impl StorageControllerMonitor {
             .collect()
     }
 
-    /// Check if any RAID arrays are degraded.
+    /// Check if any RAID arrays are degraded, failed or stopped. An inactive
+    /// array is counted here as before, when it was mapped to `Failed`.
     pub fn has_degraded_raids(&self) -> bool {
-        self.raid_arrays
-            .iter()
-            .any(|a| a.status == RaidStatus::Degraded || a.status == RaidStatus::Failed)
+        self.raid_arrays.iter().any(|a| {
+            matches!(
+                a.status,
+                RaidStatus::Degraded | RaidStatus::Failed | RaidStatus::Inactive
+            )
+        })
     }
 
     // ── Linux implementations ──
@@ -259,17 +269,17 @@ impl StorageControllerMonitor {
                 let transport = Self::read_trimmed(&base.join("transport"));
 
                 // Count namespaces
-                let ns_count = std::fs::read_dir(&base)
-                    .map(|rd| {
-                        rd.flatten()
-                            .filter(|e| {
-                                e.file_name()
-                                    .to_string_lossy()
-                                    .starts_with(&format!("{}n", name))
-                            })
-                            .count() as u32
-                    })
-                    .unwrap_or(0);
+                // None when the controller directory cannot be listed. It used
+                // to be `0`, which reads as a controller with no namespaces.
+                let ns_count = std::fs::read_dir(&base).ok().map(|rd| {
+                    rd.flatten()
+                        .filter(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with(&format!("{}n", name))
+                        })
+                        .count() as u32
+                });
 
                 // PCIe info from device/
                 let pcie_speed = Self::read_trimmed(&base.join("device/current_link_speed"));
@@ -283,11 +293,9 @@ impl StorageControllerMonitor {
                     pcie_speed,
                     pcie_width,
                     namespace_count: ns_count,
-                    transport: if transport.is_empty() {
-                        "pcie".to_string()
-                    } else {
-                        transport
-                    },
+                    // No transport file means no transport was read. It used to
+                    // fall back to "pcie", which the kernel was never asked for.
+                    transport: (!transport.is_empty()).then_some(transport),
                 };
 
                 self.controllers.push(StorageControllerInfo {
@@ -332,13 +340,12 @@ impl StorageControllerMonitor {
                     "mpt3sas" | "mpt2sas" | "megaraid_sas" => StorageInterface::SAS,
                     "uas" | "usb-storage" => StorageInterface::USB,
                     "virtio_scsi" => StorageInterface::Virtio,
-                    _ => {
-                        if proc_name.contains("iscsi") {
-                            StorageInterface::ISCSI
-                        } else {
-                            StorageInterface::SCSI
-                        }
-                    }
+                    _ if proc_name.contains("iscsi") => StorageInterface::ISCSI,
+                    // No evidence in the host's name for an interface. It used
+                    // to fall through to SCSI, which was a guess for every host
+                    // this match does not list, and for a host whose name was
+                    // never read.
+                    _ => StorageInterface::Unknown,
                 };
 
                 let model_name = Self::read_trimmed(&base.join("model_name"));
@@ -375,6 +382,13 @@ impl StorageControllerMonitor {
 
     /// Parse the text of `/proc/mdstat` into one entry per array. Takes the text
     /// rather than reading the file, so it can be tested on any platform.
+    ///
+    /// An array line is `mdN : <state> [<personality>] <members...>`. A running
+    /// array names its personality (`raid1`, `raid5`, ...). An inactive array
+    /// names none, and its first member would read as one if the level were
+    /// taken by position, so the level is taken only when the word is a known
+    /// personality. Members are every token of the form `name[index]`, with an
+    /// optional `(F)`, `(S)` or `(J)` flag.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn parse_mdstat(content: &str) -> Vec<RaidArrayInfo> {
         let mut arrays = Vec::new();
@@ -384,6 +398,7 @@ impl StorageControllerMonitor {
             let line = line.trim();
 
             // "md0 : active raid1 sda1[0] sdb1[1]"
+            // "md127 : inactive sdb[1](S) sda[0](S)"
             if line.starts_with("md") && line.contains(" : ") {
                 // Save previous array
                 if let Some(array) = current.take() {
@@ -391,44 +406,38 @@ impl StorageControllerMonitor {
                 }
 
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() < 4 {
+                if parts.len() < 3 {
                     continue;
                 }
 
                 let name = parts[0].to_string();
-                let status_str = parts[2]; // "active" or "inactive"
-                let level_str = if parts.len() > 3 { parts[3] } else { "" };
-
-                let status = match status_str {
+                let status = match parts[2] {
                     "active" => RaidStatus::Active,
-                    "inactive" => RaidStatus::Failed,
+                    "inactive" => RaidStatus::Inactive,
                     _ => RaidStatus::Unknown,
                 };
 
-                let level = match level_str {
-                    "raid0" => RaidLevel::Raid0,
-                    "raid1" => RaidLevel::Raid1,
-                    "raid5" => RaidLevel::Raid5,
-                    "raid6" => RaidLevel::Raid6,
-                    "raid10" => RaidLevel::Raid10,
-                    "linear" => RaidLevel::Linear,
-                    other => RaidLevel::Unknown(other.to_string()),
-                };
+                // The personality is the word after the state, when one is named.
+                let level = parts
+                    .get(3)
+                    .filter(|word| Self::is_md_personality(word))
+                    .map(|word| Self::raid_level_of(word));
 
-                // Extract member devices (e.g., "sda1[0]", "sdb1[1]")
-                let members: Vec<String> = parts[4..]
+                let listed: Vec<(&str, &str)> = parts[3..]
                     .iter()
-                    .filter_map(|p| p.split('[').next().map(|s| s.to_string()))
+                    .filter_map(|t| Self::parse_member(t))
                     .collect();
+                let members: Vec<String> = listed.iter().map(|(n, _)| n.to_string()).collect();
 
                 // Member flags follow the index: "sdc1[2](F)", "sdd1[3](S)".
                 // Counted from what the line lists, so a flag that is absent
                 // reads as zero of that flag.
-                let failed_devices = parts[4..].iter().filter(|p| p.contains("(F)")).count() as u32;
-                let spare_devices = parts[4..].iter().filter(|p| p.contains("(S)")).count() as u32;
-                let active_devices = parts[4..]
+                let failed_devices =
+                    listed.iter().filter(|(_, f)| f.contains("(F)")).count() as u32;
+                let spare_devices = listed.iter().filter(|(_, f)| f.contains("(S)")).count() as u32;
+                let active_devices = listed
                     .iter()
-                    .filter(|p| !p.contains("(F)") && !p.contains("(S)") && !p.contains("(J)"))
+                    .filter(|(_, f)| !f.contains("(F)") && !f.contains("(S)") && !f.contains("(J)"))
                     .count() as u32;
 
                 current = Some(RaidArrayInfo {
@@ -493,6 +502,55 @@ impl StorageControllerMonitor {
             arrays.push(array);
         }
         arrays
+    }
+
+    /// Whether a word in an md array line is a personality the kernel can run.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn is_md_personality(word: &str) -> bool {
+        matches!(
+            word,
+            "raid0"
+                | "raid1"
+                | "raid4"
+                | "raid5"
+                | "raid6"
+                | "raid10"
+                | "linear"
+                | "multipath"
+                | "faulty"
+        )
+    }
+
+    /// The level a personality word names. Personalities with no `RaidLevel`
+    /// variant (`raid4`, `multipath`, `faulty`) keep their own name.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn raid_level_of(word: &str) -> RaidLevel {
+        match word {
+            "raid0" => RaidLevel::Raid0,
+            "raid1" => RaidLevel::Raid1,
+            "raid5" => RaidLevel::Raid5,
+            "raid6" => RaidLevel::Raid6,
+            "raid10" => RaidLevel::Raid10,
+            "linear" => RaidLevel::Linear,
+            other => RaidLevel::Unknown(other.to_string()),
+        }
+    }
+
+    /// One member token of an array line: `sdb1[1]`, or `sdc1[2](F)` with a
+    /// flag. Returns the device name and the text after the index, which holds
+    /// the flag. `None` for any token that is not a member, such as a
+    /// personality word or a blocks count.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn parse_member(token: &str) -> Option<(&str, &str)> {
+        let (name, after) = token.split_once('[')?;
+        if name.is_empty() {
+            return None;
+        }
+        let (index, flags) = after.split_once(']')?;
+        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        Some((name, flags))
     }
 
     #[cfg(target_os = "linux")]
@@ -589,7 +647,7 @@ impl StorageControllerMonitor {
         ) {
             Ok(text) => {
                 any_ok = true;
-                self.parse_windows_controllers(&text, StorageInterface::SCSI);
+                self.parse_windows_controllers(&text);
             }
             Err(e) => failures.push(format!("Win32_SCSIController: {e}")),
         }
@@ -601,7 +659,7 @@ impl StorageControllerMonitor {
         ) {
             Ok(text) => {
                 any_ok = true;
-                self.parse_windows_controllers(&text, StorageInterface::AHCI);
+                self.parse_windows_controllers(&text);
             }
             Err(e) => failures.push(format!("Win32_IDEController: {e}")),
         }
@@ -632,7 +690,7 @@ impl StorageControllerMonitor {
     }
 
     #[cfg(target_os = "windows")]
-    fn parse_windows_controllers(&mut self, json_text: &str, default_iface: StorageInterface) {
+    fn parse_windows_controllers(&mut self, json_text: &str) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_text) {
             let items = match &val {
                 serde_json::Value::Array(arr) => arr.clone(),
@@ -645,11 +703,12 @@ impl StorageControllerMonitor {
                 let driver = item["DriverName"].as_str().unwrap_or("").to_string();
 
                 // The bound driver names the transport, and the row already
-                // carries it. `default_iface` is the class of the WMI query
-                // that returned the row, which is not a property of the
-                // device: Windows exposes NVMe controllers through
-                // `Win32_SCSIController`, so all three on this host were
-                // published as `SCSI`.
+                // carries it. The WMI class that returned the row is not used:
+                // it is the query's class, not a property of the device.
+                // Windows exposes NVMe controllers through
+                // `Win32_SCSIController`, so the class said SCSI for all three
+                // on this host. A row whose driver and name match nothing is
+                // Unknown.
                 //
                 // The name check below it did not save them either. It looked
                 // for `nvme`, and Windows calls them `Standard NVM Express
@@ -667,7 +726,7 @@ impl StorageControllerMonitor {
                     _ if lower_name.contains("ahci") || lower_name.contains("sata") => {
                         StorageInterface::AHCI
                     }
-                    _ => default_iface.clone(),
+                    _ => StorageInterface::Unknown,
                 };
 
                 // `DeviceID` is a device instance path, not an address. For a
@@ -725,8 +784,10 @@ impl StorageControllerMonitor {
                         firmware,
                         pcie_speed: item["spnvme_linkspeed"].as_str().unwrap_or("").to_string(),
                         pcie_width: item["spnvme_linkwidth"].as_str().unwrap_or("").to_string(),
-                        namespace_count: 1,
-                        transport: "pcie".to_string(),
+                        // Neither is read from `SPNVMeDataType`. They were the
+                        // literals `1` and "pcie" for every drive.
+                        namespace_count: None,
+                        transport: None,
                     };
 
                     self.controllers.push(StorageControllerInfo {
@@ -764,7 +825,10 @@ impl StorageControllerMonitor {
                         model: String::new(),
                         // Not read; "ahci" was a literal for every SATA controller.
                         driver: None,
-                        interface: StorageInterface::AHCI,
+                        // The data type says SATA, not AHCI, and nothing read
+                        // here names the programming interface. It used to be
+                        // AHCI for every controller.
+                        interface: StorageInterface::Unknown,
                         pci_address: String::new(),
                         ports: None,
                         nvme_info: None,
@@ -862,8 +926,8 @@ mod tests {
             firmware: "5B2QGXA7".into(),
             pcie_speed: "8 GT/s".into(),
             pcie_width: "x4".into(),
-            namespace_count: 1,
-            transport: "pcie".into(),
+            namespace_count: Some(1),
+            transport: Some("pcie".into()),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("Samsung"));
@@ -874,7 +938,7 @@ mod tests {
     fn test_raid_serialization() {
         let array = RaidArrayInfo {
             name: "md0".into(),
-            level: RaidLevel::Raid1,
+            level: Some(RaidLevel::Raid1),
             status: RaidStatus::Active,
             active_devices: 2,
             total_devices: 2,
@@ -904,7 +968,7 @@ mod tests {
         assert_eq!(arrays.len(), 1);
         let md1 = &arrays[0];
         assert_eq!(md1.name, "md1");
-        assert_eq!(md1.level, RaidLevel::Raid5);
+        assert_eq!(md1.level, Some(RaidLevel::Raid5));
         assert_eq!(md1.status, RaidStatus::Degraded);
         assert_eq!(md1.members, vec!["sdd1", "sdc1", "sdb1", "sda1"]);
         assert_eq!(md1.total_devices, 4);
@@ -914,6 +978,77 @@ mod tests {
         assert_eq!(md1.wanted_devices, Some(3));
         assert_eq!(md1.working_devices, Some(2));
         assert_eq!(md1.size_bytes, Some(2093056 * 1024));
+    }
+
+    #[test]
+    fn test_parse_mdstat_active_raid1() {
+        let text = concat!(
+            "Personalities : [raid1]\n",
+            "md0 : active raid1 sdb1[1] sda1[0]\n",
+            "      976630464 blocks super 1.2 [2/2] [UU]\n",
+            "      bitmap: 0/8 pages [0KB], 65536KB chunk\n",
+            "\n",
+            "unused devices: <none>\n",
+        );
+        let arrays = StorageControllerMonitor::parse_mdstat(text);
+        assert_eq!(arrays.len(), 1);
+        let md0 = &arrays[0];
+        assert_eq!(md0.name, "md0");
+        assert_eq!(md0.level, Some(RaidLevel::Raid1));
+        assert_eq!(md0.status, RaidStatus::Active);
+        assert_eq!(md0.members, vec!["sdb1", "sda1"]);
+        assert_eq!(md0.total_devices, 2);
+        assert_eq!(md0.active_devices, 2);
+        assert_eq!(md0.failed_devices, 0);
+        assert_eq!(md0.spare_devices, 0);
+        assert_eq!(md0.wanted_devices, Some(2));
+        assert_eq!(md0.working_devices, Some(2));
+        assert_eq!(md0.size_bytes, Some(976630464 * 1024));
+        assert_eq!(md0.resync_progress, None);
+    }
+
+    /// An inactive array has no personality word, so its first member must not
+    /// be read as the level, and no member may be dropped. It is `Inactive`,
+    /// not `Failed`. The next array's blocks line must not leak into it.
+    #[test]
+    fn test_parse_mdstat_inactive_array() {
+        let text = concat!(
+            "Personalities : [raid1]\n",
+            "md127 : inactive sdb[1](S) sda[0](S)\n",
+            "      2930135040 blocks super 1.2\n",
+            "\n",
+            "md0 : active raid1 sdc1[1] sdd1[0]\n",
+            "      1046528 blocks super 1.2 [2/2] [UU]\n",
+            "\n",
+            "unused devices: <none>\n",
+        );
+        let arrays = StorageControllerMonitor::parse_mdstat(text);
+        assert_eq!(arrays.len(), 2);
+
+        let md127 = &arrays[0];
+        assert_eq!(md127.name, "md127");
+        assert_eq!(md127.level, None);
+        assert_eq!(md127.status, RaidStatus::Inactive);
+        assert_eq!(md127.members, vec!["sdb", "sda"]);
+        assert_eq!(md127.total_devices, 2);
+        assert_eq!(md127.spare_devices, 2);
+        assert_eq!(md127.failed_devices, 0);
+        assert_eq!(md127.active_devices, 0);
+        assert_eq!(md127.wanted_devices, None);
+        assert_eq!(md127.working_devices, None);
+        assert_eq!(md127.size_bytes, Some(2930135040 * 1024));
+
+        let md0 = &arrays[1];
+        assert_eq!(md0.name, "md0");
+        assert_eq!(md0.level, Some(RaidLevel::Raid1));
+        assert_eq!(md0.status, RaidStatus::Active);
+        assert_eq!(md0.size_bytes, Some(1046528 * 1024));
+    }
+
+    #[test]
+    fn test_parse_mdstat_empty_is_no_arrays() {
+        let text = "Personalities : \nunused devices: <none>\n";
+        assert!(StorageControllerMonitor::parse_mdstat(text).is_empty());
     }
 
     #[test]

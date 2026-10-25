@@ -483,7 +483,15 @@ fn resolve_ecc(out: &mut Vec<Reading>) {
         }
         for r in &c.csrows {
             let rb = format!("{base}.csrow.{}", r.index);
-            push_text(out, format!("{rb}.label"), &r.label);
+            // `None` when EDAC has no label file for this csrow or DIMM. The
+            // directory index used to be published here in its place.
+            push_opt(
+                out,
+                format!("{rb}.label"),
+                r.label.as_deref().map(|l| serde_json::json!(l)),
+                Some(U::Text),
+                "EDAC reports no DIMM label for this csrow, and the label file is absent or empty",
+            );
             push_id(out, format!("{rb}.mem_type"), &r.mem_type.to_string());
             push_opt(
                 out,
