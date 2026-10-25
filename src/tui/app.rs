@@ -1883,7 +1883,7 @@ impl App {
                     } else {
                         // For All mode: Boost GPU processes to show them first
                         // GPU processes get a large bonus in the sort key
-                        let gpu_boost: u64 = if !p.gpu_indices.is_empty() {
+                        let gpu_boost: u64 = if p.is_gpu_process() == Some(true) {
                             1_000_000_000 // 1B bonus for GPU processes
                         } else {
                             0
@@ -1899,7 +1899,7 @@ impl App {
             }
             Gpu(gpu_idx) | Accelerator(gpu_idx) => {
                 for (i, p) in self.processes.iter().enumerate() {
-                    if p.gpu_indices.contains(&gpu_idx) {
+                    if p.gpu_indices.as_ref().is_some_and(|g| g.contains(&gpu_idx)) {
                         let mem = *p.gpu_memory_per_device.get(&gpu_idx).unwrap_or(&0);
                         indexed.push((i, (mem, 0)));
                     }
@@ -2032,7 +2032,7 @@ impl App {
                 let mut procs: Vec<&ProcessMonitorInfo> = self
                     .processes
                     .iter()
-                    .filter(|p| p.gpu_indices.contains(&gpu_idx))
+                    .filter(|p| p.gpu_indices.as_ref().is_some_and(|g| g.contains(&gpu_idx)))
                     .collect();
                 procs.sort_by(|a, b| {
                     let a_mem = a.gpu_memory_per_device.get(&gpu_idx).unwrap_or(&0);
@@ -2057,7 +2057,11 @@ impl App {
                     let mut procs: Vec<&ProcessMonitorInfo> = self
                         .processes
                         .iter()
-                        .filter(|p| p.gpu_indices.contains(&global_idx))
+                        .filter(|p| {
+                            p.gpu_indices
+                                .as_ref()
+                                .is_some_and(|g| g.contains(&global_idx))
+                        })
                         .collect();
                     procs.sort_by(|a, b| {
                         let a_mem = a.gpu_memory_per_device.get(&global_idx).unwrap_or(&0);
@@ -2074,7 +2078,11 @@ impl App {
                 let mut procs: Vec<&ProcessMonitorInfo> = self
                     .processes
                     .iter()
-                    .filter(|p| p.gpu_indices.contains(&accel_idx))
+                    .filter(|p| {
+                        p.gpu_indices
+                            .as_ref()
+                            .is_some_and(|g| g.contains(&accel_idx))
+                    })
                     .collect();
                 procs.sort_by(|a, b| {
                     let a_mem = a.gpu_memory_per_device.get(&accel_idx).unwrap_or(&0);

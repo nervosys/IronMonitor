@@ -2257,13 +2257,20 @@ fn print_process_info_backend(
     for category in &categories {
         if let Some(procs) = by_category.get(*category) {
             let count = procs.len();
-            let gpu_count = procs.iter().filter(|p| p.is_gpu_process()).count();
+            let gpu_count = procs
+                .iter()
+                .filter(|p| p.is_gpu_process() == Some(true))
+                .count();
+            // GPU attribution is either run for every process or for none.
+            let gpu_known = procs.iter().all(|p| p.is_gpu_process().is_some());
             // `None` when any member's figure is not yet known.
             let total_cpu: Option<f32> = procs.iter().map(|p| p.cpu_percent).sum();
             let total_mem: u64 = procs.iter().map(|p| p.memory_bytes).sum();
             let mem_mb = total_mem as f64 / 1024.0 / 1024.0;
 
-            let gpu_indicator = if gpu_count > 0 {
+            let gpu_indicator = if !gpu_known {
+                "unknown".dimmed().to_string()
+            } else if gpu_count > 0 {
                 format!("{}", gpu_count).magenta().to_string()
             } else {
                 "-".dimmed().to_string()
@@ -2334,9 +2341,10 @@ fn print_process_info_backend(
                     // showed "0.0", which is what NVML declines to tell us
                     // under WDDM — every process on Windows.
                     let gpu_mem = match (proc.is_gpu_process(), proc.gpu_memory_mb()) {
-                        (true, Some(mb)) => format!("{mb:.1}").magenta().to_string(),
-                        (true, None) => "n/a".dimmed().to_string(),
-                        (false, _) => "-".dimmed().to_string(),
+                        (Some(true), Some(mb)) => format!("{mb:.1}").magenta().to_string(),
+                        (Some(true), None) => "n/a".dimmed().to_string(),
+                        (Some(false), _) => "-".dimmed().to_string(),
+                        (None, _) => "unknown".dimmed().to_string(),
                     };
 
                     let cpu_colored = match proc.cpu_percent {
@@ -2410,12 +2418,22 @@ fn print_all_info(
     println!("{}", "═══ Processes ═══".cyan().bold());
     match backend.processes() {
         Some(procs) => {
-            let gpu_procs: Vec<_> = procs.iter().filter(|p| p.is_gpu_process()).collect();
+            // "unknown" when GPU attribution did not run, not a count of zero.
+            let gpu_known = procs.iter().all(|p| p.is_gpu_process().is_some());
+            let gpu_text = if gpu_known {
+                procs
+                    .iter()
+                    .filter(|p| p.is_gpu_process() == Some(true))
+                    .count()
+                    .to_string()
+            } else {
+                "unknown".to_string()
+            };
             println!(
                 "  {} {} ({} using GPU)",
                 "Total:".white().bold(),
                 procs.len().to_string().cyan(),
-                gpu_procs.len().to_string().magenta()
+                gpu_text.magenta()
             );
         }
         None => println!("  {}", "Process list not read".yellow()),
@@ -2917,9 +2935,10 @@ fn print_process_info_v2(
                     // showed "0.0", which is what NVML declines to tell us
                     // under WDDM — every process on Windows.
                     let gpu_mem = match (proc.is_gpu_process(), proc.gpu_memory_mb()) {
-                        (true, Some(mb)) => format!("{mb:.1}").magenta().to_string(),
-                        (true, None) => "n/a".dimmed().to_string(),
-                        (false, _) => "-".dimmed().to_string(),
+                        (Some(true), Some(mb)) => format!("{mb:.1}").magenta().to_string(),
+                        (Some(true), None) => "n/a".dimmed().to_string(),
+                        (Some(false), _) => "-".dimmed().to_string(),
+                        (None, _) => "unknown".dimmed().to_string(),
                     };
 
                     let cpu_colored = match proc.cpu_percent {

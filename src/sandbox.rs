@@ -10,7 +10,6 @@
 //! - Container detection (Docker, LXC, systemd-nspawn)
 //! - Windows Sandbox detection
 //! - macOS sandbox detection
-//! - Wine/compatibility layer detection
 //! - Debugger detection
 //! - Known analysis tool paths
 //!
@@ -28,6 +27,7 @@
 
 #[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(any(target_os = "linux", windows))]
 use std::path::Path;
 
 /// Sandbox detection results
@@ -45,7 +45,11 @@ pub struct SandboxInfo {
     /// Is running under macOS sandbox
     pub is_macos_sandbox: bool,
 
-    /// Is running under Wine/compatibility layer
+    /// Is running under Wine/compatibility layer.
+    ///
+    /// Never set. Wine and Proton are not sandboxes, and their environment
+    /// variables are not evidence of one. The field stays so the public struct
+    /// does not change.
     pub is_wine: bool,
 
     /// Is being debugged
@@ -129,9 +133,6 @@ impl SandboxDetector {
         // macOS sandbox detection
         #[cfg(target_os = "macos")]
         self.detect_macos_sandbox(&mut info);
-
-        // Wine detection
-        self.detect_wine(&mut info);
 
         // Debugger detection
         self.detect_debugger(&mut info);
@@ -313,15 +314,9 @@ impl SandboxDetector {
     /// Detect Windows Sandbox
     #[cfg(windows)]
     fn detect_windows_sandbox(&self, info: &mut SandboxInfo) {
-        // Windows Sandbox uses specific registry keys and computer names
-        if let Ok(computer_name) = std::env::var("COMPUTERNAME") {
-            if computer_name.starts_with("SANDBOX-") {
-                info.is_windows_sandbox = true;
-                info.environment = Some("Windows Sandbox".to_string());
-                info.indicators
-                    .push("Windows Sandbox computer name detected".to_string());
-            }
-        }
+        // A `SANDBOX-` computer name used to set `is_windows_sandbox`. Any user
+        // can name a machine that way, so the name is not evidence that this
+        // process runs in Windows Sandbox.
 
         // Check for Windows Sandbox specific marker file (more reliable than Containers directory)
         // The Containers directory exists on all modern Windows systems, not just sandbox
@@ -370,30 +365,16 @@ impl SandboxDetector {
         // container identity above says the process is sandboxed.
     }
 
-    /// Detect Wine/compatibility layers
-    fn detect_wine(&self, info: &mut SandboxInfo) {
-        // Check for Wine environment variables
-        if std::env::var("WINE").is_ok() || std::env::var("WINEPREFIX").is_ok() {
-            info.is_wine = true;
-            info.environment = Some("Wine".to_string());
-            info.indicators
-                .push("Wine environment detected".to_string());
-        }
-
-        // A `~/.wine` directory used to set `is_wine`. It is left behind by any
-        // Wine install, including one that is not running, so it says nothing
-        // about the current process.
-
-        // Check for Proton (Steam compatibility layer)
-        if std::env::var("STEAM_COMPAT_DATA_PATH").is_ok() {
-            info.is_wine = true;
-            info.environment = Some("Proton".to_string());
-            info.indicators
-                .push("Proton/Steam compatibility layer detected".to_string());
-        }
-    }
+    // Wine and Proton detection was removed. `WINE`, `WINEPREFIX` and
+    // `STEAM_COMPAT_DATA_PATH` used to set `is_wine`, which made
+    // `is_sandboxed()` true, and `ConsentManager` then refused every scope for
+    // Proton users. Those variables describe a compatibility layer, not a
+    // sandbox. A `~/.wine` directory was dropped for the same kind of reason:
+    // any Wine install leaves it behind, whether or not Wine is running.
 
     /// Detect debugger attachment
+    // Only Linux and Windows look for a debugger, so `info` is unused elsewhere.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
     fn detect_debugger(&self, info: &mut SandboxInfo) {
         #[cfg(target_os = "linux")]
         {
@@ -485,6 +466,50 @@ mod tests {
                     "an environment variable is being used as evidence of a ",
                     "sandbox: {}"
                 ),
+                indicator
+            );
+        }
+    }
+
+    /// A Proton (Steam compatibility layer) process sets `STEAM_COMPAT_DATA_PATH`
+    /// and usually `WINEPREFIX`. Neither is a sandbox, so neither may make
+    /// `is_sandboxed()` true, which `ConsentManager` treats as a refusal to
+    /// collect anything. A machine named `SANDBOX-*` is not a sandbox either.
+    /// The assertions look only at evidence from these variables, so they hold
+    /// on any host.
+    #[test]
+    fn a_proton_environment_is_not_reported_as_sandboxed() {
+        let vars = [
+            "STEAM_COMPAT_DATA_PATH",
+            "WINEPREFIX",
+            "WINE",
+            "COMPUTERNAME",
+        ];
+        std::env::set_var("STEAM_COMPAT_DATA_PATH", "/tmp/compatdata/1091500");
+        std::env::set_var("WINEPREFIX", "/tmp/compatdata/1091500/pfx");
+        std::env::set_var("WINE", "/usr/bin/wine");
+        std::env::set_var("COMPUTERNAME", "SANDBOX-PROTON");
+
+        let info = SandboxDetector::new().detect();
+
+        for var in vars {
+            // Only the test's own variables are removed; the value a real
+            // host set before the test ran is not restored.
+            std::env::remove_var(var);
+        }
+
+        assert!(!info.is_wine, "Proton/Wine variables set is_wine");
+        assert_ne!(info.environment.as_deref(), Some("Proton"));
+        assert_ne!(info.environment.as_deref(), Some("Wine"));
+        for indicator in &info.indicators {
+            assert!(
+                !indicator.contains("Proton") && !indicator.contains("Wine"),
+                "a compatibility layer is reported as a sandbox: {}",
+                indicator
+            );
+            assert!(
+                !indicator.contains("computer name"),
+                "a computer name is reported as a sandbox: {}",
                 indicator
             );
         }

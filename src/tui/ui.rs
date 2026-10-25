@@ -1876,15 +1876,16 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                     };
 
                     if has_gpus {
-                        // Format GPU indices (e.g., "0", "0,1", or "-" if none)
-                        let gpu_idx_str = if p.gpu_indices.is_empty() {
-                            "-".to_string()
-                        } else {
-                            p.gpu_indices
+                        // Format GPU indices (e.g., "0", "0,1"). "-" when attribution ran
+                        // and found none; "—" when it did not run, which is unknown.
+                        let gpu_idx_str = match &p.gpu_indices {
+                            None => "—".to_string(),
+                            Some(gpus) if gpus.is_empty() => "-".to_string(),
+                            Some(gpus) => gpus
                                 .iter()
                                 .map(|i| i.to_string())
                                 .collect::<Vec<_>>()
-                                .join(",")
+                                .join(","),
                         };
 
                         // Format ENC/DEC combined (show both if available)
@@ -1936,10 +1937,10 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                             ),
                             Span::styled(
                                 gpu_idx_str,
-                                Style::default().fg(if p.gpu_indices.is_empty() {
-                                    Color::DarkGray
-                                } else {
+                                Style::default().fg(if p.is_gpu_process() == Some(true) {
                                     Color::Magenta
+                                } else {
+                                    Color::DarkGray
                                 }),
                             ),
                             Span::styled(
@@ -1977,7 +1978,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                             ),
                             Span::styled(
                                 gpu_type_str.to_string(),
-                                Style::default().fg(if p.is_gpu_process() {
+                                Style::default().fg(if p.is_gpu_process() == Some(true) {
                                     glances_colors::CAREFUL
                                 } else {
                                     glances_colors::INACTIVE

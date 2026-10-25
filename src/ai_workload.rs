@@ -216,6 +216,9 @@ pub enum CloudProvider {
     AWS,
     Azure,
     GCP,
+    /// Not produced by any reader. Nothing observable in a process environment
+    /// shows that a host is on-premise, so a host with no cloud evidence is
+    /// `Unknown`. The variant is kept so the enum does not change.
     OnPremise,
     Unknown,
 }
@@ -243,12 +246,17 @@ pub struct AiWorkload {
     pub tpu_config: Option<TpuConfig>,
     /// Distributed configuration
     pub distributed_config: Option<DistributedConfig>,
-    /// Cloud provider
+    /// Cloud provider. `Unknown` unless the environment names one.
     pub cloud_provider: CloudProvider,
-    /// Environment variables relevant to AI frameworks
-    pub env_vars: HashMap<String, String>,
-    /// Start time
-    pub start_time: std::time::SystemTime,
+    /// The process environment, or `None` when it was not read. `Some` with an
+    /// empty map is a process that really has no variables; the two must not be
+    /// conflated.
+    pub env_vars: Option<HashMap<String, String>>,
+    /// Start time, or `None` when it was not read. Nothing here reads the
+    /// process start time yet, so it is `None` on every platform. It used to be
+    /// the time of the scan, which made every process look as if it started
+    /// now.
+    pub start_time: Option<std::time::SystemTime>,
 }
 
 impl AiWorkload {
@@ -384,35 +392,41 @@ impl AiWorkloadMonitor {
             return Ok(None);
         }
 
-        // Read process name
+        // Read process name. A process whose `comm` cannot be read has almost
+        // certainly exited between the two reads, so it is skipped. It used to
+        // be named `pid_<n>`, which is a name nothing reported.
         let comm_path = format!("/proc/{}/comm", pid);
-        let name = fs::read_to_string(&comm_path)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| format!("pid_{}", pid));
+        let name = match fs::read_to_string(&comm_path) {
+            Ok(s) => s.trim().to_string(),
+            Err(_) => return Ok(None),
+        };
 
         // Detect workload type
         let workload_type = self.detect_workload_type(&cmdline);
 
-        // Read environment variables
+        // Read environment variables. `None` when `environ` is unreadable (another
+        // user's process, or one that exited); an empty map used to stand in for
+        // that, which says the process had no variables.
         let environ_path = format!("/proc/{}/environ", pid);
-        let env_vars = fs::read_to_string(&environ_path)
+        let env_vars: Option<HashMap<String, String>> = fs::read_to_string(&environ_path)
             .ok()
-            .map(|s| self.parse_environ(&s))
-            .unwrap_or_default();
+            .map(|s| self.parse_environ(&s));
 
-        // Check for distributed training
-        let distributed_config = self.detect_distributed_config(&env_vars);
-
-        // Check for TPU
-        let tpu_config = self.detect_tpu_config(&env_vars);
-
-        // Detect cloud provider
-        let cloud_provider = self.detect_cloud_provider(&env_vars);
+        // Check for distributed training, TPU and cloud provider. Without an
+        // environment none of them can be observed.
+        let distributed_config = env_vars
+            .as_ref()
+            .and_then(|env| self.detect_distributed_config(env));
+        let tpu_config = env_vars
+            .as_ref()
+            .and_then(|env| self.detect_tpu_config(env));
+        let cloud_provider = env_vars.as_ref().map_or(CloudProvider::Unknown, |env| {
+            self.detect_cloud_provider(env)
+        });
 
         // Try to parse training metrics from logs or environment
         let training_metrics = if workload_type == WorkloadType::Training {
-            self.try_parse_training_metrics(pid, &env_vars)?
+            self.try_parse_training_metrics(pid, env_vars.as_ref().unwrap_or(&HashMap::new()))?
         } else {
             None
         };
@@ -437,7 +451,7 @@ impl AiWorkloadMonitor {
             distributed_config,
             cloud_provider,
             env_vars,
-            start_time: std::time::SystemTime::now(), // Approximation
+            start_time: None,
         }))
     }
 
@@ -515,8 +529,6 @@ impl AiWorkloadMonitor {
         let framework = if exe_lower.contains("python") {
             // Could be any Python-based framework, mark as unknown and use GPU detection
             AiFramework::Unknown
-        } else if exe_lower.contains("ollama") {
-            AiFramework::ONNX // Ollama uses GGML/ONNX internally
         } else if exe_lower.contains("triton")
             || exe_lower.contains("nvinfer")
             || exe_lower.contains("tensorrt")
@@ -525,6 +537,10 @@ impl AiWorkloadMonitor {
         } else if exe_lower.contains("onnx") {
             AiFramework::ONNX
         } else {
+            // Ollama lands here. It used to be mapped to ONNX, on the claim that
+            // it "uses GGML/ONNX internally". That is a fact about its
+            // implementation that nothing in the process shows, so the name
+            // alone does not identify a framework.
             AiFramework::Unknown
         };
 
@@ -570,9 +586,12 @@ impl AiWorkloadMonitor {
             gpu_indices,
             tpu_config: None,
             distributed_config: None,
+            // The environment of another process is not read on Windows, so the
+            // variables are `None`, not an empty map, which would say the process
+            // had none.
             cloud_provider: CloudProvider::Unknown,
-            env_vars: HashMap::new(),
-            start_time: std::time::SystemTime::now(),
+            env_vars: None,
+            start_time: None,
         }))
     }
 
@@ -691,11 +710,10 @@ impl AiWorkloadMonitor {
         // case this grows a home for it, so it is bound and explicitly unused.
         let _ = memory_mb;
 
-        let cloud_provider = if cmdline.contains("ollama") {
-            CloudProvider::OnPremise
-        } else {
-            CloudProvider::Unknown
-        };
+        // The environment is not read here, and the process name does not show a
+        // cloud provider. This used to report `OnPremise` for any `ollama` process,
+        // which is a claim about the host, not something ps reported.
+        let cloud_provider = CloudProvider::Unknown;
 
         Ok(Some(AiWorkload {
             pid,
@@ -711,28 +729,34 @@ impl AiWorkloadMonitor {
             tpu_config: None,
             distributed_config: None,
             cloud_provider,
-            env_vars: HashMap::new(),
-            start_time: std::time::SystemTime::now(),
+            env_vars: None,
+            start_time: None,
         }))
     }
 
+    /// Identify the framework from the executable and the module it runs with
+    /// `-m`. Matching is on whole names only. A substring match used to read
+    /// `scp tf.log host:` as TensorFlow and any path containing `jax` as JAX.
     #[allow(dead_code)]
     fn detect_framework(&self, cmdline: &str) -> AiFramework {
-        if cmdline.contains("torch") || cmdline.contains("pytorch") {
+        let names = framework_names(cmdline);
+        let has = |candidates: &[&str]| names_match(&names, candidates);
+
+        if has(&["torch", "pytorch", "torchrun"]) {
             AiFramework::PyTorch
-        } else if cmdline.contains("tensorflow") || cmdline.contains("tf.") {
+        } else if has(&["tensorflow", "tensorflow_model_server", "tf"]) {
             AiFramework::TensorFlow
-        } else if cmdline.contains("jax") {
+        } else if has(&["jax"]) {
             AiFramework::JAX
-        } else if cmdline.contains("onnx") {
+        } else if has(&["onnx", "onnxruntime"]) {
             AiFramework::ONNX
-        } else if cmdline.contains("tensorrt") || cmdline.contains("trt") {
+        } else if has(&["tensorrt", "trt"]) {
             AiFramework::TensorRT
-        } else if cmdline.contains("mxnet") {
+        } else if has(&["mxnet"]) {
             AiFramework::MXNet
-        } else if cmdline.contains("keras") {
+        } else if has(&["keras"]) {
             AiFramework::Keras
-        } else if cmdline.contains("caffe") {
+        } else if has(&["caffe"]) {
             AiFramework::Caffe
         } else {
             AiFramework::Unknown
@@ -855,11 +879,12 @@ impl AiWorkloadMonitor {
             || env_vars.contains_key("GOOGLE_CLOUD_PROJECT")
         {
             CloudProvider::GCP
-        } else if env_vars.contains_key("K8S_POD_NAME") {
-            // Could be any cloud, but at least we know it's containerized
-            CloudProvider::Unknown
         } else {
-            CloudProvider::OnPremise
+            // No cloud evidence. `K8S_POD_NAME` says a container but not which
+            // cloud, so it lands here too. This used to return `OnPremise` for
+            // every host without a cloud variable, which is a claim about the
+            // host that the environment cannot support.
+            CloudProvider::Unknown
         }
     }
 
@@ -908,6 +933,38 @@ impl AiWorkloadMonitor {
         // Would need to monitor network traffic, log files, or use framework APIs
         Ok(None)
     }
+}
+
+/// The names a command line can be identified by: the executable's base name
+/// without its extension or version suffix (`python3.11` is `python3`), and
+/// each dotted segment of a module given with `-m`. Splitting on whole
+/// tokens is what keeps `jax` in a path from reading as JAX.
+#[allow(dead_code)]
+fn framework_names(cmdline: &str) -> Vec<String> {
+    let words: Vec<&str> = cmdline.split_whitespace().collect();
+    let mut names = Vec::new();
+
+    if let Some(exe) = words.first() {
+        if let Some(base) = exe.rsplit(['/', '\\']).next() {
+            if let Some(stem) = base.split('.').next() {
+                names.push(stem.to_string());
+            }
+        }
+    }
+
+    for pair in words.windows(2) {
+        if pair[0] == "-m" {
+            names.extend(pair[1].split('.').map(str::to_string));
+        }
+    }
+
+    names
+}
+
+/// Whether any of `names` is one of `candidates`, compared as whole names.
+#[allow(dead_code)]
+fn names_match(names: &[String], candidates: &[&str]) -> bool {
+    names.iter().any(|n| candidates.contains(&n.as_str()))
 }
 
 impl Default for AiWorkloadMonitor {
@@ -1004,5 +1061,61 @@ mod tpu_absence_tests {
     #[test]
     fn a_host_with_no_tpu_name_is_not_a_tpu_host() {
         assert!(detector().detect_tpu_config(&HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_host_with_no_cloud_evidence_is_unknown_not_on_premise() {
+        assert_eq!(
+            detector().detect_cloud_provider(&HashMap::new()),
+            CloudProvider::Unknown
+        );
+
+        // A container name says the process is containerised, not which cloud.
+        let mut env = HashMap::new();
+        env.insert("K8S_POD_NAME".to_string(), "pod-1".to_string());
+        assert_eq!(
+            detector().detect_cloud_provider(&env),
+            CloudProvider::Unknown
+        );
+    }
+
+    #[test]
+    fn framework_is_not_read_from_a_substring_of_an_argument() {
+        let m = detector();
+        // `tf.log` is a file, and `jaxen-notes` is a directory.
+        assert_eq!(
+            m.detect_framework("scp tf.log host:/data"),
+            AiFramework::Unknown
+        );
+        assert_eq!(
+            m.detect_framework("/home/u/jaxen-notes/run.sh"),
+            AiFramework::Unknown
+        );
+        // Ollama is not identified as any framework from its name alone.
+        assert_eq!(
+            m.detect_framework("/usr/bin/ollama serve"),
+            AiFramework::Unknown
+        );
+    }
+
+    #[test]
+    fn framework_is_named_by_its_executable_or_its_module() {
+        let m = detector();
+        assert_eq!(
+            m.detect_framework("/usr/bin/python3 -m torch.distributed.run train.py"),
+            AiFramework::PyTorch
+        );
+        assert_eq!(
+            m.detect_framework("torchrun --nproc 4 train.py"),
+            AiFramework::PyTorch
+        );
+        assert_eq!(
+            m.detect_framework("python3.11 -m jax.tools"),
+            AiFramework::JAX
+        );
+        assert_eq!(
+            m.detect_framework("tensorflow_model_server --port=8500"),
+            AiFramework::TensorFlow
+        );
     }
 }

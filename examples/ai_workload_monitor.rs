@@ -189,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     println!("    Memory:      {:.2} GB", proc.memory_mb() / 1024.0);
 
-                    if proc.is_gpu_process() {
+                    if proc.is_gpu_process() == Some(true) {
                         match proc.gpu_memory_mb() {
                             Some(mb) => println!("    GPU Memory:  {:.2} GB", mb / 1024.0),
                             None => println!(
@@ -216,7 +216,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Show relevant environment variables
-                if !workload.env_vars.is_empty() {
+                // `None` when the environment could not be read.
+                if let Some(env_vars) = workload.env_vars.as_ref() {
                     let important_vars = [
                         "CUDA_VISIBLE_DEVICES",
                         "WORLD_SIZE",
@@ -228,8 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "NCCL_DEBUG",
                     ];
 
-                    let relevant: Vec<_> = workload
-                        .env_vars
+                    let relevant: Vec<_> = env_vars
                         .iter()
                         .filter(|(k, _)| important_vars.contains(&k.as_str()))
                         .collect();

@@ -261,8 +261,9 @@ pub struct ProcessState {
     /// not expose this under WDDM.
     pub gpu_memory_bytes: Option<u64>,
 
-    /// GPU indices used
-    pub gpu_indices: Vec<usize>,
+    /// GPU indices used, or `None` when GPU attribution did not run. Empty
+    /// means it ran and found none.
+    pub gpu_indices: Option<Vec<usize>>,
 }
 
 /// System information state for AI context
@@ -1090,7 +1091,11 @@ impl MonitoringBackend {
             .processes
             .as_ref()?
             .iter()
-            .filter(|p| p.gpu_indices.contains(&gpu_index))
+            .filter(|p| {
+                p.gpu_indices
+                    .as_ref()
+                    .is_some_and(|gpus| gpus.contains(&gpu_index))
+            })
             .collect();
         procs.sort_by(|a, b| {
             let a_mem = a.gpu_memory_per_device.get(&gpu_index).unwrap_or(&0);

@@ -49,7 +49,8 @@
 //!         proc.pid,
 //!         proc.gpu_memory_mb()
 //!             .map_or_else(|| "n/a".to_string(), |mb| format!("{mb:.0}")),
-//!         proc.gpu_indices.len()
+//!         proc.gpu_count()
+//!             .map_or_else(|| "n/a".to_string(), |n| n.to_string()),
 //!     );
 //! }
 //! # Ok(())
@@ -700,9 +701,11 @@ impl ProcessCategory {
         Self::Unknown
     }
 
-    /// Check if name matches any pattern (substring match)
+    /// Check if the name contains any pattern as a whole word. A bare substring
+    /// match read `obsidian` as `obs`, the OBS recorder, and so classified a
+    /// notes app as media.
     fn matches_any(name: &str, patterns: &[&str]) -> bool {
-        patterns.iter().any(|p| name.contains(p))
+        patterns.iter().any(|p| contains_whole_word(name, p))
     }
 
     /// Get display name for the category
@@ -838,7 +841,10 @@ pub struct ProcessMonitorInfo {
     pub cpu_percent: Option<f32>,
     /// Memory usage in bytes (Working Set / RSS)
     pub memory_bytes: u64,
-    /// Virtual memory size in bytes
+    /// Virtual memory in bytes, in each platform's own measure. Linux: the
+    /// address-space size (`vsize`). Windows: the committed private bytes
+    /// (`PagefileUsage`), not the address-space size. macOS: the virtual size
+    /// from `proc_taskinfo`. The three are not directly comparable.
     pub virtual_memory_bytes: u64,
     /// Private memory in bytes (unique to this process)
     ///
@@ -864,8 +870,12 @@ pub struct ProcessMonitorInfo {
     pub io_write_bytes: Option<u64>,
     /// Process start time (Unix timestamp in seconds)
     pub start_time: Option<u64>,
-    /// GPU indices this process is using
-    pub gpu_indices: Vec<usize>,
+    /// GPU indices this process is using. `None` when GPU attribution did not
+    /// run: the monitor has no GPU collection, because `GpuCollection::auto_detect`
+    /// failed or the monitor was built without GPUs. `Some(vec![])` means
+    /// attribution ran and found no GPU use. This was a `Vec`, empty in both
+    /// cases, so a failed GPU query read as a machine with no GPU.
+    pub gpu_indices: Option<Vec<usize>>,
     /// GPU memory usage per GPU (GPU index -> memory in bytes).
     ///
     /// A device that reports no figure for this process has no entry, rather
@@ -882,14 +892,26 @@ pub struct ProcessMonitorInfo {
     /// `observability/api.rs` already had to guard `> 0` to undo it.
     pub total_gpu_memory_bytes: Option<u64>,
     /// Process state (R=Running, S=Sleeping, D=Disk sleep, Z=Zombie, T=Stopped,
-    /// U=Unknown).
+    /// U=Unknown). On macOS, `I` is an idle task, or one still being created.
     ///
     /// `U` is not a Linux state code: it means this platform did not tell us. Windows
     /// has no per-process state — scheduling state lives on threads — and the
     /// enumeration here used to report `'R'` for every process, which made the UI
     /// claim all 420 processes on an idle desktop were running and none were asleep.
     pub state: char,
-    /// Process priority/nice value
+    /// Process priority, in the platform's own units. The units differ and are
+    /// not comparable across platforms:
+    ///
+    /// - Linux: the kernel's `priority` field from `/proc/<pid>/stat`. For an
+    ///   ordinary task this is `nice + 20` (0 to 39); a real-time task is
+    ///   negative (-2 to -100).
+    /// - Windows: the process priority class constant from `GetPriorityClass`
+    ///   (`0x40` idle, `0x4000` below normal, `0x20` normal, `0x8000` above
+    ///   normal, `0x80` high, `0x100` realtime). `None` when the call fails. It
+    ///   used to be `Some(0)`, which is not a class.
+    /// - macOS: the task's scheduling priority from `proc_taskinfo`
+    ///   (`pti_priority`, a Mach priority on a 0 to 127 scale, where 31 is the
+    ///   usual default). It is not a nice value.
     pub priority: Option<i32>,
 
     // nvtop feature parity: Per-process engine utilization
@@ -933,14 +955,16 @@ impl ProcessMonitorInfo {
             .map(|b| b as f64 / (1024.0 * 1024.0))
     }
 
-    /// Check if process is using any GPU
-    pub fn is_gpu_process(&self) -> bool {
-        !self.gpu_indices.is_empty()
+    /// Whether the process is using any GPU. `None` when GPU attribution did not
+    /// run, so the answer is unknown rather than no.
+    pub fn is_gpu_process(&self) -> Option<bool> {
+        self.gpu_indices.as_ref().map(|gpus| !gpus.is_empty())
     }
 
-    /// Get number of GPUs used by this process
-    pub fn gpu_count(&self) -> usize {
-        self.gpu_indices.len()
+    /// Number of GPUs used by this process, or `None` when attribution did not
+    /// run.
+    pub fn gpu_count(&self) -> Option<usize> {
+        self.gpu_indices.as_ref().map(Vec::len)
     }
 
     /// Get the process category
@@ -950,8 +974,11 @@ impl ProcessMonitorInfo {
 
     /// Reclassify the process (e.g., after GPU attribution is added)
     pub fn reclassify(&mut self) {
-        self.category =
-            ProcessCategory::classify(&self.name, self.user.as_deref(), self.is_gpu_process());
+        self.category = ProcessCategory::classify(
+            &self.name,
+            self.user.as_deref(),
+            self.is_gpu_process() == Some(true),
+        );
     }
 }
 
@@ -986,6 +1013,37 @@ impl CategoryStats {
         self.total_gpu_memory_bytes
             .map(|b| b as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// The account name for a macOS uid, or `None` when the account database has no
+/// entry for it.
+#[cfg(target_os = "macos")]
+fn user_name(uid: u32) -> Option<String> {
+    // SAFETY: `getpwuid` returns a pointer into static storage, or null. The
+    // name is copied out before any other call can overwrite that storage.
+    unsafe {
+        let entry = libc::getpwuid(uid);
+        if entry.is_null() {
+            return None;
+        }
+        Some(
+            std::ffi::CStr::from_ptr((*entry).pw_name)
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+}
+
+/// Whether `word` occurs in `name` with no ASCII letter or digit on either side.
+/// `.`, `-`, `_` and the ends of the name are boundaries, so `python3.11`
+/// contains `python3` and `obs-studio` contains `obs`, but `obsidian` does not.
+fn contains_whole_word(name: &str, word: &str) -> bool {
+    name.match_indices(word).any(|(i, _)| {
+        let before = name[..i].chars().next_back();
+        let after = name[i + word.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 /// The number of logical CPUs to normalise process CPU time against.
@@ -1134,11 +1192,17 @@ impl ProcessMonitor {
 
         // Add GPU information if available
         if let Some(ref gpu_collection) = self.gpu_collection {
+            // Attribution has run, so every process now has a definite answer:
+            // empty until a device claims it. The readers leave `None`, which
+            // means it did not run.
+            for proc in &mut system_processes {
+                proc.gpu_indices = Some(Vec::new());
+            }
             self.add_gpu_attribution(&mut system_processes, gpu_collection)?;
 
             // Reclassify processes after GPU attribution (GPU processes may change category)
             for proc in &mut system_processes {
-                if proc.is_gpu_process() {
+                if proc.is_gpu_process() == Some(true) {
                     proc.reclassify();
                 }
             }
@@ -1177,7 +1241,10 @@ impl ProcessMonitor {
     /// Get only GPU-using processes
     pub fn gpu_processes(&mut self) -> Result<Vec<ProcessMonitorInfo>> {
         let procs = self.processes()?;
-        Ok(procs.into_iter().filter(|p| p.is_gpu_process()).collect())
+        Ok(procs
+            .into_iter()
+            .filter(|p| p.is_gpu_process() == Some(true))
+            .collect())
     }
 
     /// Get process by PID
@@ -1234,7 +1301,10 @@ impl ProcessMonitor {
                 } else {
                     Some(reported.iter().sum())
                 };
-                let gpu_process_count = procs.iter().filter(|p| p.is_gpu_process()).count();
+                let gpu_process_count = procs
+                    .iter()
+                    .filter(|p| p.is_gpu_process() == Some(true))
+                    .count();
 
                 CategoryStats {
                     category,
@@ -1267,9 +1337,10 @@ impl ProcessMonitor {
         Ok(self.gpu_processes()?.len())
     }
 
-    /// Get number of detected GPUs
-    pub fn gpu_count(&self) -> usize {
-        self.gpu_collection.as_ref().map(|gc| gc.len()).unwrap_or(0)
+    /// Get number of detected GPUs, or `None` when GPU detection was not run or
+    /// failed. It used to return 0 then, which is a count of a machine with no GPU.
+    pub fn gpu_count(&self) -> Option<usize> {
+        self.gpu_collection.as_ref().map(|gc| gc.len())
     }
 
     /// Update process list (refresh data)
@@ -1320,8 +1391,9 @@ impl ProcessMonitor {
 
                     if let Some(proc_info) = process_map.get_mut(&pid) {
                         // Add this GPU to the process's GPU list
-                        if !proc_info.gpu_indices.contains(&gpu_idx) {
-                            proc_info.gpu_indices.push(gpu_idx);
+                        let indices = proc_info.gpu_indices.get_or_insert_with(Vec::new);
+                        if !indices.contains(&gpu_idx) {
+                            indices.push(gpu_idx);
                         }
 
                         // Add GPU memory for this device, if the device gave
@@ -1711,7 +1783,7 @@ mod linux {
             io_read_bytes,
             io_write_bytes,
             start_time: process_start_time,
-            gpu_indices: Vec::new(),
+            gpu_indices: None,
             gpu_memory_per_device: HashMap::new(),
             total_gpu_memory_bytes: None,
             state,
@@ -2178,13 +2250,15 @@ mod windows_impl {
                             category,
                             cpu_percent,
                             memory_bytes,
-                            gpu_indices: Vec::new(),
+                            gpu_indices: None,
                             gpu_memory_per_device: HashMap::new(),
                             total_gpu_memory_bytes: None,
                             // Windows exposes scheduling state per thread, not per
                             // process. Reporting 'R' here was a guess, not a reading.
                             state: 'U',
-                            priority: Some(priority_class as i32),
+                            // `GetPriorityClass` returns 0 when it fails, and 0 is
+                            // not a priority class. It was stored as `Some(0)`.
+                            priority: (priority_class != 0).then_some(priority_class as i32),
                             gfx_engine_used: None,
                             compute_engine_used: None,
                             enc_engine_used: None,
@@ -2257,7 +2331,7 @@ mod windows_impl {
                         category,
                         cpu_percent,
                         memory_bytes: row.working_set_bytes,
-                        gpu_indices: Vec::new(),
+                        gpu_indices: None,
                         gpu_memory_per_device: HashMap::new(),
                         total_gpu_memory_bytes: None,
                         state: 'U',
@@ -2505,25 +2579,29 @@ mod macos {
                     ((total_cpu_secs / (now - process_start_secs) as f64) * 100.0) as f32
                 });
 
-                // Status mapping
-                let status = match task_info.pbsd.pbi_status {
-                    1 => "Idle",
-                    2 => "Running",
-                    3 => "Sleeping",
-                    4 => "Stopped",
-                    5 => "Zombie",
-                    _ => "Unknown",
-                }
-                .to_string();
+                // Status mapping, to the state letters the struct documents. SSTOP
+                // is stopped (`T`). It used to be mapped through the word "Stopped"
+                // and then its first letter, which is `S`, sleeping.
+                let state = match task_info.pbsd.pbi_status {
+                    1 => 'I', // SIDL: being created, or idle
+                    2 => 'R', // SRUN
+                    3 => 'S', // SSLEEP
+                    4 => 'T', // SSTOP
+                    5 => 'Z', // SZOMB
+                    _ => 'U',
+                };
 
-                let user_str = format!("{}", task_info.pbsd.pbi_uid);
-                let category = ProcessCategory::classify(&name, Some(&user_str), false);
+                // The uid is a number. The name comes from the account database,
+                // or is `None` when there is no such account. It used to be the
+                // number itself, so `root` was never recognised as root.
+                let user = user_name(task_info.pbsd.pbi_uid);
+                let category = ProcessCategory::classify(&name, user.as_deref(), false);
 
                 processes.push(ProcessMonitorInfo {
                     pid: pid as u32,
                     parent_pid: Some(task_info.pbsd.pbi_ppid),
                     name,
-                    user: Some(user_str),
+                    user,
                     category,
                     cpu_percent,
                     memory_bytes: task_info.ptinfo.pti_resident_size,
@@ -2536,10 +2614,10 @@ mod macos {
                     io_read_bytes: None,
                     io_write_bytes: None,
                     start_time: Some(task_info.pbsd.pbi_start_tvsec),
-                    gpu_indices: Vec::new(),
+                    gpu_indices: None,
                     gpu_memory_per_device: HashMap::new(),
                     total_gpu_memory_bytes: None,
-                    state: status.chars().next().unwrap_or('U'), // First char of status
+                    state,
                     priority: Some(task_info.ptinfo.pti_priority),
                     gfx_engine_used: None,
                     compute_engine_used: None,
@@ -2719,7 +2797,7 @@ mod tests {
             io_read_bytes: Some(0),
             io_write_bytes: Some(0),
             start_time: None,
-            gpu_indices: vec![],
+            gpu_indices: Some(vec![]),
             gpu_memory_per_device: HashMap::new(),
             total_gpu_memory_bytes: None,
             state: 'R',
@@ -2851,6 +2929,24 @@ mod tests {
         );
     }
 
+    /// A pattern counts only as a whole word. `obs` is the OBS recorder, and
+    /// the same letters inside `obsidian` are a notes app.
+    #[test]
+    fn a_pattern_inside_a_longer_word_does_not_classify_the_process() {
+        assert_eq!(
+            ProcessCategory::classify("obsidian", None, false),
+            ProcessCategory::Productivity
+        );
+        assert_eq!(
+            ProcessCategory::classify("obs-studio", None, false),
+            ProcessCategory::Media
+        );
+        assert_eq!(
+            ProcessCategory::classify("python3.11", None, false),
+            ProcessCategory::AiMl
+        );
+    }
+
     #[test]
     fn test_classify_unknown() {
         assert_eq!(
@@ -2886,9 +2982,25 @@ mod tests {
     #[test]
     fn test_is_gpu_process() {
         let mut p = make_test_process();
-        assert!(!p.is_gpu_process());
-        p.gpu_indices.push(0);
-        assert!(p.is_gpu_process());
+        assert_eq!(p.is_gpu_process(), Some(false));
+        p.gpu_indices.get_or_insert_with(Vec::new).push(0);
+        assert_eq!(p.is_gpu_process(), Some(true));
+
+        // Attribution that never ran is unknown, not "no GPU".
+        p.gpu_indices = None;
+        assert_eq!(p.is_gpu_process(), None);
+        assert_eq!(p.gpu_count(), None);
+    }
+
+    /// Without a GPU collection, attribution never runs, so every process reports
+    /// its GPU use as unknown rather than as none.
+    #[test]
+    fn a_monitor_without_gpus_reports_gpu_use_as_unknown() {
+        let mut monitor = ProcessMonitor::without_gpu().unwrap();
+        let procs = monitor.processes().unwrap();
+        assert!(!procs.is_empty());
+        assert!(procs.iter().all(|p| p.gpu_indices.is_none()));
+        assert!(procs.iter().all(|p| p.is_gpu_process().is_none()));
     }
 
     /// A process no device reported memory for reads back as unknown, and a
@@ -2974,9 +3086,9 @@ mod tests {
     #[test]
     fn test_process_gpu_count() {
         let mut p = make_test_process();
-        assert_eq!(p.gpu_count(), 0);
-        p.gpu_indices = vec![0, 1];
-        assert_eq!(p.gpu_count(), 2);
+        assert_eq!(p.gpu_count(), Some(0));
+        p.gpu_indices = Some(vec![0, 1]);
+        assert_eq!(p.gpu_count(), Some(2));
     }
 
     #[test]

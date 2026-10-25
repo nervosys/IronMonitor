@@ -28,7 +28,11 @@ fn main() -> Result<()> {
         println!("+---------+--------------------------+-------+---------+-------+----------+");
 
         let mut count = 0;
-        for proc in gpu_procs.iter().filter(|p| p.is_gpu_process()).take(10) {
+        for proc in gpu_procs
+            .iter()
+            .filter(|p| p.is_gpu_process() == Some(true))
+            .take(10)
+        {
             let name = if proc.name.len() > 24 {
                 format!("{}...", &proc.name[..21])
             } else {
@@ -38,6 +42,7 @@ fn main() -> Result<()> {
             let gpus = proc
                 .gpu_indices
                 .iter()
+                .flatten()
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join(",");

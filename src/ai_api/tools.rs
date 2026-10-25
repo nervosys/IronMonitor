@@ -1008,9 +1008,11 @@ impl AiDataApi {
         let filtered: Vec<_> = gpu_procs
             .iter()
             .filter(|p| {
-                gpu_index
-                    .map(|idx| p.gpu_indices.contains(&(idx as usize)))
-                    .unwrap_or(true)
+                gpu_index.is_none_or(|idx| {
+                    p.gpu_indices
+                        .as_ref()
+                        .is_some_and(|gpus| gpus.contains(&(idx as usize)))
+                })
             })
             .map(|p| {
                 json!({
@@ -2204,9 +2206,11 @@ impl AiDataApi {
         let list: Vec<_> = top
             .iter()
             .filter(|p| {
-                gpu_index
-                    .map(|idx| p.gpu_indices.contains(&(idx as usize)))
-                    .unwrap_or(true)
+                gpu_index.is_none_or(|idx| {
+                    p.gpu_indices
+                        .as_ref()
+                        .is_some_and(|gpus| gpus.contains(&(idx as usize)))
+                })
             })
             .take(count)
             .map(|p| {

@@ -37,7 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize process monitor with GPU detection
     let mut monitor = ProcessMonitor::new()?;
     println!("✓ Process monitor initialized");
-    println!("✓ Detected {} GPU(s)\n", monitor.gpu_count());
+    match monitor.gpu_count() {
+        Some(n) => println!("✓ Detected {} GPU(s)\n", n),
+        None => println!("✓ GPU detection did not run\n"),
+    }
 
     loop {
         // Update process list
@@ -55,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Filter to only GPU-using processes
         let gpu_only: Vec<_> = gpu_processes
             .iter()
-            .filter(|p| p.is_gpu_process())
+            .filter(|p| p.is_gpu_process() == Some(true))
             .collect();
 
         if gpu_only.is_empty() {
