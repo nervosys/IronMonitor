@@ -83,7 +83,8 @@ pub struct InterruptInfo {
 /// Interrupt imbalance analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterruptAnalysis {
-    /// Total interrupts per second (estimated from delta if available).
+    /// Total interrupts serviced since boot, summed over every CPU: a cumulative
+    /// count, not a rate. It used to be documented as interrupts per second.
     pub total_interrupts: u64,
     /// Per-CPU interrupt totals.
     pub per_cpu_totals: Vec<u64>,
