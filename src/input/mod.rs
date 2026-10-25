@@ -550,18 +550,12 @@ impl InputMonitor {
                     .as_str()
                     .unwrap_or("Unknown Pointing Device")
                     .to_string();
-                let lower = name.to_lowercase();
-                let device_type = if lower.contains("touchpad") || lower.contains("trackpad") {
-                    InputDeviceType::Touchpad
-                } else if lower.contains("trackball") {
-                    InputDeviceType::Trackball
-                } else if lower.contains("touchscreen") || lower.contains("touch screen") {
-                    InputDeviceType::Touchscreen
-                } else if lower.contains("tablet") || lower.contains("wacom") {
-                    InputDeviceType::Tablet
-                } else {
-                    InputDeviceType::Mouse
-                };
+                // The type comes from `PointingType`, which the query already
+                // selects. It used to be a substring match on the display name,
+                // so a product name containing "touchpad" decided the class, and
+                // every name the match missed became a Mouse. A type the platform
+                // does not name is `Other`, not a guess.
+                let device_type = pointing_device_type(&item["PointingType"]);
                 let device_id = item["DeviceID"].as_str().unwrap_or("").to_string();
                 // See the keyboard branch above.
                 let iface = interface_from_device_tree(&device_id);
@@ -704,6 +698,72 @@ impl std::fmt::Display for InputInterface {
             Self::Virtual => write!(f, "Virtual"),
             Self::Unknown => write!(f, "Unknown"),
         }
+    }
+}
+
+/// The device type of a `Win32_PointingDevice` row from its `PointingType`.
+///
+/// The CIM value map is a uint16: 3 Mouse, 4 Track Ball, 5 Track Point,
+/// 7 Touch Pad, 8 Touch Screen. The string spelling is accepted too, since the
+/// property has been seen both ways. Any other value, or none, is `Other`.
+#[cfg(target_os = "windows")]
+fn pointing_device_type(value: &serde_json::Value) -> InputDeviceType {
+    if let Some(code) = value.as_u64() {
+        return match code {
+            3 => InputDeviceType::Mouse,
+            4 => InputDeviceType::Trackball,
+            5 => InputDeviceType::Trackpoint,
+            7 => InputDeviceType::Touchpad,
+            8 => InputDeviceType::Touchscreen,
+            _ => InputDeviceType::Other,
+        };
+    }
+    match value.as_str() {
+        Some("Mouse") => InputDeviceType::Mouse,
+        Some("Track Ball") => InputDeviceType::Trackball,
+        Some("Track Point") => InputDeviceType::Trackpoint,
+        Some("Touch Pad") => InputDeviceType::Touchpad,
+        Some("Touch Screen") => InputDeviceType::Touchscreen,
+        _ => InputDeviceType::Other,
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod pointing_tests {
+    use super::{pointing_device_type, InputDeviceType};
+
+    #[test]
+    fn pointing_type_decides_the_class_not_the_name() {
+        // A touchpad whose product name says nothing about it is still a touchpad.
+        assert_eq!(
+            pointing_device_type(&serde_json::json!(7)),
+            InputDeviceType::Touchpad
+        );
+        assert_eq!(
+            pointing_device_type(&serde_json::json!("Touch Pad")),
+            InputDeviceType::Touchpad
+        );
+        assert_eq!(
+            pointing_device_type(&serde_json::json!(3)),
+            InputDeviceType::Mouse
+        );
+    }
+
+    #[test]
+    fn an_unnamed_pointing_type_is_other_not_a_mouse() {
+        // "Other" (1) and "Unknown" (2) in the value map, and a missing property.
+        assert_eq!(
+            pointing_device_type(&serde_json::json!(1)),
+            InputDeviceType::Other
+        );
+        assert_eq!(
+            pointing_device_type(&serde_json::json!(2)),
+            InputDeviceType::Other
+        );
+        assert_eq!(
+            pointing_device_type(&serde_json::Value::Null),
+            InputDeviceType::Other
+        );
     }
 }
 

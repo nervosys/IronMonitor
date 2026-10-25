@@ -116,8 +116,10 @@ pub struct CodecCapability {
     pub codec: VideoCodec,
     /// Direction (encode/decode/both)
     pub direction: CodecDirection,
-    /// Maximum supported resolution
-    pub max_resolution: MaxResolution,
+    /// Maximum supported resolution, or `None` where no frame class was read.
+    /// The Apple rows used to hold literal 4K and 8K classes for every chip, and
+    /// the VA-API rows a literal 4K, neither of which any platform query reports.
+    pub max_resolution: Option<MaxResolution>,
     /// Maximum bit depth
     pub max_bit_depth: BitDepth,
     /// Maximum FPS at the maximum resolution.
@@ -400,11 +402,12 @@ impl CodecMonitor {
             .filter(|c| {
                 &c.codec == codec
                     && matches!(c.direction, CodecDirection::Decode | CodecDirection::Both)
-                    // `Unknown` sorts above every real class in the derived
-                    // ordering, so an unclassified row must not reach `max()`.
-                    && c.max_resolution != MaxResolution::Unknown
             })
-            .map(|c| c.max_resolution.clone())
+            // A row with no frame class is `None`, and so is `Unknown`. Neither
+            // may reach `max()`: `Unknown` sorts above every real class in the
+            // derived ordering.
+            .filter_map(|c| c.max_resolution.clone())
+            .filter(|r| *r != MaxResolution::Unknown)
             .max()
             .unwrap_or(MaxResolution::Unknown)
     }
@@ -557,7 +560,7 @@ impl CodecMonitor {
             device: gpu_name.to_string(),
             codec,
             direction,
-            max_resolution: MaxResolution::Unknown,
+            max_resolution: None,
             max_bit_depth: BitDepth::Unknown,
             max_fps: None,
             engine: engine.to_string(),
@@ -681,39 +684,22 @@ impl CodecMonitor {
     }
 
     fn infer_apple_codecs(&mut self, gpu_name: &str) {
+        // No frame class is read for these rows, so `max_resolution` is `None`.
+        // The rows used to name a literal 4K or 8K class per codec, which no
+        // platform query reported for this chip.
         let codecs = vec![
-            (
-                VideoCodec::H264,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit8,
-            ),
-            (
-                VideoCodec::H265,
-                CodecDirection::Both,
-                MaxResolution::UHD8K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::VP9,
-                CodecDirection::Decode,
-                MaxResolution::UHD4K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::ProRes,
-                CodecDirection::Both,
-                MaxResolution::UHD8K,
-                BitDepth::Bit10,
-            ),
+            (VideoCodec::H264, CodecDirection::Both, BitDepth::Bit8),
+            (VideoCodec::H265, CodecDirection::Both, BitDepth::Bit10),
+            (VideoCodec::VP9, CodecDirection::Decode, BitDepth::Bit10),
+            (VideoCodec::ProRes, CodecDirection::Both, BitDepth::Bit10),
         ];
 
-        for (codec, dir, res, depth) in codecs {
+        for (codec, dir, depth) in codecs {
             self.codec_caps.push(CodecCapability {
                 device: gpu_name.to_string(),
                 codec,
                 direction: dir,
-                max_resolution: res,
+                max_resolution: None,
                 max_bit_depth: depth,
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
@@ -733,7 +719,7 @@ impl CodecMonitor {
                 device: gpu_name.to_string(),
                 codec: VideoCodec::AV1,
                 direction: CodecDirection::Decode,
-                max_resolution: MaxResolution::UHD8K,
+                max_resolution: None,
                 max_bit_depth: BitDepth::Bit10,
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
@@ -894,7 +880,7 @@ impl CodecMonitor {
                     // vainfo's profile and entrypoint lines carry no frame size,
                     // and this reader does not query one. It used to be the
                     // literal UHD4K on every row.
-                    max_resolution: MaxResolution::Unknown,
+                    max_resolution: None,
                     max_bit_depth: if profile.contains("10") {
                         BitDepth::Bit10
                     } else {
@@ -968,7 +954,7 @@ impl std::fmt::Display for MaxResolution {
 mod tests {
     use super::*;
 
-    fn decode_row(res: MaxResolution) -> CodecCapability {
+    fn decode_row(res: Option<MaxResolution>) -> CodecCapability {
         CodecCapability {
             device: "VA-API".into(),
             codec: VideoCodec::H264,
@@ -988,10 +974,7 @@ mod tests {
     #[test]
     fn test_unclassified_row_does_not_win_max_decode_resolution() {
         let monitor = CodecMonitor {
-            codec_caps: vec![
-                decode_row(MaxResolution::Unknown),
-                decode_row(MaxResolution::FullHD),
-            ],
+            codec_caps: vec![decode_row(None), decode_row(Some(MaxResolution::FullHD))],
             compute_caps: Vec::new(),
             unmatched_gpus: Vec::new(),
         };
@@ -1000,7 +983,7 @@ mod tests {
             MaxResolution::FullHD
         );
         let only_unknown = CodecMonitor {
-            codec_caps: vec![decode_row(MaxResolution::Unknown)],
+            codec_caps: vec![decode_row(None)],
             compute_caps: Vec::new(),
             unmatched_gpus: Vec::new(),
         };
@@ -1203,12 +1186,33 @@ mod tests {
     }
 
     #[test]
+    fn test_apple_rows_name_no_frame_class() {
+        // The Apple table is inferred from the chip name, which fixes the codecs
+        // and not a frame size. No row may carry a resolution it did not read.
+        let mut monitor = empty_monitor();
+        monitor.infer_apple_codecs("Apple M3 Max");
+        assert!(!monitor.codec_caps.is_empty());
+        assert!(monitor
+            .codec_caps
+            .iter()
+            .all(|c| c.max_resolution.is_none()));
+        assert!(monitor
+            .codec_caps
+            .iter()
+            .any(|c| c.codec == VideoCodec::AV1));
+        assert_eq!(
+            monitor.max_decode_resolution(&VideoCodec::H264),
+            MaxResolution::Unknown
+        );
+    }
+
+    #[test]
     fn test_serialization() {
         let cap = CodecCapability {
             device: "Test GPU".into(),
             codec: VideoCodec::AV1,
             direction: CodecDirection::Decode,
-            max_resolution: MaxResolution::UHD8K,
+            max_resolution: Some(MaxResolution::UHD8K),
             max_bit_depth: BitDepth::Bit10,
             max_fps: Some(60),
             engine: "NVDEC".into(),

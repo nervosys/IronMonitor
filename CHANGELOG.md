@@ -54,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Peripheral readers no longer report values they did not read: the Linux
+  Bluetooth adapter name is `None` rather than "Bluetooth Adapter (hciN)"; Windows
+  pointing devices take their type from `PointingType` instead of the product
+  name, and an unnamed type is `Other`; Apple codec rows publish no frame class
+  rather than a literal 4K or 8K; `EmcInfo.value` is renamed
+  `clock_percent_of_max`, since it is a clock ratio and not a bandwidth; a failed
+  Windows NPU query is `npu.<unreadable>` instead of "no NPU" (`npu.<none>`); and
+  the codec `max_resolution` of a row with no frame class is unavailable, not the
+  text "Unknown".
 - RAPL: an unread `enabled` attribute is no longer published as a measured
   `true`; a missing powercap tree is an error, not "present with no domains";
   PSys is reported separately instead of being added to the package total; and

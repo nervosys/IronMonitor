@@ -25,6 +25,15 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
     // `npu.<none>` is declared for every domain by the base schema, so it is not
     // declared here.
     add(Entity::new(
+        "npu.<unreadable>",
+        D::Npu,
+        K::Diagnostic,
+        None,
+        P::Unavailable,
+        true,
+        "Present when NPU enumeration itself failed, carrying the error. Whether any NPU exists is unknown, which is not the same as the `npu.<none>` finding that the domain enumerated nothing.",
+    ));
+    add(Entity::new(
         "npu.{n}.name",
         D::Npu,
         K::Identity,
@@ -84,8 +93,11 @@ pub(super) fn resolve(out: &mut Vec<Reading>) {
     let npus = match crate::silicon::query_npus() {
         Ok(npus) => npus,
         Err(e) => {
+            // A failed query says nothing about whether an NPU exists, so it is
+            // `npu.<unreadable>` and not `npu.<none>`, which would tell an agent
+            // the machine has no NPU when the reader could not look.
             out.push(Reading::unavailable(
-                "npu.<none>",
+                "npu.<unreadable>",
                 None,
                 format!("the NPU query failed: {e}"),
             ));

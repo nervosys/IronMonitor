@@ -182,11 +182,11 @@ fn read_emc_info() -> Result<EmcInfo> {
             "EMC reports no maximum frequency".to_string(),
         ));
     }
-    let value = ((cur as f32 / max as f32) * 100.0) as u32;
+    let clock_percent_of_max = ((cur as f32 / max as f32) * 100.0) as u32;
 
     Ok(EmcInfo {
         online: true,
-        value,
+        clock_percent_of_max,
         current: cur,
         max,
         min,

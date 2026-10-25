@@ -408,9 +408,12 @@ impl BluetoothMonitor {
                                 _ => None,
                             });
 
+                    // The kernel's sysfs entry names no product, so the name is
+                    // `None`. It used to be the constructed label "Bluetooth
+                    // Adapter (hciN)", which is the index dressed as a name.
                     self.adapters.push(BluetoothAdapter {
                         id: name.clone(),
-                        name: Some(format!("Bluetooth Adapter ({})", name)),
+                        name: None,
                         address,
                         powered,
                     });

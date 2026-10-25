@@ -95,8 +95,11 @@ impl SwapInfo {
 pub struct EmcInfo {
     /// EMC online status
     pub online: bool,
-    /// Percentage of bandwidth used
-    pub value: u32,
+    /// Current clock as a percentage of the maximum clock. It is a frequency
+    /// ratio, not a bandwidth or a utilisation. The field used to be named
+    /// `value` and documented as "Percentage of bandwidth used", which read as
+    /// a measured bus load it was not.
+    pub clock_percent_of_max: u32,
     /// Current frequency in kHz
     pub current: u32,
     /// Maximum frequency in kHz

@@ -3010,23 +3010,29 @@ fn resolve_codecs(out: &mut Vec<Reading>) {
             &format!("{:?}", c.direction),
         );
         push_str(out, format!("{base}.engine"), &c.engine);
-        push_str(
-            out,
-            format!("{base}.max_resolution"),
-            &format!("{:?}", c.max_resolution),
-        );
+        // `Unknown` is an absence, so it is not published as the text "Unknown".
+        match &c.max_resolution {
+            Some(res) if *res != MaxResolution::Unknown => {
+                push_str(out, format!("{base}.max_resolution"), &format!("{res:?}"))
+            }
+            _ => out.push(Reading::unavailable(
+                format!("{base}.max_resolution"),
+                Some(Unit::Identifier),
+                "the platform reports no frame class for this engine, and none is inferred",
+            )),
+        }
 
         // Pixel dimensions for the frame class. A table, and declared as one:
         // the class is what the reader knows, and these two are what a consumer
         // sizing a buffer actually needs.
-        let pixels = match c.max_resolution {
-            MaxResolution::SD => Some((720, 480)),
-            MaxResolution::HD => Some((1280, 720)),
-            MaxResolution::FullHD => Some((1920, 1080)),
-            MaxResolution::QHD => Some((2560, 1440)),
-            MaxResolution::UHD4K => Some((3840, 2160)),
-            MaxResolution::UHD8K => Some((7680, 4320)),
-            MaxResolution::Unknown => None,
+        let pixels = match &c.max_resolution {
+            Some(MaxResolution::SD) => Some((720, 480)),
+            Some(MaxResolution::HD) => Some((1280, 720)),
+            Some(MaxResolution::FullHD) => Some((1920, 1080)),
+            Some(MaxResolution::QHD) => Some((2560, 1440)),
+            Some(MaxResolution::UHD4K) => Some((3840, 2160)),
+            Some(MaxResolution::UHD8K) => Some((7680, 4320)),
+            Some(MaxResolution::Unknown) | None => None,
         };
         match pixels {
             Some((w, h)) => {

@@ -328,55 +328,63 @@ impl SiliconMonitor for WindowsSiliconMonitor {
         {
             let mut npus = Vec::new();
 
-            if let Ok(com) = wmi::COMLibrary::new() {
-                if let Ok(wmi_conn) = wmi::WMIConnection::new(com) {
-                    #[derive(serde::Deserialize, Debug)]
-                    #[serde(rename_all = "PascalCase")]
-                    struct PnpDevice {
-                        name: Option<String>,
-                        manufacturer: Option<String>,
-                        #[allow(dead_code)]
-                        status: Option<String>,
-                    }
+            // A WMI failure is an error, not an empty list. It used to be swallowed
+            // by `if let Ok`, so a query that never ran read as "no NPU". The error
+            // now reaches the ontology, which reports the NPU domain as unreadable.
+            let com = wmi::COMLibrary::new().map_err(|e| {
+                crate::error::IronError::System(format!("NPU query: COM did not start: {e}"))
+            })?;
+            let wmi_conn = wmi::WMIConnection::new(com).map_err(|e| {
+                crate::error::IronError::System(format!("NPU query: WMI did not connect: {e}"))
+            })?;
+            #[derive(serde::Deserialize, Debug)]
+            #[serde(rename_all = "PascalCase")]
+            struct PnpDevice {
+                name: Option<String>,
+                manufacturer: Option<String>,
+                #[allow(dead_code)]
+                status: Option<String>,
+            }
 
-                    // Query specifically for NPU device classes:
-                    //   - "Processing accelerators" is the correct Windows class for NPUs (Win11+)
-                    //   - Fall back to "System" class devices with NPU-related names
-                    // This excludes USB, HID, Bluetooth, and other unrelated device classes.
-                    if let Ok(devices) = wmi_conn.raw_query::<PnpDevice>(
-                        // `PNPClass` is filtered on but not selected: the WHERE clause
-                        // already guarantees which class each row belongs to.
-                        "SELECT Name, Manufacturer, Status FROM Win32_PnPEntity WHERE \
+            // Query specifically for NPU device classes:
+            //   - "Processing accelerators" is the correct Windows class for NPUs (Win11+)
+            //   - Fall back to "System" class devices with NPU-related names
+            // This excludes USB, HID, Bluetooth, and other unrelated device classes.
+            let devices = wmi_conn
+                .raw_query::<PnpDevice>(
+                    // `PNPClass` is filtered on but not selected: the WHERE clause
+                    // already guarantees which class each row belongs to.
+                    "SELECT Name, Manufacturer, Status FROM Win32_PnPEntity WHERE \
                          PNPClass = 'Processing accelerators' OR \
                          (PNPClass = 'System' AND \
                           (Name LIKE '%NPU%' OR Name LIKE '%Neural%' OR \
                            Name LIKE '%AI Boost%' OR Name LIKE '%AI Accelerator%'))",
-                    ) {
-                        for device in devices {
-                            if let Some(name) = device.name {
-                                // The vendor is the WMI Manufacturer, or unknown.
-                                // It used to be inferred from the device name
-                                // ("intel", "qualcomm") when Manufacturer was
-                                // absent, and the name is not the vendor.
-                                let vendor = device.manufacturer.filter(|m| !m.trim().is_empty());
-                                // No core count is read here. It used to be
-                                // guessed from `vendor`, which is itself a
-                                // substring match on the device name when the
-                                // manufacturer string is absent — a guess keyed
-                                // off a guess.
-                                let cores = None;
-                                npus.push(NpuInfo {
-                                    name,
-                                    vendor,
-                                    cores,
-                                    // Needs a vendor-specific API; 0 was not a reading.
-                                    utilization: None,
-                                    power_watts: None,
-                                    frequency_mhz: None,
-                                });
-                            }
-                        }
-                    }
+                )
+                .map_err(|e| {
+                    crate::error::IronError::System(format!("NPU query: WMI read failed: {e}"))
+                })?;
+            for device in devices {
+                if let Some(name) = device.name {
+                    // The vendor is the WMI Manufacturer, or unknown.
+                    // It used to be inferred from the device name
+                    // ("intel", "qualcomm") when Manufacturer was
+                    // absent, and the name is not the vendor.
+                    let vendor = device.manufacturer.filter(|m| !m.trim().is_empty());
+                    // No core count is read here. It used to be
+                    // guessed from `vendor`, which is itself a
+                    // substring match on the device name when the
+                    // manufacturer string is absent — a guess keyed
+                    // off a guess.
+                    let cores = None;
+                    npus.push(NpuInfo {
+                        name,
+                        vendor,
+                        cores,
+                        // Needs a vendor-specific API; 0 was not a reading.
+                        utilization: None,
+                        power_watts: None,
+                        frequency_mhz: None,
+                    });
                 }
             }
 
