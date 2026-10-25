@@ -14,6 +14,10 @@ const UTILIZATION_WHY: &str = concat!(
     "this NPU's platform reader does not measure utilization, which is not the ",
     "same as an idle NPU"
 );
+const VENDOR_WHY: &str = concat!(
+    "the platform reports no manufacturer for this NPU. It is not inferred from ",
+    "the device name"
+);
 const POWER_WHY: &str = "the platform reports no power draw for this NPU";
 const FREQUENCY_WHY: &str = "the platform reports no clock frequency for this NPU";
 
@@ -96,7 +100,16 @@ pub(super) fn resolve(out: &mut Vec<Reading>) {
     for (index, npu) in npus.iter().enumerate() {
         let base = format!("npu.{index}");
         push_text(out, format!("{base}.name"), &npu.name);
-        push_text(out, format!("{base}.vendor"), &npu.vendor);
+        push_opt(
+            out,
+            format!("{base}.vendor"),
+            npu.vendor
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| serde_json::json!(v)),
+            Some(U::Text),
+            VENDOR_WHY,
+        );
         push_spec_opt(
             out,
             format!("{base}.cores"),

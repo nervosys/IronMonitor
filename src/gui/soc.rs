@@ -231,7 +231,12 @@ pub(super) fn draw_npus(ui: &mut egui::Ui, details: Option<&SiliconDetails>, wid
                     );
                 });
                 row(ui, "Type", "NPU", DeviceTitleColors::ACCEL);
-                row(ui, "Vendor", &npu.vendor, DeviceTitleColors::ACCEL);
+                row(
+                    ui,
+                    "Vendor",
+                    npu.vendor.as_deref().unwrap_or("unknown"),
+                    DeviceTitleColors::ACCEL,
+                );
                 if let Some(cores) = npu.cores {
                     row(ui, "Cores", &cores.to_string(), DeviceTitleColors::ACCEL);
                 }
@@ -257,7 +262,7 @@ pub(super) fn draw_npus(ui: &mut egui::Ui, details: Option<&SiliconDetails>, wid
                 if npu.utilization.is_none() && npu.power_watts.is_none() {
                     note(
                         ui,
-                        if npu.vendor == "Apple" {
+                        if npu.vendor.as_deref() == Some("Apple") {
                             "No live figures: the Neural Engine's power comes from \
                              powermetrics, which needs root, and macOS reports no \
                              activity figure for it."

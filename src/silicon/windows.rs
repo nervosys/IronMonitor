@@ -354,15 +354,11 @@ impl SiliconMonitor for WindowsSiliconMonitor {
                     ) {
                         for device in devices {
                             if let Some(name) = device.name {
-                                let vendor = device.manufacturer.unwrap_or_else(|| {
-                                    if name.to_lowercase().contains("intel") {
-                                        "Intel".to_string()
-                                    } else if name.to_lowercase().contains("qualcomm") {
-                                        "Qualcomm".to_string()
-                                    } else {
-                                        "Unknown".to_string()
-                                    }
-                                });
+                                // The vendor is the WMI Manufacturer, or unknown.
+                                // It used to be inferred from the device name
+                                // ("intel", "qualcomm") when Manufacturer was
+                                // absent, and the name is not the vendor.
+                                let vendor = device.manufacturer.filter(|m| !m.trim().is_empty());
                                 // No core count is read here. It used to be
                                 // guessed from `vendor`, which is itself a
                                 // substring match on the device name when the
@@ -435,15 +431,17 @@ impl SiliconMonitor for WindowsSiliconMonitor {
                             // PhysicalDisk` instances, whose Name is "0 C:" —
                             // a disk index and drive letters, never a model
                             // string. So the two branches below cannot match
-                            // and every entry has always been "Storage", which
-                            // is at least true of all of them.
+                            // in practice, and the type is "Unknown" rather than
+                            // a label that merely describes every row. It used
+                            // to be "Storage" for all of them.
                             let controller_type = if name.contains("NVMe") {
                                 "NVMe"
                             } else if name.contains("SSD") {
                                 "SATA SSD"
                             } else {
-                                "Storage"
-                            }.to_string();
+                                "Unknown"
+                            }
+                            .to_string();
 
                             controllers.push(IoController {
                                 controller_type,

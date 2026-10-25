@@ -206,7 +206,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
         Ok((0..count)
             .map(|_| NpuInfo {
                 name: "Apple Neural Engine".to_string(),
-                vendor: "Apple".to_string(),
+                vendor: Some("Apple".to_string()),
                 // "Most" is not this machine. The ANE core count is not read.
                 cores: None,
                 // Not reported. This was the ANE's measured draw divided by a
@@ -230,10 +230,7 @@ impl SiliconMonitor for AppleSiliconMonitor {
             let text = String::from_utf8_lossy(&output.stdout);
             // iostat -d outputs: device, KB/t, tps, MB/s
             for line in text.lines().skip(2) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    let name = parts[0].to_string();
-                    let mbps: f64 = parts[3].parse().unwrap_or(0.0);
+                if let Some((name, mbps)) = parse_iostat_row(line) {
                     controllers.push(IoController {
                         controller_type: if name.starts_with("disk") {
                             "NVMe".to_string()
@@ -241,7 +238,9 @@ impl SiliconMonitor for AppleSiliconMonitor {
                             "Storage".to_string()
                         },
                         name,
-                        bandwidth_mbps: Some(mbps),
+                        // `None` when the MB/s column does not parse. It used to
+                        // be 0.0, an idle disk, for a figure that was never read.
+                        bandwidth_mbps: mbps,
                         // 7000 was the spec figure for Apple Silicon's fastest
                         // NVMe, applied to whatever this disk is. Nothing about
                         // the actual link is read here.
@@ -296,9 +295,8 @@ impl SiliconMonitor for AppleSiliconMonitor {
                     // New interface line like "en0: flags=8863<UP,...>"
                     let iface = line.split(':').next().unwrap_or("").to_string();
                     if !current_iface.is_empty() && is_up && !current_iface.starts_with("lo") {
-                        let interface_type = classify_macos_interface(&current_iface);
                         networks.push(NetworkSilicon {
-                            interface: interface_type,
+                            interface: current_iface.clone(),
                             link_speed_mbps: None,
                             rx_bandwidth_mbps: None,
                             tx_bandwidth_mbps: None,
@@ -312,9 +310,8 @@ impl SiliconMonitor for AppleSiliconMonitor {
             }
             // Push last
             if !current_iface.is_empty() && is_up && !current_iface.starts_with("lo") {
-                let interface_type = classify_macos_interface(&current_iface);
                 networks.push(NetworkSilicon {
-                    interface: interface_type,
+                    interface: current_iface.clone(),
                     link_speed_mbps: None,
                     rx_bandwidth_mbps: None,
                     tx_bandwidth_mbps: None,
@@ -331,21 +328,17 @@ impl SiliconMonitor for AppleSiliconMonitor {
     }
 }
 
-/// Classify macOS interface name to type
-fn classify_macos_interface(iface: &str) -> String {
-    if iface == "en0" {
-        "WiFi".to_string()
-    } else if iface.starts_with("en") {
-        "Ethernet".to_string()
-    } else if iface.starts_with("bridge") {
-        "Bridge".to_string()
-    } else if iface.starts_with("awdl") {
-        "AirDrop".to_string()
-    } else if iface.starts_with("utun") {
-        "VPN Tunnel".to_string()
-    } else {
-        iface.to_string()
+/// One `iostat -d` device row as `(device, MB/s)`, or `None` for a line that is
+/// not a row.
+///
+/// The MB/s column is `None` when it does not parse. Reading it as 0.0 reported
+/// an idle disk for a figure that was never obtained.
+fn parse_iostat_row(line: &str) -> Option<(String, Option<f64>)> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 4 {
+        return None;
     }
+    Some((parts[0].to_string(), parts[3].parse::<f64>().ok()))
 }
 
 /// One CPU performance level, as `hw.perflevelN.*` reports it.
@@ -696,6 +689,20 @@ mod tests {
         );
         assert_eq!(count_ioreg_objects(ane), 1);
         assert_eq!(count_ioreg_objects(""), 0);
+    }
+
+    /// An unparsed MB/s column is unread, not an idle disk.
+    #[test]
+    fn iostat_rows_keep_an_unparsed_rate_as_none() {
+        assert_eq!(
+            parse_iostat_row("disk0 26.04 1342 34.07"),
+            Some(("disk0".to_string(), Some(34.07)))
+        );
+        assert_eq!(
+            parse_iostat_row("disk0 26.04 1342 -"),
+            Some(("disk0".to_string(), None))
+        );
+        assert_eq!(parse_iostat_row("KB/t tps"), None);
     }
 
     #[test]

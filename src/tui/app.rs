@@ -866,7 +866,8 @@ impl From<&NpuInfo> for AcceleratorInfo {
     fn from(npu: &NpuInfo) -> Self {
         AcceleratorInfo {
             name: npu.name.clone(),
-            vendor: npu.vendor.clone(),
+            // An unread vendor is shown as unknown, not as an empty name.
+            vendor: npu.vendor.clone().unwrap_or_else(|| "unknown".to_string()),
             accel_type: AcceleratorType::Npu,
             utilization: npu.utilization.map(f32::from),
             temperature: None,

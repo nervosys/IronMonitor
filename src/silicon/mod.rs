@@ -104,8 +104,13 @@ pub struct CpuCluster {
 pub struct NpuInfo {
     /// NPU name (e.g., "Apple Neural Engine", "Intel AI Boost")
     pub name: String,
-    /// Vendor
-    pub vendor: String,
+    /// Vendor, where it was read.
+    ///
+    /// Never guessed from the device name. Windows used to infer "Intel" or
+    /// "Qualcomm" from a substring of the name when the manufacturer string was
+    /// absent, and Linux labelled every `/sys/class/accel` device "Intel", so an
+    /// AMD XDNA NPU was listed twice, once as each vendor.
+    pub vendor: Option<String>,
     /// Core count, where it was read.
     ///
     /// Never inferred from the vendor. This carried `Some(16)` for any Intel

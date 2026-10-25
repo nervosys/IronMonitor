@@ -8,6 +8,92 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+/// Energy the RAPL counter gained between two readings, in microjoules.
+///
+/// The counter wraps at `max_energy_range_uj`. Across a wrap the gain is
+/// `(max - prev) + current`. With the range unknown the interval has no energy
+/// figure, so this is `None`. The post-wrap reading used to stand in for the
+/// gain, which is the energy since the wrap and not since the last sample.
+fn rapl_energy_delta(prev: u64, current: u64, max_range: Option<u64>) -> Option<u64> {
+    if current >= prev {
+        return Some(current - prev);
+    }
+    let max = max_range?;
+    if max <= prev {
+        return None;
+    }
+    Some(max - prev + current)
+}
+
+/// Usable bandwidth of a PCIe link in MB/s.
+///
+/// Raw GT/s times lanes gives Gbit/s. Line encoding removes its overhead: Gen 1
+/// and 2 (2.5 and 5 GT/s) use 8b/10b, Gen 3 and later use 128b/130b. Dividing
+/// by 8 bits per byte then gives MB/s, so a Gen 4 x4 link is about 7877 MB/s.
+fn pcie_link_mb_per_s(gt_per_s: f64, lanes: u32) -> f64 {
+    let encoding = if gt_per_s <= 5.0 {
+        8.0 / 10.0
+    } else {
+        128.0 / 130.0
+    };
+    gt_per_s * lanes as f64 * encoding * 1000.0 / 8.0
+}
+
+/// Idle and total jiffies per CPU from one `/proc/stat` reading, by CPU number.
+///
+/// The aggregate `cpu ` line is skipped. Its name has no number, and reading it
+/// as CPU 0 would mix the whole machine into core 0.
+fn parse_proc_stat_ticks(stat: &str) -> HashMap<u32, (u64, u64)> {
+    let mut ticks = HashMap::new();
+    for line in stat.lines() {
+        let Some(rest) = line.strip_prefix("cpu") else {
+            continue;
+        };
+        if rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let mut fields = rest.split_whitespace();
+        let Some(cpu) = fields.next().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        // user, nice, system, idle, ...
+        let times: Vec<u64> = fields.filter_map(|s| s.parse().ok()).collect();
+        if times.len() >= 4 {
+            let total: u64 = times.iter().sum();
+            ticks.insert(cpu, (times[3], total));
+        }
+    }
+    ticks
+}
+
+/// Utilization percentage per CPU from the ticks gained between two readings.
+///
+/// A CPU needs a line in both readings, and a counter that went backwards is a
+/// reset rather than a measurement. Either leaves that CPU out, so it reads as
+/// unmeasured.
+fn cpu_utilization_between(
+    prev: &HashMap<u32, (u64, u64)>,
+    cur: &HashMap<u32, (u64, u64)>,
+) -> HashMap<u32, u8> {
+    let mut utilization = HashMap::new();
+    for (&cpu, &(idle, total)) in cur {
+        let Some(&(prev_idle, prev_total)) = prev.get(&cpu) else {
+            continue;
+        };
+        let (Some(d_idle), Some(d_total)) =
+            (idle.checked_sub(prev_idle), total.checked_sub(prev_total))
+        else {
+            continue;
+        };
+        if d_total == 0 {
+            continue;
+        }
+        let busy = d_total - d_idle.min(d_total);
+        utilization.insert(cpu, (busy * 100 / d_total).min(100) as u8);
+    }
+    utilization
+}
+
 /// Linux silicon monitor
 pub struct LinuxSiliconMonitor {
     cpu_count: Option<usize>,
@@ -119,21 +205,25 @@ impl LinuxSiliconMonitor {
 
                                 // Calculate power if we have valid previous readings
                                 if prev_time > 0 && prev_energy > 0 {
-                                    let energy_delta = if current_energy >= prev_energy {
-                                        current_energy - prev_energy
-                                    } else {
-                                        // Counter wrapped, use just current energy as estimate
-                                        current_energy
-                                    };
+                                    // The wrap range is read only when the counter
+                                    // wrapped, but it is one small file either way.
+                                    let max_range =
+                                        fs::read_to_string(path.join("max_energy_range_uj"))
+                                            .ok()
+                                            .and_then(|s| s.trim().parse::<u64>().ok());
+                                    let energy_delta =
+                                        rapl_energy_delta(prev_energy, current_energy, max_range);
 
                                     let time_delta_s =
                                         (now_ns - prev_time) as f64 / 1_000_000_000.0;
 
-                                    if time_delta_s > 0.0 {
-                                        // Power = Energy / Time (microjoules / seconds = microwatts)
-                                        let power_uw = energy_delta as f64 / time_delta_s;
-                                        let power_w = power_uw / 1_000_000.0;
-                                        return Some(power_w as f32);
+                                    if let Some(energy_delta) = energy_delta {
+                                        if time_delta_s > 0.0 {
+                                            // Power = Energy / Time (microjoules / seconds = microwatts)
+                                            let power_uw = energy_delta as f64 / time_delta_s;
+                                            let power_w = power_uw / 1_000_000.0;
+                                            return Some(power_w as f32);
+                                        }
                                     }
                                 }
 
@@ -252,39 +342,29 @@ impl LinuxSiliconMonitor {
     }
 
     /// Read CPU utilization from /proc/stat
+    ///
+    /// /proc/stat holds ticks since boot, so one reading is the average since
+    /// boot and not the current load. This differences against the previous
+    /// call's reading, kept in `PREVIOUS_TICKS`. The first call in a process has
+    /// nothing to difference, so it reports no utilization for any CPU. It used
+    /// to convert the since-boot counters into a percentage directly, which is
+    /// the uptime average presented as the current load.
     fn read_cpu_utilization(&self) -> HashMap<u32, u8> {
-        let mut utilization = HashMap::new();
+        static PREVIOUS_TICKS: std::sync::Mutex<Option<HashMap<u32, (u64, u64)>>> =
+            std::sync::Mutex::new(None);
 
-        if let Ok(stat) = fs::read_to_string("/proc/stat") {
-            for line in stat.lines() {
-                if line.starts_with("cpu") && !line.starts_with("cpu ") {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() < 5 {
-                        continue;
-                    }
+        let current = fs::read_to_string("/proc/stat")
+            .map(|stat| parse_proc_stat_ticks(&stat))
+            .unwrap_or_default();
 
-                    // Extract CPU number
-                    if let Some(cpu_id) = parts[0].strip_prefix("cpu") {
-                        if let Ok(cpu_num) = cpu_id.parse::<u32>() {
-                            // Parse CPU times (user, nice, system, idle, ...)
-                            let times: Vec<u64> =
-                                parts[1..].iter().filter_map(|s| s.parse().ok()).collect();
-
-                            if times.len() >= 4 {
-                                let idle = times[3];
-                                let total: u64 = times.iter().sum();
-
-                                if let Some(idle_pct) = (idle * 100).checked_div(total) {
-                                    let util = 100 - idle_pct;
-                                    utilization.insert(cpu_num, util.min(100) as u8);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let mut previous = PREVIOUS_TICKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let utilization = match previous.as_ref() {
+            Some(prev) => cpu_utilization_between(prev, &current),
+            None => HashMap::new(),
+        };
+        *previous = Some(current);
         utilization
     }
 
@@ -369,6 +449,60 @@ impl LinuxSiliconMonitor {
         }
 
         None
+    }
+}
+
+/// One `/sys/class/accel` device as an NPU.
+///
+/// The vendor is read from the PCI vendor id: 0x8086 Intel, 0x1022 AMD, 0x1ae0
+/// Google. Any other id, or none, leaves the vendor unknown rather than naming
+/// the device's class.
+fn accel_npu(path: &Path, dev_name: &str, index: usize) -> NpuInfo {
+    let vendor_id = fs::read_to_string(path.join("device/vendor"))
+        .ok()
+        .map(|s| s.trim().to_string());
+    let device_id = fs::read_to_string(path.join("device/device"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let (vendor, name) = match vendor_id.as_deref() {
+        Some("0x8086") => ("Intel", format!("Intel AI Boost NPU {index}")),
+        Some("0x1022") => {
+            let name = match device_id.as_str() {
+                "0x1502" => "AMD Ryzen AI (Phoenix XDNA)".to_string(),
+                "0x17f0" => "AMD Ryzen AI (Hawk Point XDNA)".to_string(),
+                "0x1569" => "AMD Ryzen AI (Strix Point XDNA2)".to_string(),
+                _ => format!("AMD XDNA NPU ({dev_name})"),
+            };
+            ("AMD", name)
+        }
+        // A TPU is named by its device node, not a version: the sysfs entry
+        // carries no version and the index is not one.
+        Some("0x1ae0") => ("Google", format!("Google TPU ({dev_name})")),
+        _ => {
+            return NpuInfo {
+                name: format!("Accelerator ({dev_name})"),
+                vendor: None,
+                cores: None,
+                utilization: None,
+                power_watts: None,
+                frequency_mhz: None,
+            }
+        }
+    };
+
+    NpuInfo {
+        name,
+        vendor: Some(vendor.to_string()),
+        // Neither the core count nor a TPU utilization API is read here.
+        cores: None,
+        utilization: LinuxSiliconMonitor::read_npu_utilization(path),
+        power_watts: fs::read_to_string(path.join("device/power/power_usage"))
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map(|p| p / 1_000_000.0), // Convert from microwatts
+        frequency_mhz: None,
     }
 }
 
@@ -473,112 +607,14 @@ impl SiliconMonitor for LinuxSiliconMonitor {
     fn npu_info(&self) -> Result<Vec<NpuInfo>> {
         let mut npus = Vec::new();
 
-        // Intel NPU detection via /sys/class/accel
+        // Every NPU and AI accelerator the kernel exposes is a /sys/class/accel
+        // device, and each is listed once. The vendor comes from the device's PCI
+        // vendor id. This used to label every device "Intel" in one loop, and a
+        // second loop then listed the AMD XDNA devices again.
         if let Ok(entries) = std::fs::read_dir("/sys/class/accel") {
-            for (index, entry) in entries.enumerate() {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-
-                    // Read device name
-                    let name = std::fs::read_to_string(path.join("device/modalias"))
-                        .ok()
-                        .map(|s| {
-                            if s.contains("intel") {
-                                format!("Intel AI Boost NPU {}", index)
-                            } else {
-                                format!("NPU {}", index)
-                            }
-                        })
-                        .unwrap_or_else(|| format!("NPU {}", index));
-
-                    // Read utilization via runtime PM active/suspended time deltas
-                    let utilization = Self::read_npu_utilization(&path);
-
-                    // Try to read power consumption
-                    let power_watts =
-                        std::fs::read_to_string(path.join("device/power/power_usage"))
-                            .ok()
-                            .and_then(|s| s.trim().parse::<f32>().ok())
-                            .map(|p| p / 1_000_000.0); // Convert from microwatts
-
-                    npus.push(NpuInfo {
-                        name,
-                        vendor: "Intel".to_string(),
-                        cores: None,
-                        utilization,
-                        power_watts,
-                        frequency_mhz: None,
-                    });
-                }
-            }
-        }
-
-        // AMD XDNA NPU detection via /sys/class/accel
-        // AMD NPUs (Ryzen AI / XDNA) appear as accel devices with vendor 0x1022
-        if let Ok(entries) = std::fs::read_dir("/sys/class/accel") {
-            for entry in entries.flatten() {
-                let path = entry.path();
+            for (index, entry) in entries.flatten().enumerate() {
                 let dev_name = entry.file_name().to_string_lossy().to_string();
-
-                // Check for AMD vendor ID (0x1022) in the underlying PCI device
-                if let Ok(vendor) = std::fs::read_to_string(path.join("device/vendor")) {
-                    if vendor.trim() == "0x1022" {
-                        // Read device ID for model identification
-                        let device_id = std::fs::read_to_string(path.join("device/device"))
-                            .ok()
-                            .map(|s| s.trim().to_string())
-                            .unwrap_or_default();
-
-                        let npu_name = match device_id.as_str() {
-                            "0x1502" => "AMD Ryzen AI (Phoenix XDNA)".to_string(),
-                            "0x17f0" => "AMD Ryzen AI (Hawk Point XDNA)".to_string(),
-                            "0x1569" => "AMD Ryzen AI (Strix Point XDNA2)".to_string(),
-                            _ => format!("AMD XDNA NPU ({})", dev_name),
-                        };
-
-                        let utilization = Self::read_npu_utilization(&path);
-
-                        let power_watts =
-                            std::fs::read_to_string(path.join("device/power/power_usage"))
-                                .ok()
-                                .and_then(|s| s.trim().parse::<f32>().ok())
-                                .map(|p| p / 1_000_000.0);
-
-                        npus.push(NpuInfo {
-                            name: npu_name,
-                            vendor: "AMD".to_string(),
-                            cores: None,
-                            utilization,
-                            power_watts,
-                            frequency_mhz: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Google TPU detection via /dev/accel*
-        for i in 0..8 {
-            let dev_path = format!("/dev/accel{}", i);
-            if std::path::Path::new(&dev_path).exists() {
-                // Read TPU info from sysfs
-                let sys_path = format!("/sys/class/accel/accel{}/device", i);
-                if let Ok(vendor_id) = std::fs::read_to_string(format!("{}/vendor", sys_path)) {
-                    if vendor_id.trim() == "0x1ae0" {
-                        // Google vendor ID
-                        npus.push(NpuInfo {
-                            name: format!("Google TPU v{}", i),
-                            vendor: "Google".to_string(),
-                            // "Typical" is not this device's count, and the
-                            // utilization needs a TPU API neither of which is
-                            // read here.
-                            cores: None,
-                            utilization: None,
-                            power_watts: None,
-                            frequency_mhz: None,
-                        });
-                    }
-                }
+                npus.push(accel_npu(&entry.path(), &dev_name, index));
             }
         }
 
@@ -586,7 +622,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
         if std::path::Path::new("/sys/kernel/debug/msm_fastrpc").exists() {
             npus.push(NpuInfo {
                 name: "Qualcomm Hexagon DSP".to_string(),
-                vendor: "Qualcomm".to_string(),
+                vendor: Some("Qualcomm".to_string()),
                 cores: None,
                 utilization: None,
                 power_watts: None,
@@ -641,9 +677,7 @@ impl SiliconMonitor for LinuxSiliconMonitor {
                         // use: a device that supports PCIe 4.0 x4 but trained
                         // at 3.0 x2 cannot exceed what it trained at.
                         let max_bandwidth_mbps = match (cur_speed, cur_width) {
-                            (Some(speed), Some(width)) => {
-                                Some(speed * width as f64 * 1000.0 * 0.98462)
-                            }
+                            (Some(speed), Some(width)) => Some(pcie_link_mb_per_s(speed, width)),
                             _ => None,
                         };
 
@@ -798,38 +832,145 @@ impl SiliconMonitor for LinuxSiliconMonitor {
 
         // Try to read WiFi-specific information
         if let Ok(entries) = std::fs::read_dir("/sys/class/ieee80211") {
-            for (index, entry) in entries.enumerate() {
-                if let Ok(entry) = entry {
-                    let _phy_name = entry.file_name().to_string_lossy().to_string();
+            for entry in entries.flatten() {
+                // The phy's netdev name comes from its device/net directory. A
+                // phy with no netdev has no interface to report, so it is
+                // skipped. It used to be named "wlan{index}", a made-up
+                // interface name that matches nothing on the machine.
+                let Some(interface_name) = std::fs::read_dir(entry.path().join("device/net"))
+                    .ok()
+                    .and_then(|mut entries| entries.next())
+                    .and_then(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                else {
+                    continue;
+                };
 
-                    // Try to find the interface name
-                    let interface_name = std::fs::read_dir(entry.path().join("device/net"))
-                        .ok()
-                        .and_then(|mut entries| entries.next())
-                        .and_then(|e| e.ok())
-                        .map(|e| e.file_name().to_string_lossy().to_string())
-                        .unwrap_or_else(|| format!("wlan{}", index));
-
-                    // Only add if not already in list
-                    if !network_devices
-                        .iter()
-                        .any(|d| d.interface == interface_name)
-                    {
-                        network_devices.push(NetworkSilicon {
-                            interface: interface_name,
-                            // Needs iwconfig or nl80211, neither of which is
-                            // called here.
-                            link_speed_mbps: None,
-                            rx_bandwidth_mbps: None,
-                            tx_bandwidth_mbps: None,
-                            packet_rate: None,
-                            power_state: None,
-                        });
-                    }
+                // Only add if not already in list
+                if !network_devices
+                    .iter()
+                    .any(|d| d.interface == interface_name)
+                {
+                    network_devices.push(NetworkSilicon {
+                        interface: interface_name,
+                        // Needs iwconfig or nl80211, neither of which is
+                        // called here.
+                        link_speed_mbps: None,
+                        rx_bandwidth_mbps: None,
+                        tx_bandwidth_mbps: None,
+                        packet_rate: None,
+                        power_state: None,
+                    });
                 }
             }
         }
 
         Ok(network_devices)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Gen 4 x4 is 16 GT/s with 128b/130b: about 7877 MB/s, not 63000.
+    #[test]
+    fn pcie_link_bandwidth_is_megabytes_per_second() {
+        let gen4_x4 = pcie_link_mb_per_s(16.0, 4);
+        assert!((gen4_x4 - 7877.0).abs() < 1.0, "{gen4_x4}");
+        // Gen 2 uses 8b/10b: 5 GT/s x1 is 500 MB/s.
+        assert!((pcie_link_mb_per_s(5.0, 1) - 500.0).abs() < 1e-9);
+    }
+
+    /// A monotonic counter gives its gain. A wrap needs the counter's range,
+    /// and without one the interval has no energy figure.
+    #[test]
+    fn rapl_energy_delta_handles_a_wrap_or_reports_none() {
+        assert_eq!(rapl_energy_delta(100, 250, None), Some(150));
+        assert_eq!(rapl_energy_delta(900, 100, Some(1000)), Some(200));
+        assert_eq!(rapl_energy_delta(900, 100, None), None);
+        // A range no larger than the previous reading cannot be right.
+        assert_eq!(rapl_energy_delta(900, 100, Some(800)), None);
+    }
+
+    /// The aggregate `cpu ` line is not CPU 0, and utilization is the busy
+    /// share of the ticks gained between two readings, not the since-boot share.
+    #[test]
+    fn cpu_utilization_is_differenced_between_readings() {
+        let first = concat!(
+            "cpu  900 0 100 8000 0 0 0 0 0 0\n",
+            "cpu0 450 0 50 4000 0 0 0 0 0 0\n",
+            "cpu1 450 0 50 4000 0 0 0 0 0 0\n",
+        );
+        // Since boot, cpu0 is about 11% busy (500 of 4500 ticks). Over the
+        // interval it was 75% busy (75 of 100 ticks), and cpu1 was 20%.
+        let second = concat!(
+            "cpu  1000 0 200 8400 0 0 0 0 0 0\n",
+            "cpu0 575 0 0 4025 0 0 0 0 0 0\n",
+            "cpu1 470 0 50 4080 0 0 0 0 0 0\n",
+        );
+        let before = parse_proc_stat_ticks(first);
+        assert_eq!(before.len(), 2);
+        assert_eq!(before[&0], (4000, 4500));
+        let after = parse_proc_stat_ticks(second);
+        let util = cpu_utilization_between(&before, &after);
+        assert_eq!(util.get(&0), Some(&75));
+        assert_eq!(util.get(&1), Some(&20));
+        // No previous reading means no utilization, not the since-boot figure.
+        assert!(cpu_utilization_between(&HashMap::new(), &after).is_empty());
+    }
+
+    /// A counter that went backwards is a reset, and the CPU reads as unmeasured.
+    #[test]
+    fn cpu_utilization_drops_a_counter_reset() {
+        let before = parse_proc_stat_ticks("cpu0 500 0 0 500 0 0 0 0 0 0\n");
+        let after = parse_proc_stat_ticks("cpu0 10 0 0 90 0 0 0 0 0 0\n");
+        assert!(cpu_utilization_between(&before, &after).is_empty());
+    }
+
+    /// An accelerator's vendor is its PCI vendor id, and an id nothing names is
+    /// unknown rather than the class the device was found under.
+    #[test]
+    fn accel_vendor_comes_from_the_pci_vendor_id() {
+        let root = std::env::temp_dir().join(format!(
+            "ironmon-accel-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let make = |dir: &str, vendor: Option<&str>, device: Option<&str>| {
+            let path = root.join(dir);
+            fs::create_dir_all(path.join("device")).unwrap();
+            if let Some(v) = vendor {
+                fs::write(path.join("device/vendor"), format!("{v}\n")).unwrap();
+            }
+            if let Some(d) = device {
+                fs::write(path.join("device/device"), format!("{d}\n")).unwrap();
+            }
+            path
+        };
+        let amd = make("accel1", Some("0x1022"), Some("0x17f0"));
+        let intel = make("accel0", Some("0x8086"), None);
+        let other = make("accel2", Some("0xabcd"), None);
+        let bare = make("accel3", None, None);
+
+        let amd_npu = accel_npu(&amd, "accel1", 1);
+        assert_eq!(amd_npu.vendor.as_deref(), Some("AMD"));
+        assert_eq!(amd_npu.name, "AMD Ryzen AI (Hawk Point XDNA)");
+        let intel_npu = accel_npu(&intel, "accel0", 0);
+        assert_eq!(intel_npu.vendor.as_deref(), Some("Intel"));
+        assert_eq!(accel_npu(&other, "accel2", 2).vendor, None);
+        assert_eq!(accel_npu(&bare, "accel3", 3).vendor, None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A parsed `/proc/stat` line with no fields after the name is skipped, not
+    /// read as a zero-tick CPU.
+    #[test]
+    fn short_proc_stat_lines_are_not_cpus() {
+        assert!(parse_proc_stat_ticks("cpu3\ncpu\n").is_empty());
     }
 }
