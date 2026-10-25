@@ -3686,29 +3686,37 @@ fn push_microarch(out: &mut Vec<Reading>, report: &crate::cpu_microarch::CpuMicr
     // which put a Rust debug rendering -- braces, quotes, `None` -- into a
     // reading declared as an identifier. It parsed as a value and was one only
     // in the sense that a screenshot of a table is a table.
-    push_spec_id(out, "cpu.microarch.name", &uarch.name);
+    push_spec_opt(
+        out,
+        "cpu.microarch.name",
+        uarch.name.as_deref().map(|n| serde_json::json!(n)),
+        Some(Unit::Identifier),
+        "the processor was not identified as a known microarchitecture",
+    );
     push_spec_id(out, "cpu.microarch.codename", &uarch.codename);
     push_spec_id(out, "cpu.microarch.vendor", &format!("{:?}", uarch.vendor));
     push_spec_id(out, "cpu.microarch.isa", &uarch.arch);
     push_spec_opt(
         out,
         "cpu.microarch.process",
-        (uarch.process_nm > 0).then(|| serde_json::json!(uarch.process_nm)),
+        uarch.process_nm.map(|nm| serde_json::json!(nm)),
         Some(Unit::Count),
         "IronMonitor holds no process node for this microarchitecture",
     );
     push_spec_opt(
         out,
         "cpu.microarch.year",
-        (uarch.year > 0).then(|| serde_json::json!(uarch.year)),
+        uarch.year.map(|y| serde_json::json!(y)),
         Some(Unit::Count),
         "IronMonitor holds no introduction date for this microarchitecture",
     );
-    out.push(Reading::spec(
+    push_spec_opt(
+        out,
         "cpu.microarch.hybrid",
-        serde_json::json!(uarch.hybrid),
+        uarch.hybrid.map(|h| serde_json::json!(h)),
         None,
-    ));
+        "the processor was not identified, so whether it is a hybrid design is not known",
+    );
 
     // Family zero identifies no x86 part that has ever shipped, so it means the
     // CPUID triple was not read rather than that this is family 0. When it is

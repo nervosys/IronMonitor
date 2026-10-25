@@ -142,8 +142,10 @@ pub struct KernelHardening {
     /// Whether kernel module loading is locked down (`kernel.modules_disabled`
     /// on Linux), or `None` where it was not read.
     pub modules_locked: Option<bool>,
-    /// Whether kernel lockdown is active.
-    pub lockdown_mode: String,
+    /// The active kernel lockdown mode (`none`, `integrity` or `confidentiality`),
+    /// or `None` where the kernel does not report one. Read from the bracketed
+    /// token in `/sys/kernel/security/lockdown`; the whole file used to be stored.
+    pub lockdown_mode: Option<String>,
     /// Whether Secure Boot is enabled, or `None` where it could not be read.
     ///
     /// The Windows reader shelled out to `Confirm-SecureBootUEFI`, which
@@ -163,8 +165,9 @@ pub struct KernelHardening {
 /// Overall security posture score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityPosture {
-    /// Score from 0-100.
-    pub score: u32,
+    /// Score from 0-100, or `None` when no CPU vulnerability was enumerated
+    /// (the score would otherwise assume every one is mitigated).
+    pub score: Option<u32>,
     /// Risk level.
     pub risk_level: String,
     /// Individual component scores.
@@ -266,13 +269,14 @@ impl SecurityMitigationsMonitor {
             .filter(|v| v.status == MitigationStatus::Vulnerable)
             .count();
 
-        let vuln_score = if vuln_count > 0 {
-            ((mitigated as f64 / vuln_count as f64) * 25.0) as u32
-        } else {
-            25
-        };
-        score += vuln_score as i32;
-        components.push(("CPU Vulnerability Mitigations".into(), vuln_score));
+        // Nothing enumerated is no evidence of mitigation. It used to score the
+        // full 25 points, and with them a full posture. Now it scores nothing,
+        // and the total below is unknown.
+        if vuln_count > 0 {
+            let vuln_score = ((mitigated as f64 / vuln_count as f64) * 25.0) as u32;
+            score += vuln_score as i32;
+            components.push(("CPU Vulnerability Mitigations".into(), vuln_score));
+        }
 
         if vulnerable > 0 {
             findings.push(SecurityFinding {
@@ -343,13 +347,15 @@ impl SecurityMitigationsMonitor {
         score += hard_score as i32;
         components.push(("Kernel Hardening".into(), hard_score));
 
-        let final_score = score.clamp(0, 100) as u32;
+        // Unknown when no vulnerability was enumerated, rather than a score
+        // that assumes every one of them is mitigated.
+        let final_score = (vuln_count > 0).then(|| score.clamp(0, 100) as u32);
         let risk_level = match final_score {
-            0..=30 => "Critical",
-            31..=50 => "High",
-            51..=70 => "Medium",
-            71..=85 => "Low",
-            86..=100 => "Minimal",
+            Some(0..=30) => "Critical",
+            Some(31..=50) => "High",
+            Some(51..=70) => "Medium",
+            Some(71..=85) => "Low",
+            Some(86..=100) => "Minimal",
             _ => "Unknown",
         }
         .to_string();
@@ -700,11 +706,9 @@ impl SecurityMitigationsMonitor {
             unprivileged_bpf_disabled: bpf,
             ptrace_scope: ptrace,
             modules_locked,
-            lockdown_mode: if lockdown.is_empty() {
-                "none".into()
-            } else {
-                lockdown
-            },
+            // The bracketed token. A missing file, or one with no bracket, is
+            // no mode at all, not "none".
+            lockdown_mode: active_lockdown_mode(&lockdown),
             secure_boot,
             stack_protector: None, // Most modern kernels have this
         })
@@ -730,7 +734,7 @@ impl SecurityMitigationsMonitor {
             // read as "unrestricted" rather than "not applicable".
             ptrace_scope: None,
             modules_locked: None,
-            lockdown_mode: "none".into(),
+            lockdown_mode: None,
             secure_boot: sb,
             stack_protector: None,
         })
@@ -749,7 +753,7 @@ impl SecurityMitigationsMonitor {
             // ptrace component of the score on every Mac.
             ptrace_scope: None,
             modules_locked: None,
-            lockdown_mode: "none".into(),
+            lockdown_mode: None,
             // "Apple Silicon always has Secure Boot" is not a reading, and this
             // code runs on Intel Macs too, where it depends on the T2 chip and
             // the user's Startup Security Utility setting.
@@ -767,7 +771,7 @@ impl SecurityMitigationsMonitor {
             unprivileged_bpf_disabled: None,
             ptrace_scope: 0,
             modules_locked: false,
-            lockdown_mode: "unknown".into(),
+            lockdown_mode: None,
             secure_boot: None,
             stack_protector: None,
         })
@@ -786,18 +790,30 @@ impl Default for SecurityMitigationsMonitor {
                 unprivileged_bpf_disabled: None,
                 ptrace_scope: None,
                 modules_locked: None,
-                lockdown_mode: "unknown".into(),
+                lockdown_mode: None,
                 secure_boot: None,
                 stack_protector: None,
             },
             posture: SecurityPosture {
-                score: 0,
+                score: None,
                 risk_level: "Unknown".into(),
                 component_scores: Vec::new(),
                 findings: Vec::new(),
             },
         })
     }
+}
+
+/// The active kernel lockdown mode from `/sys/kernel/security/lockdown`.
+///
+/// The file lists every mode and brackets the active one, as in
+/// `none [integrity] confidentiality`. `None` when no mode is bracketed.
+#[cfg(any(target_os = "linux", test))]
+fn active_lockdown_mode(file: &str) -> Option<String> {
+    let open = file.find('[')?;
+    let close = open + file[open..].find(']')?;
+    let token = file[open + 1..close].trim();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 #[cfg(test)]
@@ -847,14 +863,52 @@ mod tests {
             unprivileged_bpf_disabled: None,
             ptrace_scope: Some(1),
             modules_locked: None,
-            lockdown_mode: "none".into(),
+            lockdown_mode: None,
             secure_boot: None,
             stack_protector: None,
         };
 
         let posture = SecurityMitigationsMonitor::compute_posture(&vulns, &lsms, &hardening);
-        assert!(posture.score >= 70); // Good security posture
+        assert!(posture.score.is_some_and(|s| s >= 70)); // Good security posture
         assert!(posture.risk_level == "Low" || posture.risk_level == "Minimal");
+    }
+
+    #[test]
+    fn lockdown_reports_the_bracketed_mode_only() {
+        assert_eq!(
+            active_lockdown_mode("none [integrity] confidentiality\n").as_deref(),
+            Some("integrity")
+        );
+        assert_eq!(
+            active_lockdown_mode("[none] integrity confidentiality").as_deref(),
+            Some("none")
+        );
+        // Not a lockdown file: no bracket, so no mode.
+        assert_eq!(active_lockdown_mode("none integrity confidentiality"), None);
+        assert_eq!(active_lockdown_mode(""), None);
+    }
+
+    #[test]
+    fn nothing_enumerated_is_no_score() {
+        let hardened = KernelHardening {
+            aslr_level: Some(2),
+            kptr_restrict: Some(true),
+            dmesg_restrict: Some(true),
+            unprivileged_bpf_disabled: None,
+            ptrace_scope: Some(1),
+            modules_locked: None,
+            lockdown_mode: None,
+            secure_boot: Some(true),
+            stack_protector: None,
+        };
+        // Zero vulnerabilities enumerated must not read as a full score.
+        let posture = SecurityMitigationsMonitor::compute_posture(&[], &[], &hardened);
+        assert_eq!(posture.score, None);
+        assert_eq!(posture.risk_level, "Unknown");
+        assert!(posture
+            .component_scores
+            .iter()
+            .all(|(name, _)| name != "CPU Vulnerability Mitigations"));
     }
 
     #[test]
@@ -868,7 +922,7 @@ mod tests {
             unprivileged_bpf_disabled: None,
             ptrace_scope: None,
             modules_locked: None,
-            lockdown_mode: "unknown".into(),
+            lockdown_mode: None,
             secure_boot: None,
             stack_protector: None,
         };
@@ -918,12 +972,12 @@ mod tests {
                 unprivileged_bpf_disabled: None,
                 ptrace_scope: None,
                 modules_locked: None,
-                lockdown_mode: "none".into(),
+                lockdown_mode: None,
                 secure_boot: None,
                 stack_protector: None,
             },
             posture: SecurityPosture {
-                score: 50,
+                score: Some(50),
                 risk_level: "Medium".into(),
                 component_scores: vec![],
                 findings: vec![],

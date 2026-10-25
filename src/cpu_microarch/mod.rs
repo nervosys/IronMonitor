@@ -17,7 +17,7 @@ use crate::error::IronError;
 /// What each platform's `read_cpu_info` returns:
 /// `(model_name, family, model, stepping, flags, cores, threads)`.
 type CpuInfoFields = (
-    String,
+    Option<String>,
     Option<u32>,
     Option<u32>,
     Option<u32>,
@@ -66,19 +66,25 @@ impl std::fmt::Display for CpuVendor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Microarchitecture {
     /// Microarchitecture name (e.g. "Zen 4", "Raptor Lake", "Firestorm").
-    pub name: String,
-    /// Code name (e.g. "Raphael", "Raptor Lake-S").
+    ///
+    /// `None` where the part was not identified. A name such as "Unknown AMD"
+    /// used to stand in for that, and surfaces as a name.
+    pub name: Option<String>,
+    /// Code name (e.g. "Raphael", "Raptor Lake-S"). Empty where not identified.
     pub codename: String,
-    /// Manufacturing process node in nanometers (e.g. 5, 7, 10).
-    pub process_nm: u32,
-    /// Year of introduction.
-    pub year: u32,
+    /// Manufacturing process node in nanometers (e.g. 5, 7, 10), or `None`
+    /// where the generation is not identified or its node is not public.
+    pub process_nm: Option<u32>,
+    /// Year of introduction, or `None` where the generation is not identified.
+    pub year: Option<u32>,
     /// CPU vendor.
     pub vendor: CpuVendor,
     /// Architecture family (e.g. "x86_64", "aarch64", "riscv64").
     pub arch: String,
-    /// Whether this is a hybrid/big.LITTLE design.
-    pub hybrid: bool,
+    /// Whether this is a hybrid/big.LITTLE design, or `None` where the part was
+    /// not identified. An unidentified Apple part used to be reported as hybrid
+    /// because every Apple silicon part so far is.
+    pub hybrid: Option<bool>,
     /// Performance core uarch name (for hybrid designs).
     pub p_core_uarch: Option<String>,
     /// Efficiency core uarch name (for hybrid designs).
@@ -137,8 +143,10 @@ pub struct InferredPerformance {
 /// Full CPU microarchitecture report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuMicroarchReport {
-    /// CPU model name string.
-    pub model_name: String,
+    /// CPU model name string, or `None` where the platform did not report one.
+    /// Windows used to fill this with the literal "Unknown CPU" when
+    /// `Win32_Processor` gave no name.
+    pub model_name: Option<String>,
     /// CPUID family.
     /// CPUID family, where it is readable.
     ///
@@ -213,7 +221,8 @@ impl CpuMicroarchMonitor {
     /// Create a new monitor and detect microarchitecture.
     pub fn new() -> Result<Self, IronError> {
         let (model_name, family, model, stepping, flags, cores, threads) = Self::read_cpu_info()?;
-        let microarch = Self::identify_microarch(&model_name, family, model, stepping);
+        let name_text = model_name.as_deref().unwrap_or("");
+        let microarch = Self::identify_microarch(name_text, family, model, stepping);
         // Only a list the platform enumerates in full can say a feature is absent.
         // Linux `/proc/cpuinfo` is one. The other readers return none or a partial
         // list, so their absent flags stay `None`.
@@ -222,7 +231,7 @@ impl CpuMicroarchMonitor {
         let extensions = Self::detect_extensions(flag_list, &microarch);
         // An unknown count takes the smallest scaling bucket, as 0 always did;
         // the estimate is inferred either way, and is labelled so.
-        let performance = Self::infer_performance(&model_name, &microarch, cores.unwrap_or(0));
+        let performance = Self::infer_performance(name_text, &microarch, cores.unwrap_or(0));
         let smt_enabled = cores.zip(threads).map(|(c, t)| t > c);
 
         Ok(Self {
@@ -311,28 +320,42 @@ impl CpuMicroarchMonitor {
             CpuVendor::Intel => Self::identify_intel(&upper, family, model),
             CpuVendor::AMD => Self::identify_amd(&upper, family, model),
             CpuVendor::Apple => Self::identify_apple(&upper),
-            CpuVendor::AWS => Microarchitecture {
-                name: "Neoverse".into(),
-                codename: if upper.contains("GRAVITON4") {
-                    "Graviton4".into()
+            CpuVendor::AWS => {
+                // The generation is taken only from the name it is spelled in.
+                // A Graviton with no generation in its name used to be called
+                // Graviton2 with the 5 nm / 2023 figures of a later part, which
+                // was true of none of them. Nodes come from the generation's
+                // published part: Neoverse N1 (Graviton2) 7 nm 2020, Neoverse V1
+                // (Graviton3) 5 nm 2021. Graviton4 (Neoverse V2, 2023) has no
+                // published node, so none is given.
+                let (codename, process_nm, year) = if upper.contains("GRAVITON4") {
+                    ("Graviton4", None, Some(2023))
                 } else if upper.contains("GRAVITON3") {
-                    "Graviton3".into()
+                    ("Graviton3", Some(5), Some(2021))
+                } else if upper.contains("GRAVITON2") {
+                    ("Graviton2", Some(7), Some(2020))
                 } else {
-                    "Graviton2".into()
-                },
-                process_nm: 5,
-                year: 2023,
-                vendor,
-                arch: "aarch64".into(),
-                hybrid: false,
-                p_core_uarch: None,
-                e_core_uarch: None,
-            },
+                    ("", None, None)
+                };
+                Microarchitecture {
+                    name: Some("Neoverse".into()),
+                    codename: codename.into(),
+                    process_nm,
+                    year,
+                    vendor,
+                    arch: "aarch64".into(),
+                    hybrid: Some(false),
+                    p_core_uarch: None,
+                    e_core_uarch: None,
+                }
+            }
             _ => Microarchitecture {
-                name: "Unknown".into(),
+                // Not identified: no name, no node, no year, and no claim
+                // about hybrid design. A "Unknown" name used to pass as one.
+                name: None,
                 codename: String::new(),
-                process_nm: 0,
-                year: 0,
+                process_nm: None,
+                year: None,
                 vendor,
                 arch: if cfg!(target_arch = "x86_64") {
                     "x86_64".into()
@@ -341,7 +364,7 @@ impl CpuMicroarchMonitor {
                 } else {
                     "unknown".into()
                 },
-                hybrid: false,
+                hybrid: None,
                 p_core_uarch: None,
                 e_core_uarch: None,
             },
@@ -466,14 +489,17 @@ impl CpuMicroarchMonitor {
             ("Unknown Intel", "", 0, 0, false, None, None)
         };
 
+        // A part outside the table has no name and no hybrid claim; its 0s are
+        // placeholders in the table above, never published.
+        let identified = !uarch.starts_with("Unknown");
         Microarchitecture {
-            name: uarch.into(),
+            name: identified.then(|| uarch.to_string()),
             codename: codename.into(),
-            process_nm: process,
-            year,
+            process_nm: (process > 0).then_some(process),
+            year: (year > 0).then_some(year),
             vendor: CpuVendor::Intel,
             arch: "x86_64".into(),
-            hybrid,
+            hybrid: identified.then_some(hybrid),
             p_core_uarch: p_core.map(String::from),
             e_core_uarch: e_core.map(String::from),
         }
@@ -536,14 +562,16 @@ impl CpuMicroarchMonitor {
             ("Unknown AMD", "", 0, 0)
         };
 
+        // Outside the table: no name, and the placeholder 0s are not published.
+        let identified = !uarch.starts_with("Unknown");
         Microarchitecture {
-            name: uarch.into(),
+            name: identified.then(|| uarch.to_string()),
             codename: codename.into(),
-            process_nm: process,
-            year,
+            process_nm: (process > 0).then_some(process),
+            year: (year > 0).then_some(year),
             vendor: CpuVendor::AMD,
             arch: "x86_64".into(),
-            hybrid: false,
+            hybrid: identified.then_some(false),
             p_core_uarch: None,
             e_core_uarch: None,
         }
@@ -573,16 +601,19 @@ impl CpuMicroarchMonitor {
             ("Unknown Apple", "", 0, 0, true)
         };
 
+        // An unidentified Apple part is not called hybrid, and gets no core
+        // names; the split below used to turn "Unknown Apple" into a P-core name.
+        let identified = !uarch.starts_with("Unknown");
         Microarchitecture {
-            name: uarch.into(),
+            name: identified.then(|| uarch.to_string()),
             codename: codename.into(),
-            process_nm: process,
-            year,
+            process_nm: (process > 0).then_some(process),
+            year: (year > 0).then_some(year),
             vendor: CpuVendor::Apple,
             arch: "aarch64".into(),
-            hybrid,
-            p_core_uarch: Some(uarch.split('/').next().unwrap_or("P-core").into()),
-            e_core_uarch: Some(uarch.split('/').nth(1).unwrap_or("E-core").into()),
+            hybrid: identified.then_some(hybrid),
+            p_core_uarch: identified.then(|| uarch.split('/').next().unwrap_or("P-core").into()),
+            e_core_uarch: identified.then(|| uarch.split('/').nth(1).unwrap_or("E-core").into()),
         }
     }
 
@@ -932,7 +963,7 @@ impl CpuMicroarchMonitor {
         let upper = model_name.to_uppercase();
 
         // Base IPC by microarchitecture
-        let (base_ipc, st_score, tdp, boost) = match microarch.name.as_str() {
+        let (base_ipc, st_score, tdp, boost) = match microarch.name.as_deref().unwrap_or("") {
             // Intel
             "Arrow Lake" | "Lion Cove" => (2.1, 92, 125, 5800),
             "Raptor Lake" | "Raptor Cove" => (2.0, 90, 125, 5800),
@@ -1007,11 +1038,11 @@ impl CpuMicroarchMonitor {
         }
 
         let mut notes = Vec::new();
-        if microarch.hybrid {
+        if microarch.hybrid == Some(true) {
             notes.push("Hybrid architecture: scheduler-aware threading recommended".into());
         }
-        if microarch.process_nm > 0 && microarch.process_nm <= 5 {
-            notes.push(format!("Leading-edge {}nm process", microarch.process_nm));
+        if let Some(nm) = microarch.process_nm.filter(|&nm| nm <= 5) {
+            notes.push(format!("Leading-edge {nm}nm process"));
         }
 
         InferredPerformance {
@@ -1029,7 +1060,7 @@ impl CpuMicroarchMonitor {
     fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
 
-        let mut model_name = String::new();
+        let mut model_name: Option<String> = None;
         // `None` until /proc/cpuinfo supplies them. Zero was both the
         // "not seen yet" marker and a publishable value.
         let mut family: Option<u32> = None;
@@ -1037,14 +1068,15 @@ impl CpuMicroarchMonitor {
         let mut stepping: Option<u32> = None;
         // ARM kernels commonly omit both lines.
         let mut siblings: Option<u32> = None;
-        let mut cores: Option<u32> = None;
 
         for line in cpuinfo.lines() {
             if let Some((key, val)) = line.split_once(':') {
                 let key = key.trim();
                 let val = val.trim();
                 match key {
-                    "model name" if model_name.is_empty() => model_name = val.into(),
+                    "model name" if model_name.is_none() && !val.is_empty() => {
+                        model_name = Some(val.into());
+                    }
                     "cpu family" if family.is_none() => {
                         family = val.parse().ok();
                     }
@@ -1057,13 +1089,15 @@ impl CpuMicroarchMonitor {
                     "siblings" if siblings.is_none() => {
                         siblings = val.parse().ok().filter(|&n| n > 0);
                     }
-                    "cpu cores" if cores.is_none() => {
-                        cores = val.parse().ok().filter(|&n| n > 0);
-                    }
                     _ => {}
                 }
             }
         }
+
+        // The physical count is unique (package, core) pairs, not `cpu cores`,
+        // which is per package: a 2-socket machine reported half its cores.
+        // `None` where the kernel gives no package or core ids (some ARM).
+        let cores = physical_cores_from_cpuinfo(&cpuinfo);
 
         // No `siblings` line is no logical count. It used to become the
         // physical count, which made SMT "off" on any kernel that omits it.
@@ -1084,23 +1118,17 @@ impl CpuMicroarchMonitor {
             .map_err(IronError::Io)?;
 
         let text = String::from_utf8_lossy(&output.stdout);
-        let val: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or_default();
+        let processors = parse_win32_processors(&text);
 
-        // `Win32_Processor.Name` is space-padded to a fixed width; the same
-        // padding reached hardware_ai before it was trimmed there.
-        let model_name = val["Name"]
-            .as_str()
-            .unwrap_or("Unknown CPU")
-            .trim()
-            .to_string();
-        // `None`, never `1`. A fallback of 1 was published as a measurement of
+        // `Name` is trimmed in the parser. No name is `None`, not a stand-in.
+        let model_name = processors.name;
+        // Counts are summed over every package; see `parse_win32_processors`.
+        // `None`, never `1`: a fallback of 1 was published as a measurement of
         // a single-core machine by `cpu.cores.physical` and both microarch
-        // counts, with SMT off -- the same shape as the cache line size that
-        // sat at a sentinel of 64. A WMI count of 0 is not a processor either.
-        let count = |key: &str| val[key].as_u64().map(|v| v as u32).filter(|&n| n > 0);
-        let cores = count("NumberOfCores");
+        // counts, with SMT off.
+        let cores = processors.cores;
         // Not the physical count when absent: that made SMT "off".
-        let threads = count("NumberOfLogicalProcessors");
+        let threads = processors.threads;
 
         // WMI does expose the CPUID triple, and the comment that used to sit
         // here said it does not. `Win32_Processor.Description` is the string
@@ -1111,8 +1139,9 @@ impl CpuMicroarchMonitor {
         // Description first because it comes from the query already running;
         // the environment variable is the fallback, and is what a process
         // launched under an unusual environment might be missing.
-        let (family, model, stepping) = val["Description"]
-            .as_str()
+        let (family, model, stepping) = processors
+            .description
+            .as_deref()
             .and_then(parse_cpuid_triple)
             .or_else(|| {
                 std::env::var("PROCESSOR_IDENTIFIER")
@@ -1174,7 +1203,15 @@ impl CpuMicroarchMonitor {
         let cores = count("hw.physicalcpu");
         let threads = count("hw.logicalcpu");
 
-        Ok((brand, family, model, stepping, flags, cores, threads))
+        Ok((
+            Some(brand).filter(|b| !b.is_empty()),
+            family,
+            model,
+            stepping,
+            flags,
+            cores,
+            threads,
+        ))
     }
 
     /// A platform with no reader here reports nothing, including no core count.
@@ -1185,7 +1222,7 @@ impl CpuMicroarchMonitor {
     /// exactly that reason; the two counts were the exception.
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn read_cpu_info() -> Result<CpuInfoFields, IronError> {
-        Ok((String::new(), None, None, None, Vec::new(), None, None))
+        Ok((None, None, None, None, Vec::new(), None, None))
     }
 }
 
@@ -1266,6 +1303,97 @@ fn parse_cpuinfo_flags(cpuinfo: &str) -> Vec<String> {
     Vec::new()
 }
 
+/// Physical cores from `/proc/cpuinfo`: the number of distinct
+/// `(physical id, core id)` pairs over all processor blocks.
+///
+/// `cpu cores` is per package, so it is not summed here: a two-socket machine
+/// would be reported with half its cores. Each core appears once per hardware
+/// thread, which is why the pairs are collected rather than counted. `None` when
+/// no block carries both ids, as on ARM kernels, and never a count inferred from
+/// the logical one.
+///
+/// `src/interconnect` uses this too, so the two cannot disagree.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn physical_cores_from_cpuinfo(cpuinfo: &str) -> Option<u32> {
+    let mut seen = std::collections::HashSet::new();
+    let (mut package, mut core): (Option<u32>, Option<u32>) = (None, None);
+    // The final empty line closes the last block when the text does not end
+    // with a blank line.
+    for line in cpuinfo.lines().chain(std::iter::once("")) {
+        if line.trim().is_empty() {
+            if let (Some(p), Some(c)) = (package.take(), core.take()) {
+                seen.insert((p, c));
+            }
+            package = None;
+            core = None;
+            continue;
+        }
+        if let Some((key, val)) = line.split_once(':') {
+            match key.trim() {
+                "physical id" => package = val.trim().parse().ok(),
+                "core id" => core = val.trim().parse().ok(),
+                _ => {}
+            }
+        }
+    }
+    (!seen.is_empty()).then_some(seen.len() as u32)
+}
+
+/// What `Win32_Processor` reported, with counts summed over every package.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Win32Processors {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub cores: Option<u32>,
+    pub threads: Option<u32>,
+}
+
+/// Parses `Get-CimInstance Win32_Processor | ... | ConvertTo-Json`.
+///
+/// PowerShell writes one object for one package and an array for several, so
+/// both shapes are accepted. Counts are summed across the packages, and every
+/// package must report a count, or the sum is short and no count is given. The
+/// name and description come from the first package.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn parse_win32_processors(json: &str) -> Win32Processors {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return Win32Processors::default();
+    };
+    let packages: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![&value],
+        _ => Vec::new(),
+    };
+    let Some(first) = packages.first() else {
+        return Win32Processors::default();
+    };
+
+    let name = first["Name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let description = first["Description"].as_str().map(String::from);
+
+    // A WMI count of 0 is not a processor. One package without a count makes
+    // the total unknown rather than short.
+    let sum = |key: &str| -> Option<u32> {
+        let counts: Option<Vec<u32>> = packages
+            .iter()
+            .map(|p| p[key].as_u64().map(|v| v as u32).filter(|&n| n > 0))
+            .collect();
+        counts.map(|c| c.iter().sum())
+    };
+
+    Win32Processors {
+        name,
+        description,
+        cores: sum("NumberOfCores"),
+        threads: sum("NumberOfLogicalProcessors"),
+    }
+}
+
 /// The CPU's identity -- its model name and physical core count -- probed
 /// once per process.
 ///
@@ -1305,7 +1433,11 @@ pub fn cpu_identity() -> &'static CpuIdentity {
         };
         let report = monitor.report();
         CpuIdentity {
-            model_name: Some(report.model_name.trim().to_string()).filter(|n| !n.is_empty()),
+            model_name: report
+                .model_name
+                .as_deref()
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty()),
             physical_cores: report.physical_cores.map(|p| p as usize),
         }
     })
@@ -1333,18 +1465,18 @@ impl Default for CpuMicroarchMonitor {
     fn default() -> Self {
         Self::new().unwrap_or(Self {
             report: CpuMicroarchReport {
-                model_name: String::new(),
+                model_name: None,
                 family: None,
                 model: None,
                 stepping: None,
                 microarch: Microarchitecture {
-                    name: "Unknown".into(),
+                    name: None,
                     codename: String::new(),
-                    process_nm: 0,
-                    year: 0,
+                    process_nm: None,
+                    year: None,
                     vendor: CpuVendor::Unknown,
                     arch: String::new(),
-                    hybrid: false,
+                    hybrid: None,
                     p_core_uarch: None,
                     e_core_uarch: None,
                 },
@@ -1416,10 +1548,10 @@ mod tests {
             Some(0xB7),
             Some(1),
         );
-        assert_eq!(uarch.name, "Raptor Lake");
+        assert_eq!(uarch.name.as_deref(), Some("Raptor Lake"));
         assert_eq!(uarch.vendor, CpuVendor::Intel);
-        assert!(uarch.hybrid);
-        assert_eq!(uarch.process_nm, 7);
+        assert_eq!(uarch.hybrid, Some(true));
+        assert_eq!(uarch.process_nm, Some(7));
     }
 
     #[test]
@@ -1430,10 +1562,10 @@ mod tests {
             Some(97),
             Some(2),
         );
-        assert_eq!(uarch.name, "Zen 4");
+        assert_eq!(uarch.name.as_deref(), Some("Zen 4"));
         assert_eq!(uarch.vendor, CpuVendor::AMD);
-        assert!(!uarch.hybrid);
-        assert_eq!(uarch.process_nm, 5);
+        assert_eq!(uarch.hybrid, Some(false));
+        assert_eq!(uarch.process_nm, Some(5));
     }
 
     /// The published CPUID triple is absent where it was not read, not zero.
@@ -1479,34 +1611,185 @@ mod tests {
             .expect("a report")
             .report()
             .clone();
-        assert_eq!(
-            report.model_name.trim(),
-            report.model_name,
-            "the model name kept its WMI padding: {:?}",
-            report.model_name
+        if let Some(name) = &report.model_name {
+            assert_eq!(
+                name.trim(),
+                name,
+                "the model name kept its WMI padding: {:?}",
+                name
+            );
+            assert_ne!(name.trim(), "Unknown CPU", "a stand-in name was published");
+        }
+    }
+
+    #[test]
+    fn an_unidentified_part_has_no_name_and_no_hybrid_claim() {
+        // Apple parts are hybrid, but an unlisted Apple part is not known to be.
+        let apple = CpuMicroarchMonitor::identify_microarch("Apple M9 Ultra", None, None, None);
+        assert_eq!(apple.name, None);
+        assert_eq!(apple.hybrid, None);
+        assert_eq!(apple.p_core_uarch, None);
+        assert_eq!(apple.e_core_uarch, None);
+        assert_eq!(apple.process_nm, None);
+        assert_eq!(apple.year, None);
+
+        let amd = CpuMicroarchMonitor::identify_microarch("AMD Mystery 1000", None, None, None);
+        assert_eq!(amd.name, None);
+        assert_eq!(amd.hybrid, None);
+
+        let intel = CpuMicroarchMonitor::identify_microarch("Intel Mystery", None, None, None);
+        assert_eq!(intel.name, None);
+        assert_eq!(intel.hybrid, None);
+
+        // A Graviton with no generation in its name gets none.
+        let graviton = CpuMicroarchMonitor::identify_microarch("AWS Graviton", None, None, None);
+        assert_eq!(graviton.codename, "");
+        assert_eq!(graviton.process_nm, None);
+        assert_eq!(graviton.year, None);
+    }
+
+    #[test]
+    fn graviton_generations_carry_only_their_published_figures() {
+        let g2 = CpuMicroarchMonitor::identify_microarch("AWS GRAVITON2", None, None, None);
+        assert_eq!(g2.codename, "Graviton2");
+        assert_eq!(g2.process_nm, Some(7));
+        assert_eq!(g2.year, Some(2020));
+
+        let g3 = CpuMicroarchMonitor::identify_microarch("AWS GRAVITON3", None, None, None);
+        assert_eq!(g3.codename, "Graviton3");
+        assert_eq!(g3.process_nm, Some(5));
+        assert_eq!(g3.year, Some(2021));
+
+        // Neoverse V2's node is not public, so Graviton4 has no node.
+        let g4 = CpuMicroarchMonitor::identify_microarch("AWS GRAVITON4", None, None, None);
+        assert_eq!(g4.codename, "Graviton4");
+        assert_eq!(g4.process_nm, None);
+        assert_eq!(g4.year, Some(2023));
+    }
+
+    #[test]
+    fn linux_physical_cores_are_unique_package_core_pairs() {
+        // Two sockets of two cores each, two threads per core. Each processor
+        // block repeats its core id per thread, and "cpu cores" is per package.
+        let mut text = String::new();
+        let mut processor = 0;
+        for package in 0..2 {
+            for core in 0..2 {
+                for _thread in 0..2 {
+                    text.push_str(&format!(
+                        concat!(
+                            "processor\t: {processor}\n",
+                            "vendor_id\t: GenuineIntel\n",
+                            "model name\t: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz\n",
+                            "siblings\t: 4\n",
+                            "cpu cores\t: 2\n",
+                            "physical id\t: {package}\n",
+                            "core id\t\t: {core}\n\n",
+                        ),
+                        processor = processor,
+                        package = package,
+                        core = core,
+                    ));
+                    processor += 1;
+                }
+            }
+        }
+        assert_eq!(physical_cores_from_cpuinfo(&text), Some(4));
+        // A single socket with the same shape.
+        let single: String = text
+            .split("\n\n")
+            .take(4)
+            .map(|b| format!("{b}\n\n"))
+            .collect();
+        assert_eq!(physical_cores_from_cpuinfo(&single), Some(2));
+    }
+
+    #[test]
+    fn cpuinfo_without_package_or_core_ids_has_no_physical_count() {
+        // ARM kernels print a CPU part and no topology: a count would be a guess.
+        let arm = concat!(
+            "processor\t: 0\n",
+            "Features\t: fp asimd\n",
+            "CPU implementer\t: 0x41\n",
+            "CPU part\t: 0xd0c\n\n",
+            "processor\t: 1\n",
+            "Features\t: fp asimd\n",
+            "CPU part\t: 0xd0c\n\n",
         );
+        assert_eq!(physical_cores_from_cpuinfo(arm), None);
+        assert_eq!(physical_cores_from_cpuinfo(""), None);
+    }
+
+    #[test]
+    fn windows_processor_object_and_array_shapes_both_parse() {
+        // One package: ConvertTo-Json writes an object.
+        // WMI pads Name to a fixed width; the padding is built here, not written.
+        let pad = " ".repeat(17);
+        let one = format!(
+            r#"{{"Name":"AMD Ryzen 9 9900X 12-Core Processor{pad}","Description":"AMD64 Family 26 Model 68 Stepping 0","Family":107,"NumberOfCores":12,"NumberOfLogicalProcessors":24}}"#
+        );
+        let one = one.as_str();
+        let p = parse_win32_processors(one);
+        assert_eq!(
+            p.name.as_deref(),
+            Some("AMD Ryzen 9 9900X 12-Core Processor")
+        );
+        assert_eq!(
+            p.description.as_deref(),
+            Some("AMD64 Family 26 Model 68 Stepping 0")
+        );
+        assert_eq!(p.cores, Some(12));
+        assert_eq!(p.threads, Some(24));
+
+        // Two packages: an array. Counts sum; the name is the first package's.
+        let two = r#"[{"Name":"Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz","Description":"x86 Family 6 Model 85 Stepping 4","NumberOfCores":20,"NumberOfLogicalProcessors":40},{"Name":"Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz","Description":"x86 Family 6 Model 85 Stepping 4","NumberOfCores":20,"NumberOfLogicalProcessors":40}]"#;
+        let p = parse_win32_processors(two);
+        assert_eq!(
+            p.name.as_deref(),
+            Some("Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz")
+        );
+        assert_eq!(p.cores, Some(40));
+        assert_eq!(p.threads, Some(80));
+        assert_ne!(p.name.as_deref(), Some("Unknown CPU"));
+    }
+
+    #[test]
+    fn windows_processor_without_a_name_or_count_is_none() {
+        let empty = parse_win32_processors("");
+        assert_eq!(empty, Win32Processors::default());
+        assert_eq!(empty.name, None);
+
+        // A package with no count makes the total unknown, not short.
+        let partial = r#"[{"Name":"CPU A","NumberOfCores":8,"NumberOfLogicalProcessors":16},{"Name":"CPU A","NumberOfLogicalProcessors":16}]"#;
+        let p = parse_win32_processors(partial);
+        assert_eq!(p.cores, None);
+        assert_eq!(p.threads, Some(32));
+
+        let blank = parse_win32_processors(r#"{"Name":"   ","NumberOfCores":0}"#);
+        assert_eq!(blank.name, None);
+        assert_eq!(blank.cores, None);
     }
 
     #[test]
     fn test_apple_m3() {
         // Apple reports no x86 CPUID triple; identification is by name.
         let uarch = CpuMicroarchMonitor::identify_microarch("Apple M3 Pro", None, None, None);
-        assert_eq!(uarch.name, "Ibiza");
+        assert_eq!(uarch.name.as_deref(), Some("Ibiza"));
         assert_eq!(uarch.vendor, CpuVendor::Apple);
-        assert!(uarch.hybrid);
-        assert_eq!(uarch.process_nm, 3);
+        assert_eq!(uarch.hybrid, Some(true));
+        assert_eq!(uarch.process_nm, Some(3));
     }
 
     #[test]
     fn test_performance_inference() {
         let uarch = Microarchitecture {
-            name: "Zen 4".into(),
+            name: Some("Zen 4".into()),
             codename: "Raphael".into(),
-            process_nm: 5,
-            year: 2022,
+            process_nm: Some(5),
+            year: Some(2022),
             vendor: CpuVendor::AMD,
             arch: "x86_64".into(),
-            hybrid: false,
+            hybrid: Some(false),
             p_core_uarch: None,
             e_core_uarch: None,
         };
@@ -1523,13 +1806,13 @@ mod tests {
             .map(String::from)
             .collect();
         let uarch = Microarchitecture {
-            name: "Zen 4".into(),
+            name: Some("Zen 4".into()),
             codename: "".into(),
-            process_nm: 5,
-            year: 2022,
+            process_nm: Some(5),
+            year: Some(2022),
             vendor: CpuVendor::AMD,
             arch: "x86_64".into(),
-            hybrid: false,
+            hybrid: Some(false),
             p_core_uarch: None,
             e_core_uarch: None,
         };
@@ -1548,13 +1831,13 @@ mod tests {
     #[test]
     fn an_unread_feature_is_unknown_not_absent() {
         let uarch = Microarchitecture {
-            name: "Zen 4".into(),
+            name: Some("Zen 4".into()),
             codename: "".into(),
-            process_nm: 5,
-            year: 2022,
+            process_nm: Some(5),
+            year: Some(2022),
             vendor: CpuVendor::AMD,
             arch: "x86_64".into(),
-            hybrid: false,
+            hybrid: Some(false),
             p_core_uarch: None,
             e_core_uarch: None,
         };
@@ -1609,13 +1892,13 @@ mod tests {
     #[test]
     fn test_serialization() {
         let uarch = Microarchitecture {
-            name: "Zen 4".into(),
+            name: Some("Zen 4".into()),
             codename: "Raphael".into(),
-            process_nm: 5,
-            year: 2022,
+            process_nm: Some(5),
+            year: Some(2022),
             vendor: CpuVendor::AMD,
             arch: "x86_64".into(),
-            hybrid: false,
+            hybrid: Some(false),
             p_core_uarch: None,
             e_core_uarch: None,
         };

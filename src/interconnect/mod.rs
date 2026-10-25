@@ -439,14 +439,12 @@ impl InterconnectMonitor {
         });
         let (if_speed_gts, compute_dies, io_dies, _max_cores_per_die, gen, on_pkg_bw) = if apu {
             return Self::unlisted_amd(sockets);
-        } else if name.contains("9950")
-            || name.contains("9900")
-            || name.contains("9700")
-            || name.contains("9600")
-            // With the space: "RYZEN 5" contains "ZEN 5".
-            || name.contains(" ZEN 5")
-        {
+        } else if name.contains("9950") || name.contains("9900") {
             (32.0, 2, 1, 8, "IF 4.0", 64.0)
+        } else if name.contains("9700") || name.contains("9600") {
+            // One CCD: the 6- and 8-core Zen 5 desktop parts. The table used to
+            // give two, which doubled their CCD count.
+            (32.0, 1, 1, 8, "IF 4.0", 64.0)
         } else if name.contains("7950") || name.contains("7900") {
             (32.0, 2, 1, 8, "IF 3.5", 36.0)
         } else if name.contains("7800") || name.contains("7700") || name.contains("7600") {
@@ -455,15 +453,10 @@ impl InterconnectMonitor {
             (32.0, 2, 1, 8, "IF 3.0", 32.0)
         } else if name.contains("5800") || name.contains("5700") || name.contains("5600") {
             (32.0, 1, 1, 8, "IF 3.0", 32.0)
-        } else if name.contains("EPYC 9") || name.contains("GENOA") || name.contains("TURIN") {
-            (32.0, 12, 1, 8, "IF 4.0", 64.0)
-        } else if name.contains("EPYC 7") {
-            (16.0, 8, 1, 8, "IF 2.0", 32.0)
-        // "THREADRIPPER PRO", not "PRO": "RYZEN 7 PRO 7840U" contains "PRO 7".
-        } else if name.contains("THREADRIPPER 7") || name.contains("THREADRIPPER PRO 7") {
-            (32.0, 8, 1, 8, "IF 3.5", 36.0)
-        } else if name.contains("THREADRIPPER 5") || name.contains("THREADRIPPER PRO 5") {
-            (32.0, 4, 1, 8, "IF 3.0", 32.0)
+        // EPYC and Threadripper PRO/non-PRO are not given a die count here. The
+        // CCD count varies by SKU within a family (a 7960X has four CCDs where
+        // the family's maximum is eight), and no SKU table is held, so they take
+        // the unlisted path below rather than a guessed count.
         } else {
             // A model the table does not list gets no chiplet topology and no
             // link figures. The table's default row is not a description of any
@@ -473,18 +466,20 @@ impl InterconnectMonitor {
 
         let mut links = Vec::new();
 
-        // Inter-socket links for multi-socket, where the socket count is known
+        // Inter-socket links for multi-socket, where the socket count is known.
+        // The link count and width are not known from the model name, so no
+        // bandwidth or width is given. The table used to assume four links of
+        // sixteen lanes, which was a guess.
         if let Some(count) = sockets.filter(|&s| s > 1) {
-            let inter_bw = if_speed_gts * 2.0 * 4.0; // 4 links typically
             for i in 0..count {
                 for j in (i + 1)..count {
                     links.push(InterconnectLink {
                         link_type: InterconnectType::InfinityFabric,
                         source: format!("Socket {}", i),
                         destination: format!("Socket {}", j),
-                        bandwidth_gbs: Some(inter_bw),
-                        bidirectional_bandwidth_gbs: Some(inter_bw * 2.0),
-                        width: Some(16),
+                        bandwidth_gbs: None,
+                        bidirectional_bandwidth_gbs: None,
+                        width: None,
                         speed_gts: Some(if_speed_gts),
                         estimated_latency_ns: Some(120.0),
                         active: None,
@@ -752,32 +747,9 @@ impl InterconnectMonitor {
     /// See the Windows variant.
     #[cfg(target_os = "linux")]
     fn detect_physical_cores() -> Option<u32> {
-        // Unique (physical id, core id) pairs in /proc/cpuinfo. Counting
-        // "cpu cores" alone multiplies by the socket count.
+        // The same count `cpu_microarch` reports, so the two cannot disagree.
         let text = std::fs::read_to_string("/proc/cpuinfo").ok()?;
-        let mut seen = std::collections::HashSet::new();
-        let (mut pkg, mut core) = (None, None);
-        for line in text.lines() {
-            if let Some(v) = line.strip_prefix("physical id") {
-                pkg = v
-                    .split(':')
-                    .nth(1)
-                    .and_then(|s| s.trim().parse::<u32>().ok());
-            } else if let Some(v) = line.strip_prefix("core id") {
-                core = v
-                    .split(':')
-                    .nth(1)
-                    .and_then(|s| s.trim().parse::<u32>().ok());
-            } else if line.trim().is_empty() {
-                if let (Some(p), Some(c)) = (pkg.take(), core.take()) {
-                    seen.insert((p, c));
-                }
-            }
-        }
-        if let (Some(p), Some(c)) = (pkg, core) {
-            seen.insert((p, c));
-        }
-        (!seen.is_empty()).then_some(seen.len() as u32)
+        crate::cpu_microarch::physical_cores_from_cpuinfo(&text)
     }
 
     /// See the Windows variant.
@@ -913,9 +885,12 @@ mod tests {
             "AMD EPYC 9654 96-Core Processor",
         ] {
             let topo = InterconnectMonitor::infer_topology(model, Some(1), Some(12));
-            assert_eq!(
+            // EPYC and Threadripper are unlisted (no SKU die table), so no
+            // protocol is claimed for them. What must not happen is the Intel
+            // MESIF classification.
+            assert_ne!(
                 topo.coherence_protocol,
-                Some(CoherenceProtocol::MOESI),
+                Some(CoherenceProtocol::MESIF),
                 "{model} was classified as Intel"
             );
         }

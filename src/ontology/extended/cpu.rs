@@ -1089,7 +1089,7 @@ fn resolve_hybrid_cores(out: &mut Vec<Reading>) {
     };
 
     let uarch = &monitor.report().microarch;
-    let identified = uarch.hybrid && !uarch.name.starts_with("Unknown");
+    let identified = uarch.hybrid == Some(true) && uarch.name.is_some();
     let why = "this processor is not a hybrid design, or its family was not identified, so no separate core microarchitecture is known";
 
     // The reader fills an unnamed core with the placeholder "P-core" or "E-core"
@@ -1285,9 +1285,15 @@ fn resolve_security(out: &mut Vec<Reading>) {
         Some(U::Count),
         "the Yama module is not loaded, so there is no ptrace scope to read",
     );
-    // The reader substitutes "none" when the lockdown file is missing or empty,
-    // and the gate in `push_text` turns that into an absence.
-    push_text(out, "system.security.lockdown_mode", &h.lockdown_mode);
+    // `None` when the lockdown file is absent or brackets no mode. It used to
+    // be published as "none", which is a claim about the kernel, not a read.
+    push_opt(
+        out,
+        "system.security.lockdown_mode",
+        h.lockdown_mode.as_deref().map(|m| serde_json::json!(m)),
+        Some(U::Text),
+        "the kernel does not report a lockdown mode here",
+    );
 }
 
 fn resolve_os_detail(out: &mut Vec<Reading>) {

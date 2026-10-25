@@ -83,8 +83,12 @@ pub struct CpuSchedStats {
     pub waiting_ns: u64,
     /// Number of timeslices run.
     pub timeslices: u64,
-    /// Current runqueue depth (number of runnable tasks).
-    pub runqueue_depth: u32,
+    /// Current runqueue depth (number of runnable tasks), or `None`.
+    ///
+    /// Always `None` on mainline Linux: there is no per-CPU `runqueue` file
+    /// under `/sys/devices/system/cpu/cpuN`, and the read used to fall back to
+    /// 0, an idle queue, on every machine.
+    pub runqueue_depth: Option<u32>,
 }
 
 /// Global scheduler tuning parameters.
@@ -123,8 +127,10 @@ pub struct SchedulerAnalysis {
     /// CPU with the highest wait time; `None` under the same condition, rather
     /// than naming CPU 0.
     pub busiest_cpu: Option<u32>,
-    /// Whether scheduling latency is concerning.
-    pub latency_concern: bool,
+    /// Whether scheduling latency is concerning, or `None` when the CPU pressure
+    /// file could not be read. It used to be `false` then, which read as "no
+    /// concern" on a machine that was not measured.
+    pub latency_concern: Option<bool>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -174,19 +180,18 @@ impl SchedulerMonitor {
         let pressure = Self::read_psi();
         let tuning = Self::read_tuning();
 
-        let avg_rq: Option<f64> = (!cpu_stats.is_empty()).then(|| {
-            cpu_stats
-                .iter()
-                .map(|c| c.runqueue_depth as f64)
-                .sum::<f64>()
-                / cpu_stats.len() as f64
-        });
-        let max_rq = cpu_stats.iter().map(|c| c.runqueue_depth).max();
+        // Depths that were read. Today none is, so these are `None`.
+        let depths: Vec<u32> = cpu_stats.iter().filter_map(|c| c.runqueue_depth).collect();
+        let avg_rq: Option<f64> = (!depths.is_empty())
+            .then(|| depths.iter().map(|&d| d as f64).sum::<f64>() / depths.len() as f64);
+        let max_rq = depths.iter().copied().max();
         let busiest = cpu_stats.iter().max_by_key(|c| c.waiting_ns).map(|c| c.cpu);
 
+        // `None` without the CPU pressure file, not "no concern".
         let latency_concern = pressure
             .iter()
-            .any(|p| p.resource == "cpu" && p.some_avg10 > 25.0);
+            .find(|p| p.resource == "cpu")
+            .map(|p| p.some_avg10 > 25.0);
 
         let mut recommendations = Vec::new();
 
@@ -260,11 +265,10 @@ impl SchedulerMonitor {
             let waiting_ns: u64 = parts.get(8).and_then(|s| s.parse().ok()).unwrap_or(0);
             let timeslices: u64 = parts.get(9).and_then(|s| s.parse().ok()).unwrap_or(0);
 
-            let rq_path = format!("/sys/devices/system/cpu/cpu{}/runqueue", cpu);
-            let runqueue_depth = std::fs::read_to_string(&rq_path)
-                .ok()
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+            // No runqueue depth. The per-CPU `runqueue` file this used to read
+            // is not in mainline Linux, and the fallback of 0 published an idle
+            // queue on every machine.
+            let runqueue_depth = None;
 
             stats.push(CpuSchedStats {
                 cpu,
@@ -307,11 +311,15 @@ impl SchedulerMonitor {
         };
 
         // Detect EEVDF vs CFS — EEVDF was merged in Linux 6.6
-        let kernel_version = std::fs::read_to_string("/proc/version").unwrap_or_default();
-        let scheduler_type = if Self::kernel_version_ge(&kernel_version, 6, 6) {
-            SchedPolicy::EEVDF
-        } else {
-            SchedPolicy::Normal
+        // Unknown when `/proc/version` is unread or unparsed. It used to be
+        // `Normal` then, which named a scheduler nobody had checked.
+        let scheduler_type = match std::fs::read_to_string("/proc/version")
+            .ok()
+            .and_then(|v| Self::kernel_version(&v))
+        {
+            Some((major, minor)) if (major, minor) >= (6, 6) => SchedPolicy::EEVDF,
+            Some(_) => SchedPolicy::Normal,
+            None => SchedPolicy::Unknown,
         };
 
         SchedTuning {
@@ -325,19 +333,15 @@ impl SchedulerMonitor {
         }
     }
 
+    /// `(major, minor)` from a `/proc/version` line, or `None` if it does not
+    /// parse. "Linux version 6.8.0-..." gives (6, 8).
     #[cfg(target_os = "linux")]
-    fn kernel_version_ge(version_str: &str, major: u32, minor: u32) -> bool {
-        // "Linux version 6.8.0-..." -> extract 6.8
-        if let Some(ver_part) = version_str.split_whitespace().nth(2) {
-            let parts: Vec<&str> = ver_part.split('.').collect();
-            if let (Some(maj), Some(min)) = (
-                parts.first().and_then(|s| s.parse::<u32>().ok()),
-                parts.get(1).and_then(|s| s.parse::<u32>().ok()),
-            ) {
-                return (maj, min) >= (major, minor);
-            }
-        }
-        false
+    fn kernel_version(version_str: &str) -> Option<(u32, u32)> {
+        let ver_part = version_str.split_whitespace().nth(2)?;
+        let mut parts = ver_part.split('.');
+        let maj = parts.next()?.parse::<u32>().ok()?;
+        let min = parts.next()?.parse::<u32>().ok()?;
+        Some((maj, min))
     }
 }
 
@@ -359,7 +363,7 @@ impl Default for SchedulerMonitor {
                 avg_runqueue_depth: None,
                 max_runqueue_depth: None,
                 busiest_cpu: None,
-                latency_concern: false,
+                latency_concern: None,
                 recommendations: Vec::new(),
             },
         })
@@ -507,18 +511,22 @@ mod tests {
                 running_ns: 100,
                 waiting_ns: 50,
                 timeslices: 10,
-                runqueue_depth: 2,
+                runqueue_depth: Some(2),
             },
             CpuSchedStats {
                 cpu: 1,
                 running_ns: 200,
                 waiting_ns: 100,
                 timeslices: 20,
-                runqueue_depth: 6,
+                runqueue_depth: Some(6),
             },
         ];
-        let avg: f64 =
-            stats.iter().map(|c| c.runqueue_depth as f64).sum::<f64>() / stats.len() as f64;
+        let avg: f64 = stats
+            .iter()
+            .filter_map(|c| c.runqueue_depth)
+            .map(|d| d as f64)
+            .sum::<f64>()
+            / stats.len() as f64;
         assert!((avg - 4.0).abs() < 0.01);
     }
 
