@@ -47,10 +47,30 @@ pub struct ProcessNode {
     pub memory_bytes: Option<u64>,
     /// Direct child PIDs
     pub children: Vec<u32>,
-    /// Container cgroup information (Linux only). `Some` only when a container
-    /// runtime marker is in the cgroup path. `None` means a host process, or a
-    /// `/proc/<pid>/cgroup` that could not be read: the two are not told apart.
-    pub cgroup: Option<CgroupInfo>,
+    /// Cgroup attribution (Linux only). `None` means the cgroup was not read:
+    /// `/proc/<pid>/cgroup` was unreadable, or this platform does not read
+    /// cgroups. `Some(CgroupAttribution::Host)` is a process that was read and
+    /// is in no container.
+    pub cgroup: Option<CgroupAttribution>,
+}
+
+/// What a process's cgroup says about its container, once the cgroup was read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CgroupAttribution {
+    /// Read, and in no container runtime's cgroup.
+    Host,
+    /// Read, and inside a container runtime's cgroup.
+    Container(CgroupInfo),
+}
+
+impl CgroupAttribution {
+    /// The container's details, where the process is in one.
+    pub fn container(&self) -> Option<&CgroupInfo> {
+        match self {
+            Self::Container(info) => Some(info),
+            Self::Host => None,
+        }
+    }
 }
 
 /// Container and cgroup information for a process
@@ -272,11 +292,18 @@ impl ProcessTree {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_cgroup_linux(pid: u32) -> Option<CgroupInfo> {
-        use std::fs;
+    fn read_cgroup_linux(pid: u32) -> Option<CgroupAttribution> {
+        // An unreadable `/proc/<pid>/cgroup` is no attribution at all. It used to
+        // be `None`, the same value a host process got, so the two were
+        // indistinguishable.
+        let content = std::fs::read_to_string(format!("/proc/{}/cgroup", pid)).ok()?;
+        Some(Self::attribute_cgroup(&content))
+    }
 
-        let cgroup_path = format!("/proc/{}/cgroup", pid);
-        let content = fs::read_to_string(&cgroup_path).ok()?;
+    /// Attribute a process from the text of its `/proc/<pid>/cgroup`.
+    #[cfg(target_os = "linux")]
+    fn attribute_cgroup(content: &str) -> CgroupAttribution {
+        use std::fs;
 
         // Parse cgroup v2 (unified): "0::/path"
         // Parse cgroup v1: "id:controller:path"
@@ -296,7 +323,7 @@ impl ProcessTree {
         }
 
         if path.is_empty() || path == "/" {
-            return None; // Host process, not containerized
+            return CgroupAttribution::Host; // Read, and not containerized
         }
 
         // A path with no runtime marker is a host service, session or scope
@@ -304,7 +331,9 @@ impl ProcessTree {
         // used to be reported as an Unknown-runtime container, which made every
         // systemd unit count as containerized.
         let (runtime, container_id) = Self::detect_container_runtime(&path);
-        let runtime = runtime?;
+        let Some(runtime) = runtime else {
+            return CgroupAttribution::Host;
+        };
 
         // Try to read cgroup limits
         let cgroup_base = format!("/sys/fs/cgroup{}", path);
@@ -320,7 +349,7 @@ impl ProcessTree {
             .and_then(|s| crate::cgroup_monitor::parse_cpu_max(&s))
             .map_or((None, None), |(q, p)| (Some(q), Some(p)));
 
-        Some(CgroupInfo {
+        CgroupAttribution::Container(CgroupInfo {
             path,
             runtime: Some(runtime),
             container_id,
@@ -446,7 +475,7 @@ impl ProcessTree {
                         cpu_percent: None,
                         memory_bytes: None,
                         children: Vec::new(),
-                        cgroup: None, // No cgroups on Windows
+                        cgroup: None, // Not read: cgroups are not read on Windows
                     };
 
                     children_map.entry(ppid).or_default().push(pid);
@@ -499,6 +528,7 @@ impl ProcessTree {
                     cpu_percent: None,
                     memory_bytes,
                     children: Vec::new(),
+                    // Not read: this platform's reader does not read cgroups.
                     cgroup: None,
                 };
 
@@ -539,19 +569,30 @@ impl ProcessTree {
 
     /// Get cgroup info for a process
     pub fn cgroup_info(&self, pid: u32) -> Option<&CgroupInfo> {
-        self.nodes.get(&pid).and_then(|n| n.cgroup.as_ref())
+        self.nodes
+            .get(&pid)
+            .and_then(|n| n.cgroup.as_ref())
+            .and_then(CgroupAttribution::container)
     }
 
     /// Get all containerized processes
     pub fn containerized_processes(&self) -> Vec<&ProcessNode> {
-        self.nodes.values().filter(|n| n.cgroup.is_some()).collect()
+        self.nodes
+            .values()
+            .filter(|n| {
+                n.cgroup
+                    .as_ref()
+                    .and_then(CgroupAttribution::container)
+                    .is_some()
+            })
+            .collect()
     }
 
     /// Get processes grouped by container
     pub fn by_container(&self) -> HashMap<String, Vec<&ProcessNode>> {
         let mut groups: HashMap<String, Vec<&ProcessNode>> = HashMap::new();
         for node in self.nodes.values() {
-            if let Some(ref cgroup) = node.cgroup {
+            if let Some(cgroup) = node.cgroup.as_ref().and_then(CgroupAttribution::container) {
                 let key = cgroup
                     .container_id
                     .clone()
@@ -626,6 +667,7 @@ impl ProcessTree {
             let container_tag = node
                 .cgroup
                 .as_ref()
+                .and_then(CgroupAttribution::container)
                 .and_then(|c| c.runtime.as_ref())
                 .map(|r| format!(" [{}]", r))
                 .unwrap_or_default();
@@ -642,11 +684,20 @@ impl ProcessTree {
     /// Summary statistics
     pub fn summary(&self) -> ProcessTreeSummary {
         let total = self.nodes.len();
-        let containerized = self.nodes.values().filter(|n| n.cgroup.is_some()).count();
+        let containerized = self
+            .nodes
+            .values()
+            .filter(|n| {
+                n.cgroup
+                    .as_ref()
+                    .and_then(CgroupAttribution::container)
+                    .is_some()
+            })
+            .count();
 
         let mut containers: HashMap<String, usize> = HashMap::new();
         for node in self.nodes.values() {
-            if let Some(ref cgroup) = node.cgroup {
+            if let Some(cgroup) = node.cgroup.as_ref().and_then(CgroupAttribution::container) {
                 if let Some(ref id) = cgroup.container_id {
                     *containers.entry(id.clone()).or_default() += 1;
                 }
@@ -775,5 +826,35 @@ mod tests {
 
         let (runtime, _) = ProcessTree::detect_container_runtime("/lxc/web01/init.scope");
         assert_eq!(runtime, Some(ContainerRuntime::Lxc));
+    }
+
+    /// A process whose cgroup file is read and names no container is `Host`,
+    /// which is a different answer from one whose file was not read at all.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_host_cgroup_is_host_not_unread() {
+        let attribution = ProcessTree::attribute_cgroup("0::/init.scope\n");
+        assert!(matches!(attribution, CgroupAttribution::Host));
+        assert!(attribution.container().is_none());
+    }
+
+    /// A cgroup file that names a container runtime is a container, with the
+    /// runtime and the id it carries.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_docker_cgroup_is_a_container() {
+        let line = "0::/system.slice/docker-abc123def456abc123def456abc123def456abc123def456abc123def456abcd.scope\n";
+        let attribution = ProcessTree::attribute_cgroup(line);
+        let info = attribution.container().expect("a container");
+        assert_eq!(info.runtime, Some(ContainerRuntime::Docker));
+        assert!(info.container_id.is_some());
+    }
+
+    /// A process whose `/proc/<pid>/cgroup` cannot be read has no attribution.
+    /// No process can have this pid, so the file is absent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreadable_cgroup_file_is_none_not_host() {
+        assert!(ProcessTree::read_cgroup_linux(u32::MAX).is_none());
     }
 }

@@ -201,8 +201,14 @@ impl WatchdogMonitor {
         // happens to contain "soft".
         const SOFTDOG_IDENTITY: &str = "Software Watchdog";
 
+        // A missing class directory means the watchdog subsystem is not exposed,
+        // which is not the same as having no watchdog devices. It used to return
+        // an empty overview, which read as "no watchdogs here".
         if !wdt_path.exists() {
-            return Ok(Self::empty_overview());
+            return Err(IronError::NotFound(format!(
+                "{} does not exist, so watchdog devices cannot be read",
+                wdt_path.display()
+            )));
         }
 
         let entries = std::fs::read_dir(wdt_path).map_err(IronError::Io)?;
@@ -363,24 +369,6 @@ impl WatchdogMonitor {
                 .into(),
         ))
     }
-
-    fn empty_overview() -> WatchdogOverview {
-        WatchdogOverview {
-            devices: Vec::new(),
-            total_count: 0,
-            active_count: 0,
-            hardware_count: 0,
-            recommendations: Vec::new(),
-        }
-    }
-}
-
-impl Default for WatchdogMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: Self::empty_overview(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -430,10 +418,15 @@ mod tests {
         assert_eq!(unread.is_default_timeout(), None);
     }
 
+    /// A missing `/sys/class/watchdog` is a failed read, not a machine with no
+    /// watchdog devices.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn test_monitor_default() {
-        let monitor = WatchdogMonitor::default();
-        let _overview = monitor.overview();
+    fn missing_watchdog_class_is_an_error_not_zero_devices() {
+        let root =
+            std::env::temp_dir().join(format!("ironmon-watchdog-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(WatchdogMonitor::scan_root(&root).is_err());
     }
 
     #[test]

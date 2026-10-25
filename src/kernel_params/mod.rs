@@ -597,23 +597,6 @@ impl KernelParamsMonitor {
     }
 }
 
-impl Default for KernelParamsMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            report: KernelParamsReport {
-                params: Vec::new(),
-                security_params: Vec::new(),
-                network_params: Vec::new(),
-                vm_params: Vec::new(),
-                non_recommended_count: 0,
-                security_score: None,
-                network_score: None,
-                recommendations: Vec::new(),
-            },
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,12 +688,6 @@ mod tests {
         ];
         let score = KernelParamsMonitor::compute_security_score(&params);
         assert_eq!(score, Some(100));
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = KernelParamsMonitor::default();
-        let _report = monitor.report();
     }
 
     #[test]

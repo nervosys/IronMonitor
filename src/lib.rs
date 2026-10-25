@@ -509,7 +509,9 @@ pub use anomaly::{
 };
 
 // Re-export process tree
-pub use process_tree::{ContainerRuntime, ProcessNode, ProcessTree, ProcessTreeSummary};
+pub use process_tree::{
+    CgroupAttribution, ContainerRuntime, ProcessNode, ProcessTree, ProcessTreeSummary,
+};
 
 // Re-export boot configuration
 pub use boot_config::{

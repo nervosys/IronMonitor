@@ -94,10 +94,10 @@ pub struct IoStats {
 pub struct BlockDeviceIo {
     /// Device name (e.g. "sda", "nvme0n1").
     pub name: String,
-    /// Active I/O scheduler.
-    pub scheduler: IoSchedulerType,
-    /// Available schedulers.
-    pub available_schedulers: Vec<IoSchedulerType>,
+    /// Active I/O scheduler, or `None` where `queue/scheduler` was not read.
+    pub scheduler: Option<IoSchedulerType>,
+    /// Available schedulers, or `None` where `queue/scheduler` was not read.
+    pub available_schedulers: Option<Vec<IoSchedulerType>>,
     /// Whether this is a rotational (HDD) device. `None` when
     /// `queue/rotational` was not readable — which is not the same as an SSD.
     pub rotational: Option<bool>,
@@ -120,8 +120,9 @@ pub struct BlockDeviceIo {
     /// `.unwrap_or(0)`. See `disk::DiskInfo::capacity` and
     /// `smart::SmartDiskInfo::capacity_bytes`.
     pub size_bytes: Option<u64>,
-    /// Model / product name.
-    pub model: String,
+    /// Model / product name, or `None` where `device/model` was not read. An
+    /// empty file is no model either.
+    pub model: Option<String>,
 }
 
 impl BlockDeviceIo {
@@ -177,16 +178,18 @@ impl BlockDeviceIo {
     /// `rotational` was not read — the answer depends entirely on it, so there
     /// is no verdict to give without it.
     pub fn scheduler_optimal(&self) -> Option<bool> {
+        // No scheduler read is no scheduler to judge.
+        let scheduler = self.scheduler?;
         let optimal = if self.rotational? {
             // HDDs benefit from BFQ or mq-deadline
             matches!(
-                self.scheduler,
+                scheduler,
                 IoSchedulerType::Bfq | IoSchedulerType::MqDeadline
             )
         } else {
             // SSDs/NVMe work best with none, mq-deadline, or kyber
             matches!(
-                self.scheduler,
+                scheduler,
                 IoSchedulerType::None | IoSchedulerType::MqDeadline | IoSchedulerType::Kyber
             )
         };
@@ -295,10 +298,12 @@ impl IoSchedulerMonitor {
             let size_bytes = Self::read_sysfs_u64(&dev_path.join("size")).map(|s| s * 512);
 
             // Model
+            // An unread model used to be `""`, which read as a device with a
+            // blank product name. It is `None` now, as is an empty file.
             let model = std::fs::read_to_string(dev_path.join("device/model"))
                 .ok()
                 .map(|s| s.trim().to_string())
-                .unwrap_or_default();
+                .filter(|s| !s.is_empty());
 
             devices.push(BlockDeviceIo {
                 name,
@@ -325,13 +330,13 @@ impl IoSchedulerMonitor {
 
         let mut recommendations = Vec::new();
         for dev in &devices {
-            if dev.scheduler_optimal() == Some(false) {
+            if let (Some(false), Some(current)) = (dev.scheduler_optimal(), dev.scheduler) {
                 let rotational = dev.rotational == Some(true);
                 let suggested = if rotational { "bfq" } else { "none" };
                 recommendations.push(format!(
                     "{}: using '{}' scheduler; '{}' may be better for {} devices",
                     dev.name,
-                    dev.scheduler,
+                    current,
                     suggested,
                     if rotational { "rotational" } else { "SSD/NVMe" }
                 ));
@@ -347,8 +352,14 @@ impl IoSchedulerMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_scheduler(queue_path: &std::path::Path) -> (IoSchedulerType, Vec<IoSchedulerType>) {
-        let content = std::fs::read_to_string(queue_path.join("scheduler")).unwrap_or_default();
+    fn read_scheduler(
+        queue_path: &std::path::Path,
+    ) -> (Option<IoSchedulerType>, Option<Vec<IoSchedulerType>>) {
+        // An unreadable `scheduler` file is no answer. It used to parse as the
+        // empty string: an Unknown active scheduler and an empty list.
+        let Ok(content) = std::fs::read_to_string(queue_path.join("scheduler")) else {
+            return (None, None);
+        };
 
         let mut active = IoSchedulerType::Unknown;
         let mut available = Vec::new();
@@ -377,7 +388,7 @@ impl IoSchedulerMonitor {
             }
         }
 
-        (active, available)
+        (Some(active), Some(available))
     }
 
     #[cfg(target_os = "linux")]
@@ -466,19 +477,6 @@ impl IoSchedulerMonitor {
     }
 }
 
-impl Default for IoSchedulerMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: IoSchedulerOverview {
-                devices: Vec::new(),
-                total_devices: 0,
-                non_optimal_count: 0,
-                recommendations: Vec::new(),
-            },
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,8 +492,8 @@ mod tests {
     fn test_optimal_ssd() {
         let dev = BlockDeviceIo {
             name: "nvme0n1".into(),
-            scheduler: IoSchedulerType::None,
-            available_schedulers: vec![IoSchedulerType::None, IoSchedulerType::MqDeadline],
+            scheduler: Some(IoSchedulerType::None),
+            available_schedulers: Some(vec![IoSchedulerType::None, IoSchedulerType::MqDeadline]),
             rotational: Some(false),
             queue_depth: Some(256),
             logical_block_size: Some(512),
@@ -516,7 +514,7 @@ mod tests {
                 discards_completed: Some(0),
             },
             size_bytes: Some(1_000_000_000_000),
-            model: "Samsung 990 Pro".into(),
+            model: Some("Samsung 990 Pro".into()),
         };
         assert_eq!(dev.scheduler_optimal(), Some(true));
     }
@@ -525,8 +523,8 @@ mod tests {
     fn test_non_optimal_hdd() {
         let dev = BlockDeviceIo {
             name: "sda".into(),
-            scheduler: IoSchedulerType::None,
-            available_schedulers: vec![IoSchedulerType::None, IoSchedulerType::Bfq],
+            scheduler: Some(IoSchedulerType::None),
+            available_schedulers: Some(vec![IoSchedulerType::None, IoSchedulerType::Bfq]),
             rotational: Some(true),
             queue_depth: Some(128),
             logical_block_size: Some(512),
@@ -547,15 +545,9 @@ mod tests {
                 discards_completed: Some(0),
             },
             size_bytes: Some(2_000_000_000_000),
-            model: "WDC WD20EARS".into(),
+            model: Some("WDC WD20EARS".into()),
         };
         assert_eq!(dev.scheduler_optimal(), Some(false));
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = IoSchedulerMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]
@@ -586,8 +578,8 @@ mod tests {
     fn an_unread_rotational_flag_yields_no_verdict() {
         let dev = BlockDeviceIo {
             name: "sdz".into(),
-            scheduler: IoSchedulerType::Bfq,
-            available_schedulers: vec![IoSchedulerType::Bfq],
+            scheduler: Some(IoSchedulerType::Bfq),
+            available_schedulers: Some(vec![IoSchedulerType::Bfq]),
             rotational: None,
             queue_depth: None,
             logical_block_size: None,
@@ -608,9 +600,48 @@ mod tests {
                 discards_completed: Some(0),
             },
             size_bytes: Some(0),
-            model: String::new(),
+            model: None,
         };
         assert_eq!(dev.scheduler_optimal(), None);
+    }
+
+    /// An unread scheduler file is no scheduler, so there is no verdict on it.
+    /// It used to parse as `Unknown`, which is not optimal on any device and
+    /// was recommended against.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_scheduler_file_is_none_not_unknown() {
+        let dir = std::env::temp_dir().join(format!("ironmon-iosched-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (active, available) = IoSchedulerMonitor::read_scheduler(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(active, None);
+        assert_eq!(available, None);
+    }
+
+    /// The bracketed entry is the active scheduler and every entry is listed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_scheduler_takes_active_from_brackets() {
+        let dir = std::env::temp_dir().join(format!("ironmon-iosched-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scheduler"), "[mq-deadline] kyber bfq none\n").unwrap();
+        let (active, available) = IoSchedulerMonitor::read_scheduler(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(active, Some(IoSchedulerType::MqDeadline));
+        assert_eq!(
+            available,
+            Some(vec![
+                IoSchedulerType::MqDeadline,
+                IoSchedulerType::Kyber,
+                IoSchedulerType::Bfq,
+                IoSchedulerType::None,
+            ])
+        );
     }
 
     #[cfg(not(target_os = "linux"))]

@@ -80,6 +80,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results, and link speed is `link_speed_bps` rather than throughput.
 - Readers no longer report values they did not obtain: the motherboard OS name, architecture and firmware type (Windows, macOS, Linux) are `None` when unread instead of compile-time or assumed values, the observability API drops the same fallbacks, a disk whose filesystem query failed is reported with the reason, unenumerated services and boot entries are absent rather than empty, `cpu_frequency_mhz` is documented as core 0 with a new `cpu_core_frequency_mhz` per-core series, zero swap and used memory are kept in the fleet table, and the pipeline network totals are `None` unless every interface has a rate.
 - Agent tool JSON: unread values are `null` instead of `"None"`, `"Unknown"`, `Some(..)` text, a `"CPU"` or empty model, `false` for a component that failed to start, or an empty list presented as complete; CPU `model` and per-core `online` are `None` where unread (Windows and macOS have no online reader).
+- Linux kernel-interface readers no longer report what they did not read. The
+  block device `model` and active `scheduler` are `None` when unread, not `""`
+  and `unknown`; the EDAC controller name is `None` rather than the directory
+  name `mc{n}`; a thermal trip with an unreadable type is kept with its type
+  `None` instead of being dropped; a process whose `/proc/<pid>/cgroup` is
+  unreadable is `None` rather than indistinguishable from a host process; and a
+  missing `/sys/class/watchdog` is an error, not "no watchdogs". The readers'
+  `Default` impls, which turned a failed read into an empty overview, are
+  removed.
 - RAPL: an unread `enabled` attribute is no longer published as a measured
   `true`; a missing powercap tree is an error, not "present with no domains";
   PSys is reported separately instead of being added to the package total; and

@@ -82,8 +82,10 @@ impl std::fmt::Display for TripPointType {
 pub struct TripPoint {
     /// Trip point index.
     pub index: u32,
-    /// Trip type.
-    pub trip_type: TripPointType,
+    /// Trip type, or `None` where the `type` file was not read or named no
+    /// type this reader knows. The trip itself is kept, because its temperature
+    /// may still have been read.
+    pub trip_type: Option<TripPointType>,
     /// Trip temperature in millidegrees Celsius, where it was read.
     pub temp_mc: Option<i64>,
     /// Hysteresis in millidegrees Celsius, where it was read.
@@ -181,7 +183,7 @@ impl ThermalZoneInfo {
         let here = self.temp_c()?;
         self.trip_points
             .iter()
-            .filter(|tp| tp.trip_type == TripPointType::Critical)
+            .filter(|tp| tp.trip_type == Some(TripPointType::Critical))
             .find_map(|tp| tp.temp_c())
             .map(|critical| critical - here)
     }
@@ -196,7 +198,7 @@ impl ThermalZoneInfo {
         let passive: Vec<i64> = self
             .trip_points
             .iter()
-            .filter(|tp| tp.trip_type == TripPointType::Passive)
+            .filter(|tp| tp.trip_type == Some(TripPointType::Passive))
             .filter_map(|tp| tp.temp_mc)
             .collect();
         // No passive trip point read is not the same as being below one.
@@ -414,14 +416,16 @@ impl ThermalZoneMonitor {
             }
 
             let tp_temp = Self::read_sysfs_i64(&tp_temp_path);
-            let tp_type_str = Self::read_sysfs(&tp_type_path).unwrap_or_default();
-            let tp_type = match tp_type_str.as_str() {
-                "active" => TripPointType::Active,
-                "passive" => TripPointType::Passive,
-                "hot" => TripPointType::Hot,
-                "critical" => TripPointType::Critical,
-                _ => continue,
-            };
+            // An unread `type` used to be `""`, which matched no arm and dropped
+            // the whole trip along with its temperature. The trip now stays, with
+            // its type `None`.
+            let tp_type = Self::read_sysfs(&tp_type_path).and_then(|s| match s.as_str() {
+                "active" => Some(TripPointType::Active),
+                "passive" => Some(TripPointType::Passive),
+                "hot" => Some(TripPointType::Hot),
+                "critical" => Some(TripPointType::Critical),
+                _ => None,
+            });
 
             let hyst = Self::read_sysfs_i64(&path.join(format!("trip_point_{}_hyst", i)));
 
@@ -439,7 +443,7 @@ impl ThermalZoneMonitor {
         // point was unread.
         let passive: Vec<i64> = trip_points
             .iter()
-            .filter(|tp| tp.trip_type == TripPointType::Passive)
+            .filter(|tp| tp.trip_type == Some(TripPointType::Passive))
             .filter_map(|tp| tp.temp_mc)
             .collect();
         let passive_active = match temp_mc {
@@ -514,26 +518,6 @@ impl ThermalZoneMonitor {
                 .into(),
         ))
     }
-
-    fn empty_overview() -> ThermalZoneOverview {
-        ThermalZoneOverview {
-            zones: Vec::new(),
-            cooling_devices: Vec::new(),
-            zone_count: 0,
-            hottest_zone: None,
-            hottest_temp_c: None,
-            throttling_count: 0,
-            recommendations: Vec::new(),
-        }
-    }
-}
-
-impl Default for ThermalZoneMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: Self::empty_overview(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -551,7 +535,7 @@ mod tests {
     fn test_trip_point_temp() {
         let tp = TripPoint {
             index: 0,
-            trip_type: TripPointType::Critical,
+            trip_type: Some(TripPointType::Critical),
             temp_mc: Some(105_000),
             hysteresis_mc: Some(0),
         };
@@ -560,7 +544,7 @@ mod tests {
         // A trip point whose file could not be read has no temperature.
         let unread = TripPoint {
             index: 1,
-            trip_type: TripPointType::Critical,
+            trip_type: Some(TripPointType::Critical),
             temp_mc: None,
             hysteresis_mc: None,
         };
@@ -579,13 +563,13 @@ mod tests {
             trip_points: vec![
                 TripPoint {
                     index: 0,
-                    trip_type: TripPointType::Passive,
+                    trip_type: Some(TripPointType::Passive),
                     temp_mc: Some(90_000),
                     hysteresis_mc: Some(2_000),
                 },
                 TripPoint {
                     index: 1,
-                    trip_type: TripPointType::Critical,
+                    trip_type: Some(TripPointType::Critical),
                     temp_mc: Some(105_000),
                     hysteresis_mc: Some(0),
                 },
@@ -615,7 +599,7 @@ mod tests {
             available_policies: Some(vec!["step_wise".into()]),
             trip_points: vec![TripPoint {
                 index: 0,
-                trip_type: TripPointType::Passive,
+                trip_type: Some(TripPointType::Passive),
                 temp_mc: Some(90_000),
                 hysteresis_mc: Some(2_000),
             }],
@@ -649,12 +633,6 @@ mod tests {
             max_state: Some(10),
         };
         assert!((cd.utilization_pct().expect("both states read") - 50.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = ThermalZoneMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]
@@ -784,6 +762,24 @@ mod tests {
         let zone = &overview.zones[0];
         assert_eq!(zone.trip_points.len(), MAX_TRIP_POINTS as usize);
         assert!(zone.trip_points_truncated);
+    }
+
+    /// A trip whose `type` is unreadable is kept with its temperature and no
+    /// type. It used to be dropped, which also removed its temperature from
+    /// the passive and critical comparisons.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trip_with_unread_type_is_kept_with_type_none() {
+        let root = thermal_tree("trip-no-type");
+        let zone = root.join("thermal_zone0");
+        std::fs::write(zone.join("trip_point_0_temp"), "90000\n").unwrap();
+        let overview = ThermalZoneMonitor::scan_root(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let trips = &overview.zones[0].trip_points;
+        assert_eq!(trips.len(), 1);
+        assert_eq!(trips[0].trip_type, None);
+        assert_eq!(trips[0].temp_mc, Some(90_000));
     }
 
     /// Exactly the bound's worth of trip points is complete, not truncated.

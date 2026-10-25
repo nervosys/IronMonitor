@@ -422,25 +422,6 @@ impl DmaEngineMonitor {
                 .into(),
         ))
     }
-
-    fn empty_overview() -> DmaOverview {
-        DmaOverview {
-            controllers: Vec::new(),
-            total_controllers: 0,
-            total_channels: 0,
-            has_ioat: false,
-            has_dsa: false,
-            recommendations: Vec::new(),
-        }
-    }
-}
-
-impl Default for DmaEngineMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: Self::empty_overview(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -568,12 +549,6 @@ mod tests {
             .filter(|c| c.in_use == Some(true))
             .collect();
         assert_eq!(active.len(), 2);
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = DmaEngineMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]

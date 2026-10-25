@@ -89,8 +89,10 @@ pub struct EdacCsRow {
 pub struct EdacMemoryController {
     /// MC index.
     pub index: u32,
-    /// MC name/driver.
-    pub mc_name: String,
+    /// MC name/driver, or `None` where `mc_name` was not read. The directory
+    /// name (`mc0`) is the kernel's index for the controller, not its driver,
+    /// so it is not substituted here.
+    pub mc_name: Option<String>,
     /// Total correctable errors on this controller, or `None` where the
     /// counter was not readable. See [`EdacCsRow::ce_count`].
     pub ce_count: Option<u64>,
@@ -186,12 +188,18 @@ impl EdacMonitor {
 
     #[cfg(target_os = "linux")]
     fn scan() -> Result<EdacOverview, IronError> {
+        Self::scan_root(std::path::Path::new("/sys/devices/system/edac"))
+    }
+
+    /// Read the memory controllers under `mc_base`, normally
+    /// `/sys/devices/system/edac`.
+    #[cfg(target_os = "linux")]
+    fn scan_root(mc_base: &std::path::Path) -> Result<EdacOverview, IronError> {
         // An absent `edac` directory is the driver not being loaded, which is
         // not the same fact as a loaded driver finding no controller -- and an
         // empty overview said the second while meaning the first. The
         // distinction is the whole difference between "this machine reports no
         // ECC errors" and "nothing here counts them".
-        let mc_base = std::path::Path::new("/sys/devices/system/edac");
         if !mc_base.exists() {
             return Err(IronError::FeatureNotAvailable(
                 "the kernel exposes no /sys/devices/system/edac: no EDAC driver \
@@ -207,8 +215,9 @@ impl EdacMonitor {
         for i in Self::indexed_entries(&mc_base.join("mc"), "mc")? {
             let mc_path = mc_base.join(format!("mc/mc{}", i));
 
-            let mc_name =
-                Self::read_sysfs(&mc_path.join("mc_name")).unwrap_or_else(|| format!("mc{}", i));
+            // The name used to fall back to the directory name `mc{i}` when the
+            // file was unread, which reported an index as if it were a driver.
+            let mc_name = Self::read_sysfs(&mc_path.join("mc_name"));
             // `read_sysfs_u64` already answers `None` for a file that is
             // missing or unreadable. These used to discard that and report `0`,
             // which is an ECC error count an operator acts on.
@@ -459,29 +468,6 @@ impl EdacMonitor {
                 .into(),
         ))
     }
-
-    fn empty_overview() -> EdacOverview {
-        EdacOverview {
-            controllers: Vec::new(),
-            total_controllers: 0,
-            // Nothing was read, so there is no total. `0` here claimed a clean
-            // bill of health for a machine nobody examined.
-            total_ce: None,
-            total_ue: None,
-            // Nothing was read, so ECC state is unknown. `false` here said ECC
-            // was off.
-            ecc_active: None,
-            recommendations: Vec::new(),
-        }
-    }
-}
-
-impl Default for EdacMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: Self::empty_overview(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -500,7 +486,7 @@ mod tests {
         let overview = EdacOverview {
             controllers: vec![EdacMemoryController {
                 index: 0,
-                mc_name: "test_mc".into(),
+                mc_name: Some("test_mc".into()),
                 ce_count: Some(5),
                 ue_count: Some(0),
                 ce_noinfo_count: Some(0),
@@ -564,12 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn test_monitor_default() {
-        let monitor = EdacMonitor::default();
-        let _overview = monitor.overview();
-    }
-
-    #[test]
     fn test_serialization() {
         let cs = EdacCsRow {
             index: 0,
@@ -584,5 +564,20 @@ mod tests {
         let json = serde_json::to_string(&cs).unwrap();
         assert!(json.contains("DIMM0"));
         let _: EdacCsRow = serde_json::from_str(&json).unwrap();
+    }
+
+    /// A controller whose `mc_name` cannot be read has no name. The directory
+    /// is `mc0`, which is an index, and it is not reported as the driver.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_mc_name_is_none_not_the_directory_name() {
+        let root = std::env::temp_dir().join(format!("ironmon-edac-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("mc/mc0")).unwrap();
+        let overview = EdacMonitor::scan_root(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(overview.controllers.len(), 1);
+        assert_eq!(overview.controllers[0].mc_name, None);
     }
 }

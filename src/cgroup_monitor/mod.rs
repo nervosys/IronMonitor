@@ -622,21 +622,6 @@ impl CgroupMonitor {
     }
 }
 
-impl Default for CgroupMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: CgroupOverview {
-                version: CgroupVersion::Unknown,
-                available_controllers: None,
-                cgroups: Vec::new(),
-                container_count: 0,
-                total_memory_limit_bytes: None,
-                total_effective_cpus: None,
-            },
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,12 +874,6 @@ mod tests {
         let mem = CgroupMonitor::read_memory_v2(&dir);
         std::fs::remove_dir_all(&dir).ok();
         assert!(mem.is_none());
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = CgroupMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]

@@ -357,25 +357,6 @@ impl VoltageRegulatorMonitor {
                 .into(),
         ))
     }
-
-    fn empty_overview() -> VoltageRegulatorOverview {
-        VoltageRegulatorOverview {
-            regulators: Vec::new(),
-            total_count: 0,
-            enabled_count: 0,
-            out_of_range_count: 0,
-            estimated_power_uw: None,
-            recommendations: Vec::new(),
-        }
-    }
-}
-
-impl Default for VoltageRegulatorMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            overview: Self::empty_overview(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -428,12 +409,6 @@ mod tests {
             power_uw: None,
         };
         assert_eq!(info.voltage_in_range(), Some(false));
-    }
-
-    #[test]
-    fn test_monitor_default() {
-        let monitor = VoltageRegulatorMonitor::default();
-        let _overview = monitor.overview();
     }
 
     #[test]

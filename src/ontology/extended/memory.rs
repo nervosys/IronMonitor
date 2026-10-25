@@ -437,7 +437,13 @@ fn resolve_ecc(out: &mut Vec<Reading>) {
 
     for c in controllers {
         let base = format!("memory.ecc.controller.{}", c.index);
-        push_id(out, format!("{base}.mc_name"), &c.mc_name);
+        push_opt(
+            out,
+            format!("{base}.mc_name"),
+            c.mc_name.as_ref().map(|n| serde_json::json!(n)),
+            Some(U::Identifier),
+            "this controller's driver name could not be read",
+        );
         push_opt(
             out,
             format!("{base}.ce_count"),
