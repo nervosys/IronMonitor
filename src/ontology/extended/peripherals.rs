@@ -562,10 +562,13 @@ fn resolve_bluetooth_detail(out: &mut Vec<Reading>) {
             Some(format!("{:?}", d.device_type)),
             "the device's class of device did not identify its type",
         );
-        push_id(
+        // `Unknown` is published as unavailable with its reason, not as the
+        // identifier "unknown", which reads as a measured state.
+        enum_reading(
             out,
             format!("{base}.state"),
-            &format!("{:?}", d.state).to_lowercase(),
+            Some(format!("{:?}", d.state)),
+            "the platform did not report this device's connection state",
         );
         push_opt(
             out,

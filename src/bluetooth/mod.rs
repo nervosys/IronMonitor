@@ -350,10 +350,12 @@ impl BluetoothMonitor {
                         address: address_from_pnp_id(id),
                         name: (!name.is_empty()).then(|| name.to_string()),
                         device_type: device_type_from_name(name),
-                        // A peripheral's PnP node exists, with status OK, once it
-                        // is paired, connected or not. This reported every
-                        // paired device as connected. `Paired` is what is known.
-                        state: BluetoothState::Paired,
+                        // The PnP node carries no connection or pairing state: its
+                        // `Status` is node health, and it reads "OK" whether the
+                        // peripheral is connected or not. This used to report every
+                        // peripheral as `Paired` regardless of its real state. The
+                        // state is `Unknown` until a property that says it is read.
+                        state: BluetoothState::Unknown,
                         battery_percent: None,
                     });
                 }

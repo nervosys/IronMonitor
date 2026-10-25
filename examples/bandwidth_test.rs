@@ -20,10 +20,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║  ─────────────────────────────────────────────────────────────────║");
 
     let mem_result = memory_bandwidth_test(Duration::from_secs(2));
-    println!(
-        "║    Copy Bandwidth: {:.2} GB/s                                      ║",
-        mem_result.bandwidth_gbytes_per_sec
-    );
+    match mem_result.bandwidth_gbytes_per_sec {
+        Some(gbps) => println!(
+            "║    Copy Bandwidth: {:.2} GB/s                                      ║",
+            gbps
+        ),
+        None => println!("║    Copy Bandwidth: unknown (run too short to measure)              ║"),
+    }
     println!(
         "║    Bytes Copied: {} MB                                          ║",
         mem_result.total_bytes_copied / (1024 * 1024)

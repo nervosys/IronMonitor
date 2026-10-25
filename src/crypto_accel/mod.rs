@@ -196,9 +196,20 @@ impl CryptoAccelMonitor {
         let flag_set: std::collections::HashSet<&str> = flags.iter().map(|s| s.as_str()).collect();
         let mut features = Vec::new();
 
-        // AES-NI
+        // The AES feature is named for the instruction set the machine has.
+        // "AES-NI" is the x86 name; on ARM the same `aes` flag is the ARMv8
+        // Cryptographic Extension. The ARM names are read from the flags, not
+        // the build target, so the answer follows the machine that was probed.
+        // `sha1`, `sha2`, `pmull` and `rndr` are ARM-only spellings; the macOS
+        // probe reports no `asimd` flag, so it is needed too.
+        let arm = ["asimd", "sha1", "sha2", "pmull", "rndr"]
+            .iter()
+            .any(|f| flag_set.contains(f));
+        let aes_name = if arm { "AES" } else { "AES-NI" };
+
+        // AES-NI (x86) or AES (ARMv8)
         features.push(CryptoFeature {
-            name: "AES-NI".into(),
+            name: aes_name.into(),
             cpu_flag: "aes".into(),
             category: CryptoCategory::SymmetricEncryption,
             hardware_accelerated: flag_set.contains("aes"),
@@ -504,7 +515,8 @@ impl CryptoAccelMonitor {
             .any(|f| f.cpu_flag == "aes" && f.hardware_accelerated)
         {
             recs.push(
-                "No AES-NI detected; encryption workloads will be significantly slower".into(),
+                "No hardware AES detected; encryption workloads will be significantly slower"
+                    .into(),
             );
         }
 
@@ -533,12 +545,27 @@ impl CryptoAccelMonitor {
     /// An error when neither line is present. An empty list would be read as
     /// "the processor has no accelerated primitive", which is a claim about the
     /// hardware made from a file that was not read.
+    ///
+    /// On ARM the kernel's `rng` token is the ARMv8.5 RNDR instruction
+    /// (FEAT_RNG). It is published as `rndr`, the name the macOS probe uses for
+    /// the same feature. `rng` used to be dropped, so an aarch64 Linux machine
+    /// with RNDR reported no random number instruction.
     #[cfg(any(target_os = "linux", test))]
     fn parse_cpuinfo_flags(cpuinfo: &str) -> Result<Vec<String>, IronError> {
         for line in cpuinfo.lines() {
-            if line.starts_with("flags") || line.starts_with("Features") {
+            if line.starts_with("flags") {
                 if let Some((_, flags_str)) = line.split_once(':') {
                     return Ok(flags_str.split_whitespace().map(String::from).collect());
+                }
+            }
+            if line.starts_with("Features") {
+                if let Some((_, flags_str)) = line.split_once(':') {
+                    let mut flags: Vec<String> =
+                        flags_str.split_whitespace().map(String::from).collect();
+                    if flags.iter().any(|f| f == "rng") {
+                        flags.push("rndr".into());
+                    }
+                    return Ok(flags);
                 }
             }
         }
@@ -686,6 +713,54 @@ mod tests {
         let flags = CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).unwrap();
         assert!(flags.contains(&"pmull".to_string()));
         assert!(flags.contains(&"sha2".to_string()));
+    }
+
+    #[test]
+    fn aarch64_rng_token_is_the_rndr_instruction() {
+        // Captured shape of an aarch64 Linux Features line with FEAT_RNG present.
+        let cpuinfo = "processor\t: 0\nBogoMIPS\t: 50.00\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp ssbs rng\nCPU implementer\t: 0x41\n";
+        let flags = CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).unwrap();
+        assert!(flags.contains(&"rng".to_string()));
+        assert!(flags.contains(&"rndr".to_string()));
+
+        let features = CryptoAccelMonitor::detect_features(&flags);
+        let rndr = features.iter().find(|f| f.name == "RNDR").unwrap();
+        assert!(rndr.hardware_accelerated);
+        assert_eq!(rndr.category, CryptoCategory::RandomNumberGen);
+    }
+
+    #[test]
+    fn aarch64_without_rng_token_reports_no_rndr() {
+        // Captured shape of an aarch64 Features line from a core without FEAT_RNG.
+        let cpuinfo =
+            "processor\t: 0\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid\n";
+        let flags = CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).unwrap();
+        assert!(!flags.contains(&"rndr".to_string()));
+        let features = CryptoAccelMonitor::detect_features(&flags);
+        let rndr = features.iter().find(|f| f.name == "RNDR").unwrap();
+        assert!(!rndr.hardware_accelerated);
+    }
+
+    #[test]
+    fn the_aes_feature_is_named_for_the_architecture() {
+        let arm: Vec<String> = ["fp", "asimd", "aes"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let arm_features = CryptoAccelMonitor::detect_features(&arm);
+        assert!(arm_features
+            .iter()
+            .any(|f| f.name == "AES" && f.cpu_flag == "aes"));
+        assert!(!arm_features.iter().any(|f| f.name == "AES-NI"));
+
+        let x86: Vec<String> = ["aes", "pclmulqdq", "rdrand"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let x86_features = CryptoAccelMonitor::detect_features(&x86);
+        assert!(x86_features
+            .iter()
+            .any(|f| f.name == "AES-NI" && f.cpu_flag == "aes"));
     }
 
     #[test]

@@ -383,11 +383,12 @@ pub fn memory_bandwidth_test(duration: Duration) -> MemoryBandwidthResult {
 
     let duration_secs = start.elapsed().as_secs_f64();
     let total_bytes = iterations * buffer_size as u64 * 2; // Read + Write
-    let bandwidth_gbps = if duration_secs > 0.0 {
-        (total_bytes as f64 / duration_secs) / 1_000_000_000.0
-    } else {
-        0.0
-    };
+                                                           // A zero duration, or a run that never completed an iteration, means the timer
+                                                           // did not resolve the run, which is not a measured rate. This used to report
+                                                           // `0.0` GB/s in that case, indistinguishable from a real stall, so the rate is
+                                                           // `None` instead.
+    let bandwidth_gbps = (duration_secs > 0.0 && iterations > 0)
+        .then(|| (total_bytes as f64 / duration_secs) / 1_000_000_000.0);
 
     MemoryBandwidthResult {
         duration_secs,
@@ -406,8 +407,9 @@ pub struct MemoryBandwidthResult {
     pub total_bytes_copied: u64,
     /// Number of iterations
     pub iterations: u64,
-    /// Bandwidth in GB/s
-    pub bandwidth_gbytes_per_sec: f64,
+    /// Bandwidth in GB/s. `None` when the run took no measurable time; this was
+    /// `0.0`, which reads as a measured stall.
+    pub bandwidth_gbytes_per_sec: Option<f64>,
 }
 
 /// Quick bandwidth check to common public servers
@@ -450,10 +452,17 @@ mod tests {
     #[test]
     fn test_memory_bandwidth() {
         let result = memory_bandwidth_test(Duration::from_secs(1));
-        assert!(result.bandwidth_gbytes_per_sec > 0.0);
+        assert!(result.bandwidth_gbytes_per_sec.is_some_and(|g| g > 0.0));
         println!(
-            "Memory bandwidth: {:.2} GB/s",
+            "Memory bandwidth: {:?} GB/s",
             result.bandwidth_gbytes_per_sec
         );
+    }
+
+    #[test]
+    fn zero_duration_memory_run_reports_no_rate() {
+        // A zero-length run is a timer that did not resolve the run, not a stall.
+        let result = memory_bandwidth_test(Duration::ZERO);
+        assert_eq!(result.bandwidth_gbytes_per_sec, None);
     }
 }

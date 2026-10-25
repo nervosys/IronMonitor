@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machine has no GPU. It is now the new domain diagnostic `gpu.<unreadable>`,
   which carries the error and says whether GPUs exist is unknown. `gpu.<none>`
   is still reported when enumeration succeeds and finds nothing.
+- The memory bandwidth test reports no rate when its run took no measurable
+  time, or completed no iteration, instead of `0.0` GB/s, which read as a
+  stall. The example renders it as unknown.
+- Windows Bluetooth peripherals are reported with state `unknown` rather than
+  `paired`, since the PnP data read carries no connection or pairing state. The
+  ontology publishes an unknown state as unavailable with its reason.
+- The AES crypto feature is named `AES` on ARM, from the `aes` flag, and
+  `AES-NI` only on x86.
+- On aarch64 Linux, the `rng` flag in `/proc/cpuinfo` is reported as the RNDR
+  random number instruction, matching the macOS ARM probe.
 - Windows PCI devices no longer report their PnP health (`OK`) as a power
   state, and the subsystem vendor and device ids are split from `SUBSYS_` as
   Microsoft lays it out (device, then vendor); both fields held the whole
