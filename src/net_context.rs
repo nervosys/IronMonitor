@@ -375,6 +375,10 @@ pub fn parse_windows(
 /// 11 24H2's location consent has not been given.
 const NETSH_LOCATION_REFUSAL: &str = "location permission";
 
+/// What English `netsh wlan show interfaces` prints on a machine with no
+/// wireless adapter.
+const NETSH_NO_WIRELESS_INTERFACE: &str = "There is no wireless interface on the system.";
+
 /// Parse `netsh wlan show interfaces`. English output only: `netsh` localises
 /// its labels, and a label it does not recognise is left unread.
 pub fn parse_netsh_wlan(text: &str) -> Result<Vec<WifiInterface>, String> {
@@ -437,7 +441,12 @@ pub fn parse_netsh_wlan(text: &str) -> Result<Vec<WifiInterface>, String> {
     // Output with no `Name` line is not "no Wi-Fi adapter". The labels are
     // matched in English only, so a localised listing that names no interface
     // in a key this reader knows used to come back as an empty list, and the
-    // ontology reported that the machine has no Wi-Fi.
+    // ontology reported that the machine has no Wi-Fi. The one English
+    // sentence that does mean "none" is recognised, so a desktop without a
+    // wireless adapter still reports none rather than an unreadable listing.
+    if interfaces.is_empty() && text.contains(NETSH_NO_WIRELESS_INTERFACE) {
+        return Ok(interfaces);
+    }
     if interfaces.is_empty() && !text.trim().is_empty() {
         return Err(concat!(
             "netsh wlan printed output with no interface this reader recognises ",
@@ -1072,6 +1081,12 @@ There is 1 interface on the system:
     /// under a label this reader does not know, so nothing is recognised: that
     /// is an error, not an empty list. The label is an assumed localisation,
     /// not one captured from a German Windows.
+    #[test]
+    fn english_no_wireless_interface_is_none_not_an_error() {
+        let text = "\r\nThere is no wireless interface on the system.\r\n";
+        assert_eq!(parse_netsh_wlan(text).unwrap().len(), 0);
+    }
+
     #[test]
     fn localised_netsh_output_with_no_known_label_is_an_error_not_no_wifi() {
         let text = concat!(
