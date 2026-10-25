@@ -124,8 +124,9 @@ pub struct CgroupInfo {
     pub io: Option<CgroupIo>,
     /// PID limits.
     pub pids: Option<CgroupPids>,
-    /// Controllers enabled for this cgroup.
-    pub controllers: Vec<String>,
+    /// Controllers enabled for this cgroup. `None` when `cgroup.controllers`
+    /// was not readable; an empty list means it was read and named none.
+    pub controllers: Option<Vec<String>>,
 }
 
 /// System-wide cgroup overview.
@@ -133,8 +134,9 @@ pub struct CgroupInfo {
 pub struct CgroupOverview {
     /// Cgroup version in use.
     pub version: CgroupVersion,
-    /// Available controllers.
-    pub available_controllers: Vec<String>,
+    /// Available controllers. `None` when the hierarchy listing was not
+    /// readable, which is different from a hierarchy with none.
+    pub available_controllers: Option<Vec<String>>,
     /// All monitored cgroups.
     pub cgroups: Vec<CgroupInfo>,
     /// Total number of containers detected.
@@ -245,6 +247,28 @@ fn sum_read_u64(values: impl IntoIterator<Item = u64>) -> Option<u64> {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn sum_read_f64(values: impl IntoIterator<Item = f64>) -> Option<f64> {
     values.into_iter().reduce(|a, b| a + b)
+}
+
+/// The container runtime a cgroup's name belongs to, if any.
+///
+/// Matches the runtimes' own naming and nothing broader. A bare `.scope`
+/// suffix used to count as a container, but systemd gives login sessions and
+/// ordinary units that suffix too, so `session-3.scope` was reported as one.
+#[cfg(any(target_os = "linux", test))]
+fn container_runtime_of(name: &str) -> Option<&'static str> {
+    if name.contains("docker-") {
+        Some("docker")
+    } else if name.contains("cri-containerd-") {
+        Some("containerd")
+    } else if name.contains("crio-") {
+        Some("cri-o")
+    } else if name.contains("libpod-") {
+        Some("podman")
+    } else if name.starts_with("lxc") || name.contains("lxc-") {
+        Some("lxc")
+    } else {
+        None
+    }
 }
 
 /// Total memory limit over the cgroups that have a limit. An unlimited
@@ -376,24 +400,24 @@ impl CgroupMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn list_controllers(version: &CgroupVersion) -> Vec<String> {
+    fn list_controllers(version: &CgroupVersion) -> Option<Vec<String>> {
+        // An unreadable listing used to become an empty Vec, the same as a
+        // hierarchy that has no controllers. It is `None` instead.
         match version {
             CgroupVersion::V2 => std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers")
-                .map(|s| s.split_whitespace().map(String::from).collect())
-                .unwrap_or_default(),
+                .ok()
+                .map(|s| s.split_whitespace().map(String::from).collect()),
             CgroupVersion::V1 => {
                 // List controller directories
-                std::fs::read_dir("/sys/fs/cgroup")
-                    .map(|entries| {
-                        entries
-                            .flatten()
-                            .filter(|e| e.path().is_dir())
-                            .map(|e| e.file_name().to_string_lossy().to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default()
+                std::fs::read_dir("/sys/fs/cgroup").ok().map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| e.path().is_dir())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect()
+                })
             }
-            _ => Vec::new(),
+            _ => None,
         }
     }
 
@@ -436,23 +460,11 @@ impl CgroupMonitor {
 
                 // Check if this has cgroup.procs (is a real cgroup)
                 if path.join("cgroup.procs").exists() {
-                    let is_container = name.contains("docker-")
-                        || name.contains("cri-containerd-")
-                        || name.contains("libpod-")
-                        || name.contains("lxc-")
-                        || name.ends_with(".scope");
-
-                    let container_runtime = if name.contains("docker-") {
-                        Some("docker".into())
-                    } else if name.contains("cri-containerd-") {
-                        Some("containerd".into())
-                    } else if name.contains("libpod-") {
-                        Some("podman".into())
-                    } else if name.contains("lxc-") {
-                        Some("lxc".into())
-                    } else {
-                        None
-                    };
+                    // Only a container runtime's own cgroup names count. A bare
+                    // `.scope` is also how systemd names login sessions and
+                    // ordinary units, which were all reported as containers.
+                    let container_runtime = container_runtime_of(&name).map(String::from);
+                    let is_container = container_runtime.is_some();
 
                     let friendly_name = if is_container {
                         // Try to extract container ID
@@ -465,8 +477,8 @@ impl CgroupMonitor {
                     };
 
                     let controllers = std::fs::read_to_string(path.join("cgroup.controllers"))
-                        .map(|s| s.split_whitespace().map(String::from).collect())
-                        .unwrap_or_default();
+                        .ok()
+                        .map(|s| s.split_whitespace().map(String::from).collect());
 
                     let cpu = Self::read_cpu_v2(&path);
                     let memory = Self::read_memory_v2(&path);
@@ -601,14 +613,12 @@ impl CgroupMonitor {
 
     #[cfg(not(target_os = "linux"))]
     fn scan() -> Result<CgroupOverview, IronError> {
-        Ok(CgroupOverview {
-            version: CgroupVersion::Unknown,
-            available_controllers: Vec::new(),
-            cgroups: Vec::new(),
-            container_count: 0,
-            total_memory_limit_bytes: None,
-            total_effective_cpus: None,
-        })
+        // An empty overview here read as "no cgroups and no containers" on a
+        // platform where the question was never asked. The reason travels with
+        // the error instead.
+        Err(IronError::UnsupportedPlatform(
+            "cgroups are read from `/sys/fs/cgroup`, which this platform does not expose".into(),
+        ))
     }
 }
 
@@ -617,7 +627,7 @@ impl Default for CgroupMonitor {
         Self::new().unwrap_or(Self {
             overview: CgroupOverview {
                 version: CgroupVersion::Unknown,
-                available_controllers: Vec::new(),
+                available_controllers: None,
                 cgroups: Vec::new(),
                 container_count: 0,
                 total_memory_limit_bytes: None,
@@ -679,7 +689,7 @@ mod tests {
             memory: None,
             io: None,
             pids: None,
-            controllers: vec!["cpu".into(), "memory".into()],
+            controllers: Some(vec!["cpu".into(), "memory".into()]),
         };
         assert!(cg.is_container);
         assert_eq!(cg.container_runtime, Some("docker".into()));
@@ -891,7 +901,7 @@ mod tests {
     fn test_serialization() {
         let overview = CgroupOverview {
             version: CgroupVersion::V2,
-            available_controllers: vec!["cpu".into(), "memory".into()],
+            available_controllers: Some(vec!["cpu".into(), "memory".into()]),
             cgroups: Vec::new(),
             container_count: 0,
             total_memory_limit_bytes: None,
@@ -950,7 +960,7 @@ mod tests {
             }),
             io: None,
             pids: None,
-            controllers: Vec::new(),
+            controllers: Some(Vec::new()),
         }
     }
 
@@ -972,5 +982,35 @@ mod tests {
         ];
         assert_eq!(sum_memory_limits(&cgroups), Some(3072));
         assert_eq!(sum_effective_cpus(&cgroups), Some(2.5));
+    }
+
+    #[test]
+    fn runtime_names_are_containers() {
+        assert_eq!(container_runtime_of("docker-abc123.scope"), Some("docker"));
+        assert_eq!(
+            container_runtime_of("cri-containerd-abc123.scope"),
+            Some("containerd")
+        );
+        assert_eq!(container_runtime_of("crio-abc123.scope"), Some("cri-o"));
+        assert_eq!(container_runtime_of("libpod-abc123.scope"), Some("podman"));
+        assert_eq!(container_runtime_of("lxc.payload.web"), Some("lxc"));
+    }
+
+    #[test]
+    fn a_scope_suffix_alone_is_not_a_container() {
+        // Login sessions and ordinary units carry `.scope` too.
+        assert_eq!(container_runtime_of("session-3.scope"), None);
+        assert_eq!(container_runtime_of("app-gnome-terminal-1234.scope"), None);
+        assert_eq!(container_runtime_of("user@1000.service"), None);
+        assert_eq!(container_runtime_of("system.slice"), None);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn scan_is_unsupported_off_linux() {
+        assert!(matches!(
+            CgroupMonitor::new(),
+            Err(IronError::UnsupportedPlatform(_))
+        ));
     }
 }

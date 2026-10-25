@@ -26,7 +26,10 @@ pub enum DmaEngineType {
     DwAxiDma,
     /// PL330 / ARM DMA.
     Pl330,
-    /// Unknown / other.
+    /// The controller exists but its driver could not be read from sysfs.
+    /// Distinct from `Other`, which names a driver that was read.
+    Unknown,
+    /// A driver was read and is not one this reader classifies.
     Other(String),
 }
 
@@ -39,26 +42,74 @@ impl std::fmt::Display for DmaEngineType {
             Self::IntelIdxd => write!(f, "Intel IDXD"),
             Self::DwAxiDma => write!(f, "DW AXI DMA"),
             Self::Pl330 => write!(f, "PL330"),
+            Self::Unknown => write!(f, "Unknown"),
             Self::Other(s) => write!(f, "{}", s),
         }
     }
 }
 
 /// DMA channel capabilities.
+///
+/// Each field is `None` when the reader did not observe it. An unreadable
+/// capability file leaves every field `None`; it is not evidence that the
+/// hardware lacks the capability, and it is not evidence that it has it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmaCapabilities {
     /// Memory-to-memory copy.
-    pub memcpy: bool,
+    pub memcpy: Option<bool>,
     /// Memory-to-memory with XOR (RAID5).
-    pub xor: bool,
+    pub xor: Option<bool>,
     /// Memory fill.
-    pub memset: bool,
+    pub memset: Option<bool>,
     /// Scatter-gather.
-    pub sg: bool,
+    pub sg: Option<bool>,
     /// PQ (RAID6).
-    pub pq: bool,
+    pub pq: Option<bool>,
     /// Interrupt.
-    pub interrupt: bool,
+    pub interrupt: Option<bool>,
+}
+
+impl DmaCapabilities {
+    /// Every capability unknown: the source was not read.
+    #[cfg(any(target_os = "linux", test))]
+    fn unread() -> Self {
+        Self {
+            memcpy: None,
+            xor: None,
+            memset: None,
+            sg: None,
+            pq: None,
+            interrupt: None,
+        }
+    }
+}
+
+/// Map a driver name, as read from the channel's `device/driver` link, to an
+/// engine type. `None` means the link was not readable.
+#[cfg(any(target_os = "linux", test))]
+fn engine_type_from_driver(driver: Option<&str>) -> DmaEngineType {
+    match driver {
+        Some("ioatdma") => DmaEngineType::IntelIoat,
+        Some("idxd") => DmaEngineType::IntelIdxd,
+        Some("dw-axi-dmac") => DmaEngineType::DwAxiDma,
+        Some("pl330") => DmaEngineType::Pl330,
+        Some(other) => DmaEngineType::Other(other.to_string()),
+        None => DmaEngineType::Unknown,
+    }
+}
+
+/// Parse the device `cap` file. The file was read, so every field is known:
+/// a capability it does not name is observed to be absent.
+#[cfg(any(target_os = "linux", test))]
+fn capabilities_from_cap_string(caps: &str) -> DmaCapabilities {
+    DmaCapabilities {
+        memcpy: Some(caps.contains("copy")),
+        xor: Some(caps.contains("xor")),
+        memset: Some(caps.contains("fill") || caps.contains("memset")),
+        sg: Some(caps.contains("sg")),
+        pq: Some(caps.contains("pq")),
+        interrupt: Some(caps.contains("interrupt")),
+    }
 }
 
 /// Single DMA channel.
@@ -66,8 +117,9 @@ pub struct DmaCapabilities {
 pub struct DmaChannel {
     /// Channel name (e.g. "dma0chan0").
     pub name: String,
-    /// Whether channel is in use.
-    pub in_use: bool,
+    /// Whether channel is in use. `None` when the `in_use` (or work-queue
+    /// `state`) file was not readable.
+    pub in_use: Option<bool>,
     /// Transfer bytes completed (if available).
     pub bytes_transferred: Option<u64>,
     /// Number of transfers (if available).
@@ -156,9 +208,8 @@ impl DmaEngineMonitor {
                 if let Some((ctrl_name, _chan_idx)) = Self::parse_channel_name(&name) {
                     let path = entry.path();
 
-                    let in_use = Self::read_sysfs(&path.join("in_use"))
-                        .map(|s| s != "0")
-                        .unwrap_or(false);
+                    // An unreadable `in_use` was reported as idle. It is unknown.
+                    let in_use = Self::read_sysfs(&path.join("in_use")).map(|s| s != "0");
 
                     let bytes_transferred = Self::read_sysfs_u64(&path.join("bytes_transferred"));
                     let transfer_count = Self::read_sysfs_u64(&path.join("memcpy_count"));
@@ -171,7 +222,7 @@ impl DmaEngineMonitor {
                     };
 
                     let controller = controllers.entry(ctrl_name.clone()).or_insert_with(|| {
-                        let engine_type = Self::detect_engine_type(&ctrl_name);
+                        let engine_type = Self::detect_engine_type(&path);
                         let capabilities = Self::read_capabilities(&path);
 
                         // Resolve NUMA node from device link
@@ -257,50 +308,27 @@ impl DmaEngineMonitor {
         }
     }
 
+    /// Engine type from the driver bound to a channel's device.
+    ///
+    /// `channel_path` is the channel's own `/sys/class/dma/dmaNchanM` entry.
+    /// This used to build `/sys/class/dma/dmaNchan0` from the controller name
+    /// with `replace("dma", "dma0")`, which turned `dma0` into `dma00`. The
+    /// path never existed, so every controller fell through to
+    /// `Other("dma0")`: a controller name sitting in the type field.
     #[cfg(target_os = "linux")]
-    fn detect_engine_type(ctrl_name: &str) -> DmaEngineType {
-        // Try to read driver name for the DMA device
-        let sysfs_path = format!(
-            "/sys/class/dma/{}chan0/device/driver",
-            ctrl_name.replace("dma", "dma0")
-        );
-        if let Ok(link) = std::fs::read_link(&sysfs_path) {
-            let driver = link
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            return match driver.as_str() {
-                "ioatdma" => DmaEngineType::IntelIoat,
-                "idxd" => DmaEngineType::IntelIdxd,
-                "dw-axi-dmac" => DmaEngineType::DwAxiDma,
-                "pl330" => DmaEngineType::Pl330,
-                other => DmaEngineType::Other(other.to_string()),
-            };
-        }
-        DmaEngineType::Other(ctrl_name.to_string())
+    fn detect_engine_type(channel_path: &std::path::Path) -> DmaEngineType {
+        let driver = std::fs::read_link(channel_path.join("device/driver"))
+            .ok()
+            .and_then(|link| link.file_name().map(|n| n.to_string_lossy().into_owned()));
+        engine_type_from_driver(driver.as_deref())
     }
 
     #[cfg(target_os = "linux")]
     fn read_capabilities(path: &std::path::Path) -> DmaCapabilities {
-        // Read from device caps or from channel-level info
-        let device_path = path.join("device");
-        let caps_str = if device_path.exists() {
-            Self::read_sysfs(&device_path.join("cap")).unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        DmaCapabilities {
-            // Was `|| caps_str.is_empty()`, which claimed memcpy support
-            // whenever the `cap` file was missing or unreadable -- asserting a
-            // hardware capability the reader never observed. An unreadable cap
-            // file is not evidence of a capability.
-            memcpy: caps_str.contains("copy"),
-            xor: caps_str.contains("xor"),
-            memset: caps_str.contains("fill") || caps_str.contains("memset"),
-            sg: caps_str.contains("sg"),
-            pq: caps_str.contains("pq"),
-            interrupt: caps_str.contains("interrupt"),
+        match std::fs::read_to_string(path.join("device/cap")) {
+            Ok(caps) => capabilities_from_cap_string(caps.trim()),
+            // The cap file was not readable: no field is known.
+            Err(_) => DmaCapabilities::unread(),
         }
     }
 
@@ -332,10 +360,10 @@ impl DmaEngineMonitor {
                 for i in 0..16 {
                     let wq_path = path.join(format!("wq{}.{}", name, i));
                     if wq_path.exists() {
-                        let state = Self::read_sysfs(&wq_path.join("state")).unwrap_or_default();
+                        let state = Self::read_sysfs(&wq_path.join("state"));
                         channels.push(DmaChannel {
                             name: format!("{}_wq{}", name, i),
-                            in_use: state == "enabled",
+                            in_use: state.map(|s| s == "enabled"),
                             bytes_transferred: None,
                             transfer_count: None,
                         });
@@ -350,14 +378,11 @@ impl DmaEngineMonitor {
                         engine_type,
                         channel_count: ch_count,
                         channels,
-                        capabilities: DmaCapabilities {
-                            memcpy: true,
-                            xor: false,
-                            memset: true,
-                            sg: true,
-                            pq: false,
-                            interrupt: true,
-                        },
+                        // This used to be a fixed set (memcpy, memset, sg,
+                        // interrupt true; xor, pq false) applied to every
+                        // DSA/IAX device without reading any of it. None of
+                        // these were observed, so none is reported.
+                        capabilities: DmaCapabilities::unread(),
                         numa_node,
                     },
                 );
@@ -432,16 +457,67 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let caps = DmaCapabilities {
-            memcpy: true,
-            xor: true,
-            memset: true,
-            sg: false,
-            pq: true,
-            interrupt: true,
+            memcpy: Some(true),
+            xor: Some(true),
+            memset: Some(true),
+            sg: Some(false),
+            pq: Some(true),
+            interrupt: Some(true),
         };
-        assert!(caps.memcpy);
-        assert!(caps.pq);
-        assert!(!caps.sg);
+        assert_eq!(caps.memcpy, Some(true));
+        assert_eq!(caps.pq, Some(true));
+        assert_eq!(caps.sg, Some(false));
+    }
+
+    #[test]
+    fn driver_names_map_to_engine_types() {
+        assert_eq!(
+            engine_type_from_driver(Some("ioatdma")),
+            DmaEngineType::IntelIoat
+        );
+        assert_eq!(
+            engine_type_from_driver(Some("idxd")),
+            DmaEngineType::IntelIdxd
+        );
+        assert_eq!(engine_type_from_driver(Some("pl330")), DmaEngineType::Pl330);
+    }
+
+    #[test]
+    fn a_driver_that_is_read_but_unlisted_is_named_not_unknown() {
+        assert_eq!(
+            engine_type_from_driver(Some("mv_xor")),
+            DmaEngineType::Other("mv_xor".into())
+        );
+    }
+
+    #[test]
+    fn an_unreadable_driver_link_is_unknown_not_a_controller_name() {
+        // The controller name used to land here as `Other("dma0")`.
+        assert_eq!(engine_type_from_driver(None), DmaEngineType::Unknown);
+        assert_eq!(DmaEngineType::Unknown.to_string(), "Unknown");
+    }
+
+    #[test]
+    fn cap_file_names_each_capability_it_states() {
+        let caps = capabilities_from_cap_string("copy fill interrupt");
+        assert_eq!(caps.memcpy, Some(true));
+        assert_eq!(caps.memset, Some(true));
+        assert_eq!(caps.interrupt, Some(true));
+        // Read, and not naming these: observed absent, not unknown.
+        assert_eq!(caps.xor, Some(false));
+        assert_eq!(caps.pq, Some(false));
+        assert_eq!(caps.sg, Some(false));
+    }
+
+    #[test]
+    fn an_unread_cap_file_asserts_nothing() {
+        let caps = DmaCapabilities::unread();
+        assert_eq!(caps.memcpy, None);
+        assert_eq!(caps.xor, None);
+        assert_eq!(caps.memset, None);
+        assert_eq!(caps.sg, None);
+        assert_eq!(caps.pq, None);
+        assert_eq!(caps.interrupt, None);
     }
 
     #[test]
@@ -453,40 +529,44 @@ mod tests {
             channels: vec![
                 DmaChannel {
                     name: "dma0chan0".into(),
-                    in_use: true,
+                    in_use: Some(true),
                     bytes_transferred: Some(1_000_000),
                     transfer_count: Some(100),
                 },
                 DmaChannel {
                     name: "dma0chan1".into(),
-                    in_use: false,
+                    in_use: Some(false),
                     bytes_transferred: Some(0),
                     transfer_count: Some(0),
                 },
                 DmaChannel {
                     name: "dma0chan2".into(),
-                    in_use: true,
+                    in_use: Some(true),
                     bytes_transferred: Some(500_000),
                     transfer_count: Some(50),
                 },
                 DmaChannel {
                     name: "dma0chan3".into(),
-                    in_use: false,
+                    in_use: Some(false),
                     bytes_transferred: None,
                     transfer_count: None,
                 },
             ],
             capabilities: DmaCapabilities {
-                memcpy: true,
-                xor: true,
-                memset: true,
-                sg: true,
-                pq: false,
-                interrupt: true,
+                memcpy: Some(true),
+                xor: Some(true),
+                memset: Some(true),
+                sg: Some(true),
+                pq: Some(false),
+                interrupt: Some(true),
             },
             numa_node: 0,
         };
-        let active: Vec<_> = ctrl.channels.iter().filter(|c| c.in_use).collect();
+        let active: Vec<_> = ctrl
+            .channels
+            .iter()
+            .filter(|c| c.in_use == Some(true))
+            .collect();
         assert_eq!(active.len(), 2);
     }
 
@@ -500,7 +580,7 @@ mod tests {
     fn test_serialization() {
         let ch = DmaChannel {
             name: "dma0chan0".into(),
-            in_use: true,
+            in_use: Some(true),
             bytes_transferred: Some(1_000_000),
             transfer_count: Some(100),
         };

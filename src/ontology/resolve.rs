@@ -3431,7 +3431,13 @@ fn resolve_kernel_params(out: &mut Vec<Reading>) {
     for (i, p) in params.iter().enumerate() {
         let base = format!("system.kernel_param.{i}");
         push_id(out, format!("{base}.name"), &p.name);
-        push_id(out, format!("{base}.value"), &p.value);
+        push_opt(
+            out,
+            format!("{base}.value"),
+            p.value.as_ref().map(|v| serde_json::json!(v)),
+            Some(Unit::Identifier),
+            "the parameter was not readable here, so it has no value",
+        );
         push_id(
             out,
             format!("{base}.category"),

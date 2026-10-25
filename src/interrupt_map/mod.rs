@@ -70,10 +70,14 @@ pub struct InterruptInfo {
     pub chip: String,
     /// Hardware IRQ description (e.g. device name).
     pub description: String,
-    /// CPU affinity mask (which CPUs handle this IRQ).
-    pub affinity_cpus: Vec<u32>,
-    /// Whether the affinity is balanced across CPUs.
-    pub affinity_balanced: bool,
+    /// CPU affinity mask (which CPUs handle this IRQ). `None` when the IRQ has
+    /// no `smp_affinity_list` (the per-CPU special interrupts such as NMI and
+    /// LOC) or the file was not readable. It used to be filled with every CPU
+    /// in that case, which read as "handled everywhere".
+    pub affinity_cpus: Option<Vec<u32>>,
+    /// Whether the affinity is balanced across CPUs. `None` exactly when
+    /// `affinity_cpus` is `None`.
+    pub affinity_balanced: Option<bool>,
 }
 
 /// Interrupt imbalance analysis.
@@ -277,12 +281,8 @@ impl InterruptMapMonitor {
             let interrupt_type = Self::classify_interrupt(&irq, &chip);
 
             // Try reading affinity
-            let affinity_cpus = Self::read_affinity(&irq, cpu_count);
-            let affinity_balanced = if affinity_cpus.len() > 1 {
-                affinity_cpus.len() as u32 >= cpu_count / 2
-            } else {
-                false
-            };
+            let affinity_cpus = Self::read_affinity(&irq);
+            let affinity_balanced = affinity_balance(affinity_cpus.as_deref(), cpu_count);
 
             interrupts.push(InterruptInfo {
                 irq,
@@ -330,21 +330,23 @@ impl InterruptMapMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_affinity(irq: &str, cpu_count: u32) -> Vec<u32> {
-        // Only for numeric IRQs
+    fn read_affinity(irq: &str) -> Option<Vec<u32>> {
+        // Only numeric IRQs have a `/proc/irq/N` directory. The named ones
+        // (NMI, LOC, RES, ...) are per-CPU and have no affinity to read. This
+        // used to answer "every CPU" for them, and for an unreadable file.
         if irq.parse::<u32>().is_err() {
-            return (0..cpu_count).collect();
+            return None;
         }
 
         let affinity_path = format!("/proc/irq/{}/smp_affinity_list", irq);
-        match std::fs::read_to_string(&affinity_path) {
-            Ok(s) => Self::parse_cpu_list(s.trim(), cpu_count),
-            Err(_) => (0..cpu_count).collect(),
-        }
+        let s = std::fs::read_to_string(&affinity_path).ok()?;
+        let cpus = Self::parse_cpu_list(s.trim());
+        // A file that names no CPU is not a mask of zero CPUs.
+        (!cpus.is_empty()).then_some(cpus)
     }
 
-    #[cfg(target_os = "linux")]
-    fn parse_cpu_list(s: &str, _max: u32) -> Vec<u32> {
+    #[cfg(any(target_os = "linux", test))]
+    fn parse_cpu_list(s: &str) -> Vec<u32> {
         let mut cpus = Vec::new();
         for part in s.split(',') {
             let part = part.trim();
@@ -390,23 +392,11 @@ impl InterruptMapMonitor {
     }
 }
 
-impl Default for InterruptMapMonitor {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            interrupts: Vec::new(),
-            cpu_count: 1,
-            analysis: InterruptAnalysis {
-                total_interrupts: 0,
-                per_cpu_totals: Vec::new(),
-                busiest_cpu: 0,
-                quietest_cpu: 0,
-                imbalance_ratio: 1.0,
-                significant_imbalance: false,
-                top_sources: Vec::new(),
-                recommendations: Vec::new(),
-            },
-        })
-    }
+/// Whether an IRQ's affinity covers at least half the CPUs. Unknown affinity
+/// gives unknown balance; a known single CPU is not balanced.
+#[cfg(any(target_os = "linux", test))]
+fn affinity_balance(affinity: Option<&[u32]>, cpu_count: u32) -> Option<bool> {
+    affinity.map(|cpus| cpus.len() > 1 && cpus.len() as u32 >= cpu_count / 2)
 }
 
 #[cfg(test)]
@@ -429,8 +419,8 @@ mod tests {
             total_count: 4000,
             chip: "IO-APIC".into(),
             description: "timer".into(),
-            affinity_cpus: vec![0, 1, 2, 3],
-            affinity_balanced: true,
+            affinity_cpus: Some(vec![0, 1, 2, 3]),
+            affinity_balanced: Some(true),
         }];
         let analysis = InterruptMapMonitor::analyze(&interrupts, 4);
         assert!(!analysis.significant_imbalance);
@@ -446,8 +436,8 @@ mod tests {
             total_count: 10300,
             chip: "PCI-MSI".into(),
             description: "nvme0q0".into(),
-            affinity_cpus: vec![0],
-            affinity_balanced: false,
+            affinity_cpus: Some(vec![0]),
+            affinity_balanced: Some(false),
         }];
         let analysis = InterruptMapMonitor::analyze(&interrupts, 4);
         assert!(analysis.significant_imbalance);
@@ -456,9 +446,31 @@ mod tests {
     }
 
     #[test]
-    fn test_monitor_default() {
-        let monitor = InterruptMapMonitor::default();
-        let _analysis = monitor.analysis();
+    fn cpu_list_expands_ranges_and_singletons() {
+        assert_eq!(
+            InterruptMapMonitor::parse_cpu_list("0-3,8"),
+            vec![0, 1, 2, 3, 8]
+        );
+        assert_eq!(InterruptMapMonitor::parse_cpu_list("5"), vec![5]);
+    }
+
+    #[test]
+    fn cpu_list_with_nothing_parseable_is_empty_not_all_cpus() {
+        assert!(InterruptMapMonitor::parse_cpu_list("").is_empty());
+        assert!(InterruptMapMonitor::parse_cpu_list("garbage").is_empty());
+    }
+
+    #[test]
+    fn unknown_affinity_gives_unknown_balance() {
+        assert_eq!(affinity_balance(None, 8), None);
+    }
+
+    #[test]
+    fn balance_needs_at_least_half_the_cpus() {
+        assert_eq!(affinity_balance(Some(&[0, 1, 2, 3]), 8), Some(true));
+        assert_eq!(affinity_balance(Some(&[0, 1, 2]), 8), Some(false));
+        // One CPU is observed, and it is not balanced.
+        assert_eq!(affinity_balance(Some(&[0]), 1), Some(false));
     }
 
     #[test]
@@ -470,8 +482,8 @@ mod tests {
             total_count: 300,
             chip: "PCI-MSI".into(),
             description: "eth0".into(),
-            affinity_cpus: vec![0, 1],
-            affinity_balanced: true,
+            affinity_cpus: Some(vec![0, 1]),
+            affinity_balanced: Some(true),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("PCI-MSI"));

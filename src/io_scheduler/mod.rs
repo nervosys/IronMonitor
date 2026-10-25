@@ -245,13 +245,13 @@ impl IoSchedulerMonitor {
         let block_path = std::path::Path::new("/sys/block");
         let mut devices = Vec::new();
 
+        // A missing `/sys/block` used to return an empty overview, which read
+        // as "this machine has no block devices". It is a reader that could
+        // not run, so it says so, as the non-Linux stubs do.
         if !block_path.exists() {
-            return Ok(IoSchedulerOverview {
-                devices: Vec::new(),
-                total_devices: 0,
-                non_optimal_count: 0,
-                recommendations: Vec::new(),
-            });
+            return Err(IronError::UnsupportedPlatform(
+                "`/sys/block` is not present, so block devices cannot be enumerated here".into(),
+            ));
         }
 
         let entries = std::fs::read_dir(block_path).map_err(IronError::Io)?;
@@ -611,5 +611,14 @@ mod tests {
             model: String::new(),
         };
         assert_eq!(dev.scheduler_optimal(), None);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn scan_is_unsupported_off_linux() {
+        assert!(matches!(
+            IoSchedulerMonitor::new(),
+            Err(IronError::UnsupportedPlatform(_))
+        ));
     }
 }

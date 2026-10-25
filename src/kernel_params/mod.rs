@@ -47,12 +47,15 @@ impl std::fmt::Display for ParamCategory {
 pub struct KernelParam {
     /// Full parameter path (e.g. "net.ipv4.tcp_syncookies").
     pub name: String,
-    /// Current value.
-    pub value: String,
+    /// Current value. `None` when the parameter could not be read. This used to
+    /// be the text "N/A", which read as a value.
+    pub value: Option<String>,
     /// Category.
     pub category: ParamCategory,
-    /// Whether the current value matches recommended.
-    pub is_recommended: bool,
+    /// Whether the current value matches recommended. `None` when there is no
+    /// value to compare, or nothing to compare it against. An unread parameter
+    /// is neither a finding nor a pass.
+    pub is_recommended: Option<bool>,
     /// Recommended value (if known).
     pub recommended: Option<String>,
     /// Description.
@@ -70,12 +73,15 @@ pub struct KernelParamsReport {
     pub network_params: Vec<KernelParam>,
     /// Memory/VM parameters.
     pub vm_params: Vec<KernelParam>,
-    /// Number of non-recommended settings.
+    /// Number of non-recommended settings. Unread parameters are not counted.
     pub non_recommended_count: u32,
-    /// Security hardening score (0-100).
-    pub security_score: u32,
-    /// Network tuning score (0-100).
-    pub network_score: u32,
+    /// Security hardening score (0-100). `None` when no security parameter
+    /// could be compared against its recommendation. It used to be 0 with no
+    /// security parameters and 50 with nothing to compare.
+    pub security_score: Option<u32>,
+    /// Network tuning score (0-100). `None` under the same condition as
+    /// `security_score`.
+    pub network_score: Option<u32>,
     /// Recommendations.
     pub recommendations: Vec<String>,
 }
@@ -156,7 +162,7 @@ impl KernelParamsMonitor {
 
         let non_recommended = params
             .iter()
-            .filter(|p| !p.is_recommended && p.recommended.is_some())
+            .filter(|p| p.is_recommended == Some(false) && p.recommended.is_some())
             .count() as u32;
 
         let security_score = Self::compute_security_score(&security_params);
@@ -164,11 +170,11 @@ impl KernelParamsMonitor {
 
         let mut recommendations = Vec::new();
         for p in &params {
-            if !p.is_recommended {
-                if let Some(ref rec) = p.recommended {
+            if p.is_recommended == Some(false) {
+                if let (Some(ref value), Some(ref rec)) = (&p.value, &p.recommended) {
                     recommendations.push(format!(
                         "{}: current={}, recommended={}",
-                        p.name, p.value, rec
+                        p.name, value, rec
                     ));
                 }
             }
@@ -186,34 +192,29 @@ impl KernelParamsMonitor {
         })
     }
 
-    fn compute_security_score(params: &[KernelParam]) -> u32 {
-        if params.is_empty() {
-            return 0;
-        }
-        let total = params.iter().filter(|p| p.recommended.is_some()).count();
-        if total == 0 {
-            return 50;
-        }
-        let good = params
-            .iter()
-            .filter(|p| p.is_recommended && p.recommended.is_some())
-            .count();
-        ((good as f64 / total as f64) * 100.0) as u32
+    fn compute_security_score(params: &[KernelParam]) -> Option<u32> {
+        Self::score_against_recommended(params)
     }
 
-    fn compute_network_score(params: &[KernelParam]) -> u32 {
-        if params.is_empty() {
-            return 0;
-        }
-        let total = params.iter().filter(|p| p.recommended.is_some()).count();
-        if total == 0 {
-            return 50;
-        }
-        let good = params
+    fn compute_network_score(params: &[KernelParam]) -> Option<u32> {
+        Self::score_against_recommended(params)
+    }
+
+    /// Share of judged parameters that match their recommendation. A parameter
+    /// is judged only when it was read and has a recommendation to compare to;
+    /// with none judged there is nothing to score, so the answer is `None`
+    /// rather than a number chosen to look neutral.
+    fn score_against_recommended(params: &[KernelParam]) -> Option<u32> {
+        let judged: Vec<bool> = params
             .iter()
-            .filter(|p| p.is_recommended && p.recommended.is_some())
-            .count();
-        ((good as f64 / total as f64) * 100.0) as u32
+            .filter(|p| p.recommended.is_some())
+            .filter_map(|p| p.is_recommended)
+            .collect();
+        if judged.is_empty() {
+            return None;
+        }
+        let good = judged.iter().filter(|&&matches| matches).count();
+        Some(((good as f64 / judged.len() as f64) * 100.0) as u32)
     }
 
     #[cfg(target_os = "linux")]
@@ -438,12 +439,15 @@ impl KernelParamsMonitor {
         let mut params = Vec::new();
         for (name, _default, category, description, recommended) in &checks {
             let sysctl_path = format!("/proc/sys/{}", name.replace('.', "/"));
+            // An unreadable sysctl has no value and nothing to judge. It used to
+            // be given the value "N/A" and counted as not recommended.
             let value = std::fs::read_to_string(&sysctl_path)
                 .ok()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "N/A".into());
+                .map(|s| s.trim().to_string());
 
-            let is_recommended = Self::check_recommended(&value, recommended);
+            let is_recommended = value
+                .as_deref()
+                .map(|v| Self::check_recommended(v, recommended));
 
             params.push(KernelParam {
                 name: name.to_string(),
@@ -459,9 +463,6 @@ impl KernelParamsMonitor {
 
     #[cfg(target_os = "linux")]
     fn check_recommended(value: &str, recommended: &str) -> bool {
-        if value == "N/A" {
-            return false;
-        }
         // Numeric comparison
         if let (Ok(v), Ok(r)) = (value.parse::<i64>(), recommended.parse::<i64>()) {
             return v >= r; // For most params, >= recommended is fine
@@ -504,9 +505,9 @@ impl KernelParamsMonitor {
             if let Some(val) = agreed_tcp_level(&String::from_utf8_lossy(&out.stdout)) {
                 params.push(KernelParam {
                     name: "net.tcp.autotuninglevel".into(),
-                    value: val.clone(),
+                    value: Some(val.clone()),
                     category: ParamCategory::Network,
-                    is_recommended: val.to_lowercase() == "normal",
+                    is_recommended: Some(val.to_lowercase() == "normal"),
                     recommended: Some("Normal".into()),
                     description: "TCP auto-tuning level, agreed by every template that states one"
                         .into(),
@@ -554,18 +555,25 @@ impl KernelParamsMonitor {
                 .arg(name)
                 .output();
 
+            // A failed or empty read has no value. It used to be "N/A".
             let value = output
                 .ok()
+                .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|| "N/A".into());
+                .filter(|s| !s.is_empty());
 
-            let is_recommended = if recommended.is_empty() {
-                true
-            } else if let (Ok(v), Ok(r)) = (value.parse::<i64>(), recommended.parse::<i64>()) {
-                v >= r
-            } else {
-                value == *recommended
-            };
+            // Nothing to compare against (`vm.swapusage`) is no judgement, and
+            // neither is a value that was never read. Both used to be `true`.
+            let is_recommended = value
+                .as_deref()
+                .filter(|_| !recommended.is_empty())
+                .map(|v| {
+                    if let (Ok(v_num), Ok(r)) = (v.parse::<i64>(), recommended.parse::<i64>()) {
+                        v_num >= r
+                    } else {
+                        v == *recommended
+                    }
+                });
 
             params.push(KernelParam {
                 name: name.to_string(),
@@ -598,8 +606,8 @@ impl Default for KernelParamsMonitor {
                 network_params: Vec::new(),
                 vm_params: Vec::new(),
                 non_recommended_count: 0,
-                security_score: 0,
-                network_score: 0,
+                security_score: None,
+                network_score: None,
                 recommendations: Vec::new(),
             },
         })
@@ -622,23 +630,57 @@ mod tests {
         let params = vec![
             KernelParam {
                 name: "a".into(),
-                value: "2".into(),
+                value: Some("2".into()),
                 category: ParamCategory::Security,
-                is_recommended: true,
+                is_recommended: Some(true),
                 recommended: Some("2".into()),
                 description: "".into(),
             },
             KernelParam {
                 name: "b".into(),
-                value: "0".into(),
+                value: Some("0".into()),
                 category: ParamCategory::Security,
-                is_recommended: false,
+                is_recommended: Some(false),
                 recommended: Some("1".into()),
                 description: "".into(),
             },
         ];
         let score = KernelParamsMonitor::compute_security_score(&params);
-        assert_eq!(score, 50);
+        assert_eq!(score, Some(50));
+    }
+
+    fn judged(name: &str, value: Option<&str>, is_recommended: Option<bool>) -> KernelParam {
+        KernelParam {
+            name: name.into(),
+            value: value.map(String::from),
+            category: ParamCategory::Security,
+            is_recommended,
+            recommended: Some("1".into()),
+            description: "".into(),
+        }
+    }
+
+    #[test]
+    fn nothing_to_score_is_no_score_not_fifty() {
+        assert_eq!(KernelParamsMonitor::compute_security_score(&[]), None);
+        let unread = [judged("a", None, None)];
+        assert_eq!(KernelParamsMonitor::compute_security_score(&unread), None);
+    }
+
+    #[test]
+    fn unread_parameters_do_not_move_the_score() {
+        let params = [judged("a", Some("1"), Some(true)), judged("b", None, None)];
+        assert_eq!(
+            KernelParamsMonitor::compute_security_score(&params),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn a_parameter_with_no_recommendation_is_not_judged() {
+        let mut no_rec = judged("a", Some("0"), Some(false));
+        no_rec.recommended = None;
+        assert_eq!(KernelParamsMonitor::compute_network_score(&[no_rec]), None);
     }
 
     #[test]
@@ -646,23 +688,23 @@ mod tests {
         let params = vec![
             KernelParam {
                 name: "a".into(),
-                value: "1".into(),
+                value: Some("1".into()),
                 category: ParamCategory::Security,
-                is_recommended: true,
+                is_recommended: Some(true),
                 recommended: Some("1".into()),
                 description: "".into(),
             },
             KernelParam {
                 name: "b".into(),
-                value: "1".into(),
+                value: Some("1".into()),
                 category: ParamCategory::Security,
-                is_recommended: true,
+                is_recommended: Some(true),
                 recommended: Some("1".into()),
                 description: "".into(),
             },
         ];
         let score = KernelParamsMonitor::compute_security_score(&params);
-        assert_eq!(score, 100);
+        assert_eq!(score, Some(100));
     }
 
     #[test]
@@ -675,9 +717,9 @@ mod tests {
     fn test_serialization() {
         let param = KernelParam {
             name: "net.ipv4.tcp_syncookies".into(),
-            value: "1".into(),
+            value: Some("1".into()),
             category: ParamCategory::Network,
-            is_recommended: true,
+            is_recommended: Some(true),
             recommended: Some("1".into()),
             description: "SYN cookies".into(),
         };
