@@ -985,9 +985,9 @@ impl Ontology {
         // score compresses a set of facts into a number whose scale nothing
         // documents, and an agent is better served by the facts.
         //
-        // Throughput estimates are published, and as `Derived`. They come from
-        // per-primitive constants rather than from running anything on this
-        // machine, so they are a calculation and are labelled as one.
+        // Throughput is declared but never filled. The per-primitive constants
+        // it used to carry were not measured on this processor, so the row is
+        // unavailable with the reason, rather than a figure labelled `Derived`.
         add(Entity::new(
             "cpu.crypto.<none>",
             D::Cpu,
@@ -1031,14 +1031,12 @@ impl Ontology {
             D::Cpu,
             K::Limit,
             Some(U::BytesPerSecond),
-            P::Derived,
+            P::Unavailable,
             true,
-            "Estimated per-core throughput for this primitive. A constant scaled \
-             to bytes, not a measurement of this processor: a consumer sizing a \
-             pipeline from it is reading a rule of thumb. Nullable, because \
-             IronMonitor holds no estimate for every primitive.",
-        )
-        .derived(&["cpu.crypto.feature.{n}.name"]));
+            "Per-core throughput for this primitive. Not measured by IronMonitor, \
+             so it is always unavailable; the reason on each row says so. Kept \
+             declared so the id is stable and a future benchmark can fill it.",
+        ));
         add(Entity::new(
             "cpu.crypto.rng.<none>",
             D::Cpu,

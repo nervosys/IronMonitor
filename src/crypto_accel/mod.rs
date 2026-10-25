@@ -1,19 +1,21 @@
 //! Cryptographic hardware acceleration detection and monitoring.
 //!
 //! Detects CPU-accelerated cryptographic instructions (AES-NI, SHA, etc.),
-//! hardware random number generators, TPM crypto capabilities, and GPU
-//! compute crypto potential. Provides throughput estimation based on
-//! detected features.
+//! hardware random number generators, and TPM crypto capabilities.
 //!
 //! ## Platform Support
 //!
 //! - **Linux**: `/proc/cpuinfo` flags, `/dev/hwrng`, `/sys/class/tpm/`
-//! - **Windows**: CPU feature detection, `BCryptEnumAlgorithms`
+//! - **Windows (x86, x86_64)**: CPUID through `std::arch::is_x86_feature_detected!`
 //! - **macOS**: `sysctl hw.optional.*`, Secure Enclave detection
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::IronError;
+
+/// Flag spellings the SHA-1 / SHA-256 extension reports under: `sha_ni` and
+/// `sha` on x86, `sha1` and `sha2` on ARMv8.
+const SHA_FLAGS: [&str; 4] = ["sha_ni", "sha", "sha2", "sha1"];
 
 /// Category of cryptographic acceleration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,16 +53,19 @@ impl std::fmt::Display for CryptoCategory {
 /// A detected cryptographic acceleration feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoFeature {
-    /// Feature name (e.g. "AES-NI", "SHA-256 Extensions").
+    /// Feature name (e.g. "AES-NI", "SHA Extensions").
     pub name: String,
-    /// CPU flag or identifier.
+    /// CPU flag or identifier, spelled as the platform reports it.
     pub cpu_flag: String,
     /// Category.
     pub category: CryptoCategory,
     /// Whether hardware-accelerated.
     pub hardware_accelerated: bool,
-    /// Estimated throughput in GB/s (per core, if known).
-    pub estimated_throughput_gbs: Option<f64>,
+    // There is no per-primitive throughput field. The constants this struct
+    // used to carry (AES 10 GB/s, VAES 40 GB/s and so on) were not measured on
+    // this processor, and the ontology published them as
+    // `cpu.crypto.feature.N.throughput`. They are gone; that id now reports
+    // unavailable.
     /// Description.
     pub description: String,
 }
@@ -184,6 +189,9 @@ impl CryptoAccelMonitor {
         })
     }
 
+    // One push per primitive reads better as a list than a single `vec!` of
+    // struct literals, and the ARM and Key Locker rows are conditional.
+    #[allow(clippy::vec_init_then_push)]
     fn detect_features(flags: &[String]) -> Vec<CryptoFeature> {
         let flag_set: std::collections::HashSet<&str> = flags.iter().map(|s| s.as_str()).collect();
         let mut features = Vec::new();
@@ -194,11 +202,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "aes".into(),
             category: CryptoCategory::SymmetricEncryption,
             hardware_accelerated: flag_set.contains("aes"),
-            estimated_throughput_gbs: if flag_set.contains("aes") {
-                Some(10.0)
-            } else {
-                None
-            },
             description: "AES encryption/decryption in hardware".into(),
         });
 
@@ -208,11 +211,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "vaes".into(),
             category: CryptoCategory::VectorCrypto,
             hardware_accelerated: flag_set.contains("vaes"),
-            estimated_throughput_gbs: if flag_set.contains("vaes") {
-                Some(40.0)
-            } else {
-                None
-            },
             description: "Vectorized AES for parallel encryption (AVX-512)".into(),
         });
 
@@ -222,11 +220,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "pclmulqdq".into(),
             category: CryptoCategory::CarrylessMultiply,
             hardware_accelerated: flag_set.contains("pclmulqdq"),
-            estimated_throughput_gbs: if flag_set.contains("pclmulqdq") {
-                Some(8.0)
-            } else {
-                None
-            },
             description: "Carry-less multiplication for GCM and CRC".into(),
         });
 
@@ -236,25 +229,17 @@ impl CryptoAccelMonitor {
             cpu_flag: "vpclmulqdq".into(),
             category: CryptoCategory::VectorCrypto,
             hardware_accelerated: flag_set.contains("vpclmulqdq"),
-            estimated_throughput_gbs: if flag_set.contains("vpclmulqdq") {
-                Some(32.0)
-            } else {
-                None
-            },
             description: "Vectorized carry-less multiply for parallel GCM".into(),
         });
 
-        // SHA extensions
+        // SHA extensions. The entry carries whichever spelling the platform
+        // reported, so an ARM machine is never named with the x86 `sha_ni`.
+        let sha_flag = SHA_FLAGS.iter().copied().find(|f| flag_set.contains(f));
         features.push(CryptoFeature {
             name: "SHA Extensions".into(),
-            cpu_flag: "sha_ni".into(),
+            cpu_flag: sha_flag.unwrap_or("sha_ni").into(),
             category: CryptoCategory::Hashing,
-            hardware_accelerated: flag_set.contains("sha_ni") || flag_set.contains("sha"),
-            estimated_throughput_gbs: if flag_set.contains("sha_ni") || flag_set.contains("sha") {
-                Some(6.0)
-            } else {
-                None
-            },
+            hardware_accelerated: sha_flag.is_some(),
             description: "SHA-1 and SHA-256 hardware acceleration".into(),
         });
 
@@ -265,7 +250,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "sha512".into(),
             category: CryptoCategory::Hashing,
             hardware_accelerated: has_sha512,
-            estimated_throughput_gbs: if has_sha512 { Some(8.0) } else { None },
             description: "SHA-512 hardware acceleration".into(),
         });
 
@@ -275,7 +259,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "sm3".into(),
             category: CryptoCategory::Hashing,
             hardware_accelerated: flag_set.contains("sm3"),
-            estimated_throughput_gbs: None,
             description: "SM3 hash function (Chinese national standard)".into(),
         });
 
@@ -285,7 +268,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "sm4".into(),
             category: CryptoCategory::SymmetricEncryption,
             hardware_accelerated: flag_set.contains("sm4"),
-            estimated_throughput_gbs: None,
             description: "SM4 block cipher (Chinese national standard)".into(),
         });
 
@@ -295,11 +277,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "rdrand".into(),
             category: CryptoCategory::RandomNumberGen,
             hardware_accelerated: flag_set.contains("rdrand"),
-            estimated_throughput_gbs: if flag_set.contains("rdrand") {
-                Some(0.5)
-            } else {
-                None
-            },
             description: "Hardware random number generator instruction".into(),
         });
 
@@ -309,8 +286,18 @@ impl CryptoAccelMonitor {
             cpu_flag: "rdseed".into(),
             category: CryptoCategory::RandomNumberGen,
             hardware_accelerated: flag_set.contains("rdseed"),
-            estimated_throughput_gbs: None,
             description: "True random seed for seeding PRNGs".into(),
+        });
+
+        // RNDR (AArch64, FEAT_RNG): the ARM counterpart of RDRAND. It has its
+        // own flag rather than sharing `rdrand`, which would publish an x86
+        // instruction name on an ARM machine.
+        features.push(CryptoFeature {
+            name: "RNDR".into(),
+            cpu_flag: "rndr".into(),
+            category: CryptoCategory::RandomNumberGen,
+            hardware_accelerated: flag_set.contains("rndr"),
+            description: "AArch64 random number instruction (FEAT_RNG)".into(),
         });
 
         // AArch64 crypto extensions
@@ -320,7 +307,6 @@ impl CryptoAccelMonitor {
                 cpu_flag: "pmull".into(),
                 category: CryptoCategory::SymmetricEncryption,
                 hardware_accelerated: true,
-                estimated_throughput_gbs: Some(5.0),
                 description: "ARMv8 Cryptographic Extensions".into(),
             });
         }
@@ -332,7 +318,6 @@ impl CryptoAccelMonitor {
             cpu_flag: "keylocker".into(),
             category: CryptoCategory::KeyManagement,
             hardware_accelerated: has_kl,
-            estimated_throughput_gbs: None,
             description: "Intel Key Locker for AES key protection".into(),
         });
 
@@ -394,7 +379,10 @@ impl CryptoAccelMonitor {
                         sources.push(HardwareRng {
                             name: rng_name.to_string(),
                             available: true,
-                            quality: Some(1000),
+                            // No entropy figure is readable for the TPM source.
+                            // This used to report 1000, a constant that the
+                            // ontology published as a bits-per-sample value.
+                            quality: None,
                             source_type: RngSource::Tpm,
                         });
                     }
@@ -458,7 +446,7 @@ impl CryptoAccelMonitor {
         // SHA: 15 points
         if features
             .iter()
-            .any(|f| (f.cpu_flag == "sha_ni" || f.cpu_flag == "sha") && f.hardware_accelerated)
+            .any(|f| SHA_FLAGS.contains(&f.cpu_flag.as_str()) && f.hardware_accelerated)
         {
             score += 15;
         }
@@ -479,10 +467,10 @@ impl CryptoAccelMonitor {
             score += 10;
         }
 
-        // RDRAND: 10 points
+        // RDRAND (x86) or RNDR (AArch64): 10 points
         if features
             .iter()
-            .any(|f| f.cpu_flag == "rdrand" && f.hardware_accelerated)
+            .any(|f| (f.cpu_flag == "rdrand" || f.cpu_flag == "rndr") && f.hardware_accelerated)
         {
             score += 10;
         }
@@ -532,7 +520,7 @@ impl CryptoAccelMonitor {
 
         if !features
             .iter()
-            .any(|f| (f.cpu_flag == "sha_ni" || f.cpu_flag == "sha") && f.hardware_accelerated)
+            .any(|f| SHA_FLAGS.contains(&f.cpu_flag.as_str()) && f.hardware_accelerated)
         {
             recs.push("No SHA extensions; consider BLAKE3 for faster software hashing".into());
         }
@@ -540,70 +528,107 @@ impl CryptoAccelMonitor {
         recs
     }
 
-    #[cfg(target_os = "linux")]
-    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
-        let content = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
-        for line in content.lines() {
+    /// The feature list from `/proc/cpuinfo`: `flags` on x86, `Features` on ARM.
+    ///
+    /// An error when neither line is present. An empty list would be read as
+    /// "the processor has no accelerated primitive", which is a claim about the
+    /// hardware made from a file that was not read.
+    #[cfg(any(target_os = "linux", test))]
+    fn parse_cpuinfo_flags(cpuinfo: &str) -> Result<Vec<String>, IronError> {
+        for line in cpuinfo.lines() {
             if line.starts_with("flags") || line.starts_with("Features") {
                 if let Some((_, flags_str)) = line.split_once(':') {
                     return Ok(flags_str.split_whitespace().map(String::from).collect());
                 }
             }
         }
-        Ok(Vec::new())
+        Err(IronError::Parse(
+            "/proc/cpuinfo has no flags or Features line".into(),
+        ))
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     fn read_cpu_flags() -> Result<Vec<String>, IronError> {
-        // Use PROCESSOR_IDENTIFIER and hard-coded detection on Windows
-        let mut flags = Vec::new();
+        let content = std::fs::read_to_string("/proc/cpuinfo").map_err(IronError::Io)?;
+        Self::parse_cpuinfo_flags(&content)
+    }
 
-        // Try WMI for basic info
-        let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Caption",
-            ])
-            .output();
-
-        if let Ok(out) = output {
-            let _caption = String::from_utf8_lossy(&out.stdout);
-            // Modern Intel/AMD CPUs generally have AES-NI and RDRAND
-            flags.extend_from_slice(&[
-                "aes".into(),
-                "pclmulqdq".into(),
-                "rdrand".into(),
-                "rdseed".into(),
-            ]);
+    /// CPUID through `std::arch`, one query per flag. Each entry pairs the flag
+    /// name as the Linux `/proc/cpuinfo` path spells it with the feature name
+    /// the standard library queries it by, so `detect_features` reads both
+    /// platforms the same way. The answers come from the processor, not from
+    /// the product name, which the old PowerShell caption probe never read.
+    #[cfg(all(
+        target_os = "windows",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
+        macro_rules! probe {
+            // `tt`, not `literal`: the standard library's macro only accepts its
+            // feature name as a bare token.
+            ($($flag:literal => $feature:tt),* $(,)?) => {{
+                let mut flags = Vec::new();
+                $(
+                    if std::arch::is_x86_feature_detected!($feature) {
+                        flags.push($flag.to_string());
+                    }
+                )*
+                flags
+            }};
         }
+        Ok(probe! {
+            "aes" => "aes",
+            "pclmulqdq" => "pclmulqdq",
+            "vaes" => "vaes",
+            "vpclmulqdq" => "vpclmulqdq",
+            "sha_ni" => "sha",
+            "rdrand" => "rdrand",
+            "rdseed" => "rdseed",
+        })
+    }
 
-        Ok(flags)
+    /// Windows on ARM: the feature registers are not queried here, so nothing
+    /// is read. An error, so the crypto rows say so instead of reporting no
+    /// acceleration.
+    #[cfg(all(
+        target_os = "windows",
+        not(any(target_arch = "x86", target_arch = "x86_64"))
+    ))]
+    fn read_cpu_flags() -> Result<Vec<String>, IronError> {
+        Err(IronError::UnsupportedPlatform(
+            "CPU crypto flags are not read on this Windows architecture; only x86 and x86_64 are probed".into(),
+        ))
     }
 
     #[cfg(target_os = "macos")]
     fn read_cpu_flags() -> Result<Vec<String>, IronError> {
         let mut flags = Vec::new();
 
+        // Flag names are the ones the Linux path reports for the same feature on
+        // ARM, so one table of names serves both. The ARM rows name their own
+        // feature: FEAT_SHA256 is `sha2`, not the x86 `sha_ni`, and FEAT_RNG is
+        // `rndr`, not `rdrand`.
         let checks = &[
             ("hw.optional.aes", "aes"),
+            ("hw.optional.arm.FEAT_AES", "aes"),
             ("hw.optional.armv8_crc32", "crc32"),
-            ("hw.optional.arm.FEAT_SHA1", "sha"),
-            ("hw.optional.arm.FEAT_SHA256", "sha_ni"),
+            ("hw.optional.arm.FEAT_SHA1", "sha1"),
+            ("hw.optional.arm.FEAT_SHA256", "sha2"),
             ("hw.optional.arm.FEAT_PMULL", "pmull"),
-            ("hw.optional.arm.FEAT_RNG", "rdrand"),
+            ("hw.optional.arm.FEAT_RNG", "rndr"),
         ];
 
         for (sysctl, flag) in checks {
-            let output = std::process::Command::new("sysctl")
+            // A key this machine does not have makes sysctl exit non-zero: that
+            // is an absent feature. Failing to run sysctl at all means the
+            // flags were not read, and that is an error.
+            let out = std::process::Command::new("sysctl")
                 .arg("-n")
                 .arg(sysctl)
-                .output();
-            if let Ok(out) = output {
-                let val = String::from_utf8_lossy(&out.stdout);
-                if val.trim() == "1" {
-                    flags.push(flag.to_string());
-                }
+                .output()
+                .map_err(IronError::Io)?;
+            if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "1" {
+                flags.push(flag.to_string());
             }
         }
 
@@ -612,7 +637,9 @@ impl CryptoAccelMonitor {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn read_cpu_flags() -> Result<Vec<String>, IronError> {
-        Ok(Vec::new())
+        Err(IronError::UnsupportedPlatform(
+            "CPU crypto flags are not read on this platform".into(),
+        ))
     }
 }
 
@@ -642,6 +669,67 @@ mod tests {
         let aes = features.iter().find(|f| f.cpu_flag == "aes").unwrap();
         assert!(aes.hardware_accelerated);
         assert_eq!(aes.category, CryptoCategory::SymmetricEncryption);
+    }
+
+    #[test]
+    fn test_cpuinfo_x86_flags_line() {
+        let cpuinfo = "processor\t: 0\nvendor_id\t: AuthenticAMD\nflags\t\t: fpu aes pclmulqdq rdrand rdseed sha_ni vaes vpclmulqdq\nbugs\t\t: sysret_ss_attrs\n";
+        let flags = CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).unwrap();
+        assert!(flags.contains(&"aes".to_string()));
+        assert!(flags.contains(&"sha_ni".to_string()));
+        assert!(!flags.contains(&"sysret_ss_attrs".to_string()));
+    }
+
+    #[test]
+    fn test_cpuinfo_arm_features_line() {
+        let cpuinfo = "processor\t: 0\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32\n";
+        let flags = CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).unwrap();
+        assert!(flags.contains(&"pmull".to_string()));
+        assert!(flags.contains(&"sha2".to_string()));
+    }
+
+    #[test]
+    fn test_cpuinfo_without_flags_line_is_an_error() {
+        // An empty list here would read as "no accelerated primitive".
+        let cpuinfo = "processor\t: 0\nmodel name\t: Unknown\n";
+        assert!(CryptoAccelMonitor::parse_cpuinfo_flags(cpuinfo).is_err());
+    }
+
+    #[test]
+    fn test_arm_flags_use_arm_names() {
+        let flags: Vec<String> = ["aes", "pmull", "sha1", "sha2", "rndr"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let features = CryptoAccelMonitor::detect_features(&flags);
+
+        let rng: Vec<&str> = features
+            .iter()
+            .filter(|f| f.hardware_accelerated && f.category == CryptoCategory::RandomNumberGen)
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(rng, vec!["RNDR"]);
+
+        let sha = features
+            .iter()
+            .find(|f| f.name == "SHA Extensions")
+            .unwrap();
+        assert!(sha.hardware_accelerated);
+        assert_eq!(sha.cpu_flag, "sha2");
+    }
+
+    #[test]
+    fn test_x86_random_names() {
+        let flags: Vec<String> = ["rdrand", "rdseed"].iter().map(|s| s.to_string()).collect();
+        let features = CryptoAccelMonitor::detect_features(&flags);
+        let accelerated = |name: &str| {
+            features
+                .iter()
+                .any(|f| f.name == name && f.hardware_accelerated)
+        };
+        assert!(accelerated("RDRAND"));
+        assert!(accelerated("RDSEED"));
+        assert!(!accelerated("RNDR"));
     }
 
     #[test]
@@ -681,7 +769,6 @@ mod tests {
             cpu_flag: "aes".into(),
             category: CryptoCategory::SymmetricEncryption,
             hardware_accelerated: true,
-            estimated_throughput_gbs: Some(10.0),
             description: "AES".into(),
         };
         let json = serde_json::to_string(&feature).unwrap();

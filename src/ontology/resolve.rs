@@ -3800,21 +3800,15 @@ fn resolve_crypto(out: &mut Vec<Reading>) {
             format!("{base}.category"),
             &format!("{:?}", f.category),
         );
-        // GB/s to bytes per second. Decimal, matching how the constants were
-        // written down; and `Derived`, because a constant is not a measurement
-        // however plausible the number looks.
-        match f.estimated_throughput_gbs {
-            Some(gbs) => out.push(Reading::derived(
-                format!("{base}.throughput"),
-                serde_json::json!(gbs * 1_000_000_000.0),
-                Some(Unit::BytesPerSecond),
-            )),
-            None => out.push(Reading::unavailable(
-                format!("{base}.throughput"),
-                Some(Unit::BytesPerSecond),
-                "IronMonitor holds no throughput estimate for this primitive",
-            )),
-        }
+        // Always unavailable. This row used to publish a per-primitive constant
+        // (AES 10 GB/s and so on) as `Derived`, and a constant written down
+        // from a rule of thumb is not a throughput of this processor. Nothing
+        // here benchmarks, so the row stays declared and says why it is empty.
+        out.push(Reading::unavailable(
+            format!("{base}.throughput"),
+            Some(Unit::BytesPerSecond),
+            "no throughput is measured; the figure was a per-primitive constant",
+        ));
     }
 
     let sources: Vec<_> = report.rng_sources.iter().filter(|r| r.available).collect();
