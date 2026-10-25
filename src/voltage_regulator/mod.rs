@@ -94,8 +94,17 @@ pub struct VoltageRegulatorInfo {
     /// alone discarded it with `.unwrap_or(0)`. Zero consumers is a real state
     /// for a regulator, so an unread count read as an idle one.
     pub num_users: Option<u32>,
-    /// Whether regulator is always on.
-    pub always_on: bool,
+    /// Whether the regulator is always on. Always `None` today.
+    ///
+    /// This used to be read from `suspend_mem_state == "enabled"`, which says
+    /// what the regulator is set to during suspend-to-memory, not whether it
+    /// stays on. The regulator sysfs ABI has no always-on attribute (the
+    /// `regulator-always-on` property stays in the device tree), so nothing
+    /// here can read it.
+    pub always_on: Option<bool>,
+    /// The regulator's `suspend_mem_state` attribute, verbatim, or `None`
+    /// where the attribute is absent.
+    pub suspend_mem_state: Option<String>,
     /// Power in microwatts (voltage * current if both available).
     pub power_uw: Option<u64>,
 }
@@ -233,9 +242,7 @@ impl VoltageRegulatorMonitor {
                 RegulatorType::Unknown
             };
 
-            let always_on = Self::read_sysfs_string(&path.join("suspend_mem_state"))
-                .map(|s| s == "enabled")
-                .unwrap_or(false);
+            let suspend_mem_state = Self::read_sysfs_string(&path.join("suspend_mem_state"));
 
             let power_uw = match (voltage_uv, current_ua) {
                 (Some(v), Some(c)) => Some(v * c / 1_000_000),
@@ -253,7 +260,8 @@ impl VoltageRegulatorMonitor {
                 max_voltage_uv,
                 current_ua,
                 num_users,
-                always_on,
+                always_on: None,
+                suspend_mem_state,
                 power_uw,
             });
         }
@@ -365,7 +373,8 @@ mod tests {
             max_voltage_uv: Some(1_300_000),
             current_ua: Some(5_000_000),
             num_users: Some(1),
-            always_on: true,
+            always_on: None,
+            suspend_mem_state: None,
             power_uw: Some(5_500_000),
         };
         assert!((info.voltage_v().unwrap() - 1.1).abs() < 0.001);
@@ -386,7 +395,8 @@ mod tests {
             max_voltage_uv: Some(1_300_000),
             current_ua: None,
             num_users: Some(0),
-            always_on: false,
+            always_on: None,
+            suspend_mem_state: None,
             power_uw: None,
         };
         assert_eq!(info.voltage_in_range(), Some(false));
@@ -411,7 +421,8 @@ mod tests {
             max_voltage_uv: Some(900_000),
             current_ua: None,
             num_users: Some(2),
-            always_on: true,
+            always_on: None,
+            suspend_mem_state: Some("disabled".into()),
             power_uw: None,
         };
         let json = serde_json::to_string(&info).unwrap();

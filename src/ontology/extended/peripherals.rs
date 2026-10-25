@@ -427,7 +427,7 @@ fn resolve_camera_detail(out: &mut Vec<Reading>) {
         text_reading(
             out,
             format!("board.camera.{i}.vendor"),
-            Some(c.vendor.as_str()),
+            c.vendor.as_deref(),
             U::Text,
             "the platform names no vendor for this camera",
             P::Measured,

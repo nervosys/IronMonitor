@@ -98,6 +98,11 @@ pub enum FanControlMode {
     Dc,
     /// Automatic/thermal control
     Auto,
+    /// No control: the chip runs the fan at full speed (hwmon `pwmN_enable` 0).
+    ///
+    /// This is not `Dc`. The hwmon DC-versus-PWM drive question is `pwmN_mode`,
+    /// a separate attribute, and the old reader mapped enable 0 to `Dc`.
+    FullSpeed,
 }
 
 /// Fan type classification
@@ -192,7 +197,10 @@ impl FanInfo {
             rpm_max: None,
             rpm_target: None,
             profile: FanProfile::Auto,
-            available_profiles: vec![FanProfile::Auto],
+            // Empty until a reader establishes what the fan accepts. This used
+            // to be `[Auto]` for every fan, including WMI fans that cannot be
+            // controlled at all.
+            available_profiles: Vec::new(),
             control_mode: FanControlMode::Auto,
             controllable: false,
             pwm_enable: None,
@@ -638,18 +646,23 @@ impl FanMonitor {
                     }
                 }
 
-                // Read PWM enable (control mode)
+                // Read PWM enable (control mode). Its value says what the chip
+                // will accept; the file existing says nothing about that.
                 let pwm_enable_file = path.join(format!("pwm{}_enable", i));
                 if let Ok(enable_str) = fs::read_to_string(&pwm_enable_file) {
                     if let Ok(enable) = enable_str.trim().parse::<u8>() {
                         fan.pwm_enable = Some(enable);
-                        fan.control_mode = match enable {
-                            0 => FanControlMode::Dc,
-                            1 => FanControlMode::Pwm,
-                            2 => FanControlMode::Auto,
-                            _ => FanControlMode::Auto,
-                        };
-                        fan.controllable = enable < 2;
+                        fan.control_mode = hwmon_enable_mode(enable);
+                        let pwm_writable = fs::metadata(&pwm_file)
+                            .map(|m| !m.permissions().readonly())
+                            .unwrap_or(false);
+                        fan.controllable = hwmon_controllable(enable, pwm_writable);
+                        if fan.control_mode == FanControlMode::Pwm {
+                            fan.profile = FanProfile::Manual;
+                        }
+                        if fan.controllable {
+                            fan.available_profiles = vec![FanProfile::Manual, FanProfile::Auto];
+                        }
                     }
                 }
 
@@ -678,9 +691,6 @@ impl FanMonitor {
 
                 // Classify fan type
                 fan.fan_type = classify_fan_type(&device_name, &fan_name);
-
-                // Set available profiles
-                fan.available_profiles = vec![FanProfile::Manual, FanProfile::Auto];
 
                 self.fans.push(fan);
             }
@@ -1097,36 +1107,45 @@ impl FanMonitor {
 
     #[cfg(target_os = "macos")]
     fn macos_discover_fans(&mut self) -> Result<()> {
-        use std::process::Command;
-
-        // Use SMC to read fan info (requires smcFanControl or similar)
-        // This is a simplified version
-
-        let output = Command::new("system_profiler")
-            .args(["SPHardwareDataType"])
-            .output();
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                // Macs typically have multiple fans
-                for i in 1..=4 {
-                    let mut fan = FanInfo::new(format!("fan{}", i));
-                    fan.fan_type = FanType::System;
-                    // SMC values would need to be read via IOKit
-                    fan.controllable = false;
-                    self.fans.push(fan);
-                }
-            }
-        }
-
-        Ok(())
+        // Fan speeds live in the SMC, which needs IOKit bindings this module
+        // does not have. This used to push four fans named fan1..fan4 whenever
+        // `system_profiler SPHardwareDataType` exited 0, a command whose output
+        // was never parsed. Those were invented fans with no speed behind them.
+        // Report the absence instead.
+        Err(IronError::UnsupportedPlatform(
+            "fan speeds on macOS are read from the SMC, which this build does not read".to_string(),
+        ))
     }
+}
+
+/// What a `pwmN_enable` value says the fan is doing, per the hwmon sysfs ABI:
+/// 0 is no control (the chip runs the fan at full speed), 1 is manual PWM, and
+/// 2 or more is automatic control by the driver or chip.
+#[cfg(any(target_os = "linux", test))]
+fn hwmon_enable_mode(enable: u8) -> FanControlMode {
+    match enable {
+        0 => FanControlMode::FullSpeed,
+        1 => FanControlMode::Pwm,
+        _ => FanControlMode::Auto,
+    }
+}
+
+/// Whether a fan can be commanded: the chip must be in a mode that takes a
+/// PWM value (1 or 2 and up, never 0), and the `pwmN` file must be writable.
+#[cfg(any(target_os = "linux", test))]
+fn hwmon_controllable(enable: u8, pwm_writable: bool) -> bool {
+    enable != 0 && pwm_writable
 }
 
 /// Classify fan type based on device/fan name
 #[allow(dead_code)]
 fn classify_fan_type(device_name: &str, fan_name: &str) -> FanType {
     let name_lower = format!("{} {}", device_name, fan_name).to_lowercase();
+    // Whole words only: `sys` as a substring matched `system76_acpi`, which is
+    // not a system fan.
+    let words: Vec<&str> = name_lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .collect();
 
     if name_lower.contains("cpu") || name_lower.contains("processor") {
         FanType::Cpu
@@ -1139,7 +1158,7 @@ fn classify_fan_type(device_name: &str, fan_name: &str) -> FanType {
         FanType::Psu
     } else if name_lower.contains("case")
         || name_lower.contains("chassis")
-        || name_lower.contains("sys")
+        || words.contains(&"sys")
     {
         FanType::Case
     } else if name_lower.contains("chip") || name_lower.contains("pch") {
@@ -1415,5 +1434,42 @@ mod tests {
             hysteresis: 0.0,
         };
         assert_eq!(curve.calculate_speed(50.0), 100.0);
+    }
+
+    // === hwmon pwmN_enable tests ===
+
+    /// The hwmon ABI: 0 is no control, 1 is manual PWM, 2 and up is automatic.
+    #[test]
+    fn test_hwmon_enable_mode_follows_abi() {
+        assert_eq!(hwmon_enable_mode(0), FanControlMode::FullSpeed);
+        assert_eq!(hwmon_enable_mode(1), FanControlMode::Pwm);
+        assert_eq!(hwmon_enable_mode(2), FanControlMode::Auto);
+        // Chip-specific values (smart fan modes) are automatic control too.
+        assert_eq!(hwmon_enable_mode(5), FanControlMode::Auto);
+    }
+
+    #[test]
+    fn test_hwmon_zero_is_never_controllable() {
+        // Enable 0 is no control, whatever the pwm file's permissions say.
+        assert!(!hwmon_controllable(0, true));
+        assert!(!hwmon_controllable(0, false));
+    }
+
+    #[test]
+    fn test_hwmon_controllable_needs_writable_pwm_in_a_commandable_mode() {
+        assert!(hwmon_controllable(1, true));
+        assert!(hwmon_controllable(2, true));
+        assert!(!hwmon_controllable(1, false));
+        assert!(!hwmon_controllable(2, false));
+    }
+
+    #[test]
+    fn test_classify_sys_is_a_word_not_a_substring() {
+        // `system76_acpi` contains "sys" but names no system fan.
+        assert_eq!(
+            classify_fan_type("system76_acpi", "system76_acpi_1"),
+            FanType::Unknown
+        );
+        assert_eq!(classify_fan_type("nct6798", "sys_fan_2"), FanType::Case);
     }
 }

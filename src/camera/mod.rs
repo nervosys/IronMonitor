@@ -74,8 +74,12 @@ pub struct CameraInfo {
     pub device_path: String,
     /// Driver in use
     pub driver: String,
-    /// Vendor / manufacturer
-    pub vendor: String,
+    /// Vendor / manufacturer, `None` where the platform names none.
+    ///
+    /// The macOS reader used to write "Apple" on every camera, USB ones
+    /// included, and the Windows reader wrote an empty string for a missing
+    /// `Manufacturer`.
+    pub vendor: Option<String>,
     /// Maximum resolution (width)
     pub max_width: u32,
     /// Maximum resolution (height)
@@ -357,19 +361,22 @@ impl CameraMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_usb_vendor(base: &std::path::Path) -> String {
+    fn read_usb_vendor(base: &std::path::Path) -> Option<String> {
         // Walk up to find vendor info in USB hierarchy
         let mut path = base.to_path_buf();
         for _ in 0..5 {
             let vendor_path = path.join("manufacturer");
             if let Ok(v) = std::fs::read_to_string(&vendor_path) {
-                return v.trim().to_string();
+                let v = v.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
             }
             if !path.pop() {
                 break;
             }
         }
-        String::new()
+        None
     }
 
     #[cfg(target_os = "linux")]
@@ -477,7 +484,10 @@ impl CameraMonitor {
                 .as_str()
                 .unwrap_or("Unknown Camera")
                 .to_string();
-            let vendor = item["Manufacturer"].as_str().unwrap_or("").to_string();
+            let vendor = item["Manufacturer"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
             let device_id = item["DeviceID"].as_str().unwrap_or("").to_string();
             let lower = device_id.to_lowercase();
             let connection = if lower.contains("usb") {
@@ -521,68 +531,87 @@ impl CameraMonitor {
             "system_profiler",
             &["SPCameraDataType", "-detailLevel", "full"],
         )?;
-        let mut name = String::new();
-        let mut model_id = String::new();
-        let mut unique_id = String::new();
-        let mut index: u32 = 0;
+        self.cameras = parse_macos_cameras(&text);
+        Ok(())
+    }
+}
 
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.ends_with(':') && !trimmed.starts_with("Camera") && !trimmed.is_empty() {
-                // Flush previous
-                if !name.is_empty() {
-                    let connection = if model_id.to_lowercase().contains("usb") {
-                        CameraConnection::USB
-                    } else if model_id.to_lowercase().contains("virtual") {
-                        CameraConnection::Virtual
-                    } else {
-                        CameraConnection::Internal
-                    };
-                    self.cameras.push(CameraInfo {
-                        name: name.clone(),
-                        connection,
-                        device_path: unique_id.clone(),
-                        driver: String::new(),
-                        vendor: "Apple".into(),
-                        max_width: 0,
-                        max_height: 0,
-                        formats: None,
-                        capabilities: vec![
-                            CameraCapability::VideoCapture,
-                            CameraCapability::Autofocus,
-                        ],
-                        is_active: None,
-                        index,
-                    });
-                    index += 1;
-                }
-                name = trimmed.trim_end_matches(':').to_string();
-                model_id.clear();
-                unique_id.clear();
-            } else if let Some(v) = trimmed.strip_prefix("Model ID:") {
-                model_id = v.trim().to_string();
+/// One device block from `system_profiler SPCameraDataType`, before it becomes
+/// a [`CameraInfo`].
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct MacCameraBlock {
+    name: String,
+    model_id: String,
+    unique_id: String,
+    vendor: Option<String>,
+}
+
+/// Reads the cameras out of `system_profiler SPCameraDataType -detailLevel full`.
+///
+/// Every device goes through the same conversion, the last one included. The
+/// last device used to be built by a separate branch that hard-coded
+/// `Internal`, and it alone differed from the rest. Vendor is set only when the
+/// output names one, and autofocus is not listed because nothing here reads it.
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_cameras(text: &str) -> Vec<CameraInfo> {
+    let mut blocks: Vec<MacCameraBlock> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_attribute = ["Model ID:", "Unique ID:", "Manufacturer:"]
+            .iter()
+            .any(|key| trimmed.starts_with(key));
+        if trimmed.ends_with(':')
+            && !is_attribute
+            && !trimmed.starts_with("Camera")
+            && !trimmed.is_empty()
+        {
+            blocks.push(MacCameraBlock {
+                name: trimmed.trim_end_matches(':').to_string(),
+                ..Default::default()
+            });
+        } else if let Some(block) = blocks.last_mut() {
+            if let Some(v) = trimmed.strip_prefix("Model ID:") {
+                block.model_id = v.trim().to_string();
             } else if let Some(v) = trimmed.strip_prefix("Unique ID:") {
-                unique_id = v.trim().to_string();
+                block.unique_id = v.trim().to_string();
+            } else if let Some(v) = trimmed.strip_prefix("Manufacturer:") {
+                let v = v.trim();
+                if !v.is_empty() {
+                    block.vendor = Some(v.to_string());
+                }
             }
         }
-        // Flush last
-        if !name.is_empty() {
-            self.cameras.push(CameraInfo {
-                name,
-                connection: CameraConnection::Internal,
-                device_path: unique_id,
+    }
+
+    blocks
+        .into_iter()
+        .filter(|b| !b.name.is_empty())
+        .enumerate()
+        .map(|(i, b)| {
+            let model = b.model_id.to_lowercase();
+            let connection = if model.contains("usb") {
+                CameraConnection::USB
+            } else if model.contains("virtual") {
+                CameraConnection::Virtual
+            } else {
+                CameraConnection::Internal
+            };
+            CameraInfo {
+                name: b.name,
+                connection,
+                device_path: b.unique_id,
                 driver: String::new(),
-                vendor: "Apple".into(),
+                vendor: b.vendor,
                 max_width: 0,
                 max_height: 0,
                 formats: None,
                 capabilities: vec![CameraCapability::VideoCapture],
                 is_active: None,
-                index,
-            });
-        }
-        Ok(())
-    }
+                index: i as u32,
+            }
+        })
+        .collect()
 }
 
 impl Default for CameraMonitor {
@@ -644,7 +673,7 @@ mod tests {
             connection: CameraConnection::USB,
             device_path: String::new(),
             driver: String::new(),
-            vendor: String::new(),
+            vendor: None,
             max_width: 1920,
             max_height: 1080,
             formats: None,
@@ -663,7 +692,7 @@ mod tests {
             connection: CameraConnection::Internal,
             device_path: "/dev/video0".into(),
             driver: "uvcvideo".into(),
-            vendor: "Logitech".into(),
+            vendor: Some("Logitech".into()),
             max_width: 1920,
             max_height: 1080,
             formats: Some(vec!["YUYV".into(), "MJPG".into()]),
@@ -693,5 +722,61 @@ mod tests {
         assert_eq!(std::mem::size_of::<V4l2Fmtdesc>(), 64);
         assert_eq!(std::mem::offset_of!(V4l2Fmtdesc, pixelformat), 44);
         assert_eq!(VIDIOC_ENUM_FMT, 0xC040_5602);
+    }
+
+    /// Shaped like `system_profiler SPCameraDataType -detailLevel full` output
+    /// with a built-in camera first and a USB camera last. The USB camera is the
+    /// one the old reader hard-coded as `Internal`.
+    const MACOS_CAMERAS: &str = concat!(
+        "Camera:\n",
+        "\n",
+        "    FaceTime HD Camera:\n",
+        "\n",
+        "      Model ID: FaceTime HD Camera\n",
+        "      Unique ID: 3F2A0000000000000000000000000001\n",
+        "\n",
+        "    Logi C920 HD Pro Webcam:\n",
+        "\n",
+        "      Model ID: UVC Camera (046d:08e5) USB\n",
+        "      Unique ID: 0x14100000046d08e5\n",
+        "      Manufacturer: Logitech\n",
+    );
+
+    #[test]
+    fn test_macos_camera_parse_keeps_every_device_on_one_path() {
+        let cams = parse_macos_cameras(MACOS_CAMERAS);
+        assert_eq!(cams.len(), 2);
+
+        assert_eq!(cams[0].name, "FaceTime HD Camera");
+        assert_eq!(cams[0].index, 0);
+        assert_eq!(cams[0].connection, CameraConnection::Internal);
+        assert_eq!(cams[0].device_path, "3F2A0000000000000000000000000001");
+
+        // The last device gets the same connection rule as the rest.
+        assert_eq!(cams[1].name, "Logi C920 HD Pro Webcam");
+        assert_eq!(cams[1].index, 1);
+        assert_eq!(cams[1].connection, CameraConnection::USB);
+        assert_eq!(cams[1].device_path, "0x14100000046d08e5");
+    }
+
+    #[test]
+    fn test_macos_camera_vendor_is_only_what_the_output_names() {
+        let cams = parse_macos_cameras(MACOS_CAMERAS);
+        // No manufacturer line: unknown, not "Apple".
+        assert_eq!(cams[0].vendor, None);
+        assert_eq!(cams[1].vendor.as_deref(), Some("Logitech"));
+    }
+
+    #[test]
+    fn test_macos_camera_does_not_claim_autofocus() {
+        for cam in parse_macos_cameras(MACOS_CAMERAS) {
+            assert_eq!(cam.capabilities, vec![CameraCapability::VideoCapture]);
+            assert_eq!(cam.is_active, None);
+        }
+    }
+
+    #[test]
+    fn test_macos_camera_parse_of_empty_output_is_empty() {
+        assert!(parse_macos_cameras("Camera:\n\n").is_empty());
     }
 }
