@@ -584,9 +584,7 @@ pub fn get_system_info() -> Result<SystemInfo, Error> {
 
     // Query Win32_ComputerSystem
     let cs_info: Option<Win32ComputerSystem> = wmi_conn
-        .raw_query::<Win32ComputerSystem>(
-            "SELECT Manufacturer, Model FROM Win32_ComputerSystem",
-        )
+        .raw_query::<Win32ComputerSystem>("SELECT Manufacturer, Model FROM Win32_ComputerSystem")
         .ok()
         .and_then(|v: Vec<Win32ComputerSystem>| v.into_iter().next());
 

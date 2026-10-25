@@ -4485,9 +4485,24 @@ impl IronMonitorApp {
             ui.add(SectionHeader::new(&t).icon("🌐"));
 
             // Show total bandwidth rates at the top
-            // Summed over the interfaces that have a rate.
-            let total_rx_rate: f64 = rates.values().filter_map(|(rx, _)| *rx).sum();
-            let total_tx_rate: f64 = rates.values().filter_map(|(_, tx)| *tx).sum();
+            // A total only when every interface has a rate. This summed the
+            // interfaces that had one, which understated the total while any
+            // interface was still waiting for its second sample.
+            let rate_text = |r: Option<f64>| match r {
+                Some(r) => format!("{}/s", format_bytes(r)),
+                None => "—".to_string(),
+            };
+            let any = !rates.is_empty();
+            let total_rx_rate = rates
+                .values()
+                .map(|(rx, _)| *rx)
+                .sum::<Option<f64>>()
+                .filter(|_| any);
+            let total_tx_rate = rates
+                .values()
+                .map(|(_, tx)| *tx)
+                .sum::<Option<f64>>()
+                .filter(|_| any);
 
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
@@ -4496,12 +4511,12 @@ impl IronMonitorApp {
                         .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                 );
                 ui.label(
-                    RichText::new(format!("↓ {}/s", format_bytes(total_rx_rate)))
+                    RichText::new(format!("↓ {}", rate_text(total_rx_rate)))
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .strong(),
                 );
                 ui.label(
-                    RichText::new(format!("↑ {}/s", format_bytes(total_tx_rate)))
+                    RichText::new(format!("↑ {}", rate_text(total_tx_rate)))
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
                         .strong(),
                 );
