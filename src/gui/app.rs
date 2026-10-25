@@ -3172,12 +3172,15 @@ impl IronMonitorApp {
                     }
 
                     // CPUs
-                    if stats.num_cpus > 0 {
-                        ui.label(
-                            RichText::new(format!("💻 {} CPUs", stats.num_cpus))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                        );
-                    }
+                    // An unread count shows as unknown, not as zero CPUs.
+                    let cpus = match stats.num_cpus {
+                        Some(n) => format!("💻 {} CPUs", n),
+                        None => "💻 unknown CPUs".to_string(),
+                    };
+                    ui.label(
+                        RichText::new(cpus)
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                    );
                 }
             });
 

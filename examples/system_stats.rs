@@ -62,7 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(running) => println!("📊       {running} running"),
         None => println!("📊       runnable count not reported on this platform"),
     }
-    println!("💻 CPUs: {}", stats.num_cpus);
+    match stats.num_cpus {
+        Some(n) => println!("💻 CPUs: {n}"),
+        None => println!("💻 CPUs: not reported on this platform"),
+    }
     println!();
 
     // CPU Time breakdown (like 'top' or 'htop')

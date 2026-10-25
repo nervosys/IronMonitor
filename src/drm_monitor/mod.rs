@@ -79,8 +79,10 @@ pub struct DrmConnector {
     pub current_mode: Option<String>,
     /// DPMS state.
     pub dpms: Option<String>,
-    /// Whether enabled.
-    pub enabled: bool,
+    /// Whether enabled, from sysfs `enabled` ("enabled" / "disabled").
+    /// `None` when the file is unreadable or reports anything else, such as
+    /// "unknown": it used to be `false` on a failed read.
+    pub enabled: Option<bool>,
 }
 
 /// A DRM device (GPU kernel object).
@@ -98,12 +100,15 @@ pub struct DrmDevice {
     pub render_node: Option<String>,
     /// Connectors.
     pub connectors: Vec<DrmConnector>,
-    /// Number of CRTCs.
-    pub crtc_count: u32,
-    /// Number of planes.
-    pub plane_count: u32,
-    /// Whether this is the primary/boot GPU.
-    pub is_boot_gpu: bool,
+    /// Number of CRTCs. `None`: sysfs does not expose CRTCs, and the counting
+    /// ioctl is not used here. It used to be a constant `0`.
+    pub crtc_count: Option<u32>,
+    /// Number of planes. `None` for the same reason as `crtc_count`.
+    pub plane_count: Option<u32>,
+    /// Whether this is the boot GPU, from `device/boot_vga` on Linux. `None`
+    /// when that file is unreadable or on platforms that do not report it. It
+    /// used to be set on the first enumerated card, which is not the boot GPU.
+    pub is_boot_gpu: Option<bool>,
     /// GPU memory info (if available via sysfs).
     pub vram_total_bytes: Option<u64>,
     pub vram_used_bytes: Option<u64>,
@@ -136,8 +141,9 @@ pub struct DrmClient {
     pub command: String,
     /// Card being used.
     pub card: String,
-    /// Whether authenticated.
-    pub authenticated: bool,
+    /// Whether authenticated (the `a` column of debugfs `clients`). `None`
+    /// when the column is absent or not `y`/`n`.
+    pub authenticated: Option<bool>,
 }
 
 /// DRM subsystem overview.
@@ -147,10 +153,11 @@ pub struct DrmOverview {
     pub devices: Vec<DrmDevice>,
     /// Active DRM clients.
     pub clients: Vec<DrmClient>,
-    /// Total connected displays.
-    pub total_connected_displays: u32,
-    /// Total DRM devices.
-    pub total_devices: u32,
+    /// Total connected displays. `None` where connectors were not enumerated
+    /// (Windows, macOS): a `0` there would claim no displays are attached.
+    pub total_connected_displays: Option<u32>,
+    /// Total DRM devices. `None` where the platform reader is not implemented.
+    pub total_devices: Option<u32>,
     /// Primary GPU driver.
     pub primary_driver: Option<String>,
 }
@@ -194,11 +201,13 @@ impl DrmMonitor {
         let mut devices = Vec::new();
 
         if !drm_path.exists() {
+            // No DRM subsystem at all: the directory's absence is an observed
+            // zero, not an unread count.
             return Ok(DrmOverview {
                 devices: Vec::new(),
                 clients: Vec::new(),
-                total_connected_displays: 0,
-                total_devices: 0,
+                total_connected_displays: Some(0),
+                total_devices: Some(0),
                 primary_driver: None,
             });
         }
@@ -220,21 +229,21 @@ impl DrmMonitor {
             }
         }
 
-        let total_displays = devices.iter().map(|d| d.connected_displays() as u32).sum();
+        let total_displays: u32 = devices.iter().map(|d| d.connected_displays() as u32).sum();
         let total = devices.len() as u32;
-        let primary_driver = devices.first().map(|d| d.driver.clone());
+        // The primary driver is the boot GPU's, when sysfs says which that is.
+        // The first enumerated card is not necessarily the boot device.
+        let primary_driver = devices
+            .iter()
+            .find(|d| d.is_boot_gpu == Some(true))
+            .map(|d| d.driver.clone());
         let clients = Self::read_clients();
-
-        // Mark boot GPU
-        if let Some(first) = devices.first_mut() {
-            first.is_boot_gpu = true;
-        }
 
         Ok(DrmOverview {
             devices,
             clients,
-            total_connected_displays: total_displays,
-            total_devices: total,
+            total_connected_displays: Some(total_displays),
+            total_devices: Some(total),
             primary_driver,
         })
     }
@@ -269,6 +278,12 @@ impl DrmMonitor {
         let vram_total = Self::read_sysfs_u64(&device_path.join("mem_info_vram_total"));
         let vram_used = Self::read_sysfs_u64(&device_path.join("mem_info_vram_used"));
 
+        // Boot VGA flag: "1" for the device the firmware initialised. Unreadable
+        // (no file, or a non-PCI device) stays None.
+        let is_boot_gpu = std::fs::read_to_string(device_path.join("boot_vga"))
+            .ok()
+            .map(|s| s.trim() == "1");
+
         Ok(DrmDevice {
             card_name: card_name.to_string(),
             driver,
@@ -276,9 +291,11 @@ impl DrmMonitor {
             pci_id,
             render_node,
             connectors,
-            crtc_count: 0, // Would need DRM ioctl to get this
-            plane_count: 0,
-            is_boot_gpu: false,
+            // Sysfs exposes no CRTC or plane count; counting them needs a DRM
+            // ioctl, which this reader does not make. Used to be a constant 0.
+            crtc_count: None,
+            plane_count: None,
+            is_boot_gpu,
             vram_total_bytes: vram_total,
             vram_used_bytes: vram_used,
         })
@@ -327,10 +344,15 @@ impl DrmMonitor {
                 _ => ConnectorStatus::Unknown,
             };
 
+            // sysfs reads "enabled", "disabled" or "unknown". Only the first two
+            // are an answer; anything else is None, not false.
             let enabled = std::fs::read_to_string(entry.path().join("enabled"))
                 .ok()
-                .map(|s| s.trim() == "enabled")
-                .unwrap_or(false);
+                .and_then(|s| match s.trim() {
+                    "enabled" => Some(true),
+                    "disabled" => Some(false),
+                    _ => None,
+                });
 
             let dpms = std::fs::read_to_string(entry.path().join("dpms"))
                 .ok()
@@ -394,26 +416,38 @@ impl DrmMonitor {
         for card_num in 0..8u32 {
             let clients_path = format!("/sys/kernel/debug/dri/{}/clients", card_num);
             if let Ok(content) = std::fs::read_to_string(&clients_path) {
-                for line in content.lines().skip(1) {
-                    // header skip
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        if let Ok(pid) = parts[1].parse::<u32>() {
-                            clients.push(DrmClient {
-                                pid,
-                                command: parts[0].to_string(),
-                                card: format!("card{}", card_num),
-                                authenticated: parts
-                                    .get(2)
-                                    .map(|&s| s == "y" || s == "1")
-                                    .unwrap_or(false),
-                            });
-                        }
-                    }
-                }
+                clients.extend(Self::parse_clients(&content, &format!("card{}", card_num)));
             }
         }
 
+        clients
+    }
+
+    /// Parse a debugfs `clients` file. Columns: `command tgid dev master a uid magic`.
+    /// The `a` column (index 4) is the authenticated flag, `y` or `n`. It used to be
+    /// read from index 2, which is the device minor.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn parse_clients(content: &str, card: &str) -> Vec<DrmClient> {
+        let mut clients = Vec::new();
+        for line in content.lines().skip(1) {
+            // header skip
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            if let Ok(pid) = parts[1].parse::<u32>() {
+                clients.push(DrmClient {
+                    pid,
+                    command: parts[0].to_string(),
+                    card: card.to_string(),
+                    authenticated: match parts[4] {
+                        "y" => Some(true),
+                        "n" => Some(false),
+                        _ => None,
+                    },
+                });
+            }
+        }
         clients
     }
 
@@ -469,16 +503,27 @@ impl DrmMonitor {
                             item["AdapterRAM"].as_u64().filter(|b| *b < 4_293_918_720)
                         });
 
+                    // The WDDM driver version is the only driver fact read here. An
+                    // empty DriverVersion used to produce "WDDM ()".
+                    let driver = if driver_version.is_empty() {
+                        "WDDM".to_string()
+                    } else {
+                        format!("WDDM ({})", driver_version)
+                    };
+
                     devices.push(DrmDevice {
                         card_name: format!("card{}", i),
-                        driver: format!("WDDM ({})", driver_version),
+                        driver,
                         sysfs_path: String::new(),
                         pci_id: None,
                         render_node: None,
                         connectors: Vec::new(),
-                        crtc_count: 0,
-                        plane_count: 0,
-                        is_boot_gpu: i == 0,
+                        // No CRTC or plane count on WDDM through this query.
+                        crtc_count: None,
+                        plane_count: None,
+                        // Win32_VideoController carries no boot flag. Index 0 is
+                        // only enumeration order, so it is not reported as boot.
+                        is_boot_gpu: None,
                         vram_total_bytes: vram,
                         vram_used_bytes: None,
                     });
@@ -493,19 +538,22 @@ impl DrmMonitor {
         Ok(DrmOverview {
             devices,
             clients: Vec::new(),
-            total_connected_displays: 0,
-            total_devices: total,
+            // Connectors are not enumerated on Windows, so no display count
+            // is read. A 0 here would claim that no displays are attached.
+            total_connected_displays: None,
+            total_devices: Some(total),
             primary_driver: primary,
         })
     }
 
     #[cfg(target_os = "macos")]
     fn scan() -> Result<DrmOverview, IronError> {
+        // IOKit enumeration is not implemented, so no count is read.
         Ok(DrmOverview {
             devices: Vec::new(),
             clients: Vec::new(),
-            total_connected_displays: 0,
-            total_devices: 0,
+            total_connected_displays: None,
+            total_devices: None,
             primary_driver: None,
         })
     }
@@ -515,8 +563,8 @@ impl DrmMonitor {
         Ok(DrmOverview {
             devices: Vec::new(),
             clients: Vec::new(),
-            total_connected_displays: 0,
-            total_devices: 0,
+            total_connected_displays: None,
+            total_devices: None,
             primary_driver: None,
         })
     }
@@ -528,8 +576,9 @@ impl Default for DrmMonitor {
             overview: DrmOverview {
                 devices: Vec::new(),
                 clients: Vec::new(),
-                total_connected_displays: 0,
-                total_devices: 0,
+                // The scan failed, so nothing was counted.
+                total_connected_displays: None,
+                total_devices: None,
                 primary_driver: None,
             },
         })
@@ -561,11 +610,11 @@ mod tests {
                 status: ConnectorStatus::Connected,
                 current_mode: Some("1920x1080".into()),
                 dpms: None,
-                enabled: true,
+                enabled: Some(true),
             }],
-            crtc_count: 4,
-            plane_count: 8,
-            is_boot_gpu: true,
+            crtc_count: Some(4),
+            plane_count: Some(8),
+            is_boot_gpu: Some(true),
             vram_total_bytes: Some(8 * 1024 * 1024 * 1024),
             vram_used_bytes: Some(2 * 1024 * 1024 * 1024),
         };
@@ -588,10 +637,35 @@ mod tests {
             status: ConnectorStatus::Connected,
             current_mode: Some("2560x1440".into()),
             dpms: Some("On".into()),
-            enabled: true,
+            enabled: Some(true),
         };
         let json = serde_json::to_string(&connector).unwrap();
         assert!(json.contains("DP-1"));
         let _: DrmConnector = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_parse_clients_authenticated_column() {
+        // Captured layout of debugfs `dri/N/clients`: the `a` column is index 4.
+        let content = concat!(
+            "             command   tgid dev master a   uid  magic\n",
+            "                Xorg   1234   0   y    y     0          0\n",
+            "             firefox   5678 128   n    n  1000          0\n",
+            "           weirdapp   9999   0   n    x  1000          0\n",
+        );
+        let clients = DrmMonitor::parse_clients(content, "card0");
+        assert_eq!(clients.len(), 3);
+
+        assert_eq!(clients[0].pid, 1234);
+        assert_eq!(clients[0].command, "Xorg");
+        assert_eq!(clients[0].card, "card0");
+        // Device minor 0 and a dev column of 128 must not decide the flag.
+        assert_eq!(clients[0].authenticated, Some(true));
+
+        assert_eq!(clients[1].pid, 5678);
+        assert_eq!(clients[1].authenticated, Some(false));
+
+        // An unrecognised flag is unknown, not false.
+        assert_eq!(clients[2].authenticated, None);
     }
 }

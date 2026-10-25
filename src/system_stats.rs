@@ -147,8 +147,9 @@ pub struct SystemStats {
     pub idle_seconds: Option<u64>,
     /// Boot time (Unix timestamp)
     pub boot_time: Option<u64>,
-    /// Number of CPUs/cores
-    pub num_cpus: u32,
+    /// Number of CPUs/cores, or `None` where it was not read. Linux counts the
+    /// `cpuN` lines of `/proc/stat`, so an unreadable file gives `None`, not 0.
+    pub num_cpus: Option<u32>,
     /// Total number of processes, or `None` where it was not read.
     ///
     /// This was a bare `u32` and only Linux ever assigned it, so Windows and
@@ -273,7 +274,7 @@ mod linux {
             uptime_seconds: None,
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 0,
+            num_cpus: None,
             total_processes: None,
             running_processes: None,
             cpu_time: None,
@@ -311,7 +312,7 @@ mod linux {
                 if line.starts_with("cpu ") {
                     stats.cpu_time = parse_cpu_line(line);
                 } else if line.starts_with("cpu") && !line.starts_with("cpu ") {
-                    stats.num_cpus += 1;
+                    *stats.num_cpus.get_or_insert(0) += 1;
                 } else if line.starts_with("btime ") {
                     stats.boot_time = line.split_whitespace().nth(1).and_then(|s| s.parse().ok());
                 } else if line.starts_with("ctxt ") {
@@ -399,7 +400,7 @@ mod windows {
             uptime_seconds: None,
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 0,
+            num_cpus: None,
             total_processes: None,
             running_processes: None,
             cpu_time: None,
@@ -413,7 +414,7 @@ mod windows {
             let mut sys_info: MaybeUninit<SYSTEM_INFO> = MaybeUninit::uninit();
             GetSystemInfo(sys_info.as_mut_ptr());
             let sys_info = sys_info.assume_init();
-            stats.num_cpus = sys_info.dwNumberOfProcessors;
+            stats.num_cpus = Some(sys_info.dwNumberOfProcessors);
         }
 
         // Process count, from the struct this crate was already calling for the
@@ -471,7 +472,7 @@ mod macos {
             uptime_seconds: None,
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 0,
+            num_cpus: None,
             total_processes: None,
             running_processes: None,
             cpu_time: None,
@@ -493,15 +494,12 @@ mod macos {
             }
         }
 
-        // Get number of CPUs
-        #[cfg(feature = "num_cpus")]
-        {
-            stats.num_cpus = num_cpus::get() as u32;
-        }
-        #[cfg(not(feature = "num_cpus"))]
-        {
-            stats.num_cpus = 1; // Fallback
-        }
+        // Logical CPU count from the standard library. `None` when the platform
+        // cannot say. This used to be a constant 1 when the `num_cpus` feature
+        // was off, which reported a single-core Mac.
+        stats.num_cpus = std::thread::available_parallelism()
+            .ok()
+            .map(|n| n.get() as u32);
 
         // macOS reports no process count here. `sysctl kern.proc` would give
         // one, and until somebody writes it this stays absent rather than 0.
@@ -589,7 +587,7 @@ mod tests {
             uptime_seconds: Some(90061),
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 4,
+            num_cpus: Some(4),
             total_processes: Some(100),
             running_processes: Some(5),
             cpu_time: None,
@@ -607,7 +605,7 @@ mod tests {
             uptime_seconds: Some(3661),
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 4,
+            num_cpus: Some(4),
             total_processes: Some(100),
             running_processes: Some(5),
             cpu_time: None,
@@ -644,7 +642,7 @@ mod tests {
             uptime_seconds: None,
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 4,
+            num_cpus: Some(4),
             total_processes: None,
             running_processes: None,
             cpu_time: None,
@@ -666,7 +664,7 @@ mod tests {
             uptime_seconds: None,
             idle_seconds: None,
             boot_time: None,
-            num_cpus: 4,
+            num_cpus: Some(4),
             total_processes: None,
             running_processes: None,
             cpu_time: None,

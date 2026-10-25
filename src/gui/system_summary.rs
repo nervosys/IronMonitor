@@ -151,7 +151,7 @@ mod tests {
                 uptime_seconds: Some(90_060),
                 idle_seconds: None,
                 boot_time: None,
-                num_cpus: 1,
+                num_cpus: Some(1),
                 total_processes: Some(499),
                 running_processes: None,
                 cpu_time: None,

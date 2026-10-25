@@ -47,7 +47,9 @@ pub struct ProcessNode {
     pub memory_bytes: Option<u64>,
     /// Direct child PIDs
     pub children: Vec<u32>,
-    /// Cgroup information (Linux only)
+    /// Container cgroup information (Linux only). `Some` only when a container
+    /// runtime marker is in the cgroup path. `None` means a host process, or a
+    /// `/proc/<pid>/cgroup` that could not be read: the two are not told apart.
     pub cgroup: Option<CgroupInfo>,
 }
 
@@ -81,6 +83,8 @@ pub enum ContainerRuntime {
     Podman,
     /// containerd/CRI
     Containerd,
+    /// CRI-O
+    Crio,
     /// LXC/LXD/Incus
     Lxc,
     /// Kubernetes pod
@@ -97,6 +101,7 @@ impl std::fmt::Display for ContainerRuntime {
             Self::Docker => write!(f, "Docker"),
             Self::Podman => write!(f, "Podman"),
             Self::Containerd => write!(f, "containerd"),
+            Self::Crio => write!(f, "CRI-O"),
             Self::Lxc => write!(f, "LXC"),
             Self::Kubernetes => write!(f, "Kubernetes"),
             Self::Nspawn => write!(f, "systemd-nspawn"),
@@ -294,7 +299,12 @@ impl ProcessTree {
             return None; // Host process, not containerized
         }
 
+        // A path with no runtime marker is a host service, session or scope
+        // (`/system.slice/sshd.service`, `/user.slice/...`), not a container. It
+        // used to be reported as an Unknown-runtime container, which made every
+        // systemd unit count as containerized.
         let (runtime, container_id) = Self::detect_container_runtime(&path);
+        let runtime = runtime?;
 
         // Try to read cgroup limits
         let cgroup_base = format!("/sys/fs/cgroup{}", path);
@@ -312,7 +322,7 @@ impl ProcessTree {
 
         Some(CgroupInfo {
             path,
-            runtime,
+            runtime: Some(runtime),
             container_id,
             container_name: None, // Would need docker/podman API
             memory_limit,
@@ -341,6 +351,12 @@ impl ProcessTree {
             return (Some(ContainerRuntime::Containerd), id);
         }
 
+        // CRI-O: /crio-<id>.scope, usually under a kubepods slice
+        if cgroup_path.contains("/crio-") {
+            let id = Self::extract_container_id(cgroup_path, "crio");
+            return (Some(ContainerRuntime::Crio), id);
+        }
+
         // Kubernetes pods: /kubepods/ or /kubepods.slice/
         if cgroup_path.contains("/kubepods") {
             let id = Self::extract_container_id(cgroup_path, "kubepods");
@@ -366,11 +382,7 @@ impl ProcessTree {
             return (Some(ContainerRuntime::Nspawn), name);
         }
 
-        // In a cgroup but unknown runtime
-        if cgroup_path != "/" {
-            return (Some(ContainerRuntime::Unknown), None);
-        }
-
+        // No runtime marker: not a container. The caller drops the cgroup record.
         (None, None)
     }
 
@@ -735,5 +747,33 @@ mod tests {
     fn test_detect_host_cgroup() {
         let (runtime, _) = ProcessTree::detect_container_runtime("/");
         assert_eq!(runtime, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_host_services_are_not_containers() {
+        // Captured systemd cgroup paths: none carries a runtime marker.
+        for path in [
+            "/system.slice/sshd.service",
+            "/init.scope",
+            "/user.slice/user-1000.slice/session-2.scope",
+            "/system.slice/docker.service",
+        ] {
+            let (runtime, id) = ProcessTree::detect_container_runtime(path);
+            assert_eq!(runtime, None, "{path} is a host unit, not a container");
+            assert_eq!(id, None, "{path}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_runtime_markers() {
+        let crio = "/kubepods.slice/kubepods-pod1.slice/crio-abc123def456abc123def456abc123def456abc123def456abc123def456abcd.scope";
+        let (runtime, id) = ProcessTree::detect_container_runtime(crio);
+        assert_eq!(runtime, Some(ContainerRuntime::Crio));
+        assert!(id.is_some());
+
+        let (runtime, _) = ProcessTree::detect_container_runtime("/lxc/web01/init.scope");
+        assert_eq!(runtime, Some(ContainerRuntime::Lxc));
     }
 }
