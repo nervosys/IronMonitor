@@ -490,6 +490,15 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/bandwidth.rs",
+        "MemoryBandwidthResult",
+        "duration_secs total_bytes_copied iterations",
+        concat!(
+            "the test's own bookkeeping: how long it ran, how much it copied and ",
+            "how many passes it made, all counted by the test itself"
+        ),
+    ),
+    (
         "src/fleet.rs",
         "HostMetrics",
         "uptime_seconds",
