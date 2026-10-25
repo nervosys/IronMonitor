@@ -308,6 +308,7 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
     // GPUs are instanced, so they are gathered rather than named. A machine with
     // none gets the `gpu.<none>` diagnostic and its reason, which is the whole
     // point: "no GPU here" and "IronMonitor cannot read GPUs here" look different.
+    // A failed enumeration is `gpu.<unreadable>`, which says whether GPUs exist is unknown.
     let gpus: BTreeMap<&str, &Reading> = readings
         .iter()
         .filter(|r| r.id.starts_with("gpu.") && r.id.ends_with(".name"))
@@ -315,7 +316,8 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
         .collect();
 
     if gpus.is_empty() {
-        let reason = find(readings, "gpu.<none>")
+        let reason = find(readings, "gpu.<unreadable>")
+            .or_else(|| find(readings, "gpu.<none>"))
             .and_then(|r| r.note.clone())
             .unwrap_or_else(|| "no gpu readings in this snapshot".to_string());
         out.push(Line {
@@ -479,7 +481,7 @@ mod tests {
     #[test]
     fn no_gpu_and_no_gpu_reader_render_differently() {
         let absent = [unavailable("gpu.<none>", "no GPU detected on this machine")];
-        let unreadable = [unavailable("gpu.<none>", "GPU enumeration failed")];
+        let unreadable = [unavailable("gpu.<unreadable>", "GPU enumeration failed")];
 
         let a = summary(&absent);
         let b = summary(&unreadable);

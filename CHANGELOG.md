@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed GPU enumeration is no longer reported as `gpu.<none>`, which says the
+  machine has no GPU. It is now the new domain diagnostic `gpu.<unreadable>`,
+  which carries the error and says whether GPUs exist is unknown. `gpu.<none>`
+  is still reported when enumeration succeeds and finds nothing.
 - Windows PCI devices no longer report their PnP health (`OK`) as a power
   state, and the subsystem vendor and device ids are split from `SUBSYS_` as
   Microsoft lays it out (device, then vendor); both fields held the whole

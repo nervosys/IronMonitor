@@ -3146,6 +3146,17 @@ impl Ontology {
             ));
         }
         add(Entity::new(
+            "gpu.<unreadable>",
+            D::Gpu,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when GPU enumeration itself failed, carrying the error. \
+             Whether any GPU exists is unknown, which is not the same as the \
+             `gpu.<none>` finding that the domain enumerated nothing.",
+        ));
+        add(Entity::new(
             "gpu.{n}.<unreadable>",
             D::Gpu,
             K::Diagnostic,

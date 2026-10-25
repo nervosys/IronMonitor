@@ -167,10 +167,15 @@ pub fn snapshot() -> Vec<Reading> {
     // used to get the note below too, "no resolver bound", which is false for
     // them: the resolver ran and gave its reason. They inherit the reason of
     // the nearest enclosing diagnostic instead.
+    // A `<unreadable>` diagnostic is a declined resolver too: `gpu.<unreadable>`
+    // says the GPU enumeration failed, and the GPU entities beneath it inherit
+    // that error rather than "no resolver bound".
     let declined: Vec<(String, String)> = out
         .iter()
         .filter_map(|r| {
-            let prefix = r.id.strip_suffix(".<none>")?;
+            let prefix =
+                r.id.strip_suffix(".<none>")
+                    .or_else(|| r.id.strip_suffix(".<unreadable>"))?;
             Some((format!("{prefix}."), r.note.clone()?))
         })
         .collect();
@@ -1503,23 +1508,31 @@ fn resolve_cpu_cache(out: &mut Vec<Reading>) {
 }
 
 fn resolve_gpu(out: &mut Vec<Reading>) {
-    // All three failure paths report against `gpu.<none>`, the declared
-    // diagnostic for a domain that enumerated nothing — not against `gpu.0.name`.
+    // A failed enumeration reports against `gpu.<unreadable>`, not `gpu.<none>`.
+    // `gpu.<none>` means the GPU domain enumerated nothing, which is a claim
+    // about the machine. A failure to enumerate says nothing about whether GPUs
+    // exist, so it has its own diagnostic and carries the error text.
     //
-    // Reporting them as an unavailable `gpu.0.name` asserted that adapter zero
+    // Before that, the failure was reported against `gpu.<none>`, which told an
+    // agent the machine has no GPU when the reader simply could not look.
+    //
+    // Reporting it as an unavailable `gpu.0.name` asserted that adapter zero
     // exists and could not be read, when the truth is that no adapter is known
     // to exist at all. It also broke the schema's own promise: `gpu.{n}.name` is
     // declared non-nullable, meaning a GPU always has a name, so an unavailable
     // one is by definition a reader bug. On a headless CI runner that is exactly
     // what it was, and `non_nullable_entities_are_never_null` said so — on Linux,
     // where there is no GPU. Every machine that had one passed.
-    let Ok(monitor) = crate::UnifiedMonitor::new() else {
-        out.push(Reading::unavailable(
-            "gpu.<none>",
-            None,
-            "GPU enumeration failed",
-        ));
-        return;
+    let monitor = match crate::UnifiedMonitor::new() {
+        Ok(monitor) => monitor,
+        Err(e) => {
+            out.push(Reading::unavailable(
+                "gpu.<unreadable>",
+                None,
+                format!("GPU enumeration failed: {e}"),
+            ));
+            return;
+        }
     };
     // Per adapter, not all-or-nothing. This took `snapshot_gpus()`, which fails
     // as a whole when any one adapter's query fails, and answered that with
