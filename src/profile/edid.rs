@@ -62,6 +62,7 @@ fn windows_scan(groups: &mut Vec<ProfileGroup>) {
     let Ok(display) = hklm.open_subkey(r"SYSTEM\CurrentControlSet\Enum\DISPLAY") else {
         return;
     };
+    let live = live_monitor_keys();
     for mfg in display.enum_keys().flatten() {
         let Ok(mfg_key) = display.open_subkey(&mfg) else {
             continue;
@@ -73,16 +74,100 @@ fn windows_scan(groups: &mut Vec<ProfileGroup>) {
             let edid: Result<Vec<u8>, _> = dev.get_raw_value("EDID").map(|v| v.bytes);
             if let Ok(bytes) = edid {
                 let label = format!("{}/{}", mfg, inst);
-                if let Some(group) = decode_block(
+                if let Some(mut group) = decode_block(
                     &bytes,
                     format!(r"HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\{}", label),
-                    label,
+                    label.clone(),
                 ) {
+                    // Enum\DISPLAY keeps every monitor ever attached. Only the
+                    // live list says which are attached now.
+                    match &live {
+                        Some(keys) if !keys.contains(&label.to_ascii_uppercase()) => group.note(
+                            "Not attached now: Enum\\DISPLAY keeps monitors that were connected before, and this one is not in the live display list.",
+                        ),
+                        Some(_) => {}
+                        None => group.note(
+                            "The live display list could not be read, so whether this monitor is attached now is unknown.",
+                        ),
+                    }
                     groups.push(group);
                 }
             }
         }
     }
+}
+
+/// The `MFG/INSTANCE` key of a monitor interface path, in the form used under
+/// `Enum\DISPLAY`. For example, `\\?\DISPLAY#GSM5B09#5&2a4b8b5&0&UID12345#{guid}`
+/// gives `GSM5B09/5&2A4B8B5&0&UID12345`.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn enum_display_key(device_path: &str) -> Option<String> {
+    let mut parts = device_path.split('#');
+    let _prefix = parts.next()?;
+    let mfg = parts.next()?;
+    let inst = parts.next()?;
+    if mfg.is_empty() || inst.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{}", mfg, inst).to_ascii_uppercase())
+}
+
+/// Keys of the monitors attached now: the active monitor devices under every
+/// display adapter. `None` when no adapter could be enumerated, so presence is
+/// unknown rather than "nothing attached".
+#[cfg(windows)]
+fn live_monitor_keys() -> Option<std::collections::HashSet<String>> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
+
+    /// `DISPLAY_DEVICE_ACTIVE`
+    const MONITOR_ACTIVE: u32 = 0x0000_0001;
+    /// `EDD_GET_DEVICE_INTERFACE_NAME`: the monitor DeviceID is its interface path.
+    const GET_DEVICE_INTERFACE_NAME: u32 = 0x0000_0001;
+
+    let mut keys = std::collections::HashSet::new();
+    let mut adapters = 0u32;
+    let mut a = 0u32;
+    loop {
+        let mut adapter = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        if !unsafe { EnumDisplayDevicesW(None, a, &mut adapter, 0) }.as_bool() {
+            break;
+        }
+        a += 1;
+        adapters += 1;
+        let mut m = 0u32;
+        loop {
+            let mut mon = DISPLAY_DEVICEW {
+                cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                ..Default::default()
+            };
+            let adapter_name = PCWSTR(adapter.DeviceName.as_ptr());
+            let found = unsafe {
+                EnumDisplayDevicesW(adapter_name, m, &mut mon, GET_DEVICE_INTERFACE_NAME)
+            }
+            .as_bool();
+            if !found {
+                break;
+            }
+            m += 1;
+            if mon.StateFlags & MONITOR_ACTIVE == 0 {
+                continue;
+            }
+            let end = mon
+                .DeviceID
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(mon.DeviceID.len());
+            let path = String::from_utf16_lossy(&mon.DeviceID[..end]);
+            if let Some(key) = enum_display_key(&path) {
+                keys.insert(key);
+            }
+        }
+    }
+    (adapters > 0).then_some(keys)
 }
 
 pub fn decode_block(bytes: &[u8], source: String, locator: String) -> Option<ProfileGroup> {
@@ -529,5 +614,21 @@ mod tests {
     fn rejects_bad_magic() {
         let b = vec![0u8; 128];
         assert!(decode_block(&b, "test".into(), "card0".into()).is_none());
+    }
+
+    #[test]
+    fn enum_display_key_matches_registry_instance() {
+        let path =
+            r"\\?\DISPLAY#GSM5B09#5&2a4b8b5&0&UID12345#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        assert_eq!(
+            enum_display_key(path).as_deref(),
+            Some("GSM5B09/5&2A4B8B5&0&UID12345")
+        );
+    }
+
+    #[test]
+    fn enum_display_key_rejects_short_paths() {
+        assert_eq!(enum_display_key(r"\\?\DISPLAY"), None);
+        assert_eq!(enum_display_key(r"\\?\DISPLAY##{guid}"), None);
     }
 }

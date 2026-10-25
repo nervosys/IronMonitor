@@ -263,6 +263,12 @@ pub struct ProfileGroup {
     pub settings: Vec<Setting>,
     /// Free-form notes (capability hints, permission caveats).
     pub notes: Vec<String>,
+    /// Stable identity for matching this group across snapshots (for example
+    /// `nvme0`). Set it where `device` embeds a label that can change, such as
+    /// a model name that read once and then failed. When absent, `device` is
+    /// used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl ProfileGroup {
@@ -279,7 +285,14 @@ impl ProfileGroup {
             source: source.into(),
             settings: Vec::new(),
             notes: Vec::new(),
+            key: None,
         }
+    }
+
+    /// Set the stable identity used by [`diff`](diff::diff_snapshots).
+    pub fn with_key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
     }
 
     pub fn push(&mut self, setting: Setting) {

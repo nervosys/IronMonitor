@@ -5083,6 +5083,7 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                         schemes.len().to_string().bold()
                     );
                     for (guid, name) in schemes {
+                        let name = name.as_deref().unwrap_or("(name not read)");
                         println!("  {}  {}", guid.cyan(), name.bold());
                     }
                     println!(

@@ -670,7 +670,7 @@ mod tests {
     fn fake_outcome(status: ApplyStatus) -> ApplyOutcome {
         ApplyOutcome {
             setting_id: "fake".into(),
-            subsystem: crate::profile::Subsystem::Cpu,
+            subsystem: Some(crate::profile::Subsystem::Cpu),
             requested: SettingValue::Text("new".into()),
             status,
             message: String::new(),

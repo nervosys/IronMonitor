@@ -98,6 +98,9 @@ fn linux_groups() -> Vec<ProfileGroup> {
             "Controller features",
             ctrl_dir.display().to_string(),
         );
+        // The controller name is stable. The device label carries the model,
+        // which can read once and then fail.
+        g.key = Some(name.clone());
         let push_str = |g: &mut ProfileGroup, file: &str, id: &str, label: &str| {
             if let Ok(v) = fs::read_to_string(ctrl_dir.join(file)) {
                 let v = v.trim().to_string();

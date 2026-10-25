@@ -85,15 +85,17 @@ fn linux_cpufreq_group() -> Option<ProfileGroup> {
     if !base.exists() {
         return None;
     }
+    // Only cpu0 is read. This group used to be labelled "All CPUs (cpufreq)",
+    // which claimed a machine-wide view it did not have.
     let mut g = ProfileGroup::new(
         Subsystem::Cpu,
-        "All CPUs (cpufreq)",
+        "CPU0 (cpufreq)",
         "Governor and frequency policy",
         base.display().to_string(),
     );
 
-    // Aggregate across CPU0 only for compactness — the governor is typically
-    // uniform. Per-core breakdown is available via crate::cpufreq.
+    // Read cpu0 only for compactness: the governor is typically uniform.
+    // Per-core breakdown is available via crate::cpufreq.
     let cpu0 = base.join("cpu0/cpufreq");
     let read = |name: &str| {
         std::fs::read_to_string(cpu0.join(name))
@@ -333,7 +335,13 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
                 s.choices = Some(
                     schemes
                         .iter()
-                        .map(|(guid, name)| (name.clone(), SettingValue::Text(guid.clone())))
+                        // A scheme whose friendly name was not read is offered by its GUID.
+                        .map(|(guid, name)| {
+                            (
+                                name.clone().unwrap_or_else(|| guid.clone()),
+                                SettingValue::Text(guid.clone()),
+                            )
+                        })
                         .collect(),
                 );
             }
@@ -349,7 +357,11 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
         g.push(
             Setting::info(
                 format!("scheme.{}", guid),
-                format!("Scheme: {}", name),
+                // The name used to default to the text "<unnamed>" when it was not read.
+                match name {
+                    Some(n) => format!("Scheme: {}", n),
+                    None => "Scheme (name not read)".to_string(),
+                },
                 SettingValue::Text(guid.clone()),
             )
             .with_description("Available Windows power scheme (use its GUID with `ironmon profile set active_scheme_guid <guid> --confirm`).")
@@ -367,7 +379,7 @@ fn windows_power_policy_group() -> Option<ProfileGroup> {
 /// Enumerate all available Windows power schemes via `PowerEnumerate`.
 /// Returns `(guid_string, friendly_name)` pairs.
 #[cfg(windows)]
-pub fn enumerate_power_schemes() -> Vec<(String, String)> {
+pub fn enumerate_power_schemes() -> Vec<(String, Option<String>)> {
     use windows::Win32::System::Power::{PowerEnumerate, ACCESS_SCHEME};
     let mut out = Vec::new();
     let mut index = 0u32;
@@ -390,7 +402,8 @@ pub fn enumerate_power_schemes() -> Vec<(String, String)> {
             break;
         }
         let guid_str = format_guid(&guid);
-        let name = read_friendly_name(&guid).unwrap_or_else(|| "<unnamed>".into());
+        // None when PowerReadFriendlyName fails; the GUID is still reported.
+        let name = read_friendly_name(&guid);
         out.push((guid_str, name));
         index += 1;
         if index > 64 {

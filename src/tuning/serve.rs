@@ -627,7 +627,7 @@ mod tests {
             message: String::new(),
             outcome: Some(ApplyOutcome {
                 setting_id: id.into(),
-                subsystem: Subsystem::Cpu,
+                subsystem: Some(Subsystem::Cpu),
                 requested: SettingValue::Text("new".into()),
                 status: ApplyStatus::Applied,
                 message: String::new(),
@@ -733,7 +733,7 @@ mod tests {
             message: String::new(),
             outcome: Some(ApplyOutcome {
                 setting_id: id.into(),
-                subsystem: Subsystem::Cpu,
+                subsystem: Some(Subsystem::Cpu),
                 requested: SettingValue::Text("new".into()),
                 status: ApplyStatus::Applied,
                 message: String::new(),

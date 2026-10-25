@@ -30,7 +30,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyOutcome {
     pub setting_id: String,
-    pub subsystem: Subsystem,
+    /// `None` when no handler is registered for the id, so no subsystem can be
+    /// named. This used to be a `Subsystem::Gpu` placeholder in that case.
+    #[serde(default)]
+    pub subsystem: Option<Subsystem>,
     pub requested: SettingValue,
     pub status: ApplyStatus,
     pub message: String,
@@ -157,7 +160,7 @@ pub fn apply_setting_reversible(
         if read_current_with_retry(h.as_ref()).is_none() {
             return ApplyOutcome {
                 setting_id: setting_id.into(),
-                subsystem: h.subsystem(),
+                subsystem: Some(h.subsystem()),
                 requested: value,
                 status: ApplyStatus::Refused,
                 message: format!(
@@ -243,7 +246,7 @@ pub fn apply_setting(setting_id: &str, value: SettingValue, confirm: bool) -> Ap
     let outcome = match handler {
         None => ApplyOutcome {
             setting_id: setting_id.into(),
-            subsystem: Subsystem::Gpu, // placeholder — overridden if handler exists
+            subsystem: None,
             requested: value.clone(),
             status: ApplyStatus::NotWritable,
             message: format!(
@@ -256,7 +259,7 @@ pub fn apply_setting(setting_id: &str, value: SettingValue, confirm: bool) -> Ap
         },
         Some(h) if !confirm => ApplyOutcome {
             setting_id: setting_id.into(),
-            subsystem: h.subsystem(),
+            subsystem: Some(h.subsystem()),
             requested: value.clone(),
             status: ApplyStatus::NeedsConfirm,
             message:
@@ -342,7 +345,7 @@ pub fn record_attempt(
         .unwrap_or(0);
     let outcome = ApplyOutcome {
         setting_id: setting_id.into(),
-        subsystem,
+        subsystem: Some(subsystem),
         requested,
         status,
         message: message.into(),
@@ -398,7 +401,7 @@ impl ApplyHandler for NvidiaPersistenceModeHandler {
             other => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: other.clone(),
                     status: ApplyStatus::Failed,
                     message: "persistence_mode requires a Bool value.".into(),
@@ -415,7 +418,7 @@ impl ApplyHandler for NvidiaPersistenceModeHandler {
         }) {
             Ok(_) => ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: ApplyStatus::Applied,
                 message: format!("NVIDIA persistence mode on GPU 0 set to {}.", target),
@@ -430,7 +433,7 @@ impl ApplyHandler for NvidiaPersistenceModeHandler {
                     || s.contains("PrivilegedDriver");
                 ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: if refused {
                         ApplyStatus::Refused
@@ -480,7 +483,7 @@ impl ApplyHandler for LinuxCpufreqGovernorHandler {
             other => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: other.clone(),
                     status: ApplyStatus::Failed,
                     message: "scaling_governor requires a Text value (e.g. \"performance\")."
@@ -494,7 +497,7 @@ impl ApplyHandler for LinuxCpufreqGovernorHandler {
         match std::fs::write(path, &target) {
             Ok(_) => ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: ApplyStatus::Applied,
                 message: format!("CPU0 scaling_governor set to {:?}.", target),
@@ -505,7 +508,7 @@ impl ApplyHandler for LinuxCpufreqGovernorHandler {
                 let refused = e.kind() == std::io::ErrorKind::PermissionDenied;
                 ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: if refused {
                         ApplyStatus::Refused
@@ -549,7 +552,7 @@ impl ApplyHandler for LinuxAmdPerfLevelHandler {
             other => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: other.clone(),
                     status: ApplyStatus::Failed,
                     message: "perf_level requires a Text value (e.g. \"auto\").".into(),
@@ -564,7 +567,7 @@ impl ApplyHandler for LinuxAmdPerfLevelHandler {
             None => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: ApplyStatus::Failed,
                     message: "No AMD GPU card found in /sys/class/drm.".into(),
@@ -579,7 +582,7 @@ impl ApplyHandler for LinuxAmdPerfLevelHandler {
         match std::fs::write(&path, &target) {
             Ok(_) => ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: ApplyStatus::Applied,
                 message: format!("AMD perf level set to {:?} via {}", target, path.display()),
@@ -590,7 +593,7 @@ impl ApplyHandler for LinuxAmdPerfLevelHandler {
                 let refused = e.kind() == std::io::ErrorKind::PermissionDenied;
                 ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: if refused {
                         ApplyStatus::Refused
@@ -636,7 +639,7 @@ impl ApplyHandler for LinuxIntelGtMaxFreqHandler {
             other => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: other.clone(),
                     status: ApplyStatus::Failed,
                     message: "gt_max_freq_mhz requires a non-negative integer (MHz).".into(),
@@ -650,7 +653,7 @@ impl ApplyHandler for LinuxIntelGtMaxFreqHandler {
             None => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: ApplyStatus::Failed,
                     message: "No Intel GPU card found in /sys/class/drm.".into(),
@@ -663,7 +666,7 @@ impl ApplyHandler for LinuxIntelGtMaxFreqHandler {
         match std::fs::write(&path, mhz.to_string()) {
             Ok(_) => ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: ApplyStatus::Applied,
                 message: format!("Intel GT max frequency set to {} MHz.", mhz),
@@ -674,7 +677,7 @@ impl ApplyHandler for LinuxIntelGtMaxFreqHandler {
                 let refused = e.kind() == std::io::ErrorKind::PermissionDenied;
                 ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: if refused {
                         ApplyStatus::Refused
@@ -769,7 +772,7 @@ impl ApplyHandler for WindowsActivePowerSchemeHandler {
             other => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: other.clone(),
                     status: ApplyStatus::Failed,
                     message: "active_scheme_guid requires a Text value (GUID).".into(),
@@ -783,7 +786,7 @@ impl ApplyHandler for WindowsActivePowerSchemeHandler {
             None => {
                 return ApplyOutcome {
                     setting_id: self.setting_id().into(),
-                    subsystem: self.subsystem(),
+                    subsystem: Some(self.subsystem()),
                     requested: value.clone(),
                     status: ApplyStatus::Failed,
                     message: format!("Invalid GUID format: {:?}", guid_str),
@@ -801,7 +804,7 @@ impl ApplyHandler for WindowsActivePowerSchemeHandler {
         if win_error.0 == 0 {
             ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: ApplyStatus::Applied,
                 message: format!("Windows active power scheme set to {{{}}}.", guid_str),
@@ -813,7 +816,7 @@ impl ApplyHandler for WindowsActivePowerSchemeHandler {
             let refused = win_error.0 == 5;
             ApplyOutcome {
                 setting_id: self.setting_id().into(),
-                subsystem: self.subsystem(),
+                subsystem: Some(self.subsystem()),
                 requested: value.clone(),
                 status: if refused {
                     ApplyStatus::Refused
@@ -906,7 +909,7 @@ mod tests {
     fn outcome_serializable() {
         let outcome = ApplyOutcome {
             setting_id: "x".into(),
-            subsystem: Subsystem::Cpu,
+            subsystem: Some(Subsystem::Cpu),
             requested: SettingValue::Bool(true),
             status: ApplyStatus::NotWritable,
             message: "test".into(),
@@ -923,7 +926,7 @@ mod tests {
     fn revert_refuses_when_no_prior_value_was_recorded() {
         let applied = ApplyOutcome {
             setting_id: "scaling_governor".into(),
-            subsystem: Subsystem::Cpu,
+            subsystem: Some(Subsystem::Cpu),
             requested: SettingValue::Text("performance".into()),
             status: ApplyStatus::Applied,
             message: "applied".into(),
@@ -951,7 +954,7 @@ mod tests {
         ] {
             let applied = ApplyOutcome {
                 setting_id: "scaling_governor".into(),
-                subsystem: Subsystem::Cpu,
+                subsystem: Some(Subsystem::Cpu),
                 requested: SettingValue::Text("performance".into()),
                 status,
                 message: String::new(),
@@ -989,7 +992,7 @@ mod tests {
 
         let applied = ApplyOutcome {
             setting_id: SETTING.into(),
-            subsystem: Subsystem::Cpu,
+            subsystem: Some(Subsystem::Cpu),
             requested: SettingValue::Text("381b4222-f694-41f0-9685-ff5bb260df2e".into()),
             status: ApplyStatus::Applied,
             message: "applied".into(),
@@ -1034,7 +1037,7 @@ mod tests {
     fn a_recorded_prior_value_survives_serialisation() {
         let outcome = ApplyOutcome {
             setting_id: "scaling_governor".into(),
-            subsystem: Subsystem::Cpu,
+            subsystem: Some(Subsystem::Cpu),
             requested: SettingValue::Text("performance".into()),
             status: ApplyStatus::Applied,
             message: String::new(),
@@ -1054,7 +1057,7 @@ mod tests {
         // so the test cannot pass or fail on a guess at the wire format.
         let outcome = ApplyOutcome {
             setting_id: "scaling_governor".into(),
-            subsystem: Subsystem::Cpu,
+            subsystem: Some(Subsystem::Cpu),
             requested: SettingValue::Text("performance".into()),
             status: ApplyStatus::Applied,
             message: String::new(),

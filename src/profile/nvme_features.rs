@@ -11,7 +11,7 @@
 //! | 0x07 | Number of Queues                    | Negotiated I/O queue counts |
 //! | 0x0B | Asynchronous Event Configuration    | Event notification mask |
 //! | 0x0C | Autonomous Power State Transition   | APST enable + table |
-//! | 0x0F | Software Progress Marker            | SPM value |
+//! | 0x0F | Keep Alive Timer                    | KATO in milliseconds |
 //!
 //! Requires root (CAP_SYS_ADMIN) — `/dev/nvmeN` is mode 0660 root:disk.
 //! When permission is denied or the kernel doesn't support the ioctl,
@@ -39,10 +39,7 @@ pub fn enrich_groups(groups: &mut Vec<ProfileGroup>) {
             let p = e.path();
             let name = p.file_name()?.to_string_lossy().to_string();
             // Match only controller chardevs (nvme0, nvme1...), not namespaces.
-            if name.starts_with("nvme")
-                && name[4..].chars().all(|c| c.is_ascii_digit())
-                && !name.contains('n')
-            {
+            if is_controller_chardev(&name) {
                 Some(p)
             } else {
                 None
@@ -77,6 +74,18 @@ pub fn enrich_groups(groups: &mut Vec<ProfileGroup>) {
 
 #[cfg(not(target_os = "linux"))]
 pub fn enrich_groups(_groups: &mut Vec<ProfileGroup>) {}
+
+/// True for a controller character device name such as `nvme0`. A namespace
+/// block device such as `nvme0n1` is not a controller. The check used to test
+/// `!name.contains('n')`, which is always false for any `nvme*` name, so no
+/// controller was ever queried.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_controller_chardev(name: &str) -> bool {
+    match name.strip_prefix("nvme") {
+        Some(digits) => !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
+}
 
 #[cfg(target_os = "linux")]
 fn read_features(dev_path: &std::path::Path) -> std::io::Result<Vec<Setting>> {
@@ -145,8 +154,8 @@ fn feature_queries() -> &'static [FeatureQuery] {
         },
         FeatureQuery {
             fid: 0x0F,
-            primary_id: "feat.software_progress",
-            label: "Software Progress Marker",
+            primary_id: "feat.keep_alive_timer",
+            label: "Keep Alive Timer",
         },
     ]
 }
@@ -167,10 +176,20 @@ fn decode_feature(q: &FeatureQuery, raw: u32) -> Vec<Setting> {
                 _ => "Reserved",
             };
             vec![
-                Setting::info("feat.pm.power_state", "Active Power State", SettingValue::Uint(ps))
-                    .with_description("Current NVMe power state index (0=highest perf, higher=lower power)."),
-                Setting::info("feat.pm.workload_hint", "Workload Hint", SettingValue::Text(format!("{} ({})", wh, wh_label)))
-                    .with_description("Hint to the controller about expected workload profile."),
+                Setting::info(
+                    "feat.pm.power_state",
+                    "Active Power State",
+                    SettingValue::Uint(ps),
+                )
+                .with_description(
+                    "Current NVMe power state index (0=highest perf, higher=lower power).",
+                ),
+                Setting::info(
+                    "feat.pm.workload_hint",
+                    "Workload Hint",
+                    SettingValue::Text(format!("{} ({})", wh, wh_label)),
+                )
+                .with_description("Hint to the controller about expected workload profile."),
             ]
         }
         0x06 => {
@@ -212,16 +231,52 @@ fn decode_feature(q: &FeatureQuery, raw: u32) -> Vec<Setting> {
             let lba_status = ((raw >> 13) & 0x1) != 0;
             let endurance_group = ((raw >> 14) & 0x1) != 0;
             vec![
-                Setting::info("feat.aec.raw_mask", "Async Event Mask", SettingValue::Uint(raw as u64))
-                    .with_description("Raw 32-bit async event enable mask."),
-                Setting::info("feat.aec.smart_critical", "  → SMART/Health Critical Warnings (bits 7:0)", SettingValue::Bool(smart)),
-                Setting::info("feat.aec.namespace_attr", "  → Namespace Attribute Notices", SettingValue::Bool(ns_attr)),
-                Setting::info("feat.aec.firmware_activation", "  → Firmware Activation Notices", SettingValue::Bool(fw_act)),
-                Setting::info("feat.aec.telemetry", "  → Telemetry Log Notices", SettingValue::Bool(telemetry)),
-                Setting::info("feat.aec.asym_ns_access", "  → Asymmetric Namespace Access Change Notices", SettingValue::Bool(asym_ns)),
-                Setting::info("feat.aec.predictable_latency", "  → Predictable Latency Event Aggregate Log Change Notices", SettingValue::Bool(predictable_latency)),
-                Setting::info("feat.aec.lba_status", "  → LBA Status Information Notices", SettingValue::Bool(lba_status)),
-                Setting::info("feat.aec.endurance_group", "  → Endurance Group Event Aggregate Log Change Notices", SettingValue::Bool(endurance_group)),
+                Setting::info(
+                    "feat.aec.raw_mask",
+                    "Async Event Mask",
+                    SettingValue::Uint(raw as u64),
+                )
+                .with_description("Raw 32-bit async event enable mask."),
+                Setting::info(
+                    "feat.aec.smart_critical",
+                    "  → SMART/Health Critical Warnings (bits 7:0)",
+                    SettingValue::Bool(smart),
+                ),
+                Setting::info(
+                    "feat.aec.namespace_attr",
+                    "  → Namespace Attribute Notices",
+                    SettingValue::Bool(ns_attr),
+                ),
+                Setting::info(
+                    "feat.aec.firmware_activation",
+                    "  → Firmware Activation Notices",
+                    SettingValue::Bool(fw_act),
+                ),
+                Setting::info(
+                    "feat.aec.telemetry",
+                    "  → Telemetry Log Notices",
+                    SettingValue::Bool(telemetry),
+                ),
+                Setting::info(
+                    "feat.aec.asym_ns_access",
+                    "  → Asymmetric Namespace Access Change Notices",
+                    SettingValue::Bool(asym_ns),
+                ),
+                Setting::info(
+                    "feat.aec.predictable_latency",
+                    "  → Predictable Latency Event Aggregate Log Change Notices",
+                    SettingValue::Bool(predictable_latency),
+                ),
+                Setting::info(
+                    "feat.aec.lba_status",
+                    "  → LBA Status Information Notices",
+                    SettingValue::Bool(lba_status),
+                ),
+                Setting::info(
+                    "feat.aec.endurance_group",
+                    "  → Endurance Group Event Aggregate Log Change Notices",
+                    SettingValue::Bool(endurance_group),
+                ),
             ]
         }
         0x0C => {
@@ -233,13 +288,25 @@ fn decode_feature(q: &FeatureQuery, raw: u32) -> Vec<Setting> {
                     .with_risk(SettingRisk::Moderate),
             ]
         }
-        0x0F => vec![
-            Setting::info("feat.spm.count", "Software Progress Marker", SettingValue::Uint(raw as u64))
-                .with_description("Pre-boot software progress counter; non-zero values indicate prior boot iterations recovered after errors."),
-        ],
-        _ => vec![
-            Setting::info(q.primary_id, q.label, SettingValue::Uint(raw as u64)),
-        ],
+        0x0F => {
+            // Keep Alive Timer (FID 0Fh): KATO in milliseconds, 0 disables it.
+            // This used to decode FID 0Fh as a Software Progress Marker count,
+            // which is FID 80h. That label and its description were wrong.
+            vec![Setting::info(
+                "feat.keep_alive_timer",
+                "Keep Alive Timer",
+                SettingValue::Uint(raw as u64),
+            )
+            .with_unit("ms")
+            .with_description(
+                "Keep Alive Timeout in milliseconds; 0 means keep-alive is disabled.",
+            )]
+        }
+        _ => vec![Setting::info(
+            q.primary_id,
+            q.label,
+            SettingValue::Uint(raw as u64),
+        )],
     }
 }
 
@@ -431,5 +498,33 @@ mod tests {
             decode_feature(&q, 1)[0].value,
             SettingValue::Bool(true)
         ));
+    }
+
+    #[test]
+    fn decode_keep_alive_timer_fid_0f() {
+        let q = FeatureQuery {
+            fid: 0x0F,
+            primary_id: "feat.keep_alive_timer",
+            label: "Keep Alive Timer",
+        };
+        // 10_000 ms is the common 10 s KATO.
+        let s = decode_feature(&q, 10_000);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].id, "feat.keep_alive_timer");
+        assert_eq!(s[0].value, SettingValue::Uint(10_000));
+        assert_eq!(s[0].unit.as_deref(), Some("ms"));
+        assert!(!s.iter().any(|x| x.display_name.contains("Progress")));
+        assert!(!s.iter().any(|x| x.id == "feat.spm.count"));
+    }
+
+    #[test]
+    fn controller_chardev_filter() {
+        assert!(is_controller_chardev("nvme0"));
+        assert!(is_controller_chardev("nvme12"));
+        assert!(!is_controller_chardev("nvme0n1"));
+        assert!(!is_controller_chardev("nvme0n1p2"));
+        assert!(!is_controller_chardev("nvme"));
+        assert!(!is_controller_chardev("nvme_x"));
+        assert!(!is_controller_chardev("sda"));
     }
 }

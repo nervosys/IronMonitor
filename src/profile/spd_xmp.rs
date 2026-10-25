@@ -9,13 +9,17 @@
 //!
 //! Layout reference:
 //! - SPD byte 2 (DDR type): 0x0C = DDR4, 0x12 = DDR5.
-//! - XMP 2.0 magic `0x0C 0x4A` at offset 384 (DDR4 modules). Two profile
-//!   slots follow (35 bytes each), each carrying voltage, min cycle time,
-//!   tCL, tRCD, tRP, tRAS, tRC.
+//! - XMP 2.0 magic `0x0C 0x4A` at offset 384 (DDR4 modules). Byte 386 holds
+//!   the profile enable bits (bit 0 = profile 1, bit 1 = profile 2). Two
+//!   profile slots follow (35 bytes each), starting at 393.
 //! - XMP 3.0 (DDR5) keeps the same magic at 384, but the slot count expands
-//!   to five and slots are 64 bytes.
+//!   to five and slots are 64 bytes. The enable-bit offset for DDR5 is not
+//!   confirmed here, so DDR5 profile flags are reported as unreadable.
 //! - AMD EXPO magic `0x45 0x58 0x50 0x4F` ("EXPO") at offset 768 with two
 //!   profile slots.
+//!
+//! Byte 387 (the XMP revision) is not decoded: its layout is not confirmed,
+//! so the version is reported as unreadable rather than inferred.
 //!
 //! Writing to SPD is BIOS territory; this module is read-only.
 
@@ -116,24 +120,44 @@ fn decode_blob(bytes: &[u8], source: &str, locator: String) -> Option<ProfileGro
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn decode_xmp(group: &mut ProfileGroup, bytes: &[u8], dram: DramType) {
-    // Profile count byte 385 has bit-flags per slot. Each slot's data
-    // location and stride depends on DDR generation. We expose count +
-    // per-slot voltage / speed only — the full sub-timing decode varies
-    // significantly between XMP 2.0 (DDR4) and XMP 3.0 (DDR5) and is left
-    // for a future iteration.
-    let enabled = bytes.get(385).copied().unwrap_or(0);
-    let profile_count = enabled.count_ones() as u64;
+    // The XMP revision byte (387) is not decoded. The version used to be a
+    // literal chosen by DRAM type, which reported a version the blob never
+    // declared, so it is now unreadable until the layout is confirmed.
     group.push(
         Setting::info(
             "xmp.version",
             "XMP Version",
-            SettingValue::Text(match dram {
-                DramType::Ddr5 => "XMP 3.0".into(),
-                _ => "XMP 2.0".into(),
-            }),
+            SettingValue::Unreadable("revision byte 387 not decoded; layout not confirmed".into()),
         )
-        .with_source("SPD offset 384"),
+        .with_source("SPD offset 387"),
     );
+
+    // DDR5 (XMP 3.0): the enable-bit offset is not confirmed, so no profile
+    // count or slot values are reported. Previously byte 385 (the second magic
+    // byte) was read as the enable mask and slots were decoded without it.
+    let (enabled, slot_count, slot_stride) = match dram {
+        DramType::Ddr4 => {
+            // Byte 386: bit 0 = profile 1, bit 1 = profile 2.
+            // Byte 385 is the second magic byte, not a profile mask.
+            let mask = bytes.get(386).copied().unwrap_or(0) & 0b11;
+            (mask, 2usize, 35usize)
+        }
+        _ => {
+            group.push(
+                Setting::info(
+                    "xmp.profile_count",
+                    "XMP Profiles Present",
+                    SettingValue::Unreadable(
+                        "XMP 3.0 enable-bit offset not confirmed; profiles not decoded".into(),
+                    ),
+                )
+                .with_source("SPD offset 386 (unconfirmed for DDR5)"),
+            );
+            return;
+        }
+    };
+
+    let profile_count = enabled.count_ones() as u64;
     group.push(
         Setting::info(
             "xmp.profile_count",
@@ -141,49 +165,44 @@ fn decode_xmp(group: &mut ProfileGroup, bytes: &[u8], dram: DramType) {
             SettingValue::Uint(profile_count),
         )
         .with_description("Number of XMP profiles enabled in this DIMM's SPD.")
-        .with_source("SPD offset 385"),
+        .with_source("SPD offset 386"),
     );
+    if profile_count == 0 {
+        group.note("XMP magic present but no profiles flagged enabled in byte 386.");
+    }
 
-    let (slot_stride, slot_base) = match dram {
-        DramType::Ddr5 => (64usize, 393usize),
-        _ => (35usize, 393usize),
-    };
-    for slot in 0..5 {
+    for slot in 0..slot_count {
         if (enabled >> slot) & 1 == 0 {
             continue;
         }
-        let base = slot_base + slot * slot_stride;
+        let base = 393 + slot * slot_stride;
         if base + 4 >= bytes.len() {
             break;
         }
         let vdd_raw = bytes[base] as u32;
-        // DDR4 XMP encodes Vdd in steps of 5 mV starting at 1.0 V; bit 7 indicates
-        // "encoding present". DDR5 uses different encoding; expose raw for now.
-        let voltage = match dram {
-            DramType::Ddr4 => Some(1.0 + (vdd_raw & 0x7F) as f64 * 0.005),
-            _ => None,
-        };
-        if let Some(v) = voltage {
-            group.push(
-                Setting::info(
-                    format!("xmp.slot{}.vdd_v", slot),
-                    format!("XMP Profile {} Vdd", slot + 1),
-                    SettingValue::Float(v),
-                )
-                .with_unit("V")
-                .with_risk(SettingRisk::Dangerous)
-                .with_source(format!("SPD offset {}", base)),
-            );
-        } else {
-            group.push(
-                Setting::info(
-                    format!("xmp.slot{}.vdd_raw", slot),
-                    format!("XMP Profile {} Vdd (raw)", slot + 1),
-                    SettingValue::Uint(vdd_raw as u64),
-                )
-                .with_source(format!("SPD offset {}", base)),
-            );
+        // A zero voltage byte means the profile carries no data. Decoding it
+        // gives 1.00 V, which is a constant, not a reading, so the slot is
+        // skipped.
+        if vdd_raw & 0x7F == 0 {
+            group.note(format!(
+                "XMP profile {} is flagged enabled but its voltage byte is zero; not reported.",
+                slot + 1
+            ));
+            continue;
         }
+        // DDR4 XMP encodes Vdd in steps of 5 mV starting at 1.0 V. The low
+        // seven bits carry the value.
+        let v = 1.0 + (vdd_raw & 0x7F) as f64 * 0.005;
+        group.push(
+            Setting::info(
+                format!("xmp.slot{}.vdd_v", slot),
+                format!("XMP Profile {} Vdd", slot + 1),
+                SettingValue::Float(v),
+            )
+            .with_unit("V")
+            .with_risk(SettingRisk::Dangerous)
+            .with_source(format!("SPD offset {}", base)),
+        );
         // Min cycle time is two bytes (mtb units, 125 ps), at base+1 / base+2 for DDR4.
         let mtb_lo = bytes.get(base + 1).copied().unwrap_or(0) as u32;
         let mtb_hi = bytes.get(base + 2).copied().unwrap_or(0) as u32;
@@ -201,9 +220,6 @@ fn decode_xmp(group: &mut ProfileGroup, bytes: &[u8], dram: DramType) {
                 .with_source(format!("SPD offset {}–{}", base + 1, base + 2)),
             );
         }
-    }
-    if profile_count == 0 {
-        group.note("XMP magic present but no profiles flagged enabled in byte 385.");
     }
 }
 
@@ -239,6 +255,10 @@ fn decode_expo(group: &mut ProfileGroup, bytes: &[u8]) {
             break;
         }
         let vdd_raw = bytes[base] as u32;
+        // A zero byte is an unset profile, not a 0 V reading.
+        if vdd_raw == 0 {
+            continue;
+        }
         group.push(
             Setting::info(
                 format!("expo.slot{}.vdd_raw", slot),
@@ -255,30 +275,122 @@ fn decode_expo(group: &mut ProfileGroup, bytes: &[u8]) {
 mod tests {
     use super::*;
 
+    /// DDR4 blob with XMP 2.0 magic and two enabled profiles.
+    /// Profile 1 (offset 393): Vdd raw 0x28 = 1.20 V, tCK mtb 5 = DDR4-3200.
+    /// Profile 2 (offset 428): Vdd raw 0x2C = 1.22 V, tCK mtb 6 = DDR4-2667.
     fn make_ddr4_blob() -> Vec<u8> {
         let mut b = vec![0u8; 512];
         b[2] = 0x0C; // DDR4
         b[384] = 0x0C; // XMP magic
         b[385] = 0x4A;
-        b[386] = 0b0000_0011; // two profiles enabled
-                              // slot 0 at 393: vdd raw=0x28 → 1.0 + 40*0.005 = 1.2V
+        b[386] = 0b0000_0011; // profiles 1 and 2 enabled
         b[393] = 0x28;
-        b[394] = 0x07; // mtb lo (DDR4-3200: cycle = 625 ps → mtb = 5)
+        b[394] = 0x05; // mtb lo: 5 * 125 ps = 625 ps -> 3200 MT/s
         b[395] = 0x00;
+        b[428] = 0x2C;
+        b[429] = 0x06; // 6 * 125 ps = 750 ps -> 2667 MT/s
+        b[430] = 0x00;
         b
+    }
+
+    fn find<'a>(g: &'a ProfileGroup, id: &str) -> Option<&'a Setting> {
+        g.settings.iter().find(|s| s.id == id)
     }
 
     #[test]
     fn detects_ddr4_xmp() {
         let blob = make_ddr4_blob();
         let g = decode_blob(&blob, "test", "0-0050".into()).unwrap();
-        assert!(g.settings.iter().any(|s| s.id == "xmp.version"));
-        let profile_count = g
-            .settings
-            .iter()
-            .find(|s| s.id == "xmp.profile_count")
-            .unwrap();
-        assert!(matches!(profile_count.value, SettingValue::Uint(_)));
+        assert!(find(&g, "xmp.version").is_some());
+        let profile_count = find(&g, "xmp.profile_count").unwrap();
+        assert_eq!(profile_count.value, SettingValue::Uint(2));
+    }
+
+    #[test]
+    fn decodes_two_enabled_xmp_profiles() {
+        let blob = make_ddr4_blob();
+        let g = decode_blob(&blob, "test", "0-0050".into()).unwrap();
+
+        match find(&g, "xmp.slot0.vdd_v").unwrap().value {
+            SettingValue::Float(v) => assert!((v - 1.2).abs() < 1e-9, "got {v}"),
+            ref other => panic!("slot0 vdd not a float: {other:?}"),
+        }
+        assert_eq!(
+            find(&g, "xmp.slot0.speed_mts").unwrap().value,
+            SettingValue::Uint(3200)
+        );
+        match find(&g, "xmp.slot1.vdd_v").unwrap().value {
+            SettingValue::Float(v) => assert!((v - 1.22).abs() < 1e-9, "got {v}"),
+            ref other => panic!("slot1 vdd not a float: {other:?}"),
+        }
+        assert_eq!(
+            find(&g, "xmp.slot1.speed_mts").unwrap().value,
+            SettingValue::Uint(2667)
+        );
+    }
+
+    #[test]
+    fn version_is_unreadable_not_inferred() {
+        let g = decode_blob(&make_ddr4_blob(), "test", "x".into()).unwrap();
+        assert!(matches!(
+            find(&g, "xmp.version").unwrap().value,
+            SettingValue::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn single_enabled_profile_emits_only_that_slot() {
+        let mut blob = make_ddr4_blob();
+        blob[386] = 0b0000_0001;
+        let g = decode_blob(&blob, "test", "x".into()).unwrap();
+        assert_eq!(
+            find(&g, "xmp.profile_count").unwrap().value,
+            SettingValue::Uint(1)
+        );
+        assert!(find(&g, "xmp.slot0.vdd_v").is_some());
+        assert!(find(&g, "xmp.slot1.vdd_v").is_none());
+        assert!(find(&g, "xmp.slot1.speed_mts").is_none());
+    }
+
+    #[test]
+    fn second_magic_byte_is_not_a_profile_mask() {
+        // Byte 385 is 0x4A. With no enable bits in byte 386 the count must be
+        // zero, not the three the old code reported from 0x4A.
+        let mut blob = make_ddr4_blob();
+        blob[386] = 0;
+        let g = decode_blob(&blob, "test", "x".into()).unwrap();
+        assert_eq!(
+            find(&g, "xmp.profile_count").unwrap().value,
+            SettingValue::Uint(0)
+        );
+        assert!(find(&g, "xmp.slot0.vdd_v").is_none());
+    }
+
+    #[test]
+    fn zero_voltage_profile_is_not_reported_as_1v() {
+        let mut blob = make_ddr4_blob();
+        blob[428] = 0x00; // profile 2 flagged, but its data is all zero
+        blob[429] = 0x00;
+        let g = decode_blob(&blob, "test", "x".into()).unwrap();
+        assert!(find(&g, "xmp.slot1.vdd_v").is_none());
+        assert!(find(&g, "xmp.slot1.speed_mts").is_none());
+        assert!(find(&g, "xmp.slot0.vdd_v").is_some());
+    }
+
+    #[test]
+    fn ddr5_profile_flags_are_unreadable() {
+        let mut blob = vec![0u8; 1024];
+        blob[2] = 0x12; // DDR5
+        blob[384] = 0x0C;
+        blob[385] = 0x4A;
+        blob[386] = 0b0000_0001;
+        blob[393] = 0x50;
+        let g = decode_blob(&blob, "test", "x".into()).unwrap();
+        assert!(matches!(
+            find(&g, "xmp.profile_count").unwrap().value,
+            SettingValue::Unreadable(_)
+        ));
+        assert!(!g.settings.iter().any(|s| s.id.starts_with("xmp.slot")));
     }
 
     #[test]
@@ -297,5 +409,16 @@ mod tests {
         b[776] = 0x50;
         let g = decode_blob(&b, "test", "y".into()).unwrap();
         assert!(g.settings.iter().any(|s| s.id == "expo.version"));
+        assert!(find(&g, "expo.slot0.vdd_raw").is_some());
+    }
+
+    #[test]
+    fn expo_zero_slot_is_skipped() {
+        let mut b = vec![0u8; 1024];
+        b[2] = 0x12;
+        b[768..772].copy_from_slice(b"EXPO");
+        b[772] = 0b0000_0001; // profile 1 flagged, but its byte is zero
+        let g = decode_blob(&b, "test", "y".into()).unwrap();
+        assert!(find(&g, "expo.slot0.vdd_raw").is_none());
     }
 }

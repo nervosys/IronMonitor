@@ -199,6 +199,8 @@ fn nvidia_groups() -> Vec<ProfileGroup> {
             "Global driver profile",
             format!("NVML index {}", i),
         );
+        // The device label is the name, which may be unreadable. The index is stable.
+        g.key = Some(format!("NVML index {}", i));
         if let Err(e) = &name_result {
             g.note(format!("NVML name query failed: {}", e));
         }

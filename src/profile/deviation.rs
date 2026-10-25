@@ -4,8 +4,19 @@
 //! Catches the "I changed something I forgot about" case after BIOS updates,
 //! driver reinstalls, or NVPI tinkering. Pure inspection — no writes.
 
-use super::{ProfileSnapshot, SettingValue, Subsystem};
+use super::{ProfileSnapshot, Setting, SettingValue, Subsystem};
 use serde::{Deserialize, Serialize};
+
+/// A setting can be compared only when it declares a default and both sides
+/// were actually read. An unreadable current value used to be compared against
+/// its default and reported as a deviation, and counted as comparable.
+fn is_comparable(s: &Setting) -> bool {
+    let read = |v: &SettingValue| !matches!(v, SettingValue::Unreadable(_));
+    match &s.default {
+        Some(d) => read(d) && read(&s.value),
+        None => false,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deviation {
@@ -62,7 +73,7 @@ pub fn deviation_report(snapshot: &ProfileSnapshot) -> DeviationReport {
         for group in groups {
             for s in &group.settings {
                 settings += 1;
-                if s.default.is_some() {
+                if is_comparable(s) {
                     comparable += 1;
                 }
             }
@@ -88,6 +99,9 @@ pub fn deviations_from_default(snapshot: &ProfileSnapshot) -> Vec<Deviation> {
     for (sub, groups) in &snapshot.providers {
         for group in groups {
             for s in &group.settings {
+                if !is_comparable(s) {
+                    continue;
+                }
                 let Some(default) = s.default.clone() else {
                     continue;
                 };
@@ -220,6 +234,29 @@ mod tests {
         assert_eq!(devs[0].setting_id, "power_limit");
         assert!(matches!(devs[0].current, SettingValue::Uint(350_000)));
         assert!(matches!(devs[0].default, SettingValue::Uint(450_000)));
+    }
+
+    /// An unreadable current value is not compared against its default: it is
+    /// neither a deviation nor counted as comparable.
+    #[test]
+    fn unreadable_current_is_skipped_not_a_deviation() {
+        let mut unread = Setting::info(
+            "power_limit",
+            "Power Limit",
+            SettingValue::Unreadable("ioctl: permission denied".into()),
+        );
+        unread.default = Some(SettingValue::Uint(450_000));
+
+        let mut read = Setting::info("tdp", "TDP", SettingValue::Uint(250));
+        read.default = Some(SettingValue::Uint(200));
+
+        let snap = snap_with(vec![unread, read]);
+        let report = deviation_report(&snap);
+        assert_eq!(report.deviations.len(), 1, "only the read setting deviates");
+        assert_eq!(report.deviations[0].setting_id, "tdp");
+        assert_eq!(report.coverage.settings, 2);
+        assert_eq!(report.coverage.comparable, 1);
+        assert_eq!(report.coverage.unchecked(), 1);
     }
 
     #[test]

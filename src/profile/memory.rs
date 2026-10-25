@@ -52,29 +52,33 @@ impl ProfileProvider for MemoryProfileProvider {
             }
         };
         for dimm in monitor.populated_dimms() {
-            let label = format!(
-                "{} — {} {} ({} {:?})",
-                dimm.locator,
-                if dimm.manufacturer.is_empty() {
-                    "Unknown"
-                } else {
-                    &dimm.manufacturer
-                },
-                if dimm.part_number.is_empty() {
-                    ""
-                } else {
-                    &dimm.part_number
-                },
-                dimm.capacity_gib()
-                    .map_or_else(|| "size not read".to_string(), |g| format!("{g:.2} GiB")),
-                dimm.memory_type,
-            );
+            // Only the manufacturer and part number that were read go in the
+            // label. An empty manufacturer used to print the word "Unknown".
+            let make = [dimm.manufacturer.as_str(), dimm.part_number.as_str()]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let size = dimm
+                .capacity_gib()
+                .map_or_else(|| "size not read".to_string(), |g| format!("{g:.2} GiB"));
+            let label = if make.is_empty() {
+                format!("{} ({} {:?})", dimm.locator, size, dimm.memory_type)
+            } else {
+                format!(
+                    "{} — {} ({} {:?})",
+                    dimm.locator, make, size, dimm.memory_type
+                )
+            };
             let mut g = ProfileGroup::new(
                 Subsystem::Memory,
                 label,
                 "DIMM SPD / configured",
                 "SMBIOS Type 17",
             );
+            // The locator is the stable identity; the label carries SPD fields that can vary.
+            g.key = Some(dimm.locator.clone());
             // macOS reports no bank locator. Only a bank that was read gets a row.
             if !dimm.bank.is_empty() {
                 g.push(Setting::info(
