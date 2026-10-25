@@ -6,12 +6,159 @@
 //!
 //! ## Platform Support
 //!
-//! - **Linux**: `/sys/bus/pci/devices/`, NUMA info from `/sys/devices/system/node/`,
-//!   NVLink via `/sys/bus/pci/devices/<bdf>/nvidia/gpu/nvlink*`
-//! - **Windows / macOS**: PCI topology only
+//! - **Linux**: `/sys/bus/pci/devices/` for the GPUs and their NUMA nodes. NVIDIA
+//!   links are read from NVML (`nvidia` feature): an active NVLink whose far end is
+//!   the other GPU, and NVML's topology level between two GPUs. The sysfs `nvidia`
+//!   directory is present on every NVIDIA GPU, linked or not, so it is not evidence.
+//! - **Windows / macOS**: not read; the scan reports `UnsupportedPlatform`
 
 use crate::error::IronError;
 use serde::{Deserialize, Serialize};
+
+/// A PCI bus address as numbers: domain, bus, device, function.
+///
+/// NVML writes the domain as eight hex digits and sysfs as four, so the two are
+/// compared as numbers, not as strings.
+#[cfg(any(all(target_os = "linux", feature = "nvidia"), test))]
+type Bdf = (u32, u8, u8, u8);
+
+/// Parse `dddd:bb:dd.f` or `dddddddd:bb:dd.f` into its numbers.
+#[cfg(any(all(target_os = "linux", feature = "nvidia"), test))]
+fn parse_bdf(text: &str) -> Option<Bdf> {
+    let mut parts = text.trim().split(':');
+    let domain = u32::from_str_radix(parts.next()?, 16).ok()?;
+    let bus = u8::from_str_radix(parts.next()?, 16).ok()?;
+    let (device, function) = parts.next()?.split_once('.')?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((
+        domain,
+        bus,
+        u8::from_str_radix(device, 16).ok()?,
+        u8::from_str_radix(function, 16).ok()?,
+    ))
+}
+
+/// What NVML reported about pairs of GPUs on this machine.
+///
+/// Keys are positions in the sysfs GPU list, ordered low to high. A pair absent
+/// from both sets was not reported, which is not the same as "no link".
+#[cfg(any(target_os = "linux", test))]
+#[derive(Default)]
+struct NvmlPairFacts {
+    /// Pairs joined by an active NVLink whose remote end is the other GPU.
+    nvlink: std::collections::HashSet<(usize, usize)>,
+    /// NVML's topology level between the pair, as an interconnect type.
+    ancestor: std::collections::HashMap<(usize, usize), GpuInterconnectType>,
+}
+
+/// NVML's `NVML_NVLINK_MAX_LINKS`: the most NVLinks any NVIDIA GPU has.
+#[cfg(all(target_os = "linux", feature = "nvidia"))]
+const NVLINK_MAX_LINKS: u32 = 18;
+
+/// The interconnect class NVML's topology level names.
+///
+/// `Single` and `Multiple` are paths through one or several PCIe switches, which
+/// is what peer-to-peer runs over. `Node` and `HostBridge` go through a host
+/// bridge on one NUMA node, and `System` crosses between CPUs.
+#[cfg(all(target_os = "linux", feature = "nvidia"))]
+fn interconnect_of_topology(
+    level: nvml_wrapper::enum_wrappers::device::TopologyLevel,
+) -> Option<GpuInterconnectType> {
+    use nvml_wrapper::enum_wrappers::device::TopologyLevel;
+    match level {
+        TopologyLevel::Internal => Some(GpuInterconnectType::SameBoard),
+        TopologyLevel::Single | TopologyLevel::Multiple => {
+            Some(GpuInterconnectType::PciePeerToPeer)
+        }
+        TopologyLevel::HostBridge | TopologyLevel::Node => {
+            Some(GpuInterconnectType::PcieThroughHostBridge)
+        }
+        TopologyLevel::System => Some(GpuInterconnectType::PcieThroughCpu),
+    }
+}
+
+/// Read NVLink state and topology between the NVIDIA GPUs in `gpus`, from NVML.
+///
+/// `None` when NVML did not start (no driver, or the library is absent), which
+/// leaves every NVIDIA pair unreported. A GPU that NVML lists but sysfs does not
+/// is skipped, since it has no position in `gpus`.
+#[cfg(all(target_os = "linux", feature = "nvidia"))]
+fn read_nvml_pairs(gpus: &[GpuTopologyNode]) -> Option<NvmlPairFacts> {
+    let nvml = nvml_wrapper::Nvml::init().ok()?;
+    let count = nvml.device_count().ok()?;
+
+    let position: std::collections::HashMap<Bdf, usize> = gpus
+        .iter()
+        .enumerate()
+        .filter_map(|(i, gpu)| Some((parse_bdf(&gpu.bdf)?, i)))
+        .collect();
+
+    // (position in `gpus`, NVML index) for each GPU both readers know.
+    let mut indexed: Vec<(usize, u32)> = Vec::new();
+    for index in 0..count {
+        let Ok(device) = nvml.device_by_index(index) else {
+            continue;
+        };
+        let Ok(pci) = device.pci_info() else {
+            continue;
+        };
+        if let Some(&pos) = parse_bdf(&pci.bus_id).and_then(|key| position.get(&key)) {
+            indexed.push((pos, index));
+        }
+    }
+
+    let mut facts = NvmlPairFacts::default();
+    for &(pos, index) in &indexed {
+        let Ok(device) = nvml.device_by_index(index) else {
+            continue;
+        };
+        for link_index in 0..NVLINK_MAX_LINKS {
+            let link = device.link_wrapper_for(link_index);
+            // An error here is a link that does not exist on this GPU, or one
+            // NVML cannot say is up. Neither is a link we can name.
+            if !matches!(link.is_active(), Ok(true)) {
+                continue;
+            }
+            let Ok(remote) = link.remote_pci_info() else {
+                continue;
+            };
+            // Only a remote end that is one of the listed GPUs makes a pair. An
+            // NVSwitch or a GPU sysfs did not list is not a GPU-to-GPU link here.
+            if let Some(&other) = parse_bdf(&remote.bus_id).and_then(|key| position.get(&key)) {
+                if other != pos {
+                    facts.nvlink.insert((pos.min(other), pos.max(other)));
+                }
+            }
+        }
+    }
+
+    for (x, &(pos_a, index_a)) in indexed.iter().enumerate() {
+        for &(pos_b, index_b) in &indexed[x + 1..] {
+            let (Ok(a), Ok(b)) = (nvml.device_by_index(index_a), nvml.device_by_index(index_b))
+            else {
+                continue;
+            };
+            let Ok(level) = a.topology_common_ancestor(b) else {
+                continue;
+            };
+            if let Some(kind) = interconnect_of_topology(level) {
+                facts
+                    .ancestor
+                    .insert((pos_a.min(pos_b), pos_a.max(pos_b)), kind);
+            }
+        }
+    }
+
+    Some(facts)
+}
+
+/// Without the `nvidia` feature NVML is not read, so no NVIDIA pair is reported.
+#[cfg(all(target_os = "linux", not(feature = "nvidia")))]
+fn read_nvml_pairs(_gpus: &[GpuTopologyNode]) -> Option<NvmlPairFacts> {
+    None
+}
 
 /// GPU interconnect type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,10 +412,12 @@ impl GpuTopologyMonitor {
         }
 
         // Build links
+        let nvml_pairs = read_nvml_pairs(&gpus);
         let mut links = Vec::new();
         for i in 0..gpus.len() {
             for j in (i + 1)..gpus.len() {
-                let link_type = Self::detect_link_type(&gpus[i], &gpus[j]);
+                let link_type =
+                    Self::detect_link_type(&gpus[i], &gpus[j], (i, j), nvml_pairs.as_ref());
                 let (num_links, bw_per_link) = Self::link_bandwidth(&link_type, &gpus[i], &gpus[j]);
 
                 links.push(GpuLink {
@@ -302,11 +451,15 @@ impl GpuTopologyMonitor {
             None
         };
 
+        // "No NVLink" is a finding only when NVML answered. Without it an NVIDIA
+        // pair's link is unknown, and the recommendation would rest on nothing.
+        let interconnect_read = nvml_pairs.is_some() || gpus.iter().all(|g| g.vendor != "nvidia");
+
         let mut recs = Vec::new();
         if gpu_count > 1 && numa_nodes.len() > 1 {
             recs.push("GPUs span multiple NUMA nodes — consider NUMA-aware scheduling".into());
         }
-        if gpu_count > 1 && !has_nvlink && !has_xgmi {
+        if gpu_count > 1 && !has_nvlink && !has_xgmi && interconnect_read {
             recs.push("No high-bandwidth GPU interconnect (NVLink/xGMI) — GPU communication will use PCIe".into());
         }
 
@@ -330,24 +483,37 @@ impl GpuTopologyMonitor {
         parse_link(&speed_str, &width_str)
     }
 
-    #[cfg(target_os = "linux")]
-    fn detect_link_type(gpu_a: &GpuTopologyNode, gpu_b: &GpuTopologyNode) -> GpuInterconnectType {
-        // Check for NVLink (both NVIDIA on same NUMA node with NVLink sysfs entries)
-        if gpu_a.vendor == "nvidia" && gpu_b.vendor == "nvidia" {
-            let nvlink_path = format!("/sys/bus/pci/devices/{}/nvidia", gpu_a.bdf);
-            if std::path::Path::new(&nvlink_path).exists() {
-                return GpuInterconnectType::NvLink;
-            }
+    /// The interconnect between two GPUs, from what was read.
+    ///
+    /// NVLink is claimed only when NVML reports an active link whose far end is
+    /// the other GPU. Peer-to-peer and host-bridge paths come from NVML's topology
+    /// level. Without that, a pair on one NUMA node is `Unknown`: it used to be
+    /// `PciePeerToPeer` on the strength of sharing a node, which is not a read of
+    /// peer access. Two different NUMA nodes do mean the traffic crosses a CPU,
+    /// and that is kept, since both nodes were read.
+    #[cfg(any(target_os = "linux", test))]
+    fn detect_link_type(
+        gpu_a: &GpuTopologyNode,
+        gpu_b: &GpuTopologyNode,
+        pair: (usize, usize),
+        nvml: Option<&NvmlPairFacts>,
+    ) -> GpuInterconnectType {
+        // `pair` is already ordered low to high, as the caller builds it.
+        if nvml.is_some_and(|facts| facts.nvlink.contains(&pair)) {
+            return GpuInterconnectType::NvLink;
         }
 
         // Both nodes must have been read: an unread node is not the same as
         // another unread node.
         let numa_pair = (gpu_a.numa_node, gpu_b.numa_node);
-        let same_numa = matches!(numa_pair, (Some(a), Some(b)) if a == b);
         let different_numa = matches!(numa_pair, (Some(a), Some(b)) if a != b);
 
         // Check for xGMI (both AMD)
-        if gpu_a.vendor == "amd" && gpu_b.vendor == "amd" && same_numa {
+        #[cfg(target_os = "linux")]
+        if gpu_a.vendor == "amd"
+            && gpu_b.vendor == "amd"
+            && matches!(numa_pair, (Some(a), Some(b)) if a == b)
+        {
             // AMD GPUs on same NUMA node may have xGMI
             let xgmi_path = format!("/sys/bus/pci/devices/{}/xgmi_hive_info", gpu_a.bdf);
             if std::path::Path::new(&xgmi_path).exists() {
@@ -355,11 +521,11 @@ impl GpuTopologyMonitor {
             }
         }
 
-        // PCIe topology heuristics
-        if same_numa {
-            // Same root complex access likely
-            GpuInterconnectType::PciePeerToPeer
-        } else if different_numa {
+        if let Some(kind) = nvml.and_then(|facts| facts.ancestor.get(&pair)) {
+            return *kind;
+        }
+
+        if different_numa {
             GpuInterconnectType::PcieThroughCpu
         } else {
             GpuInterconnectType::Unknown
@@ -618,6 +784,86 @@ mod tests {
         let (generation, width, _) = parse_link("8.0 GT/s PCIe", "x0");
         assert_eq!(generation, Some(3));
         assert_eq!(pcie_bandwidth(generation, width), Some(0.0));
+    }
+
+    fn gpu(index: u32, vendor: &str, numa: Option<u32>) -> GpuTopologyNode {
+        GpuTopologyNode {
+            bdf: format!("0000:{:02x}:00.0", index + 1),
+            index,
+            name: format!("GPU{index}"),
+            vendor: vendor.into(),
+            numa_node: numa,
+            pcie_gen: None,
+            pcie_width: None,
+            pcie_speed_gts: None,
+            pcie_bandwidth_gbs: None,
+            iommu_group: None,
+            driver: String::new(),
+        }
+    }
+
+    #[test]
+    fn nvml_and_sysfs_addresses_compare_equal() {
+        // NVML writes an eight-digit domain; sysfs writes four.
+        assert_eq!(parse_bdf("00000000:01:00.0"), parse_bdf("0000:01:00.0"));
+        assert_eq!(parse_bdf("0000:41:00.0"), Some((0, 0x41, 0, 0)));
+        assert_eq!(parse_bdf("0000:41:00"), None);
+    }
+
+    #[test]
+    fn nvidia_pair_on_one_numa_node_is_unknown_without_nvml() {
+        // Sharing a NUMA node is not a read of peer access. This used to be
+        // reported as PCIe peer-to-peer.
+        let (a, b) = (gpu(0, "nvidia", Some(0)), gpu(1, "nvidia", Some(0)));
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &b, (0, 1), None),
+            GpuInterconnectType::Unknown
+        );
+    }
+
+    #[test]
+    fn nvlink_needs_an_active_link_reported_by_nvml() {
+        let (a, b) = (gpu(0, "nvidia", Some(0)), gpu(1, "nvidia", Some(0)));
+        let mut facts = NvmlPairFacts::default();
+        facts.nvlink.insert((0, 1));
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &b, (0, 1), Some(&facts)),
+            GpuInterconnectType::NvLink
+        );
+        // NVML read the pair and found no link: not NvLink, and not a guess either.
+        let empty = NvmlPairFacts::default();
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &b, (0, 1), Some(&empty)),
+            GpuInterconnectType::Unknown
+        );
+    }
+
+    #[test]
+    fn nvml_topology_level_names_the_path_between_gpus() {
+        let (a, b) = (gpu(0, "nvidia", Some(0)), gpu(1, "nvidia", Some(0)));
+        let mut facts = NvmlPairFacts::default();
+        facts
+            .ancestor
+            .insert((0, 1), GpuInterconnectType::PciePeerToPeer);
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &b, (0, 1), Some(&facts)),
+            GpuInterconnectType::PciePeerToPeer
+        );
+    }
+
+    #[test]
+    fn different_numa_nodes_still_cross_the_cpu() {
+        let (a, b) = (gpu(0, "nvidia", Some(0)), gpu(1, "nvidia", Some(1)));
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &b, (0, 1), None),
+            GpuInterconnectType::PcieThroughCpu
+        );
+        // A node that was not read settles nothing.
+        let c = gpu(2, "nvidia", None);
+        assert_eq!(
+            GpuTopologyMonitor::detect_link_type(&a, &c, (0, 2), None),
+            GpuInterconnectType::Unknown
+        );
     }
 
     #[test]

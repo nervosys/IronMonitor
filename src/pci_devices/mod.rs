@@ -14,7 +14,7 @@
 //! let monitor = PciDeviceMonitor::new().unwrap();
 //! for dev in monitor.devices() {
 //!     println!("[{}] {} {} (driver: {})",
-//!         dev.address, dev.vendor_name, dev.device_name, dev.driver);
+//!         dev.address.as_deref().unwrap_or("no address"), dev.vendor_name, dev.device_name, dev.driver);
 //! }
 //! println!("GPU devices: {}", monitor.devices_by_class(PciClass::DisplayController).len());
 //! ```
@@ -111,11 +111,33 @@ fn pcie_generation_of(rate_gts: f64) -> Option<u8> {
     .map(|(_, generation)| generation)
 }
 
+/// The PCI base class byte from a device's hardware IDs, read from the `CC_`
+/// entry (`CC_030000` gives `0x03`).
+///
+/// The IDs arrive as the registry's multi-string, joined by newlines. A `CC_`
+/// entry whose first two digits are not hex is not a class, and gives `None`.
+#[cfg(any(target_os = "windows", test))]
+fn base_class_of_hardware_ids(ids: &str) -> Option<u8> {
+    ids.lines().find_map(|line| {
+        let (_, class) = line.trim().rsplit_once("CC_")?;
+        let hex = class.get(..2)?;
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        u8::from_str_radix(hex, 16).ok()
+    })
+}
+
 /// Information about a single PCI device
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PciDeviceInfo {
-    /// BDF address (e.g., "0000:00:1f.3")
-    pub address: String,
+    /// BDF address (e.g., "0000:00:1f.3"), `None` where the platform records no
+    /// bus location for the device.
+    ///
+    /// On Windows that is a device with no `LocationInformation` in the registry.
+    /// The PnP instance path is not an address, so it is not put here. It used to
+    /// be, and then became a `pci.<address>` id segment.
+    pub address: Option<String>,
     /// Vendor ID (hex, e.g., "8086")
     pub vendor_id: String,
     /// Device ID (hex, e.g., "a170")
@@ -124,10 +146,15 @@ pub struct PciDeviceInfo {
     pub subsystem_vendor_id: Option<String>,
     /// Subsystem device ID, `None` where the platform does not report one
     pub subsystem_device_id: Option<String>,
-    /// PCI class code (2-digit hex)
-    pub class_code: String,
-    /// Decoded device class
-    pub class: PciClass,
+    /// PCI base class code (2-digit hex), `None` where it was not read.
+    ///
+    /// Linux reads it from `class`. Windows reads it from the `CC_` entry in the
+    /// device's hardware IDs. macOS does not read it.
+    pub class_code: Option<String>,
+    /// Decoded device class, `None` where the class was not read. It used to be
+    /// `Other(0xff)` when a device's name matched none of a list of words, and
+    /// Linux used `Unclassified` for a `class` file it could not read.
+    pub class: Option<PciClass>,
     /// Vendor name (human readable)
     pub vendor_name: String,
     /// Device name (human readable)
@@ -228,7 +255,10 @@ impl PciDeviceMonitor {
 
     /// Get devices by class.
     pub fn devices_by_class(&self, class: PciClass) -> Vec<&PciDeviceInfo> {
-        self.devices.iter().filter(|d| d.class == class).collect()
+        self.devices
+            .iter()
+            .filter(|d| d.class.as_ref() == Some(&class))
+            .collect()
     }
 
     /// Get devices by vendor ID.
@@ -314,14 +344,15 @@ impl PciDeviceMonitor {
                 Self::present(Self::read_hex_id(&base.join("subsystem_device")));
             let revision = Self::read_hex_id(&base.join("revision"));
 
-            let class_hex = Self::read_trimmed(&base.join("class"));
-            let class_byte = u8::from_str_radix(
-                class_hex.trim_start_matches("0x").get(..2).unwrap_or("00"),
-                16,
-            )
-            .unwrap_or(0);
-            let class = Self::classify_pci(class_byte);
-            let class_code = format!("{:02x}", class_byte);
+            // The first byte of `class` (0x030000 is display, 03). An absent or
+            // unparseable file is no class at all: it used to read as 00,
+            // Unclassified, which is a class the device may not have.
+            let class_byte = Self::read_trimmed(&base.join("class"))
+                .trim_start_matches("0x")
+                .get(..2)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            let class = class_byte.map(Self::classify_pci);
+            let class_code = class_byte.map(|b| format!("{:02x}", b));
 
             // Driver
             let driver = std::fs::read_link(base.join("driver"))
@@ -386,7 +417,7 @@ impl PciDeviceMonitor {
             let (vendor_name, device_name) = Self::lookup_pci_names(&vendor_id, &device_id);
 
             self.devices.push(PciDeviceInfo {
-                address,
+                address: Some(address),
                 vendor_id,
                 device_id,
                 subsystem_vendor_id,
@@ -496,23 +527,26 @@ impl PciDeviceMonitor {
             let (subsystem_vendor_id, subsystem_device_id) =
                 split_subsys_field(&Self::extract_pnp_field(pnp_id, "SUBSYS_"));
 
-            // Infer class from name
-            let class = Self::infer_class_from_name(&name);
+            // The PCI base class, from the register the device's hardware IDs
+            // carry. Not inferred from the device's name.
+            let class_byte = Self::registry_class_code(pnp_id);
 
             // The PnP id is a device-instance path, not an address, and
             // its tail is a volatile instance id — unusable as a stable
             // key. The registry holds the real bus/device/function and
-            // the bound driver, both readable unelevated.
+            // the bound driver, both readable unelevated. A device with no
+            // recorded location has no address, and is not given the instance
+            // path in its place.
             let (bdf, service) = Self::registry_location_and_service(pnp_id);
 
             self.devices.push(PciDeviceInfo {
-                address: bdf.unwrap_or_else(|| pnp_id.to_string()),
+                address: bdf,
                 vendor_id,
                 device_id,
                 subsystem_vendor_id,
                 subsystem_device_id,
-                class_code: String::new(),
-                class,
+                class_code: class_byte.map(|b| format!("{b:02x}")),
+                class: class_byte.map(Self::classify_pci),
                 vendor_name,
                 device_name: name,
                 driver: service.unwrap_or_default(),
@@ -580,6 +614,28 @@ impl PciDeviceMonitor {
             .filter(|s| !s.trim().is_empty());
 
         (bdf, service)
+    }
+
+    /// The PCI base class of one PnP device, from its hardware IDs.
+    ///
+    /// Windows writes a hardware ID per PCI device that carries the class
+    /// register, such as `PCI\VEN_10DE&DEV_2203&CC_030000`. `03` is the base
+    /// class, so this is the register itself and needs no map from a Windows
+    /// setup-class name, which is not one-to-one with PCI classes. `None` when
+    /// the device has no `CC_` entry, or the key cannot be read.
+    #[cfg(target_os = "windows")]
+    fn registry_class_code(pnp_id: &str) -> Option<u8> {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        if pnp_id.is_empty() {
+            return None;
+        }
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let path = format!(r"SYSTEM\CurrentControlSet\Enum\{pnp_id}");
+        let key = hklm.open_subkey_with_flags(&path, KEY_READ).ok()?;
+        let ids: String = key.get_value("HardwareID").ok()?;
+        base_class_of_hardware_ids(&ids)
     }
 
     /// PCIe link state for one device, from the device node property store.
@@ -732,48 +788,6 @@ impl PciDeviceMonitor {
             .unwrap_or_default()
     }
 
-    #[cfg(target_os = "windows")]
-    fn infer_class_from_name(name: &str) -> PciClass {
-        let lower = name.to_lowercase();
-        if lower.contains("display")
-            || lower.contains("video")
-            || lower.contains("graphics")
-            || lower.contains("gpu")
-            || lower.contains("vga")
-        {
-            PciClass::DisplayController
-        } else if lower.contains("ethernet")
-            || lower.contains("network")
-            || lower.contains("wi-fi")
-            || lower.contains("wifi")
-        {
-            PciClass::NetworkController
-        } else if lower.contains("storage")
-            || lower.contains("sata")
-            || lower.contains("ahci")
-            || lower.contains("nvme")
-            || lower.contains("raid")
-        {
-            PciClass::MassStorage
-        } else if lower.contains("audio") || lower.contains("sound") || lower.contains("multimedia")
-        {
-            PciClass::MultimediaController
-        } else if lower.contains("usb") || lower.contains("xhci") || lower.contains("smbus") {
-            PciClass::SerialBusController
-        } else if lower.contains("bridge") || lower.contains("pci-to-pci") || lower.contains("host")
-        {
-            PciClass::Bridge
-        } else if lower.contains("bluetooth") || lower.contains("wireless") {
-            PciClass::WirelessController
-        } else if lower.contains("encryption") || lower.contains("tpm") {
-            PciClass::EncryptionController
-        } else if lower.contains("signal") || lower.contains("sensor") {
-            PciClass::SignalProcessing
-        } else {
-            PciClass::Other(0xff)
-        }
-    }
-
     #[cfg(target_os = "macos")]
     fn refresh_macos(&mut self) -> Result<(), IronError> {
         let output = std::process::Command::new("system_profiler")
@@ -827,16 +841,16 @@ impl PciDeviceMonitor {
                     None
                 };
 
-                let class = Self::infer_class_from_name_mac(&name);
-
                 self.devices.push(PciDeviceInfo {
-                    address: slot,
+                    address: Some(slot),
                     vendor_id,
                     device_id,
                     subsystem_vendor_id: None,
                     subsystem_device_id: None,
-                    class_code: String::new(),
-                    class,
+                    // system_profiler gives no class register. The class used to
+                    // be inferred from the device's name, which is not a read.
+                    class_code: None,
+                    class: None,
                     vendor_name: String::new(),
                     device_name: name,
                     driver,
@@ -853,27 +867,6 @@ impl PciDeviceMonitor {
             }
         }
         Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn infer_class_from_name_mac(name: &str) -> PciClass {
-        let lower = name.to_lowercase();
-        if lower.contains("gpu") || lower.contains("display") || lower.contains("graphics") {
-            PciClass::DisplayController
-        } else if lower.contains("ethernet") || lower.contains("wifi") || lower.contains("network")
-        {
-            PciClass::NetworkController
-        } else if lower.contains("nvme") || lower.contains("ahci") || lower.contains("storage") {
-            PciClass::MassStorage
-        } else if lower.contains("audio") || lower.contains("thunderbolt") {
-            PciClass::MultimediaController
-        } else if lower.contains("usb") || lower.contains("xhci") {
-            PciClass::SerialBusController
-        } else if lower.contains("bridge") {
-            PciClass::Bridge
-        } else {
-            PciClass::Other(0xff)
-        }
     }
 }
 
@@ -1129,16 +1122,42 @@ mod tests {
         );
     }
 
+    /// Captured from a Windows PnP device's `HardwareID` value on the development
+    /// machine: an NVIDIA GPU, whose `CC_030000` is display (03), subclass 00.
+    #[test]
+    fn base_class_is_read_from_the_cc_hardware_id() {
+        let ids = "PCI\\VEN_10DE&DEV_2203&SUBSYS_161810DE&REV_A1\n\
+                   PCI\\VEN_10DE&DEV_2203&SUBSYS_161810DE\n\
+                   PCI\\VEN_10DE&DEV_2203&CC_030000\n\
+                   PCI\\VEN_10DE&DEV_2203&CC_0300";
+        assert_eq!(base_class_of_hardware_ids(ids), Some(0x03));
+        assert_eq!(
+            PciDeviceMonitor::classify_pci(0x03),
+            PciClass::DisplayController
+        );
+    }
+
+    #[test]
+    fn a_device_without_a_cc_entry_has_no_read_class() {
+        // No class register in the IDs: no class, not a name-based guess.
+        assert_eq!(
+            base_class_of_hardware_ids("PCI\\VEN_8086&DEV_1234&SUBSYS_00000000"),
+            None
+        );
+        assert_eq!(base_class_of_hardware_ids(""), None);
+        assert_eq!(base_class_of_hardware_ids("PCI\\VEN_8086&CC_zz0000"), None);
+    }
+
     #[test]
     fn test_serialization() {
         let dev = PciDeviceInfo {
-            address: "0000:00:02.0".into(),
+            address: Some("0000:00:02.0".into()),
             vendor_id: "8086".into(),
             device_id: "a780".into(),
             subsystem_vendor_id: Some("1043".into()),
             subsystem_device_id: Some("8877".into()),
-            class_code: "03".into(),
-            class: PciClass::DisplayController,
+            class_code: Some("03".into()),
+            class: Some(PciClass::DisplayController),
             vendor_name: "Intel Corporation".into(),
             device_name: "UHD Graphics".into(),
             driver: "i915".into(),

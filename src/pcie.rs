@@ -207,12 +207,14 @@ impl std::fmt::Display for PcieDeviceClass {
 pub struct PcieDevice {
     /// Bus:Device.Function address (e.g. "0000:01:00.0")
     pub bdf: String,
-    /// Vendor ID (e.g. 0x10DE for NVIDIA)
-    pub vendor_id: u16,
-    /// Device ID
-    pub device_id: u16,
-    /// Device class
-    pub device_class: PcieDeviceClass,
+    /// Vendor ID (e.g. 0x10DE for NVIDIA), `None` when sysfs did not give one.
+    /// It used to default to 0, which is no vendor.
+    pub vendor_id: Option<u16>,
+    /// Device ID, `None` when sysfs did not give one.
+    pub device_id: Option<u16>,
+    /// Device class, `None` when sysfs did not give one. It used to default to
+    /// class 0, which made an unreadable device a `Other (0x000000)`.
+    pub device_class: Option<PcieDeviceClass>,
     /// Device name (from sysfs or PCI IDs)
     pub name: String,
     /// Vendor name
@@ -290,9 +292,9 @@ impl PcieDevice {
         }
     }
 
-    /// Whether this is a GPU device
+    /// Whether this is a GPU device. An unread class is not a GPU.
     pub fn is_gpu(&self) -> bool {
-        self.device_class.is_gpu()
+        self.device_class.is_some_and(|class| class.is_gpu())
     }
 }
 
@@ -360,12 +362,12 @@ impl PcieMonitor {
             let path = entry.path();
             let bdf = entry.file_name().to_string_lossy().to_string();
 
-            // Read vendor and device IDs
-            let vendor_id = Self::read_hex_file(&path.join("vendor")).unwrap_or(0) as u16;
-            let device_id = Self::read_hex_file(&path.join("device")).unwrap_or(0) as u16;
-            let class_code = Self::read_hex_file(&path.join("class")).unwrap_or(0) as u32;
-
-            let device_class = PcieDeviceClass::from_class_code(class_code);
+            // Vendor, device and class. An unreadable file is absent, not 0: 0 is
+            // no vendor and PCI class 0, and both were reported as if read.
+            let vendor_id = Self::read_hex_file(&path.join("vendor")).map(|v| v as u16);
+            let device_id = Self::read_hex_file(&path.join("device")).map(|v| v as u16);
+            let device_class = Self::read_hex_file(&path.join("class"))
+                .map(|code| PcieDeviceClass::from_class_code(code as u32));
 
             // Read link information
             let current_speed_str =
@@ -386,9 +388,10 @@ impl PcieMonitor {
             let max_link_width = max_width_str.trim().parse::<u8>().ok();
 
             // Skip pure bridges with no live link (no width, or a width of 0).
-            if !matches!(current_link_width, Some(w) if w > 0) && !device_class.is_gpu() {
+            let is_gpu = device_class.is_some_and(|class| class.is_gpu());
+            if !matches!(current_link_width, Some(w) if w > 0) && !is_gpu {
                 // Still include bridges and endpoint devices
-                if matches!(device_class, PcieDeviceClass::Bridge) {
+                if matches!(device_class, Some(PcieDeviceClass::Bridge)) {
                     // skip pure bridges
                     continue;
                 }
@@ -428,24 +431,31 @@ impl PcieMonitor {
 
             // Vendor name lookup
             let vendor_name = match vendor_id {
-                0x10DE => "NVIDIA".to_string(),
-                0x1002 => "AMD".to_string(),
-                0x8086 => "Intel".to_string(),
-                0x14E4 => "Broadcom".to_string(),
-                0x1B73 => "Fresco Logic".to_string(),
-                0x1912 => "Renesas".to_string(),
-                0x1B21 => "ASMedia".to_string(),
-                0x1B4B => "Marvell".to_string(),
-                0x15B3 => "Mellanox".to_string(),
-                0x144D => "Samsung".to_string(),
-                0x1C5C | 0x1E0F => "SK Hynix".to_string(),
-                0x1179 | 0xC0A9 => "Toshiba / Kioxia".to_string(),
-                0x126F => "Silicon Motion".to_string(),
-                0x1987 | 0x1E4B => "Phison".to_string(),
-                _ => format!("{:04x}", vendor_id),
+                None => "unknown".to_string(),
+                Some(id) => match id {
+                    0x10DE => "NVIDIA".to_string(),
+                    0x1002 => "AMD".to_string(),
+                    0x8086 => "Intel".to_string(),
+                    0x14E4 => "Broadcom".to_string(),
+                    0x1B73 => "Fresco Logic".to_string(),
+                    0x1912 => "Renesas".to_string(),
+                    0x1B21 => "ASMedia".to_string(),
+                    0x1B4B => "Marvell".to_string(),
+                    0x15B3 => "Mellanox".to_string(),
+                    0x144D => "Samsung".to_string(),
+                    0x1C5C | 0x1E0F => "SK Hynix".to_string(),
+                    0x1179 | 0xC0A9 => "Toshiba / Kioxia".to_string(),
+                    0x126F => "Silicon Motion".to_string(),
+                    0x1987 | 0x1E4B => "Phison".to_string(),
+                    _ => format!("{:04x}", id),
+                },
             };
 
-            let name = format!("{} {} [{}]", vendor_name, device_class, bdf);
+            let class_label = match device_class {
+                Some(class) => class.to_string(),
+                None => "unknown class".to_string(),
+            };
+            let name = format!("{} {} [{}]", vendor_name, class_label, bdf);
 
             devices.push(PcieDevice {
                 bdf,
@@ -576,9 +586,9 @@ mod tests {
     fn test_bandwidth_calculation() {
         let dev = PcieDevice {
             bdf: "0000:01:00.0".into(),
-            vendor_id: 0x10DE,
-            device_id: 0x2684,
-            device_class: PcieDeviceClass::VgaCompatible,
+            vendor_id: Some(0x10DE),
+            device_id: Some(0x2684),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
             name: "NVIDIA RTX 4090".into(),
             vendor_name: "NVIDIA".into(),
             numa_node: Some(0),
@@ -600,9 +610,9 @@ mod tests {
     fn test_downgraded_detection() {
         let dev = PcieDevice {
             bdf: "0000:01:00.0".into(),
-            vendor_id: 0x10DE,
-            device_id: 0x2684,
-            device_class: PcieDeviceClass::VgaCompatible,
+            vendor_id: Some(0x10DE),
+            device_id: Some(0x2684),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
             name: "Test GPU".into(),
             vendor_name: "NVIDIA".into(),
             numa_node: Some(0),
@@ -629,9 +639,9 @@ mod tests {
     fn test_bandwidth_summary() {
         let devices = vec![PcieDevice {
             bdf: "0000:01:00.0".into(),
-            vendor_id: 0x10DE,
-            device_id: 0x2684,
-            device_class: PcieDeviceClass::VgaCompatible,
+            vendor_id: Some(0x10DE),
+            device_id: Some(0x2684),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
             name: "GPU".into(),
             vendor_name: "NVIDIA".into(),
             numa_node: Some(0),
@@ -657,9 +667,9 @@ mod tests {
     fn an_unread_width_is_absent_and_settles_nothing_alone() {
         let mut dev = PcieDevice {
             bdf: "0000:01:00.0".into(),
-            vendor_id: 0x10de,
-            device_id: 0x2684,
-            device_class: PcieDeviceClass::VgaCompatible,
+            vendor_id: Some(0x10de),
+            device_id: Some(0x2684),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
             name: "Unread width".into(),
             vendor_name: "NVIDIA".into(),
             numa_node: None,
@@ -689,9 +699,9 @@ mod tests {
 
         let dev = PcieDevice {
             bdf: "0000:02:00.0".into(),
-            vendor_id: 0x8086,
-            device_id: 0x1234,
-            device_class: PcieDeviceClass::VgaCompatible,
+            vendor_id: Some(0x8086),
+            device_id: Some(0x1234),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
             name: "Unreadable link".into(),
             vendor_name: "Intel".into(),
             numa_node: Some(0),

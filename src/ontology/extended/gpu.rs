@@ -153,8 +153,9 @@ const PCI_SUBSYSTEM_WHY: &str = concat!(
     "devices with a subsystem"
 );
 const PCI_CLASS_CODE_WHY: &str = concat!(
-    "this platform's device listing reports no PCI class code for the device. ",
-    "Windows and macOS give only the decoded class, which pci.<address>.class holds"
+    "the class code was not read for this device. Linux reads it from the class file and ",
+    "Windows from the CC_ entry of its hardware IDs. macOS gives only the decoded class, ",
+    "which pci.<address>.class holds"
 );
 const PCI_REVISION_WHY: &str = concat!(
     "the device listing reported no revision for this device. Windows and macOS ",
@@ -553,7 +554,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Identifier),
         P::Derived,
         true,
-        "The interconnect between two GPUs: nvlink, xgmi, pcie_peer_to_peer, pcie_through_cpu, pcie_through_host_bridge or same_board. Classified from sysfs markers and NUMA placement.",
+        "The interconnect between two GPUs: nvlink, xgmi, pcie_peer_to_peer, pcie_through_cpu, pcie_through_host_bridge or same_board. NVIDIA pairs are read from NVML (an active NVLink, or NVML's topology level); other pairs from sysfs NUMA placement. Unavailable where no reader reports the pair.",
     )
     .derived(&["gpu.{n}.topology.numa_node", "gpu.{n}.vendor"]));
     add(Entity::new(
@@ -1200,7 +1201,11 @@ fn resolve_pci_extras(out: &mut Vec<Reading>) {
         return;
     };
     for dev in monitor.devices() {
-        let base = format!("pci.{}", id_segment(&dev.address));
+        // A device with no bus address is not keyed; `resolve_pci` announces it.
+        let Some(address) = dev.address.as_deref() else {
+            continue;
+        };
+        let base = format!("pci.{}", id_segment(address));
         push_opt(
             out,
             format!("{base}.vendor_id"),
@@ -1238,7 +1243,7 @@ fn resolve_pci_extras(out: &mut Vec<Reading>) {
         push_opt(
             out,
             format!("{base}.class_code"),
-            nonempty(&dev.class_code),
+            dev.class_code.as_deref().and_then(nonempty),
             Some(U::Identifier),
             PCI_CLASS_CODE_WHY,
         );

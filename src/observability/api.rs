@@ -1377,7 +1377,11 @@ fn pcie_link_of(bus_id: &str) -> (Option<u8>, Option<u8>) {
             let link = monitor
                 .devices()
                 .iter()
-                .find(|d| same_pci_address(&d.address, bus_id))
+                .find(|d| {
+                    d.address
+                        .as_deref()
+                        .is_some_and(|a| same_pci_address(a, bus_id))
+                })
                 .and_then(|d| d.link_info.as_ref());
             if let Some(link) = link {
                 // Width is rendered "x16"; the number after the x is the lane count.

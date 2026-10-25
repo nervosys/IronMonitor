@@ -2119,7 +2119,18 @@ impl Ontology {
             Some(U::Identifier),
             P::Measured,
             true,
-            "Decoded PCI class — what kind of device this is.",
+            "Decoded PCI class — what kind of device this is. Absent, with its reason, \
+             where the platform gave no class register.",
+        ));
+        add(Entity::new(
+            "pci.<unlocated>",
+            D::Pci,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when some PCI devices have no bus address, so they cannot be keyed \
+             as pci.<address>. Carries the count and why.",
         ));
         add(Entity::new(
             "pci.{addr}.driver",

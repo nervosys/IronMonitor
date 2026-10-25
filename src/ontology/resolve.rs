@@ -1108,15 +1108,29 @@ fn resolve_pci(out: &mut Vec<Reading>) {
         return;
     }
 
+    let mut unlocated = 0usize;
     for dev in monitor.devices() {
-        let base = format!("pci.{}", id_segment(&dev.address));
+        // No bus address means no `pci.<address>` key. Such a device is counted
+        // under `pci.<unlocated>` below, not published under a made-up one.
+        let Some(address) = dev.address.as_deref() else {
+            unlocated += 1;
+            continue;
+        };
+        let base = format!("pci.{}", id_segment(address));
         push_text(out, format!("{base}.vendor"), &dev.vendor_name);
         push_text(out, format!("{base}.device"), &dev.device_name);
-        push_id(
-            out,
-            format!("{base}.class"),
-            &format!("{:?}", dev.class).to_lowercase(),
-        );
+        match &dev.class {
+            Some(class) => push_id(
+                out,
+                format!("{base}.class"),
+                &format!("{class:?}").to_lowercase(),
+            ),
+            None => out.push(Reading::unavailable(
+                format!("{base}.class"),
+                Some(Unit::Identifier),
+                PCI_CLASS_UNREAD_WHY,
+            )),
+        }
         push_opt(
             out,
             format!("{base}.driver"),
@@ -1174,7 +1188,31 @@ fn resolve_pci(out: &mut Vec<Reading>) {
             "the platform reports no NUMA affinity for this device",
         );
     }
+
+    // Announced rather than dropped: a machine whose devices lack a bus address
+    // has them, and "no PCI devices" would be the wrong thing to say about it.
+    if unlocated > 0 {
+        out.push(Reading::unavailable(
+            "pci.<unlocated>",
+            None,
+            format!(
+                concat!(
+                    "{} PCI device(s) have no bus address recorded, so they have no ",
+                    "pci.<address> key and are not listed; the platform recorded no bus ",
+                    "location for them"
+                ),
+                unlocated
+            ),
+        ));
+    }
 }
+
+/// Why `pci.<address>.class` is absent: the platform gave no class register.
+const PCI_CLASS_UNREAD_WHY: &str = concat!(
+    "the PCI class was not read for this device. Linux reads it from the class file, ",
+    "Windows from the CC_ entry in the device's hardware IDs, and macOS does not expose ",
+    "a class register"
+);
 
 fn resolve_usb(out: &mut Vec<Reading>) {
     let monitor = match crate::usb::UsbMonitor::new() {
