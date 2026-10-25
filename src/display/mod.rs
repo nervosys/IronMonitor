@@ -28,7 +28,14 @@ pub enum HdrMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayInfo {
     pub id: String,
+    /// The monitor's own name, from its EDID or the platform's display name.
+    /// `None` where neither was read. The connector name (`HDMI-A-1`) used to
+    /// be put here as a fallback; it is in [`Self::connector`] instead.
     pub name: Option<String>,
+    /// The port the display is attached to, as the Linux DRM or xrandr name
+    /// gives it (`eDP-1`, `HDMI-A-1`). `None` where the platform gives none.
+    #[serde(default)]
+    pub connector: Option<String>,
     pub manufacturer: Option<String>,
     pub connection: DisplayConnection,
     /// Whether the platform reports this display as the primary one, or `None`
@@ -470,6 +477,8 @@ impl DisplayMonitor {
             self.displays.push(DisplayInfo {
                 id: wide_to_string(&adapter.DeviceName),
                 name,
+                // The Windows monitor query does not name the port.
+                connector: None,
                 manufacturer: meta.and_then(|m| m.manufacturer.clone()),
                 connection: meta
                     .map(|m| m.connection)
@@ -667,7 +676,8 @@ impl DisplayMonitor {
 
                     self.displays.push(DisplayInfo {
                         id: format!("display{}", idx),
-                        name: mon_name.or(Some(connector.clone())),
+                        name: mon_name,
+                        connector: Some(connector.clone()),
                         manufacturer,
                         connection,
                         // DRM connectors carry no primary flag. This used to be
@@ -678,7 +688,14 @@ impl DisplayMonitor {
                         // The DRM modes file does not always carry a rate, and this
                         // reader never parsed one. None, not zero hertz.
                         refresh_rate: None,
-                        brightness: read_backlight_brightness(),
+                        // The sysfs backlight belongs to the internal panel
+                        // only. It used to be read for every connector, so an
+                        // external monitor reported the laptop's panel level.
+                        brightness: if is_internal_panel(&connector) {
+                            read_backlight_brightness()
+                        } else {
+                            None
+                        },
                         // DRM connector properties carry HDR metadata, which this
                         // reader does not parse. Unknown, not SDR.
                         hdr: None,
@@ -764,7 +781,9 @@ impl DisplayMonitor {
 
                             self.displays.push(DisplayInfo {
                                 id: format!("display{}", idx),
-                                name: Some(conn_name.to_string()),
+                                // xrandr names the port, not the monitor.
+                                name: None,
+                                connector: Some(conn_name.to_string()),
                                 manufacturer: None,
                                 connection,
                                 is_primary: Some(is_primary),
@@ -772,7 +791,11 @@ impl DisplayMonitor {
                                 height: h,
                                 // xrandr's rate is not parsed here.
                                 refresh_rate: None,
-                                brightness: read_backlight_brightness(),
+                                brightness: if is_internal_panel(conn_name) {
+                                    read_backlight_brightness()
+                                } else {
+                                    None
+                                },
                                 // Not read by the xrandr path. See the DRM path.
                                 hdr: None,
                                 hdr_supported: None,
@@ -857,6 +880,7 @@ impl DisplayMonitor {
                                     self.displays.push(DisplayInfo {
                                         id: format!("display{}", idx),
                                         name,
+                                        connector: None,
                                         manufacturer: display
                                             .get("_spdisplays_display-vendor-id")
                                             .and_then(|v| v.as_str())
@@ -976,7 +1000,19 @@ fn parse_edid_basic(edid: &[u8]) -> (Option<String>, Option<String>, Option<u32>
     (name, mfr, phys_w, phys_h)
 }
 
+/// Whether a connector name is an internal panel: the only kind of display a
+/// sysfs backlight can belong to. `eDP`, `LVDS` and `DSI` are the panel ports.
+#[cfg(any(target_os = "linux", test))]
+fn is_internal_panel(connector: &str) -> bool {
+    ["eDP", "LVDS", "DSI"]
+        .iter()
+        .any(|panel| connector.starts_with(panel))
+}
+
 /// Read backlight brightness from sysfs (0.0 - 1.0)
+///
+/// The kernel names backlights by device, not by port, so this reads the first
+/// one. Only an internal panel is given it: see [`is_internal_panel`].
 #[cfg(target_os = "linux")]
 fn read_backlight_brightness() -> Option<f32> {
     use std::fs;
@@ -1065,11 +1101,24 @@ mod tests {
         assert_eq!(macos_bits_per_pixel(&unknown_token), None);
     }
 
+    /// Connector names as `/sys/class/drm` and `xrandr` print them. Only the
+    /// panel ports take the backlight; `DP-1` and `HDMI-A-1` never do.
+    #[test]
+    fn only_internal_panel_connectors_take_the_backlight() {
+        for panel in ["eDP-1", "LVDS-1", "DSI-1"] {
+            assert!(is_internal_panel(panel), "{panel}");
+        }
+        for external in ["HDMI-A-1", "DP-1", "DisplayPort-0", "DVI-D-1", "VGA-1"] {
+            assert!(!is_internal_panel(external), "{external}");
+        }
+    }
+
     #[test]
     fn test_display_aspect_ratio() {
         let display = DisplayInfo {
             id: "test".to_string(),
             name: Some("Test".to_string()),
+            connector: None,
             manufacturer: None,
             connection: DisplayConnection::Hdmi,
             is_primary: Some(true),
@@ -1094,6 +1143,7 @@ mod tests {
         let display = DisplayInfo {
             id: "test".to_string(),
             name: None,
+            connector: None,
             manufacturer: None,
             connection: DisplayConnection::DisplayPort,
             is_primary: Some(false),
@@ -1118,6 +1168,7 @@ mod tests {
         let display = DisplayInfo {
             id: "test".to_string(),
             name: Some("Test Display".to_string()),
+            connector: None,
             manufacturer: Some("Acme".to_string()),
             connection: DisplayConnection::Hdmi,
             is_primary: Some(true),

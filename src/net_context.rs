@@ -48,10 +48,11 @@ pub struct NetworkAdapter {
     pub mac: Option<String>,
     /// MTU in bytes.
     pub mtu: Option<u32>,
-    /// Received and transmitted link rate in bits per second, where the driver
-    /// reports a negotiated one.
-    pub receive_bps: Option<u64>,
-    pub transmit_bps: Option<u64>,
+    /// Negotiated link speed in bits per second, where the OS reports one. This
+    /// is the link's capacity, not traffic on it. It used to be written into
+    /// `receive_bps` and `transmit_bps`, which read as throughput; no rate is
+    /// read here, because a rate needs two samples of a counter.
+    pub link_speed_bps: Option<u64>,
     /// Media type, e.g. `802.3` or `Native 802.11`.
     pub media_type: Option<String>,
     /// Whether the OS calls it virtual (a VPN, a hypervisor switch).
@@ -274,8 +275,10 @@ pub fn parse_windows(
             mtu: json_u64(item, "MtuSize")
                 .filter(|m| *m > 0)
                 .and_then(|m| u32::try_from(m).ok()),
-            receive_bps: rate("ReceiveLinkSpeed"),
-            transmit_bps: rate("TransmitLinkSpeed"),
+            // Both directions must report the same speed, or neither is taken:
+            // one figure would otherwise stand for a link whose two ends differ.
+            link_speed_bps: rate("ReceiveLinkSpeed")
+                .filter(|rx| rate("TransmitLinkSpeed") == Some(*rx)),
             media_type: json_str(item, "MediaType"),
             is_virtual: item.get("Virtual").and_then(|v| v.as_bool()),
             driver: json_str(item, "DriverProvider"),
@@ -430,6 +433,17 @@ pub fn parse_netsh_wlan(text: &str) -> Result<Vec<WifiInterface>, String> {
             "Profile" => wifi.profile = nonempty(value),
             _ => {}
         }
+    }
+    // Output with no `Name` line is not "no Wi-Fi adapter". The labels are
+    // matched in English only, so a localised listing that names no interface
+    // in a key this reader knows used to come back as an empty list, and the
+    // ontology reported that the machine has no Wi-Fi.
+    if interfaces.is_empty() && !text.trim().is_empty() {
+        return Err(concat!(
+            "netsh wlan printed output with no interface this reader recognises ",
+            "(its labels are English only)"
+        )
+        .into());
     }
     Ok(interfaces)
 }
@@ -701,13 +715,16 @@ pub fn parse_ifconfig(text: &str) -> Vec<NetworkAdapter> {
 /// Parse the `default` rows of `netstat -rn`, with `arp -an` for MACs.
 pub fn parse_netstat_defaults(netstat: &str, arp: &str) -> Vec<Gateway> {
     // `? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]`
+    // A row with no `on <device>` is skipped. It used to get an empty device,
+    // which the match below read as "any interface", so its MAC could be
+    // attached to a gateway on an interface it was never seen on.
     let neighbours: Vec<(String, String, String)> = arp
         .lines()
         .filter_map(|line| {
             let ip = line.split('(').nth(1)?.split(')').next()?.to_string();
             let mut words = line.split_whitespace();
             let mac = words.by_ref().skip_while(|w| *w != "at").nth(1)?;
-            let dev = words.skip_while(|w| *w != "on").nth(1).unwrap_or("");
+            let dev = words.skip_while(|w| *w != "on").nth(1)?;
             Some((ip, dev.to_string(), normalize_mac(mac)?))
         })
         .collect();
@@ -726,7 +743,7 @@ pub fn parse_netstat_defaults(netstat: &str, arp: &str) -> Vec<Gateway> {
             let interface = words[3].to_string();
             let mac = neighbours
                 .iter()
-                .find(|(ip, dev, _)| *ip == address && (dev.is_empty() || *dev == interface))
+                .find(|(ip, dev, _)| *ip == address && *dev == interface)
                 .map(|(_, _, mac)| mac.clone());
             Some(Gateway {
                 family: family_of(&address).to_string(),
@@ -897,8 +914,7 @@ pub fn read() -> NetworkContext {
                         .and_then(|s| s.trim().parse::<i64>().ok())
                         .filter(|mbps| *mbps > 0)
                         .map(|mbps| mbps as u64 * 1_000_000);
-                adapter.receive_bps = speed;
-                adapter.transmit_bps = speed;
+                adapter.link_speed_bps = speed;
             }
         }
         let neigh = ip_json(&["-j", "neigh"]).unwrap_or(serde_json::Value::Null);
@@ -1052,6 +1068,80 @@ There is 1 interface on the system:
         assert_eq!(wifi[0].signal_percent, None);
     }
 
+    /// `netsh` labels are English-only. The first fixture names its interface
+    /// under a label this reader does not know, so nothing is recognised: that
+    /// is an error, not an empty list. The label is an assumed localisation,
+    /// not one captured from a German Windows.
+    #[test]
+    fn localised_netsh_output_with_no_known_label_is_an_error_not_no_wifi() {
+        let text = concat!(
+            "Es ist 1 Schnittstelle auf dem System vorhanden:\n\n",
+            "    Schnittstellenname     : WLAN\n",
+            "    Beschreibung           : Intel(R) Wi-Fi 6E AX211 160MHz\n",
+            "    Status                 : verbunden\n",
+            "    SSID                   : HomeNet\n",
+        );
+        assert!(parse_netsh_wlan(text).is_err());
+    }
+
+    /// A German listing whose interface line is still `Name` is read for that
+    /// interface. Its other labels are not English, so they stay unknown. The
+    /// connection state is not inferred from the German `Status` line.
+    #[test]
+    fn localised_netsh_fields_are_unknown_not_guessed() {
+        let text = concat!(
+            "Es ist 1 Schnittstelle auf dem System vorhanden:\n\n",
+            "    Name                   : WLAN\n",
+            "    Beschreibung           : Intel(R) Wi-Fi 6E AX211 160MHz\n",
+            "    Physische Adresse      : a4:6b:b6:12:34:56\n",
+            "    Status                 : verbunden\n",
+            "    SSID                   : HomeNet\n",
+        );
+        let wifi = parse_netsh_wlan(text).unwrap();
+        assert_eq!(wifi.len(), 1);
+        assert_eq!(wifi[0].interface, "WLAN");
+        assert_eq!(wifi[0].connected, None);
+        assert_eq!(wifi[0].state, None);
+        assert_eq!(wifi[0].mac, None);
+        // `SSID` is the same word in German, so it is still read.
+        assert_eq!(wifi[0].ssid.as_deref(), Some("HomeNet"));
+    }
+
+    #[test]
+    fn a_gateway_mac_comes_only_from_the_arp_row_for_its_own_interface() {
+        let netstat = "default 192.168.1.1 UGScg en0\n";
+        let own = "? (192.168.1.1) at f4:92:bf:01:02:03 on en0 ifscope [ethernet]\n";
+        let other = "? (192.168.1.1) at f4:92:bf:01:02:03 on en1 ifscope [ethernet]\n";
+        // A row with no `on <device>` is not attached to any interface.
+        let no_device = "? (192.168.1.1) at f4:92:bf:01:02:03 ifscope [ethernet]\n";
+        assert_eq!(
+            parse_netstat_defaults(netstat, own)[0].mac.as_deref(),
+            Some("f4:92:bf:01:02:03")
+        );
+        assert_eq!(parse_netstat_defaults(netstat, other)[0].mac, None);
+        assert_eq!(parse_netstat_defaults(netstat, no_device)[0].mac, None);
+    }
+
+    /// Windows reports a link speed for each direction. One figure is taken
+    /// only when both agree; a link whose two ends differ has no single speed.
+    #[test]
+    fn link_speed_is_taken_only_when_both_directions_agree() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+            "adapters":[
+                {"Name":"Ethernet","ifIndex":19,"Status":"Up","MtuSize":1500,
+                 "ReceiveLinkSpeed":1000000000,"TransmitLinkSpeed":2500000000},
+                {"Name":"Wi-Fi","ifIndex":3,"Status":"Up","MtuSize":1500,
+                 "ReceiveLinkSpeed":1000000000,"TransmitLinkSpeed":1000000000}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let (adapters, _, _, _) = parse_windows(&json);
+        assert_eq!(adapters[0].link_speed_bps, None);
+        assert_eq!(adapters[1].link_speed_bps, Some(1_000_000_000));
+    }
+
     #[test]
     fn netsh_location_refusal_is_an_error_not_no_wifi() {
         let text = "Network shell commands need location permission to access WLAN information.";
@@ -1084,7 +1174,7 @@ There is 1 interface on the system:
         assert_eq!(adapters.len(), 2);
         let eth = &adapters[0];
         assert_eq!(eth.mac.as_deref(), Some("9c:6b:00:11:22:33"));
-        assert_eq!(eth.receive_bps, Some(2_500_000_000));
+        assert_eq!(eth.link_speed_bps, Some(2_500_000_000));
         assert_eq!(eth.addresses.len(), 2);
         assert_eq!(eth.addresses[1].address, "fe80::1");
         assert_eq!(eth.addresses[1].family, "ipv6");
@@ -1093,7 +1183,7 @@ There is 1 interface on the system:
         // An absent adapter has no address, MTU or link rate, not zeros.
         assert_eq!(adapters[1].mac, None);
         assert_eq!(adapters[1].mtu, None);
-        assert_eq!(adapters[1].receive_bps, None);
+        assert_eq!(adapters[1].link_speed_bps, None);
         assert_eq!(gateways.len(), 1);
         assert_eq!(gateways[0].address, "10.0.0.1");
         assert_eq!(gateways[0].mac.as_deref(), Some("f4:92:bf:01:02:03"));

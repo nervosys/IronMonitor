@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diffs key groups on stable identities and report unread values as their own
   category instead of changes; and unread values are no longer used as
   deviations or stand-in labels.
+- Network and display readers no longer report values they did not read: a
+  Windows `time<1ms` ping reply is no longer 1 ms, localised `netsh wlan` output
+  is an error rather than "no Wi-Fi", the backlight level is read only for
+  internal panels, monitor names are EDID names (connectors move to
+  `connector`), unmatched ARP rows and failed nmap DNS lookups no longer invent
+  results, and link speed is `link_speed_bps` rather than throughput.
 - RAPL: an unread `enabled` attribute is no longer published as a measured
   `true`; a missing powercap tree is an error, not "present with no domains";
   PSys is reported separately instead of being added to the package total; and

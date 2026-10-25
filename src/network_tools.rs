@@ -324,10 +324,17 @@ fn parse_ping_output(output: &str, result: &mut PingResult) -> bool {
         if line_lower.contains("time=") || line_lower.contains("time<") {
             // Extract time value
             if let Some(time_start) = line.find("time=").or_else(|| line.find("time<")) {
-                let time_str = &line[time_start + 5..];
-                if let Some(end) = time_str.find(|c: char| !c.is_ascii_digit() && c != '.') {
-                    if let Ok(time) = time_str[..end].parse::<f64>() {
-                        result.ping_times.push(Some(time));
+                // Windows prints a sub-millisecond reply as `time<1ms`. That is
+                // a bound, not a reading: it used to parse as 1.0 ms. The reply
+                // is recorded with no figure, as the traceroute probes are.
+                if line[time_start..].starts_with("time<") {
+                    result.ping_times.push(None);
+                } else {
+                    let time_str = &line[time_start + 5..];
+                    if let Some(end) = time_str.find(|c: char| !c.is_ascii_digit() && c != '.') {
+                        if let Ok(time) = time_str[..end].parse::<f64>() {
+                            result.ping_times.push(Some(time));
+                        }
                     }
                 }
             }
@@ -963,6 +970,10 @@ pub fn check_connectivity(hosts: &[&str]) -> HashMap<String, Option<bool>> {
 }
 
 /// Network latency test to a host (similar to mtr)
+///
+/// Returns the exact times only. A reply Windows reported as `<1 ms` has no
+/// exact time and is left out, not counted as 1 ms; the list can be shorter
+/// than `count`.
 pub fn latency_test(host: &str, count: u32) -> Result<Vec<f64>> {
     let result = ping(host, count)?;
     Ok(result.ping_times.into_iter().flatten().collect())
@@ -1251,9 +1262,11 @@ fn guess_os_from_ttl(ttl: u8) -> Option<(&'static str, &'static str, u8)> {
 pub fn nmap_scan(host: &str, ports: &[u16], timeout: Duration) -> Result<NmapScanResult> {
     let start = Instant::now();
 
-    // Resolve host
+    // Resolve host. A failed lookup is an error, not an empty address list:
+    // an empty list used to read as "the name has no addresses", and the
+    // scan went on to report the host as having none.
     let ip_addresses: Vec<String> = dns_lookup(host)
-        .unwrap_or_default()
+        .map_err(|e| IronError::Other(format!("could not resolve {host}: {e}")))?
         .into_iter()
         .map(|ip| ip.to_string())
         .collect();
@@ -1808,8 +1821,13 @@ fn parse_tshark_output(output: &str) -> Result<Vec<CapturedPacket>> {
     for line in output.lines() {
         let parts: Vec<&str> = line.split('|').collect();
         if parts.len() >= 6 {
+            // A row without a frame number is not packet 0. It used to be
+            // numbered 0, and the row was kept as though the number were read.
+            let Ok(number) = parts[0].parse::<u32>() else {
+                continue;
+            };
             let packet = CapturedPacket {
-                number: parts[0].parse().unwrap_or(0),
+                number,
                 timestamp: parts[1].to_string(),
                 source: parts[2].to_string(),
                 destination: parts[3].to_string(),
@@ -2362,6 +2380,43 @@ mod parallel_scan_tests {
 }
 
 #[cfg(test)]
+mod tshark_parse_tests {
+    use super::*;
+
+    // `tshark -T fields -E separator=|` with the fields `capture_with_tshark`
+    // asks for, in that order. The third row is a line whose frame number
+    // did not print; it must not become packet 0.
+    const TSHARK: &str = "1|0.000000000|192.168.1.10|93.184.216.34|TCP|74|51234|443|0x0002|51234 → 443 [SYN] Seq=0 Win=64240 Len=0
+2|0.012345678|93.184.216.34|192.168.1.10|TCP|74|443|51234|0x0012|443 → 51234 [SYN, ACK] Seq=0 Ack=1 Win=65535 Len=0
+|0.020000000|192.168.1.10|8.8.8.8|UDP|72|||||
+3|0.030000000|192.168.1.10|8.8.8.8|UDP|72|53211|53||DNS Standard query A example.com
+";
+
+    #[test]
+    fn rows_keep_their_frame_number_and_a_row_without_one_is_dropped() {
+        let packets = parse_tshark_output(TSHARK).unwrap();
+        let numbers: Vec<u32> = packets.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
+        assert!(packets.iter().all(|p| p.number != 0));
+    }
+
+    #[test]
+    fn tshark_fields_are_read_per_column() {
+        let packets = parse_tshark_output(TSHARK).unwrap();
+        let syn = &packets[0];
+        assert_eq!(syn.source, "192.168.1.10");
+        assert_eq!(syn.protocol, "TCP");
+        assert_eq!(syn.length, Some(74));
+        assert_eq!(syn.src_port, Some(51234));
+        assert_eq!(syn.dst_port, Some(443));
+        assert_eq!(syn.tcp_flags.as_deref(), Some("0x0002"));
+        let dns = &packets[2];
+        assert_eq!(dns.tcp_flags, None);
+        assert_eq!(dns.info, "DNS Standard query A example.com");
+    }
+}
+
+#[cfg(test)]
 mod ping_parse_tests {
     use super::*;
 
@@ -2441,6 +2496,52 @@ rtt min/avg/max/mdev = 0.077/0.978/1.880/0.901 ms
         let (_, r) = parse(WINDOWS_REPLY);
         assert_eq!(r.rtt_avg_ms, Some(0.0));
         assert_eq!(r.packet_loss_percent, 0.0);
+    }
+
+    /// `time<1ms` is a reply with a bound on its time, not a time of 1 ms.
+    /// Exact `time=` figures on the same run are still read.
+    #[test]
+    fn windows_sub_millisecond_replies_record_no_time() {
+        const WINDOWS_MIXED: &str = "
+Pinging 192.168.1.1 with 32 bytes of data:
+Reply from 192.168.1.1: bytes=32 time=2ms TTL=64
+Reply from 192.168.1.1: bytes=32 time<1ms TTL=64
+Reply from 192.168.1.1: bytes=32 time=1ms TTL=64
+
+Ping statistics for 192.168.1.1:
+    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),
+Approximate round trip times in milli-seconds:
+    Minimum = 0ms, Maximum = 2ms, Average = 1ms
+";
+        let (recognised, r) = parse(WINDOWS_MIXED);
+        assert!(recognised);
+        assert_eq!(r.ping_times, vec![Some(2.0), None, Some(1.0)]);
+        assert_eq!(r.rtt_min_ms, Some(0.0));
+        assert_eq!(r.rtt_avg_ms, Some(1.0));
+
+        let (_, r) = parse(WINDOWS_REPLY);
+        assert_eq!(r.ping_times, vec![None, None]);
+        assert!(r.is_reachable);
+
+        // With no summary line, the RTT figures come from the exact times only.
+        let mut r = PingResult::new("host");
+        parse_ping_output(
+            "Reply from 10.0.0.1: bytes=32 time<1ms TTL=64\n\
+             Reply from 10.0.0.1: bytes=32 time=4ms TTL=64\n",
+            &mut r,
+        );
+        assert_eq!(r.ping_times, vec![None, Some(4.0)]);
+        assert_eq!(
+            (r.rtt_min_ms, r.rtt_avg_ms, r.rtt_max_ms),
+            (Some(4.0), Some(4.0), Some(4.0))
+        );
+    }
+
+    /// Linux prints every reply with an exact figure, so each one is read.
+    #[test]
+    fn linux_replies_record_each_exact_time() {
+        let (_, r) = parse(LINUX_REPLY);
+        assert_eq!(r.ping_times, vec![Some(1.88), Some(0.077)]);
     }
 
     /// Output the parser does not understand is not a host that did not reply.
