@@ -171,10 +171,148 @@ pub struct ComputeCapability {
     pub source: CapabilitySource,
 }
 
+/// Whether `s` is a non-empty run of ASCII digits.
+fn all_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// NVIDIA product line. The line decides tensor cores and ray tracing: the RTX
+/// line has both from Turing on, and the GTX 10 and 16 series have neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NvidiaLine {
+    Gtx,
+    Rtx,
+}
+
+/// NVIDIA GPU generation, as the model number places it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NvidiaGen {
+    Pascal,
+    Turing,
+    Ampere,
+    Ada,
+}
+
+/// The parts of an NVIDIA model name this module reads. "NVIDIA GeForce RTX 3090 Ti"
+/// is `Rtx`, `3090`, and suffix `ti`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NvidiaModel {
+    line: NvidiaLine,
+    /// The model number token: `3090`, `1660`, or `a4000` for an RTX A-series part.
+    number: String,
+    /// The lower-case word after the number, if any: `ti`, `super`, `ada`.
+    suffix: Option<String>,
+}
+
+impl NvidiaModel {
+    /// The generation this model number places the part in, or `None` for a
+    /// number the table does not place.
+    fn generation(&self) -> Option<NvidiaGen> {
+        if self.suffix.as_deref() == Some("ada") {
+            return Some(NvidiaGen::Ada);
+        }
+        if self.line == NvidiaLine::Rtx && self.number.starts_with('a') {
+            // RTX A-series workstation parts (A2000 to A6000) are Ampere.
+            return Some(NvidiaGen::Ampere);
+        }
+        match (self.line, self.number.get(..2)?) {
+            (NvidiaLine::Gtx, "10") => Some(NvidiaGen::Pascal),
+            (NvidiaLine::Gtx, "16") => Some(NvidiaGen::Turing),
+            (NvidiaLine::Rtx, "20") => Some(NvidiaGen::Turing),
+            (NvidiaLine::Rtx, "30") => Some(NvidiaGen::Ampere),
+            (NvidiaLine::Rtx, "40") => Some(NvidiaGen::Ada),
+            _ => None,
+        }
+    }
+}
+
+/// Parse an NVIDIA model name. The model is the token after "GTX" or "RTX": a
+/// GeForce number is three or four digits, and an RTX A-series number is an "A"
+/// and four digits. Anything else (Tesla, "Quadro P4000", a name with no model)
+/// is `None`, so a substring such as "40" can never place a part by accident.
+fn parse_nvidia_model(name: &str) -> Option<NvidiaModel> {
+    let lower = name.to_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let (idx, line) = tokens.iter().enumerate().find_map(|(i, t)| match *t {
+        "rtx" => Some((i, NvidiaLine::Rtx)),
+        "gtx" => Some((i, NvidiaLine::Gtx)),
+        _ => None,
+    })?;
+    let number = *tokens.get(idx + 1)?;
+    let geforce = (3..=4).contains(&number.len()) && all_digits(number);
+    let a_series = line == NvidiaLine::Rtx
+        && number.len() == 5
+        && number.starts_with('a')
+        && all_digits(&number[1..]);
+    if !geforce && !a_series {
+        return None;
+    }
+    let suffix = tokens
+        .get(idx + 2)
+        .filter(|s| s.bytes().all(|b| b.is_ascii_alphabetic()))
+        .map(|s| s.to_string());
+    Some(NvidiaModel {
+        line,
+        number: number.to_string(),
+        suffix,
+    })
+}
+
+/// FP32 and FP16 TFLOPS for the base models listed here, matched on the exact
+/// model number with no suffix. A "Ti" or "SUPER" part has its own figures, and
+/// none is taken from its base model.
+fn nvidia_tflops(model: &NvidiaModel) -> Option<(f32, Option<f32>)> {
+    if model.suffix.is_some() {
+        return None;
+    }
+    match (model.line, model.number.as_str()) {
+        (NvidiaLine::Rtx, "4090") => Some((82.6, Some(165.2))),
+        (NvidiaLine::Rtx, "4080") => Some((48.7, Some(97.5))),
+        (NvidiaLine::Rtx, "4070") => Some((29.1, Some(58.3))),
+        (NvidiaLine::Rtx, "3090") => Some((35.6, Some(71.2))),
+        (NvidiaLine::Rtx, "3080") => Some((29.8, Some(59.6))),
+        (NvidiaLine::Rtx, "2080") => Some((14.2, Some(28.4))),
+        (NvidiaLine::Gtx, "1080") => Some((8.9, None)),
+        _ => None,
+    }
+}
+
+/// RDNA generation of an AMD Radeon RX model, as the model number places it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AmdGen {
+    Rdna1,
+    Rdna2,
+    Rdna3,
+}
+
+/// Parse the RDNA generation from an AMD RX model name. RDNA models carry four
+/// digits after "RX" (RX 5700 XT, RX 6800M, RX 7900 XTX). The three-digit RX 500
+/// series is Polaris and is not placed here, and a name with no RX model number
+/// (an APU's "Radeon(TM) Graphics") is not placed either.
+fn parse_amd_rx_generation(name: &str) -> Option<AmdGen> {
+    let lower = name.to_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let idx = tokens.iter().position(|t| *t == "rx")?;
+    let number = *tokens.get(idx + 1)?;
+    // Mobile parts end in "M" and share their desktop family's generation.
+    let digits = number.strip_suffix('m').unwrap_or(number);
+    if digits.len() != 4 || !all_digits(digits) {
+        return None;
+    }
+    match digits.as_bytes()[0] {
+        b'5' => Some(AmdGen::Rdna1),
+        b'6' => Some(AmdGen::Rdna2),
+        b'7' => Some(AmdGen::Rdna3),
+        _ => None,
+    }
+}
+
 /// Monitor for codec and compute capabilities
 pub struct CodecMonitor {
     codec_caps: Vec<CodecCapability>,
     compute_caps: Vec<ComputeCapability>,
+    /// GPUs whose names the inference rules did not place. They get no codec rows.
+    unmatched_gpus: Vec<String>,
 }
 
 impl CodecMonitor {
@@ -182,6 +320,7 @@ impl CodecMonitor {
         let mut monitor = Self {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         monitor.refresh()?;
         Ok(monitor)
@@ -190,6 +329,7 @@ impl CodecMonitor {
     pub fn refresh(&mut self) -> Result<(), IronError> {
         self.codec_caps.clear();
         self.compute_caps.clear();
+        self.unmatched_gpus.clear();
 
         // Detect GPU names for inference
         let gpu_names = Self::detect_gpu_names();
@@ -207,7 +347,11 @@ impl CodecMonitor {
         // Inference: if no capabilities detected directly, infer from GPU names
         if self.codec_caps.is_empty() {
             for name in &gpu_names {
+                let before = self.codec_caps.len();
                 self.infer_from_gpu_name(name);
+                if self.codec_caps.len() == before {
+                    self.unmatched_gpus.push(name.clone());
+                }
             }
         }
 
@@ -225,6 +369,12 @@ impl CodecMonitor {
 
     pub fn compute_capabilities(&self) -> &[ComputeCapability] {
         &self.compute_caps
+    }
+
+    /// GPU names the codec inference could not place. Each carries no codec rows,
+    /// and the ontology reports it as unavailable instead of leaving it out.
+    pub fn unmatched_gpus(&self) -> &[String] {
+        &self.unmatched_gpus
     }
 
     /// Check if a specific codec is supported for decode.
@@ -364,12 +514,12 @@ impl CodecMonitor {
             || lower.contains("rtx")
             || lower.contains("gtx")
         {
-            self.infer_nvidia_codecs(gpu_name, &lower);
+            self.infer_nvidia_codecs(gpu_name);
         }
 
         // AMD inference
         if lower.contains("amd") || lower.contains("radeon") || lower.contains("rx ") {
-            self.infer_amd_codecs(gpu_name, &lower);
+            self.infer_amd_codecs(gpu_name);
         }
 
         // Intel inference
@@ -392,207 +542,141 @@ impl CodecMonitor {
         }
     }
 
-    fn infer_nvidia_codecs(&mut self, gpu_name: &str, lower: &str) {
-        let is_rtx40 = lower.contains("40") && lower.contains("rtx");
-        let is_rtx30 = lower.contains("30") && lower.contains("rtx");
-        let is_rtx20 = lower.contains("20") && lower.contains("rtx");
-        let is_gtx16 = lower.contains("16") && lower.contains("gtx");
-        let is_gtx10 = lower.contains("10") && lower.contains("gtx");
-
-        // All modern NVIDIA: H.264, H.265 decode/encode
-        let codecs = vec![
-            (
-                VideoCodec::H264,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit8,
-            ),
-            (
-                VideoCodec::H265,
-                CodecDirection::Both,
-                MaxResolution::UHD8K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::VP9,
-                CodecDirection::Decode,
-                MaxResolution::UHD8K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::MPEG2,
-                CodecDirection::Decode,
-                MaxResolution::FullHD,
-                BitDepth::Bit8,
-            ),
-            (
-                VideoCodec::VC1,
-                CodecDirection::Decode,
-                MaxResolution::FullHD,
-                BitDepth::Bit8,
-            ),
-        ];
-
-        for (codec, dir, res, depth) in codecs {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec,
-                direction: dir,
-                max_resolution: res,
-                max_bit_depth: depth,
-                max_fps: None,
-                engine: "NVENC/NVDEC".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_NVIDIA_BASE_CODECS,
-            });
-        }
-
-        // AV1: RTX 40xx decode+encode, RTX 30xx decode only
-        if is_rtx40 {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec: VideoCodec::AV1,
-                direction: CodecDirection::Both,
-                max_resolution: MaxResolution::UHD8K,
-                max_bit_depth: BitDepth::Bit10,
-                max_fps: None,
-                engine: "NVENC/NVDEC".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_NVIDIA_AV1_RTX40,
-            });
-        } else if is_rtx30 {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec: VideoCodec::AV1,
-                direction: CodecDirection::Decode,
-                max_resolution: MaxResolution::UHD8K,
-                max_bit_depth: BitDepth::Bit10,
-                max_fps: None,
-                engine: "NVDEC".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_NVIDIA_AV1_RTX30,
-            });
-        }
-
-        let _ = (is_rtx20, is_gtx16, is_gtx10); // used for generation match above
+    /// Push one inferred row. Resolution and bit depth are `Unknown`: the
+    /// per-generation figures these rows used to carry were not taken from a
+    /// vendor matrix, so the reader no longer claims them.
+    fn push_inferred_codec(
+        &mut self,
+        gpu_name: &str,
+        codec: VideoCodec,
+        direction: CodecDirection,
+        engine: &str,
+        confidence: f32,
+    ) {
+        self.codec_caps.push(CodecCapability {
+            device: gpu_name.to_string(),
+            codec,
+            direction,
+            max_resolution: MaxResolution::Unknown,
+            max_bit_depth: BitDepth::Unknown,
+            max_fps: None,
+            engine: engine.to_string(),
+            source: CapabilitySource::Inferred,
+            confidence,
+        });
     }
 
-    fn infer_amd_codecs(&mut self, gpu_name: &str, lower: &str) {
-        let is_rdna3 = lower.contains("7") && (lower.contains("rx ") || lower.contains("radeon"));
-        let is_rdna2 = lower.contains("6") && (lower.contains("rx ") || lower.contains("radeon"));
+    fn infer_nvidia_codecs(&mut self, gpu_name: &str) {
+        // A name the model-number rule does not place gets no rows; `refresh`
+        // records it as unmatched. The rule this replaces matched substrings, so
+        // "RTX A4000" was placed in the RTX 40 generation.
+        let Some(generation) = parse_nvidia_model(gpu_name).and_then(|m| m.generation()) else {
+            return;
+        };
 
-        let codecs = vec![
-            (
-                VideoCodec::H264,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit8,
-            ),
-            (
-                VideoCodec::H265,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::VP9,
-                CodecDirection::Decode,
-                MaxResolution::UHD4K,
-                BitDepth::Bit10,
-            ),
-        ];
-
-        for (codec, dir, res, depth) in codecs {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
+        // H.264, H.265, VP9, MPEG-2 and VC-1 across the generations placed above,
+        // per the NVIDIA Video Encode and Decode GPU Support Matrix.
+        for (codec, dir) in [
+            (VideoCodec::H264, CodecDirection::Both),
+            (VideoCodec::H265, CodecDirection::Both),
+            (VideoCodec::VP9, CodecDirection::Decode),
+            (VideoCodec::MPEG2, CodecDirection::Decode),
+            (VideoCodec::VC1, CodecDirection::Decode),
+        ] {
+            self.push_inferred_codec(
+                gpu_name,
                 codec,
-                direction: dir,
-                max_resolution: res,
-                max_bit_depth: depth,
-                max_fps: None,
-                engine: "VCN".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_AMD_BASE_CODECS,
-            });
+                dir,
+                "NVENC/NVDEC",
+                CONFIDENCE_NVIDIA_BASE_CODECS,
+            );
         }
 
-        if is_rdna3 {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec: VideoCodec::AV1,
-                direction: CodecDirection::Both,
-                max_resolution: MaxResolution::UHD8K,
-                max_bit_depth: BitDepth::Bit10,
-                max_fps: None,
-                engine: "VCN 4.0".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_AMD_AV1_RDNA3,
-            });
-        } else if is_rdna2 {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec: VideoCodec::AV1,
-                direction: CodecDirection::Decode,
-                max_resolution: MaxResolution::UHD8K,
-                max_bit_depth: BitDepth::Bit10,
-                max_fps: None,
-                engine: "VCN 3.0".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_AMD_AV1_RDNA2,
-            });
+        // AV1: Ada decodes and encodes, Ampere decodes only, Turing has neither.
+        match generation {
+            NvidiaGen::Ada => self.push_inferred_codec(
+                gpu_name,
+                VideoCodec::AV1,
+                CodecDirection::Both,
+                "NVENC/NVDEC",
+                CONFIDENCE_NVIDIA_AV1_RTX40,
+            ),
+            NvidiaGen::Ampere => self.push_inferred_codec(
+                gpu_name,
+                VideoCodec::AV1,
+                CodecDirection::Decode,
+                "NVDEC",
+                CONFIDENCE_NVIDIA_AV1_RTX30,
+            ),
+            NvidiaGen::Pascal | NvidiaGen::Turing => {}
+        }
+    }
+
+    fn infer_amd_codecs(&mut self, gpu_name: &str) {
+        // Only the RDNA families are placed, by RX model number. Polaris (RX 500)
+        // and older parts, and APU names with no model number, get no rows. The
+        // rule this replaces read any 6 or 7 in the name as an RDNA generation.
+        let Some(generation) = parse_amd_rx_generation(gpu_name) else {
+            return;
+        };
+
+        // The media engine version is AMD's own naming for each family:
+        // RDNA 1 = VCN 2.0, RDNA 2 = VCN 3.0, RDNA 3 = VCN 4.0.
+        let engine = match generation {
+            AmdGen::Rdna1 => "VCN 2.0",
+            AmdGen::Rdna2 => "VCN 3.0",
+            AmdGen::Rdna3 => "VCN 4.0",
+        };
+        for (codec, dir) in [
+            (VideoCodec::H264, CodecDirection::Both),
+            (VideoCodec::H265, CodecDirection::Both),
+            (VideoCodec::VP9, CodecDirection::Decode),
+        ] {
+            self.push_inferred_codec(gpu_name, codec, dir, engine, CONFIDENCE_AMD_BASE_CODECS);
+        }
+
+        match generation {
+            AmdGen::Rdna1 => {}
+            AmdGen::Rdna2 => self.push_inferred_codec(
+                gpu_name,
+                VideoCodec::AV1,
+                CodecDirection::Decode,
+                engine,
+                CONFIDENCE_AMD_AV1_RDNA2,
+            ),
+            AmdGen::Rdna3 => self.push_inferred_codec(
+                gpu_name,
+                VideoCodec::AV1,
+                CodecDirection::Both,
+                engine,
+                CONFIDENCE_AMD_AV1_RDNA3,
+            ),
         }
     }
 
     fn infer_intel_codecs(&mut self, gpu_name: &str, lower: &str) {
-        let is_arc = lower.contains("arc");
-
-        let codecs = vec![
-            (
-                VideoCodec::H264,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit8,
-            ),
-            (
-                VideoCodec::H265,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit10,
-            ),
-            (
-                VideoCodec::VP9,
-                CodecDirection::Both,
-                MaxResolution::UHD4K,
-                BitDepth::Bit10,
-            ),
-        ];
-
-        for (codec, dir, res, depth) in codecs {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
+        // H.264 and H.265 for the Quick Sync names matched here. VP9 is not
+        // emitted: its support depends on the generation, which a name such as
+        // "Intel UHD Graphics" does not carry. The rule this replaces gave every
+        // Intel GPU VP9 at 4K.
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            self.push_inferred_codec(
+                gpu_name,
                 codec,
-                direction: dir,
-                max_resolution: res,
-                max_bit_depth: depth,
-                max_fps: None,
-                engine: "Quick Sync".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_INTEL_BASE_CODECS,
-            });
+                CodecDirection::Both,
+                "Quick Sync",
+                CONFIDENCE_INTEL_BASE_CODECS,
+            );
         }
 
-        if is_arc {
-            self.codec_caps.push(CodecCapability {
-                device: gpu_name.to_string(),
-                codec: VideoCodec::AV1,
-                direction: CodecDirection::Both,
-                max_resolution: MaxResolution::UHD8K,
-                max_bit_depth: BitDepth::Bit10,
-                max_fps: None,
-                engine: "Xe Media Engine".into(),
-                source: CapabilitySource::Inferred,
-                confidence: CONFIDENCE_INTEL_ARC_AV1,
-            });
+        if lower.contains("arc") {
+            self.push_inferred_codec(
+                gpu_name,
+                VideoCodec::AV1,
+                CodecDirection::Both,
+                "Xe Media Engine",
+                CONFIDENCE_INTEL_ARC_AV1,
+            );
         }
     }
 
@@ -670,35 +754,28 @@ impl CodecMonitor {
             || lower.contains("quadro")
             || lower.contains("tesla")
         {
-            // A generation the table does not know gets no figures: a guessed
-            // TFLOPS reads the same as a spec-sheet value once it is printed.
-            let (cuda, tflops_32, tflops_16, tensor, rt) =
-                if lower.contains("rtx 40") || lower.contains("rtx 4090") {
-                    (
-                        Some("8.9"),
-                        Some(82.6_f32),
-                        Some(165.2_f32),
-                        Some(true),
-                        Some(true),
-                    )
-                } else if lower.contains("rtx 4080") {
-                    (Some("8.9"), Some(48.7), Some(97.5), Some(true), Some(true))
-                } else if lower.contains("rtx 4070") {
-                    (Some("8.9"), Some(29.1), Some(58.3), Some(true), Some(true))
-                } else if lower.contains("rtx 30") || lower.contains("rtx 3090") {
-                    (Some("8.6"), Some(35.6), Some(71.2), Some(true), Some(true))
-                } else if lower.contains("rtx 3080") {
-                    (Some("8.6"), Some(29.8), Some(59.6), Some(true), Some(true))
-                } else if lower.contains("rtx 20") || lower.contains("rtx 2080") {
-                    (Some("7.5"), Some(14.2), Some(28.4), Some(true), Some(true))
-                } else if lower.contains("gtx 1080") {
-                    (Some("6.1"), Some(8.9), None, Some(false), Some(false))
-                } else if lower.contains("gtx 10") {
-                    (Some("6.1"), Some(6.5), None, Some(false), Some(false))
-                } else {
-                    // Unknown generation: no figures and no feature claims.
-                    (None, None, None, None, None)
-                };
+            // The generation fixes the CUDA compute capability and the two feature
+            // flags. The TFLOPS figures are per model, and only for the base models
+            // in `nvidia_tflops`. A name the rules do not place gets no figures.
+            let model = parse_nvidia_model(gpu_name);
+            let generation = model.as_ref().and_then(NvidiaModel::generation);
+            let cuda = generation.map(|g| match g {
+                NvidiaGen::Pascal => "6.1",
+                NvidiaGen::Turing => "7.5",
+                NvidiaGen::Ampere => "8.6",
+                NvidiaGen::Ada => "8.9",
+            });
+            let (tensor, rt) = match (&model, generation) {
+                (Some(m), Some(_)) => {
+                    let rtx = m.line == NvidiaLine::Rtx;
+                    (Some(rtx), Some(rtx))
+                }
+                _ => (None, None),
+            };
+            let (tflops_32, tflops_16) = match model.as_ref().and_then(nvidia_tflops) {
+                Some((fp32, fp16)) => (Some(fp32), fp16),
+                None => (None, None),
+            };
 
             self.compute_caps.push(ComputeCapability {
                 device: gpu_name.to_string(),
@@ -849,6 +926,7 @@ impl Default for CodecMonitor {
         Self::new().unwrap_or(Self {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         })
     }
 }
@@ -915,6 +993,7 @@ mod tests {
                 decode_row(MaxResolution::FullHD),
             ],
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         assert_eq!(
             monitor.max_decode_resolution(&VideoCodec::H264),
@@ -923,6 +1002,7 @@ mod tests {
         let only_unknown = CodecMonitor {
             codec_caps: vec![decode_row(MaxResolution::Unknown)],
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         assert_eq!(
             only_unknown.max_decode_resolution(&VideoCodec::H264),
@@ -949,6 +1029,7 @@ mod tests {
         let mut monitor = CodecMonitor {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         monitor.infer_from_gpu_name("NVIDIA GeForce RTX 4090");
         assert!(!monitor.codec_caps.is_empty());
@@ -963,6 +1044,7 @@ mod tests {
         let mut monitor = CodecMonitor {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         monitor.infer_compute_from_gpu("NVIDIA GeForce RTX 4090");
         assert!(!monitor.compute_caps.is_empty());
@@ -979,6 +1061,7 @@ mod tests {
         let mut monitor = CodecMonitor {
             codec_caps: Vec::new(),
             compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
         };
         monitor.infer_compute_from_gpu("NVIDIA Quadro Unknown 9000");
         assert!(!monitor.compute_caps.is_empty());
@@ -988,6 +1071,135 @@ mod tests {
         assert_eq!(monitor.compute_caps[0].has_tensor_cores, None);
         assert_eq!(monitor.compute_caps[0].has_ray_tracing, None);
         assert_eq!(monitor.total_tflops_fp32(), None);
+    }
+
+    fn empty_monitor() -> CodecMonitor {
+        CodecMonitor {
+            codec_caps: Vec::new(),
+            compute_caps: Vec::new(),
+            unmatched_gpus: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_parse_nvidia_model_names() {
+        let ti = parse_nvidia_model("NVIDIA GeForce RTX 3090 Ti").unwrap();
+        assert_eq!(ti.line, NvidiaLine::Rtx);
+        assert_eq!(ti.number, "3090");
+        assert_eq!(ti.suffix.as_deref(), Some("ti"));
+        assert_eq!(ti.generation(), Some(NvidiaGen::Ampere));
+
+        let sup = parse_nvidia_model("NVIDIA GeForce RTX 4070 SUPER").unwrap();
+        assert_eq!(sup.number, "4070");
+        assert_eq!(sup.suffix.as_deref(), Some("super"));
+        assert_eq!(sup.generation(), Some(NvidiaGen::Ada));
+
+        let a4000 = parse_nvidia_model("NVIDIA RTX A4000").unwrap();
+        assert_eq!(a4000.number, "a4000");
+        assert_eq!(a4000.suffix, None);
+        assert_eq!(a4000.generation(), Some(NvidiaGen::Ampere));
+
+        let gtx = parse_nvidia_model("NVIDIA GeForce GTX 1660 Ti").unwrap();
+        assert_eq!(gtx.line, NvidiaLine::Gtx);
+        assert_eq!(gtx.generation(), Some(NvidiaGen::Turing));
+
+        assert_eq!(parse_nvidia_model("AMD Radeon RX 570"), None);
+        assert_eq!(parse_nvidia_model("NVIDIA Quadro Unknown 9000"), None);
+    }
+
+    #[test]
+    fn test_parse_amd_rx_generation() {
+        // Polaris (three digits) and an APU name are not placed.
+        assert_eq!(parse_amd_rx_generation("AMD Radeon RX 570"), None);
+        assert_eq!(parse_amd_rx_generation("AMD Radeon(TM) Graphics"), None);
+        assert_eq!(
+            parse_amd_rx_generation("AMD Radeon RX 5700 XT"),
+            Some(AmdGen::Rdna1)
+        );
+        assert_eq!(
+            parse_amd_rx_generation("AMD Radeon RX 7900 XTX"),
+            Some(AmdGen::Rdna3)
+        );
+    }
+
+    #[test]
+    fn test_nvidia_substring_does_not_place_a_model() {
+        // "RTX A4000" contains "40" and "rtx", but it is Ampere, not RTX 40.
+        let mut monitor = empty_monitor();
+        monitor.infer_from_gpu_name("NVIDIA RTX A4000");
+        assert!(!monitor.can_encode(&VideoCodec::AV1));
+        assert!(monitor.can_decode(&VideoCodec::AV1));
+    }
+
+    #[test]
+    fn test_amd_polaris_and_apu_get_no_rows() {
+        let mut monitor = empty_monitor();
+        monitor.infer_from_gpu_name("AMD Radeon RX 570");
+        monitor.infer_from_gpu_name("AMD Radeon(TM) Graphics");
+        assert!(monitor.capabilities().is_empty());
+    }
+
+    #[test]
+    fn test_amd_rdna_generation_from_model_number() {
+        let mut rdna1 = empty_monitor();
+        rdna1.infer_from_gpu_name("AMD Radeon RX 5700 XT");
+        assert!(rdna1.can_encode(&VideoCodec::H264));
+        assert!(!rdna1.can_decode(&VideoCodec::AV1));
+
+        let mut rdna3 = empty_monitor();
+        rdna3.infer_from_gpu_name("AMD Radeon RX 7900 XTX");
+        assert!(rdna3.can_encode(&VideoCodec::AV1));
+        assert!(rdna3.capabilities().iter().all(|c| c.engine == "VCN 4.0"));
+    }
+
+    #[test]
+    fn test_intel_has_no_vp9_row() {
+        let mut monitor = empty_monitor();
+        monitor.infer_from_gpu_name("Intel(R) UHD Graphics 770");
+        assert!(!monitor
+            .capabilities()
+            .iter()
+            .any(|c| c.codec == VideoCodec::VP9));
+        assert!(monitor.can_decode(&VideoCodec::H265));
+    }
+
+    #[test]
+    fn test_nvidia_ampere_has_no_av1_encode() {
+        let mut monitor = empty_monitor();
+        monitor.infer_from_gpu_name("NVIDIA GeForce RTX 3090 Ti");
+        assert!(monitor.can_decode(&VideoCodec::AV1));
+        assert!(!monitor.can_encode(&VideoCodec::AV1));
+        assert_eq!(
+            monitor.max_decode_resolution(&VideoCodec::H264),
+            MaxResolution::Unknown
+        );
+    }
+
+    #[test]
+    fn test_compute_suffix_model_gets_no_tflops() {
+        let mut monitor = empty_monitor();
+        monitor.infer_compute_from_gpu("NVIDIA GeForce RTX 3090 Ti");
+        let c = &monitor.compute_caps[0];
+        assert_eq!(c.cuda_version.as_deref(), Some("8.6"));
+        assert_eq!(c.has_tensor_cores, Some(true));
+        assert_eq!(c.estimated_tflops_fp32, None);
+
+        monitor.infer_compute_from_gpu("NVIDIA GeForce RTX 4070 SUPER");
+        assert_eq!(monitor.compute_caps[1].estimated_tflops_fp32, None);
+    }
+
+    #[test]
+    fn test_compute_base_model_and_gtx16_flags() {
+        let mut monitor = empty_monitor();
+        monitor.infer_compute_from_gpu("NVIDIA GeForce RTX 3090");
+        assert_eq!(monitor.compute_caps[0].estimated_tflops_fp32, Some(35.6));
+
+        let mut gtx = empty_monitor();
+        gtx.infer_compute_from_gpu("NVIDIA GeForce GTX 1660 Ti");
+        let c = &gtx.compute_caps[0];
+        assert_eq!(c.cuda_version.as_deref(), Some("7.5"));
+        assert_eq!(c.has_tensor_cores, Some(false));
+        assert_eq!(c.has_ray_tracing, Some(false));
     }
 
     #[test]

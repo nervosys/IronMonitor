@@ -1832,8 +1832,9 @@ impl Ontology {
             None,
             P::Unavailable,
             true,
-            "Present when no hardware codec capability was found, carrying why. A \
-             GPU with no media engine is a real configuration - many datacentre \
+            "Present when no hardware codec capability was found, or when a GPU's \
+             model name is not placed by the codec rules, carrying why. A GPU with \
+             no media engine is a real configuration - many datacentre \
              parts ship without one - and it must not look like a failed probe.",
         ));
         add(Entity::new(

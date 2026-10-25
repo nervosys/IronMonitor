@@ -2916,12 +2916,14 @@ fn resolve_codecs(out: &mut Vec<Reading>) {
     };
 
     let caps = monitor.capabilities();
+    let unmatched = monitor.unmatched_gpus();
     if caps.is_empty() {
-        out.push(Reading::unavailable(
-            "gpu.codec.<none>",
-            None,
-            "no hardware codec capability was found; the GPU may have no media engine",
-        ));
+        let reason = if unmatched.is_empty() {
+            "no hardware codec capability was found; the GPU may have no media engine".to_string()
+        } else {
+            unmatched_reason(unmatched)
+        };
+        out.push(Reading::unavailable("gpu.codec.<none>", None, reason));
         return;
     }
 
@@ -3042,6 +3044,24 @@ fn resolve_codecs(out: &mut Vec<Reading>) {
             Some(Unit::Percent),
         ));
     }
+
+    // A GPU the name rules did not place has no rows above. Say so, rather than
+    // letting its absence read as a GPU with no media engine.
+    if !unmatched.is_empty() {
+        out.push(Reading::unavailable(
+            "gpu.codec.<none>",
+            None,
+            unmatched_reason(unmatched),
+        ));
+    }
+}
+
+/// Reason for a GPU that the codec reader could not place from its model name.
+fn unmatched_reason(names: &[String]) -> String {
+    format!(
+        "no codec rules match {}; the model name does not place it in a generation this reader knows",
+        names.join(", ")
+    )
 }
 
 /// Keyboards, pointing devices and controllers, as attached right now.
