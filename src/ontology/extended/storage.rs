@@ -811,7 +811,19 @@ fn resolve_controllers(out: &mut Vec<Reading>, monitor: &StorageControllerMonito
                 );
             }
             None => {
-                let why = "this controller is not NVMe, so NVMe identity fields do not apply";
+                // An NVMe controller without `nvme_info` is one whose identity was
+                // not read (the Windows reader reads none), not one that lacks it.
+                // These rows used to say "not NVMe" beside an interface of NVMe.
+                let why = match c.interface {
+                    crate::storage_controller::StorageInterface::NVMe => {
+                        "this NVMe controller's identity data was not read on this platform"
+                    }
+                    crate::storage_controller::StorageInterface::Unknown => concat!(
+                        "the controller's interface was not identified, ",
+                        "so whether NVMe identity fields apply is unknown"
+                    ),
+                    _ => "this controller is not NVMe, so NVMe identity fields do not apply",
+                };
                 for (suffix, unit) in [
                     ("firmware", U::Text),
                     ("serial", U::Identifier),
