@@ -51,7 +51,8 @@ pub struct FleetAlert {
 /// Per-host metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostMetrics {
-    pub cpu_usage_percent: f64,
+    /// `None` when the host did not report CPU usage, as for `memory_usage_percent`.
+    pub cpu_usage_percent: Option<f64>,
     /// `None` when the host did not report memory. A caller must not pass 0.0:
     /// that scores as a host with all its memory free.
     pub memory_usage_percent: Option<f64>,
@@ -211,20 +212,20 @@ impl FleetManager {
     ) {
         let t = thresholds;
 
-        if m.cpu_usage_percent >= t.cpu_critical {
+        if let Some(cpu) = m.cpu_usage_percent.filter(|&p| p >= t.cpu_critical) {
             alerts.push(FleetAlert {
                 host_id: host_id.into(),
                 severity: AlertSeverity::Critical,
                 category: AlertCategory::CpuOverload,
-                message: format!("CPU at {:.1}%", m.cpu_usage_percent),
+                message: format!("CPU at {:.1}%", cpu),
                 timestamp: now_secs(),
             });
-        } else if m.cpu_usage_percent >= t.cpu_warning {
+        } else if let Some(cpu) = m.cpu_usage_percent.filter(|&p| p >= t.cpu_warning) {
             alerts.push(FleetAlert {
                 host_id: host_id.into(),
                 severity: AlertSeverity::Warning,
                 category: AlertCategory::CpuOverload,
-                message: format!("CPU at {:.1}%", m.cpu_usage_percent),
+                message: format!("CPU at {:.1}%", cpu),
                 timestamp: now_secs(),
             });
         }
@@ -296,8 +297,13 @@ impl FleetManager {
                 // direction: an unreported 0.0 usage scored as fully free. Rescaling
                 // by the weight actually used scores a host on what is known about
                 // it rather than crediting it for what is not.
-                let mut weighted = (100.0 - m.cpu_usage_percent) * 0.3;
-                let mut weight = 0.3;
+                // CPU too: a bare 0.0 for an unreported CPU scored as idle.
+                let mut weighted = 0.0;
+                let mut weight = 0.0;
+                if let Some(cpu) = m.cpu_usage_percent {
+                    weighted += (100.0 - cpu) * 0.3;
+                    weight += 0.3;
+                }
                 if let Some(mem) = m.memory_usage_percent {
                     weighted += (100.0 - mem) * 0.3;
                     weight += 0.3;
@@ -315,7 +321,8 @@ impl FleetManager {
                     weighted += gpu_score * 0.2;
                     weight += 0.2;
                 }
-                Some((weighted / weight).clamp(0.0, 100.0))
+                // Nothing reported is no score, not a perfect one.
+                (weight > 0.0).then(|| (weighted / weight).clamp(0.0, 100.0))
             }
         }
     }
@@ -357,7 +364,7 @@ impl FleetManager {
                         .collect();
                     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
                 };
-                let avg_cpu = mean(|m| Some(m.cpu_usage_percent));
+                let avg_cpu = mean(|m| m.cpu_usage_percent);
                 let avg_mem = mean(|m| m.memory_usage_percent);
                 let gpu_temps: Vec<f64> = hosts
                     .iter()
@@ -469,7 +476,7 @@ mod tests {
             status: HostStatus::Online,
             last_seen: 0,
             latest_metrics: Some(HostMetrics {
-                cpu_usage_percent: 20.0,
+                cpu_usage_percent: Some(20.0),
                 memory_usage_percent: Some(20.0),
                 gpu_temperature_max,
                 gpu_utilization_max: None,

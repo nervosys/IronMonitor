@@ -481,9 +481,18 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
+        "src/anomaly.rs",
+        "AnomalySummary",
+        "samples_collected uptime_secs",
+        concat!(
+            "the detector's own bookkeeping, not readings: the length of its CPU ",
+            "window and the age of the detector, both always known"
+        ),
+    ),
+    (
         "src/fleet.rs",
         "HostMetrics",
-        "cpu_usage_percent memory_usage_percent disk_usage_percent network_rx_bytes_sec network_tx_bytes_sec uptime_seconds",
+        "uptime_seconds",
         concat!(
             "supplied by the caller through record_metrics, and deserialised with ",
             "no serde defaults; the only literal is a test fixture"
