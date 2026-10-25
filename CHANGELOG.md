@@ -63,8 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows NPU query is `npu.<unreadable>` instead of "no NPU" (`npu.<none>`); and
   the codec `max_resolution` of a row with no frame class is unavailable, not the
   text "Unknown".
-- Profile inspector: DIMM XMP profiles are read from the enable byte (386) and
-  only enabled, non-zero profiles are reported; NVMe FID 0x0F is decoded as the
+- Profile inspector: the DIMM XMP profile count is read from the enable byte
+  (386), not the second magic byte, which reported three profiles on every
+  module. Per-profile voltage and speed are no longer decoded, because the
+  profile layout they were read from put profile 2 at the wrong offset and
+  misread the cycle time. NVMe FID 0x0F is decoded as the
   Keep Alive Timer; controller Get-Features runs on `nvmeN` devices; profile
   diffs key groups on stable identities and report unread values as their own
   category instead of changes; and unread values are no longer used as
