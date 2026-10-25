@@ -132,7 +132,8 @@ impl SwapDevice {
 /// `mem_used_total` were read, so the sizes below are always figures from the device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZramInfo {
-    /// Device name (e.g., zram0)
+    /// Device name (e.g., zram0). Where several zram devices exist, their names
+    /// joined by commas, and the sizes are the sums over all of them.
     pub device: String,
     /// Total disksize in bytes
     pub disksize: u64,
@@ -223,15 +224,29 @@ impl MemoryInfo {
     }
 }
 
+/// One zram device's figures as read from sysfs. Summed across devices, which
+/// is why a device is only ever present with all four sizes.
+#[cfg(target_os = "linux")]
+struct ZramFigures {
+    disksize: u64,
+    compressed: u64,
+    original: u64,
+    mem_used: u64,
+    algorithm: Option<String>,
+}
+
 /// Total swap information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwapInfo {
     /// Total swap size in bytes
     pub total: u64,
-    /// Used swap in bytes
-    pub used: u64,
-    /// Free swap in bytes
-    pub free: u64,
+    /// Used swap in bytes, or `None` where free swap was not established. On
+    /// Windows used is total less free, so it is withheld with free.
+    pub used: Option<u64>,
+    /// Free swap in bytes, or `None` where it was not established. On Windows
+    /// it is the commit headroom less the physical headroom; where that
+    /// difference would go negative the reader withholds it, not clamps it.
+    pub free: Option<u64>,
     /// List of swap devices
     pub devices: Vec<SwapDevice>,
     /// ZRAM information if available
@@ -239,9 +254,11 @@ pub struct SwapInfo {
 }
 
 impl SwapInfo {
-    /// Get usage percentage; `None` when there is no swap to be used
+    /// Get usage percentage; `None` when there is no swap to be used, or when
+    /// the used figure was not established
     pub fn usage_percent(&self) -> Option<f64> {
-        (self.total > 0).then(|| (self.used as f64 / self.total as f64) * 100.0)
+        let used = self.used?;
+        (self.total > 0).then(|| (used as f64 / self.total as f64) * 100.0)
     }
 
     /// Check if swap is configured
@@ -338,8 +355,8 @@ impl MemoryMonitor {
             },
             swap: SwapInfo {
                 total: 0,
-                used: 0,
-                free: 0,
+                used: None,
+                free: None,
                 devices: Vec::new(),
                 zram: None,
             },
@@ -518,8 +535,8 @@ impl MemoryMonitor {
 
         // Swap from meminfo
         self.swap.total = swap_total;
-        self.swap.free = swap_free;
-        self.swap.used = swap_total.saturating_sub(swap_free);
+        self.swap.free = Some(swap_free);
+        self.swap.used = Some(swap_total.saturating_sub(swap_free));
 
         Ok(())
     }
@@ -568,52 +585,93 @@ impl MemoryMonitor {
         use std::fs;
         use std::path::Path;
 
-        // Check for zram devices
-        let zram_path = Path::new("/sys/block/zram0");
-        if !zram_path.exists() {
+        // Every zram device, not only zram0: a machine with a second compressed
+        // device used to report the first as if it were the whole of it.
+        let block = Path::new("/sys/block");
+        let mut names: Vec<String> = fs::read_dir(block)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| Self::is_zram_device(name))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+
+        if names.is_empty() {
             self.swap.zram = None;
             return Ok(());
         }
 
-        // A file that is missing or does not parse is `None`, never zero. The device is
-        // reported only when all four figures it is built from were read.
-        let read_file = |name: &str| -> Option<u64> {
-            fs::read_to_string(zram_path.join(name))
-                .ok()?
-                .trim()
-                .parse()
+        // A file that is missing or does not parse is `None`, never zero. A device
+        // contributes only when all four figures it is built from were read.
+        let read_device = |name: &str| -> Option<ZramFigures> {
+            let dir = block.join(name);
+            let read_file = |file: &str| -> Option<u64> {
+                fs::read_to_string(dir.join(file)).ok()?.trim().parse().ok()
+            };
+            let algorithm = fs::read_to_string(dir.join("comp_algorithm"))
                 .ok()
+                .map(|raw| {
+                    let raw = raw.trim().to_string();
+                    let bracketed = raw
+                        .split_whitespace()
+                        .find(|s| s.starts_with('['))
+                        .map(|s| s.trim_matches(|c| c == '[' || c == ']').to_string());
+                    bracketed.unwrap_or(raw)
+                });
+            Some(ZramFigures {
+                disksize: read_file("disksize")?,
+                compressed: read_file("compr_data_size")?,
+                original: read_file("orig_data_size")?,
+                mem_used: read_file("mem_used_total")?,
+                algorithm,
+            })
         };
 
-        let read_string = |name: &str| -> Option<String> {
-            fs::read_to_string(zram_path.join(name))
-                .ok()
-                .map(|s| s.trim().to_string())
-        };
+        // The sizes are summed across devices, so one device whose figures
+        // cannot be read would leave the total short. The report is withheld
+        // rather than given a total that leaves that device out.
+        let mut devices = Vec::with_capacity(names.len());
+        for name in &names {
+            let Some(figures) = read_device(name) else {
+                self.swap.zram = None;
+                return Ok(());
+            };
+            devices.push(figures);
+        }
 
+        let sum = |pick: fn(&ZramFigures) -> u64| -> Option<u64> {
+            devices
+                .iter()
+                .try_fold(0u64, |acc, d| acc.checked_add(pick(d)))
+        };
         let (Some(disksize), Some(compressed), Some(original), Some(mem_used)) = (
-            read_file("disksize"),
-            read_file("compr_data_size"),
-            read_file("orig_data_size"),
-            read_file("mem_used_total"),
+            sum(|d| d.disksize),
+            sum(|d| d.compressed),
+            sum(|d| d.original),
+            sum(|d| d.mem_used),
         ) else {
             self.swap.zram = None;
             return Ok(());
         };
 
-        let algorithm = read_string("comp_algorithm").map(|raw| {
-            let bracketed = raw
-                .split_whitespace()
-                .find(|s| s.starts_with('['))
-                .map(|s| s.trim_matches(|c| c == '[' || c == ']').to_string());
-            bracketed.unwrap_or(raw)
+        // One algorithm name only when every device agrees; otherwise it is
+        // per-device and no single name describes the total.
+        let algorithm = devices.first().and_then(|first| {
+            devices
+                .iter()
+                .all(|d| d.algorithm == first.algorithm)
+                .then(|| first.algorithm.clone())
+                .flatten()
         });
 
         // Nothing compressed yet means there is no ratio to report.
         let compression_ratio = (compressed > 0).then(|| original as f64 / compressed as f64);
 
         self.swap.zram = Some(ZramInfo {
-            device: "zram0".to_string(),
+            device: names.join(","),
             disksize,
             compressed_bytes: compressed,
             original_bytes: original,
@@ -625,6 +683,14 @@ impl MemoryMonitor {
         });
 
         Ok(())
+    }
+
+    /// Whether a `/sys/block` entry is a zram device (`zram0`, `zram12`), as
+    /// opposed to a name that merely begins with the letters.
+    #[cfg(target_os = "linux")]
+    fn is_zram_device(name: &str) -> bool {
+        name.strip_prefix("zram")
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
     }
 
     #[cfg(target_os = "linux")]
@@ -802,11 +868,17 @@ impl MemoryMonitor {
 
             // Page file info
             self.swap.total = status.ullTotalPageFile.saturating_sub(status.ullTotalPhys);
-            self.swap.free = status.ullAvailPageFile;
+            // Swap free is the page file's share of the commit headroom: available
+            // commit (`ullAvailPageFile`) less the physical memory that is
+            // available. The raw `ullAvailPageFile` used to be stored here, and it is
+            // commit headroom for RAM and page file together, so it reported far more
+            // swap free than the page file has. An underflow means the two figures
+            // are not consistent with that reading, so free is left unknown.
+            self.swap.free = status.ullAvailPageFile.checked_sub(status.ullAvailPhys);
             self.swap.used = self
                 .swap
-                .total
-                .saturating_sub(status.ullAvailPageFile.saturating_sub(status.ullAvailPhys));
+                .free
+                .map(|free| self.swap.total.saturating_sub(free));
 
             // Try to get pagefile path from WMI
             self.windows_read_pagefile_devices();
@@ -910,7 +982,7 @@ impl MemoryMonitor {
         let output = Command::new("powershell")
             .args(["-NoProfile",
                 "-Command",
-                "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 50 Id,Name,WorkingSet64,VirtualMemorySize64,PagedMemorySize64 | ConvertTo-Csv -NoTypeInformation"
+                "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 50 Id,Name,WorkingSet64,VirtualMemorySize64 | ConvertTo-Csv -NoTypeInformation"
             ])
             .output();
 
@@ -919,7 +991,7 @@ impl MemoryMonitor {
             for line in stdout.lines().skip(1) {
                 // Skip header
                 let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 5 {
+                if parts.len() >= 4 {
                     // A row whose id or working set did not parse is skipped, not ranked as pid 0.
                     let (Ok(pid), Ok(rss)) = (
                         parts[0].trim_matches('"').parse::<u32>(),
@@ -929,7 +1001,6 @@ impl MemoryMonitor {
                     };
                     let name = parts[1].trim_matches('"').to_string();
                     let vms = parts[3].trim_matches('"').parse::<u64>().ok();
-                    let paged = parts[4].trim_matches('"').parse::<u64>().ok();
 
                     let memory_percent = (self.memory.total > 0)
                         .then(|| (rss as f64 / self.memory.total as f64) * 100.0);
@@ -941,7 +1012,11 @@ impl MemoryMonitor {
                         vms,
                         shared: None,
                         private: None,
-                        swap: paged,
+                        // Not read. PagedMemorySize64 was used here. It counts the
+                        // process's pagefile-backed memory, which is not the part of
+                        // it currently held in the page file, and no Windows reader
+                        // here establishes that part.
+                        swap: None,
                         memory_percent,
                     });
                 }
@@ -1007,11 +1082,11 @@ impl MemoryMonitor {
             crate::error::IronError::System("vm.swapusage could not be read".to_string())
         })?;
         self.swap.total = usage.total;
-        self.swap.used = usage.used;
+        self.swap.used = Some(usage.used);
         // `SwapUsage` carries total and used; `parse_swapusage` deliberately
         // ignores the printed free, since for swap it is the difference by
         // definition rather than an independent measurement.
-        self.swap.free = usage.total.saturating_sub(usage.used);
+        self.swap.free = Some(usage.total.saturating_sub(usage.used));
 
         // macOS uses dynamic swap files. The sizes are the whole swap's rather than one
         // file's, so the device carries none.
@@ -1196,8 +1271,8 @@ pub struct MemorySummary {
     pub available_memory: Option<u64>,
     /// Total swap
     pub total_swap: u64,
-    /// Used swap
-    pub used_swap: u64,
+    /// Used swap, or `None` where it was not established (see `SwapInfo::used`)
+    pub used_swap: Option<u64>,
     /// Has ZRAM
     pub has_zram: bool,
     /// ZRAM compression ratio (if available)
@@ -1281,12 +1356,41 @@ mod tests {
         // No swap at all has no usage either: there is nothing to be a percentage of.
         let swap = SwapInfo {
             total: 0,
-            used: 0,
-            free: 0,
+            used: Some(0),
+            free: Some(0),
             devices: Vec::new(),
             zram: None,
         };
         assert_eq!(swap.usage_percent(), None);
         assert!(!swap.has_swap());
+    }
+
+    #[test]
+    fn swap_usage_is_unknown_when_used_was_not_established() {
+        // Swap exists, but the used figure was not read (Windows withholds it when
+        // free underflows). A percentage from that would be a guess.
+        let swap = SwapInfo {
+            total: 2048,
+            used: None,
+            free: None,
+            devices: Vec::new(),
+            zram: None,
+        };
+        assert!(swap.has_swap());
+        assert_eq!(swap.usage_percent(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_zram_block_device_is_a_zram_device() {
+        assert!(MemoryMonitor::is_zram_device("zram0"));
+        assert!(MemoryMonitor::is_zram_device("zram1"));
+        assert!(MemoryMonitor::is_zram_device("zram12"));
+        // Names that begin with the letters but are not zram devices.
+        assert!(!MemoryMonitor::is_zram_device("zram"));
+        assert!(!MemoryMonitor::is_zram_device("zram0p1"));
+        assert!(!MemoryMonitor::is_zram_device("zramx"));
+        assert!(!MemoryMonitor::is_zram_device("sda"));
+        assert!(!MemoryMonitor::is_zram_device("nvme0n1"));
     }
 }

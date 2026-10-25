@@ -601,11 +601,22 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "src/memory_management.rs",
-        "MemorySummary",
-        "total_memory total_swap used_swap",
+        "SwapInfo",
+        "total",
         concat!(
-            "copied from MemoryInfo's total and SwapInfo's total and used, which are read ",
-            "or the refresh fails; memory_summary is the only constructor"
+            "read on every platform that reports swap (SwapTotal, ullTotalPageFile less ",
+            "ullTotalPhys, vm.swapusage), or the refresh fails; used and free beside it ",
+            "are Option because they depend on figures that can be inconsistent"
+        ),
+    ),
+    (
+        "src/memory_management.rs",
+        "MemorySummary",
+        "total_memory total_swap",
+        concat!(
+            "copied from MemoryInfo's total and SwapInfo's total, which are read or the ",
+            "refresh fails; used_swap is Option, copied from SwapInfo::used; ",
+            "memory_summary is the only constructor"
         ),
     ),
     (

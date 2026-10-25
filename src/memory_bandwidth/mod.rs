@@ -96,16 +96,22 @@ impl std::fmt::Display for MemoryGeneration {
 }
 
 /// Memory channel configuration.
+///
+/// Every field is `None` when the platform did not supply the evidence for it.
+/// The active count is read from DIMM locator names (`ChannelA-DIMM0`, `DIMM_B1`
+/// and the like). The maximum is not read on any platform: the installed module
+/// count used to stand in for it, which assumed one module per channel slot and
+/// published that assumption as the board's limit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfig {
-    /// Number of active channels.
-    pub active_channels: u32,
-    /// Maximum supported channels.
-    pub max_channels: u32,
-    /// Whether running in interleaved mode.
-    pub interleaved: bool,
-    /// Channel mode description.
-    pub mode: String,
+    /// Number of active channels, or `None` where no locator names one.
+    pub active_channels: Option<u32>,
+    /// Maximum supported channels, or `None`: no platform reader establishes it.
+    pub max_channels: Option<u32>,
+    /// Whether running in interleaved mode, or `None` without an active count.
+    pub interleaved: Option<bool>,
+    /// Channel mode description, or `None` without an active count.
+    pub mode: Option<String>,
 }
 
 /// Bandwidth estimation from DIMM configuration.
@@ -215,12 +221,14 @@ impl MemoryBandwidthMonitor {
     fn analyze() -> Result<BandwidthAnalysis, IronError> {
         let (generation, speed_mts, channels) = Self::detect_memory_config()?;
 
-        // Every figure below is computed from the speed. Without one there is
-        // nothing to compute from, and a typical speed for the generation would
-        // make each of them an estimate of a different machine.
-        let peak = speed_mts.and_then(|speed| {
-            Self::compute_peak_bandwidth(speed, channels.active_channels, &generation)
-        });
+        // Every figure below is computed from the speed and the active channel
+        // count. Without either there is nothing to compute from, and a typical
+        // speed or a guessed channel count would make each of them an estimate
+        // of a different machine.
+        let peak = match (speed_mts, channels.active_channels) {
+            (Some(speed), Some(active)) => Self::compute_peak_bandwidth(speed, active, &generation),
+            _ => None,
+        };
 
         // Achievable is typically 70-85% of peak depending on technology
         let efficiency = match generation {
@@ -283,13 +291,20 @@ impl MemoryBandwidthMonitor {
 
         let mut recommendations = Vec::new();
 
-        if estimate.channels.active_channels < estimate.channels.max_channels {
-            recommendations.push(format!(
-                "Running {}-channel; {} channels available. Adding DIMMs could increase bandwidth {:.0}%",
-                estimate.channels.active_channels,
-                estimate.channels.max_channels,
-                (estimate.channels.max_channels as f64 / estimate.channels.active_channels as f64 - 1.0) * 100.0
-            ));
+        // Advise only when both counts were read; no platform reader sets the
+        // maximum today, so this stays silent rather than comparing to a guess.
+        if let (Some(active), Some(max)) = (
+            estimate.channels.active_channels,
+            estimate.channels.max_channels,
+        ) {
+            if active < max {
+                recommendations.push(format!(
+                    "Running {}-channel; {} channels available. Adding DIMMs could increase bandwidth {:.0}%",
+                    active,
+                    max,
+                    (max as f64 / active as f64 - 1.0) * 100.0
+                ));
+            }
         }
 
         // Only advise on a per-core figure that was actually computed.
@@ -334,9 +349,13 @@ impl MemoryBandwidthMonitor {
             .args(["-t", "memory"])
             .output();
 
+        // A run that exited non-zero (dmidecode needs root for /dev/mem) can
+        // still write something to stdout; that text is not a memory table.
         if let Ok(out) = output {
-            let text = String::from_utf8_lossy(&out.stdout);
-            return Self::parse_dmidecode(&text);
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                return Self::parse_dmidecode(&text);
+            }
         }
 
         // Nothing read.
@@ -349,22 +368,40 @@ impl MemoryBandwidthMonitor {
     ) -> Result<(MemoryGeneration, Option<u32>, ChannelConfig), IronError> {
         let mut generation = MemoryGeneration::Unknown;
         let mut max_speed = 0u32;
-        let mut populated_count = 0u32;
         let mut total_slots = 0u32;
 
+        // Locators of the modules that reported a speed. Channels come from
+        // these names; the module count alone does not say how they are wired.
+        let mut populated_locators: Vec<String> = Vec::new();
         let mut in_device = false;
+        let mut locator = String::new();
+        let mut device_populated = false;
 
         for line in text.lines() {
             let trimmed = line.trim();
 
-            if trimmed.starts_with("Memory Device") {
-                in_device = true;
-                total_slots += 1;
+            // A blank line ends a record, and so does the next `Memory Device`
+            // header. Only the exact header counts: `Memory Device Mapped
+            // Addresses` is a different SMBIOS record, not a slot.
+            if trimmed.is_empty() || trimmed == "Memory Device" {
+                if in_device && device_populated {
+                    populated_locators.push(std::mem::take(&mut locator));
+                }
+                locator.clear();
+                device_populated = false;
+                in_device = trimmed == "Memory Device";
+                if in_device {
+                    total_slots += 1;
+                }
                 continue;
             }
 
             if !in_device {
                 continue;
+            }
+
+            if let Some(val) = trimmed.strip_prefix("Locator:") {
+                locator = val.trim().to_string();
             }
 
             if trimmed.starts_with("Type:") {
@@ -390,34 +427,44 @@ impl MemoryBandwidthMonitor {
                             max_speed = speed;
                         }
                         if speed > 0 {
-                            populated_count += 1;
+                            device_populated = true;
                         }
                     }
                 }
             }
+        }
+        // The last record has no trailing blank line when the output ends on it.
+        if in_device && device_populated {
+            populated_locators.push(locator);
+        }
 
-            if trimmed.is_empty() {
-                in_device = false;
-            }
+        // No `Memory Device` record at all means the table was not read, however
+        // cleanly dmidecode exited. Reporting one channel for it was the defect.
+        if total_slots == 0 {
+            return Self::memory_config_unreadable();
         }
 
         // No substitution. `max_speed == 0` means no DIMM reported a speed,
         // and a typical speed for the generation is not this machine's.
         let speed = (max_speed > 0).then_some(max_speed);
 
-        let (active_channels, max_channels) =
-            Self::infer_channels(populated_count, total_slots, &generation);
-
+        let locators: Vec<&str> = populated_locators.iter().map(String::as_str).collect();
         Ok((
             generation,
             speed,
-            ChannelConfig {
-                active_channels,
-                max_channels,
-                interleaved: active_channels > 1 && populated_count >= active_channels,
-                mode: format!("{}-channel", active_channels),
-            },
+            Self::channel_config(Self::channels_from_locators(&locators)),
         ))
+    }
+
+    /// The channel configuration for an active count that was read, or none.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    fn channel_config(active: Option<u32>) -> ChannelConfig {
+        ChannelConfig {
+            active_channels: active,
+            max_channels: None,
+            interleaved: active.map(|a| a > 1),
+            mode: active.map(|a| format!("{a}-channel")),
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -430,7 +477,7 @@ impl MemoryBandwidthMonitor {
             ])
             .output();
 
-        if let Ok(out) = output {
+        if let Some(out) = output.as_ref().ok().filter(|out| out.status.success()) {
             let text = String::from_utf8_lossy(&out.stdout);
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 let items = if val.is_array() {
@@ -438,8 +485,10 @@ impl MemoryBandwidthMonitor {
                 } else {
                     vec![val]
                 };
+                if items.is_empty() {
+                    return Self::memory_config_unreadable();
+                }
 
-                let populated = items.len() as u32;
                 let mut max_speed = 0u32;
                 let mut gen = MemoryGeneration::Unknown;
 
@@ -460,17 +509,18 @@ impl MemoryBandwidthMonitor {
                 // No substitution; see the Linux reader.
                 let speed = (max_speed > 0).then_some(max_speed);
 
-                let (active, max) = Self::infer_channels(populated, populated, &gen);
+                // Channels from the DeviceLocator names, as on Linux. The
+                // installed module count was used here before, which read every
+                // module as its own channel.
+                let locators: Vec<&str> = items
+                    .iter()
+                    .map(|item| item["DeviceLocator"].as_str().unwrap_or(""))
+                    .collect();
 
                 return Ok((
                     gen,
                     speed,
-                    ChannelConfig {
-                        active_channels: active,
-                        max_channels: max,
-                        interleaved: active > 1,
-                        mode: format!("{}-channel", active),
-                    },
+                    Self::channel_config(Self::channels_from_locators(&locators)),
                 ));
             }
         }
@@ -532,19 +582,45 @@ impl MemoryBandwidthMonitor {
         ))
     }
 
-    fn infer_channels(populated: u32, total_slots: u32, _gen: &MemoryGeneration) -> (u32, u32) {
-        // Heuristic: 2 DIMMs per channel, max 4 channels for desktop, 8 for server
-        let max = if total_slots >= 8 {
-            (total_slots / 2).min(8)
-        } else if total_slots >= 4 {
-            (total_slots / 2).min(4)
+    /// Active channel count from the DIMM locator names of the populated modules.
+    ///
+    /// This is the rule `memory_topology` applies (`infer_channels` there), kept
+    /// in step with it by hand because that function takes its own record type.
+    /// A locator naming a channel letter (`ChannelA-DIMM0`, `Channel B`, `DIMM_B1`,
+    /// `BANK 0_A0`) contributes that letter, and the distinct letters are the
+    /// channels. With no such locator, a lone module occupies one channel and
+    /// more than one module does not say how it is wired, so `None`.
+    ///
+    /// The heuristic this replaced was "two modules per channel, capped at four
+    /// or eight", which gave a plausible count for any module count.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    fn channels_from_locators(locators: &[&str]) -> Option<u32> {
+        if locators.is_empty() {
+            return None;
+        }
+
+        let mut channels = std::collections::BTreeSet::new();
+        for locator in locators {
+            let loc = locator.to_uppercase();
+            if loc.contains("CHANNEL") || loc.contains("DIMM_") {
+                for c in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] {
+                    if loc.contains(&format!("CHANNEL{c}"))
+                        || loc.contains(&format!("CHANNEL {c}"))
+                        || loc.contains(&format!("DIMM_{c}"))
+                        || loc.contains(&format!("_{c}0"))
+                        || loc.contains(&format!("_{c}1"))
+                    {
+                        channels.insert(c);
+                    }
+                }
+            }
+        }
+
+        if channels.is_empty() {
+            (locators.len() == 1).then_some(1)
         } else {
-            total_slots.max(1)
-        };
-
-        let active = if populated > 0 { populated.min(max) } else { 1 };
-
-        (active, max)
+            Some(channels.len() as u32)
+        }
     }
 
     fn try_measure(estimate: &BandwidthEstimate) -> Option<BandwidthMeasurement> {
@@ -560,36 +636,15 @@ impl MemoryBandwidthMonitor {
         }
     }
 
+    /// No live measurement. The uncore IMC PMUs under `/sys/devices` are only
+    /// readable through `perf_event_open()`, which this module does not call.
+    /// The stub this returned whenever an `uncore_imc*` directory existed
+    /// carried 0.0 GB/s for read, write and total, with a zero duration and a
+    /// zero utilisation: a measurement of nothing, published as one. Until the
+    /// counters are read, there is no reading to return.
     #[cfg(target_os = "linux")]
-    fn read_imc_counters(estimate: &BandwidthEstimate) -> Option<BandwidthMeasurement> {
-        // Check for uncore IMC perf events
-        let imc_path = std::path::Path::new("/sys/devices");
-        if !imc_path.exists() {
-            return None;
-        }
-
-        // Look for uncore_imc_* directories
-        let entries = std::fs::read_dir(imc_path).ok()?;
-        let has_imc = entries
-            .filter_map(|e| e.ok())
-            .any(|e| e.file_name().to_string_lossy().starts_with("uncore_imc"));
-
-        if has_imc {
-            // IMC counters found but would need perf_event_open() to read
-            // Return a stub indicating capability exists
-            Some(BandwidthMeasurement {
-                read_gbs: 0.0,
-                write_gbs: 0.0,
-                total_gbs: 0.0,
-                source: "uncore_imc (counters detected, perf_event needed)".into(),
-                duration_us: 0,
-                utilization_pct: 0.0,
-            })
-        } else {
-            // No hardware counters, just use estimate
-            let _ = estimate;
-            None
-        }
+    fn read_imc_counters(_estimate: &BandwidthEstimate) -> Option<BandwidthMeasurement> {
+        None
     }
 }
 
@@ -601,10 +656,10 @@ impl Default for MemoryBandwidthMonitor {
                     generation: MemoryGeneration::Unknown,
                     speed_mts: None,
                     channels: ChannelConfig {
-                        active_channels: 0,
-                        max_channels: 0,
-                        interleaved: false,
-                        mode: String::new(),
+                        active_channels: None,
+                        max_channels: None,
+                        interleaved: None,
+                        mode: None,
                     },
                     peak_bandwidth_gbs: None,
                     achievable_bandwidth_gbs: None,
@@ -673,16 +728,116 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_inference() {
-        // 2 populated out of 4 slots
-        let (active, max) = MemoryBandwidthMonitor::infer_channels(2, 4, &MemoryGeneration::DDR4);
-        assert_eq!(active, 2);
-        assert_eq!(max, 2);
+    fn channels_come_from_locator_names_not_module_counts() {
+        // Two channels named by their locators.
+        assert_eq!(
+            MemoryBandwidthMonitor::channels_from_locators(&["ChannelA-DIMM0", "ChannelB-DIMM0"]),
+            Some(2)
+        );
+        // Two modules on the same channel are one channel, not two.
+        assert_eq!(
+            MemoryBandwidthMonitor::channels_from_locators(&["DIMM_A1", "DIMM_A2"]),
+            Some(1)
+        );
+        // Eight modules, four channels: the count of modules does not decide it.
+        assert_eq!(
+            MemoryBandwidthMonitor::channels_from_locators(&[
+                "DIMM_A1", "DIMM_A2", "DIMM_B1", "DIMM_B2", "DIMM_C1", "DIMM_C2", "DIMM_D1",
+                "DIMM_D2",
+            ]),
+            Some(4)
+        );
+    }
 
-        // Server: 8 populated out of 16 slots
-        let (active, max) = MemoryBandwidthMonitor::infer_channels(8, 16, &MemoryGeneration::DDR5);
-        assert_eq!(active, 8);
-        assert_eq!(max, 8);
+    #[test]
+    fn channels_are_unknown_without_locators_naming_them() {
+        // Several modules with no channel in their names: not a guessed count.
+        assert_eq!(
+            MemoryBandwidthMonitor::channels_from_locators(&["DIMM 0", "DIMM 1"]),
+            None
+        );
+        // A lone module occupies one channel.
+        assert_eq!(
+            MemoryBandwidthMonitor::channels_from_locators(&["DIMM 0"]),
+            Some(1)
+        );
+        assert_eq!(MemoryBandwidthMonitor::channels_from_locators(&[]), None);
+    }
+
+    /// A captured `dmidecode -t memory` run, trimmed to the fields read here.
+    /// Two populated DDR4 modules on channels A and B, and one empty slot.
+    #[cfg(target_os = "linux")]
+    const DMIDECODE_TWO_CHANNELS: &str = "\
+# dmidecode 3.5
+Getting SMBIOS data from sysfs.
+
+Handle 0x0010, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+
+Handle 0x0011, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0010
+	Locator: ChannelA-DIMM0
+	Bank Locator: BANK 0
+	Type: DDR4
+	Size: 16 GB
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+
+Handle 0x0012, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0010
+	Locator: ChannelB-DIMM0
+	Bank Locator: BANK 2
+	Type: DDR4
+	Size: 16 GB
+	Speed: 3200 MT/s
+
+Handle 0x0013, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0010
+	Locator: ChannelA-DIMM1
+	Bank Locator: BANK 1
+	Type: Unknown
+	Size: No Module Installed
+	Speed: Unknown
+";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dmidecode_reads_generation_speed_and_channels_from_locators() {
+        let (generation, speed, channels) =
+            MemoryBandwidthMonitor::parse_dmidecode(DMIDECODE_TWO_CHANNELS).unwrap();
+        assert_eq!(generation, MemoryGeneration::DDR4);
+        assert_eq!(speed, Some(3200));
+        assert_eq!(channels.active_channels, Some(2));
+        assert_eq!(channels.interleaved, Some(true));
+        assert_eq!(channels.mode.as_deref(), Some("2-channel"));
+        // Nothing establishes a board maximum, so none is published.
+        assert_eq!(channels.max_channels, None);
+    }
+
+    /// dmidecode can exit cleanly and still hold no memory table (a stray
+    /// message, or a run that never reached the table). With no `Memory Device`
+    /// record the reader must say it read nothing, not report one channel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dmidecode_without_a_memory_device_record_is_unreadable() {
+        let text = "# dmidecode 3.5\nPermission denied\n";
+        assert!(MemoryBandwidthMonitor::parse_dmidecode(text).is_err());
+    }
+
+    /// Slots that are all empty read as unknown speed and unknown channels,
+    /// not as one channel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dmidecode_with_only_empty_slots_reports_no_channel_count() {
+        let text =
+            "Memory Device\n\tLocator: DIMM 0\n\tSpeed: Unknown\n\tSize: No Module Installed\n";
+        let (_, speed, channels) = MemoryBandwidthMonitor::parse_dmidecode(text).unwrap();
+        assert_eq!(speed, None);
+        assert_eq!(channels.active_channels, None);
     }
 
     #[test]
@@ -697,10 +852,10 @@ mod tests {
             generation: MemoryGeneration::DDR5,
             speed_mts: Some(5600),
             channels: ChannelConfig {
-                active_channels: 2,
-                max_channels: 4,
-                interleaved: true,
-                mode: "dual-channel".into(),
+                active_channels: Some(2),
+                max_channels: Some(4),
+                interleaved: Some(true),
+                mode: Some("dual-channel".into()),
             },
             peak_bandwidth_gbs: Some(89.6),
             achievable_bandwidth_gbs: Some(73.5),

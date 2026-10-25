@@ -3912,6 +3912,26 @@ fn resolve_crypto(out: &mut Vec<Reading>) {
     }
 }
 
+/// The two channel counts. Each is published as read, or unavailable with the
+/// reason it is not. The maximum is never read on any platform, so it is always
+/// unavailable; the module count it used to be taken from is not a limit.
+fn push_channel_counts(out: &mut Vec<Reading>, channels: &crate::memory_bandwidth::ChannelConfig) {
+    push_spec_opt(
+        out,
+        "memory.bandwidth.channels",
+        channels.active_channels.map(|c| serde_json::json!(c)),
+        Some(Unit::Count),
+        "no DIMM locator names a channel, and a module count does not establish one",
+    );
+    push_spec_opt(
+        out,
+        "memory.bandwidth.max_channels",
+        channels.max_channels.map(|c| serde_json::json!(c)),
+        Some(Unit::Count),
+        "no platform reader establishes the controller's channel limit",
+    );
+}
+
 /// Memory bandwidth, every figure of which is arithmetic.
 ///
 /// The estimate is worth publishing and worth labelling. `Derived` is not a
@@ -3942,6 +3962,11 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
         &format!("{:?}", est.generation),
     );
 
+    // The channel counts are published on every path below. Each is either
+    // read or unavailable with its reason, and neither is ever inferred from
+    // the module count.
+    push_channel_counts(out, &est.channels);
+
     // Everything below rests on the generation, and an unidentified generation
     // does not stop the estimator producing numbers -- it falls back to 3200
     // MT/s, a 64-bit bus and a 0.75 efficiency factor, none of which is a fact
@@ -3969,16 +3994,6 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
             };
             out.push(Reading::unavailable(id, Some(unit), NO_GENERATION));
         }
-        out.push(Reading::spec(
-            "memory.bandwidth.channels",
-            serde_json::json!(est.channels.active_channels),
-            Some(Unit::Count),
-        ));
-        out.push(Reading::spec(
-            "memory.bandwidth.max_channels",
-            serde_json::json!(est.channels.max_channels),
-            Some(Unit::Count),
-        ));
         return;
     }
 
@@ -3987,12 +4002,7 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
     // `specification` of this machine -- the guard above covered an unknown
     // generation and not an unknown speed, which fell back to the same kind of
     // default. Everything derived from the speed is withheld with it.
-    let (Some(speed), Some(peak), Some(achievable), Some(triad)) = (
-        est.speed_mts,
-        est.peak_bandwidth_gbs,
-        est.achievable_bandwidth_gbs,
-        est.stream_triad_estimate_gbs,
-    ) else {
+    let Some(speed) = est.speed_mts else {
         const NO_SPEED: &str = concat!(
             "no DIMM reported a transfer rate, so the speed and every bandwidth ",
             "figure derived from it would be a built-in default"
@@ -4013,16 +4023,6 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
                 NO_SPEED,
             ));
         }
-        out.push(Reading::spec(
-            "memory.bandwidth.channels",
-            serde_json::json!(est.channels.active_channels),
-            Some(Unit::Count),
-        ));
-        out.push(Reading::spec(
-            "memory.bandwidth.max_channels",
-            serde_json::json!(est.channels.max_channels),
-            Some(Unit::Count),
-        ));
         return;
     };
 
@@ -4031,16 +4031,31 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
         serde_json::json!(speed),
         Some(Unit::Count),
     ));
-    out.push(Reading::spec(
-        "memory.bandwidth.channels",
-        serde_json::json!(est.channels.active_channels),
-        Some(Unit::Count),
-    ));
-    out.push(Reading::spec(
-        "memory.bandwidth.max_channels",
-        serde_json::json!(est.channels.max_channels),
-        Some(Unit::Count),
-    ));
+
+    // Peak, achievable and triad are all built on the active channel count.
+    // Without it they would be the speed times a guessed number of channels.
+    let (Some(peak), Some(achievable), Some(triad)) = (
+        est.peak_bandwidth_gbs,
+        est.achievable_bandwidth_gbs,
+        est.stream_triad_estimate_gbs,
+    ) else {
+        const NO_CHANNELS: &str = concat!(
+            "the active channel count was not read from DIMM locators, so every ",
+            "bandwidth figure derived from it would be a guess at the channel count"
+        );
+        for id in [
+            "memory.bandwidth.peak",
+            "memory.bandwidth.achievable",
+            "memory.bandwidth.stream_triad",
+        ] {
+            out.push(Reading::unavailable(
+                id,
+                Some(Unit::BytesPerSecond),
+                NO_CHANNELS,
+            ));
+        }
+        return;
+    };
 
     // GB/s to bytes per second, which is the unit the entities declare. Decimal
     // gigabytes, not gibibytes: memory bandwidth is quoted in the same decimal

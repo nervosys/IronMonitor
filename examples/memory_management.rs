@@ -62,10 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Total:      {:>12}", format_bytes(swap.total));
         println!(
             "   Used:       {:>12} ({})",
-            format_bytes(swap.used),
+            shown_bytes(swap.used),
             shown_percent(swap.usage_percent())
         );
-        println!("   Free:       {:>12}", format_bytes(swap.free));
+        println!("   Free:       {:>12}", shown_bytes(swap.free));
 
         if !swap.devices.is_empty() {
             println!("\n   📁 Swap Devices:");
@@ -221,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "   Swap:   {} used ({} / {})",
             shown_percent(summary.swap_percent),
-            format_bytes(summary.used_swap),
+            shown_bytes(summary.used_swap),
             format_bytes(summary.total_swap)
         );
     }
