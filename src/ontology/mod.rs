@@ -2762,7 +2762,7 @@ impl Ontology {
             D::Power,
             K::Identity,
             None,
-            P::Specification,
+            P::Measured,
             true,
             "Whether the platform reports this domain as enabled. Nullable: unavailable when the domain's enabled attribute was not read, and never assumed true. A disabled domain still has a counter and it does not advance.",
         ));
