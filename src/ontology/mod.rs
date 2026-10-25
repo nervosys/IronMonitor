@@ -784,12 +784,13 @@ impl Ontology {
             K::Identity,
             Some(U::Identifier),
             P::Specification,
-            false,
+            true,
             "Microarchitecture as ironmon recognises it - Zen 5, Golden Cove, \
              Firestorm. Distinct from `cpu.model`, which is the marketing \
              string: processors with different model names share a \
              microarchitecture, and it is the microarchitecture that decides \
-             which instructions are fast.",
+             which instructions are fast. Nullable: unavailable for a processor \
+             ironmon does not identify, where it used to say \"Unknown AMD\".",
         ));
         add(Entity::new(
             "cpu.microarch.codename",
@@ -849,10 +850,11 @@ impl Ontology {
             K::Identity,
             None,
             P::Specification,
-            false,
+            true,
             "Whether the design mixes performance and efficiency cores. True means \
              the per-core figures elsewhere are not comparable to each other, \
-             which is worth knowing before averaging any of them.",
+             which is worth knowing before averaging any of them. Nullable: \
+             unavailable when the processor was not identified.",
         ));
         add(Entity::new(
             "cpu.microarch.family",
