@@ -534,7 +534,10 @@ impl ServiceMonitor {
                                     }
                                 }
                             }
-                            "ExecMainExitTimestamp" => {
+                            // When the unit last entered the active state, which is
+                            // its start. `ExecMainExitTimestamp` is when it exited,
+                            // and was stored here as the start time.
+                            "ActiveEnterTimestamp" => {
                                 if !value.is_empty() {
                                     service.start_time = Some(value.to_string());
                                 }
@@ -551,7 +554,11 @@ impl ServiceMonitor {
                                 };
                             }
                             "UnitFileState" => {
-                                service.enabled = Some(value == "enabled");
+                                // Empty for units with no unit file (transient or
+                                // generated). That is no answer, not "disabled".
+                                if !value.is_empty() {
+                                    service.enabled = Some(value == "enabled");
+                                }
                                 service.startup_type = match value {
                                     "enabled" => StartupType::Automatic,
                                     "disabled" => StartupType::Disabled,
@@ -700,28 +707,26 @@ impl ServiceMonitor {
     fn windows_discover(&mut self) -> Result<()> {
         use std::process::Command;
 
-        // Use PowerShell to get services
+        // Use PowerShell to get services. A failed query is an error, not an
+        // empty machine: `Ok` with no services made every lookup report NotFound.
         let output = Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
                 "Get-Service | Select-Object Name, DisplayName, Status, StartType | ConvertTo-Json",
             ])
-            .output();
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    self.windows_parse_services(&stdout);
-                }
-            }
+            .output()
+            .map_err(|e| IronError::HardwareError(format!("powershell: {e}")))?;
+        if !output.status.success() {
+            return Err(IronError::HardwareError("Get-Service failed".to_string()));
         }
-
-        Ok(())
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|e| IronError::HardwareError(format!("Get-Service output: {e}")))?;
+        self.windows_parse_services(&stdout)
     }
 
     #[cfg(target_os = "windows")]
-    fn windows_parse_services(&mut self, json_str: &str) {
+    fn windows_parse_services(&mut self, json_str: &str) -> Result<()> {
         // Parse PowerShell JSON output
         #[derive(serde::Deserialize)]
         struct PsService {
@@ -735,47 +740,50 @@ impl ServiceMonitor {
             start_type: Option<i32>,
         }
 
-        // Try to parse as array or single object
-        if let Ok(services) = serde_json::from_str::<Vec<PsService>>(json_str) {
-            for ps_svc in services {
-                if let Some(name) = ps_svc.name {
-                    // Apply filter if set
-                    if let Some(ref filter) = self.filter {
-                        if !filter.iter().any(|f| name.contains(f)) {
-                            continue;
-                        }
+        // Get-Service always returns an array here. Output that does not parse
+        // is an error, not a machine with no services.
+        let services: Vec<PsService> = serde_json::from_str(json_str).map_err(|e| {
+            IronError::HardwareError(format!("Get-Service JSON did not parse: {e}"))
+        })?;
+        for ps_svc in services {
+            if let Some(name) = ps_svc.name {
+                // Apply filter if set
+                if let Some(ref filter) = self.filter {
+                    if !filter.iter().any(|f| name.contains(f)) {
+                        continue;
                     }
-
-                    let mut service = ServiceInfo::new(&name);
-                    service.display_name = ps_svc.display_name;
-                    service.service_type = ServiceType::Win32;
-
-                    // Status: 1=Stopped, 2=StartPending, 3=StopPending, 4=Running
-                    service.status = match ps_svc.status {
-                        Some(1) => ServiceStatus::Stopped,
-                        Some(2) => ServiceStatus::Starting,
-                        Some(3) => ServiceStatus::Stopping,
-                        Some(4) => ServiceStatus::Running,
-                        _ => ServiceStatus::Unknown,
-                    };
-
-                    // StartType: 0=Boot, 1=System, 2=Automatic, 3=Manual, 4=Disabled
-                    service.startup_type = match ps_svc.start_type {
-                        Some(0) | Some(1) | Some(2) => StartupType::Automatic,
-                        Some(3) => StartupType::Manual,
-                        Some(4) => StartupType::Disabled,
-                        _ => StartupType::Unknown,
-                    };
-
-                    // Unknown start type stays `None`, not `false`.
-                    service.enabled = ps_svc.start_type.map(|t| matches!(t, 0..=2));
-
-                    let idx = self.services.len();
-                    self.service_map.insert(name, idx);
-                    self.services.push(service);
                 }
+
+                let mut service = ServiceInfo::new(&name);
+                service.display_name = ps_svc.display_name;
+                service.service_type = ServiceType::Win32;
+
+                // Status: 1=Stopped, 2=StartPending, 3=StopPending, 4=Running
+                service.status = match ps_svc.status {
+                    Some(1) => ServiceStatus::Stopped,
+                    Some(2) => ServiceStatus::Starting,
+                    Some(3) => ServiceStatus::Stopping,
+                    Some(4) => ServiceStatus::Running,
+                    _ => ServiceStatus::Unknown,
+                };
+
+                // StartType: 0=Boot, 1=System, 2=Automatic, 3=Manual, 4=Disabled
+                service.startup_type = match ps_svc.start_type {
+                    Some(0) | Some(1) | Some(2) => StartupType::Automatic,
+                    Some(3) => StartupType::Manual,
+                    Some(4) => StartupType::Disabled,
+                    _ => StartupType::Unknown,
+                };
+
+                // Unknown start type stays `None`, not `false`.
+                service.enabled = ps_svc.start_type.map(|t| matches!(t, 0..=2));
+
+                let idx = self.services.len();
+                self.service_map.insert(name, idx);
+                self.services.push(service);
             }
         }
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -841,49 +849,53 @@ impl ServiceMonitor {
     fn macos_discover(&mut self) -> Result<()> {
         use std::process::Command;
 
-        // Use launchctl to list services
-        let output = Command::new("launchctl").args(["list"]).output();
+        // Use launchctl to list services. A failed listing is an error, not an
+        // empty machine, for the same reason as on Linux and Windows.
+        let output = Command::new("launchctl")
+            .args(["list"])
+            .output()
+            .map_err(|e| IronError::HardwareError(format!("launchctl: {e}")))?;
+        if !output.status.success() {
+            return Err(IronError::HardwareError(
+                "launchctl list failed".to_string(),
+            ));
+        }
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|e| IronError::HardwareError(format!("launchctl output: {e}")))?;
+        for line in stdout.lines().skip(1) {
+            // Skip header
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let name = parts[2].to_string();
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines().skip(1) {
-                        // Skip header
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 {
-                            let name = parts[2].to_string();
-
-                            // Apply filter if set
-                            if let Some(ref filter) = self.filter {
-                                if !filter.iter().any(|f| name.contains(f)) {
-                                    continue;
-                                }
-                            }
-
-                            let mut service = ServiceInfo::new(&name);
-
-                            // PID column
-                            if let Ok(pid) = parts[0].parse::<u32>() {
-                                service.pid = Some(pid);
-                                service.status = ServiceStatus::Running;
-                            } else if parts[0] == "-" {
-                                service.status = ServiceStatus::Stopped;
-                            }
-
-                            // Exit code column
-                            if let Ok(code) = parts[1].parse::<i32>() {
-                                service.exit_code = Some(code);
-                                if code != 0 && service.status == ServiceStatus::Stopped {
-                                    service.status = ServiceStatus::Failed;
-                                }
-                            }
-
-                            let idx = self.services.len();
-                            self.service_map.insert(name, idx);
-                            self.services.push(service);
-                        }
+                // Apply filter if set
+                if let Some(ref filter) = self.filter {
+                    if !filter.iter().any(|f| name.contains(f)) {
+                        continue;
                     }
                 }
+
+                let mut service = ServiceInfo::new(&name);
+
+                // PID column
+                if let Ok(pid) = parts[0].parse::<u32>() {
+                    service.pid = Some(pid);
+                    service.status = ServiceStatus::Running;
+                } else if parts[0] == "-" {
+                    service.status = ServiceStatus::Stopped;
+                }
+
+                // Exit code column
+                if let Ok(code) = parts[1].parse::<i32>() {
+                    service.exit_code = Some(code);
+                    if code != 0 && service.status == ServiceStatus::Stopped {
+                        service.status = ServiceStatus::Failed;
+                    }
+                }
+
+                let idx = self.services.len();
+                self.service_map.insert(name, idx);
+                self.services.push(service);
             }
         }
 

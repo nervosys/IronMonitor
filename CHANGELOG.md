@@ -54,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Boot and service readings no longer hold values that were not read.
+  `system.boot.duration` lost its seconds past one minute (`2min 31.3s` read as
+  120 seconds) and dropped millisecond phases; `BootTime.boot_timestamp` on
+  Windows was local time under a `Z` (UTC) suffix, so it was off by the UTC
+  offset;
+  startup items were reported enabled without a check, on Windows and macOS;
+  scheduled startup tasks were picked by the `Author` column; a service's start
+  time was its exit time; a unit with an empty unit-file state read as disabled;
+  and a failed service listing on Windows or macOS read as no services.
 - Two AMD GPUs are reported as linked by xGMI only when both GPUs'
   `xgmi_hive_id` read and match; the existence of the first GPU's hive
   directory used to be enough. Apple codec rows publish no bit depth, and a

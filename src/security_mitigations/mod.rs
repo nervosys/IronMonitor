@@ -764,13 +764,15 @@ impl SecurityMitigationsMonitor {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     fn detect_hardening() -> Result<KernelHardening, IronError> {
+        // Unsupported platform: none of these was read. Level 0 and `false` used
+        // to be asserted here, which reads as ASLR off and modules unlocked.
         Ok(KernelHardening {
-            aslr_level: 0,
+            aslr_level: None,
             kptr_restrict: None,
             dmesg_restrict: None,
             unprivileged_bpf_disabled: None,
-            ptrace_scope: 0,
-            modules_locked: false,
+            ptrace_scope: None,
+            modules_locked: None,
             lockdown_mode: None,
             secure_boot: None,
             stack_protector: None,

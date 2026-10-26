@@ -398,30 +398,26 @@ impl BootMonitor {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // Parse "Startup finished in 3.456s (firmware) + 2.345s (loader) + 1.234s (kernel) + 5.678s (userspace) = 12.713s"
             for part in stdout.split('+') {
-                let part = part.trim();
-                if let Some(time_str) = extract_time_value(part) {
-                    if let Ok(secs) = parse_time_string(&time_str) {
-                        let duration = Duration::from_secs_f64(secs);
-                        if part.contains("firmware") {
-                            self.boot_time.firmware = Some(duration);
-                        } else if part.contains("loader") {
-                            self.boot_time.bootloader = Some(duration);
-                        } else if part.contains("kernel") {
-                            self.boot_time.kernel = Some(duration);
-                        } else if part.contains("userspace") {
-                            self.boot_time.userspace = Some(duration);
-                        }
+                // The last part carries the total after '=', which is not a phase.
+                let part = part.split('=').next().unwrap_or("").trim();
+                if let Some(secs) = parse_systemd_duration(part) {
+                    let duration = Duration::from_secs_f64(secs);
+                    if part.contains("firmware") {
+                        self.boot_time.firmware = Some(duration);
+                    } else if part.contains("loader") {
+                        self.boot_time.bootloader = Some(duration);
+                    } else if part.contains("kernel") {
+                        self.boot_time.kernel = Some(duration);
+                    } else if part.contains("userspace") {
+                        self.boot_time.userspace = Some(duration);
                     }
                 }
             }
 
             // Parse total time
             if let Some(eq_pos) = stdout.find('=') {
-                let total_part = &stdout[eq_pos + 1..].trim();
-                if let Some(time_str) = extract_time_value(total_part) {
-                    if let Ok(secs) = parse_time_string(&time_str) {
-                        self.boot_time.total = Duration::from_secs_f64(secs);
-                    }
+                if let Some(secs) = parse_systemd_duration(&stdout[eq_pos + 1..]) {
+                    self.boot_time.total = Duration::from_secs_f64(secs);
                 }
             }
         }
@@ -654,11 +650,13 @@ impl BootMonitor {
             }
         }
 
-        // Get last boot time
+        // Get last boot time. The `Z` suffix claims UTC, so the value must be
+        // converted to UTC first: `Get-Date -Format` wrote the local clock
+        // under that suffix, which is wrong by the machine's UTC offset.
         let output = Command::new("powershell")
             .args(["-NoProfile",
                 "-Command",
-                "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime | Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'"
+                "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)"
             ])
             .output();
 
@@ -751,7 +749,10 @@ impl BootMonitor {
                         name,
                         description: None,
                         item_type,
-                        status: StartupItemStatus::Enabled,
+                        // Win32_StartupCommand lists the Run-key entries whether
+                        // or not Task Manager has disabled them; that state lives
+                        // in the StartupApproved keys, which are not read here.
+                        status: StartupItemStatus::Unknown,
                         command: Some(command),
                         publisher: None,
                         location: Some(location),
@@ -768,39 +769,7 @@ impl BootMonitor {
 
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1) {
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 9 {
-                    let name = parts[1].trim_matches('"').to_string();
-                    let trigger = parts.get(7).unwrap_or(&"").trim_matches('"');
-
-                    // Only include startup/logon tasks
-                    if trigger.contains("logon")
-                        || trigger.contains("startup")
-                        || trigger.contains("boot")
-                    {
-                        let status = parts.get(3).unwrap_or(&"").trim_matches('"');
-                        let status = if status == "Ready" || status == "Running" {
-                            StartupItemStatus::Enabled
-                        } else if status == "Disabled" {
-                            StartupItemStatus::Disabled
-                        } else {
-                            StartupItemStatus::Unknown
-                        };
-
-                        self.startup_items.push(StartupItem {
-                            name,
-                            description: None,
-                            item_type: StartupItemType::ScheduledTask,
-                            status,
-                            command: parts.get(8).map(|s| s.trim_matches('"').to_string()),
-                            publisher: None,
-                            location: Some("Task Scheduler".to_string()),
-                            boot_impact: None,
-                        });
-                    }
-                }
-            }
+            self.startup_items.extend(startup_tasks_from_csv(&stdout));
         }
 
         Ok(())
@@ -919,7 +888,10 @@ impl BootMonitor {
                                 name: name.trim_end_matches(".plist").to_string(),
                                 description: None,
                                 item_type,
-                                status: StartupItemStatus::Enabled,
+                                // A plist in a launch directory is installed, not
+                                // necessarily enabled: `launchctl disable` and the
+                                // plist's own Disabled key are not read here.
+                                status: StartupItemStatus::Unknown,
                                 command: None,
                                 publisher: None,
                                 location: Some(dir.to_string()),
@@ -989,47 +961,114 @@ impl Default for BootMonitor {
     }
 }
 
-/// Helper function to extract time value from systemd-analyze output
-#[cfg(target_os = "linux")]
-fn extract_time_value(s: &str) -> Option<String> {
-    // Find time value like "3.456s" or "2min 30.123s"
-    let mut result = String::new();
-    let mut in_number = false;
-
-    for c in s.chars() {
-        if c.is_numeric() || c == '.' {
-            in_number = true;
-            result.push(c);
-        } else if in_number && (c == 's' || c == 'm') {
-            result.push(c);
-            if c == 's' {
-                break;
-            }
-        } else if in_number && c == 'i' {
-            // "min"
-            result.push_str("in");
-            break;
-        }
+/// Sum every `<number><unit>` token in a systemd-analyze duration into seconds.
+///
+/// systemd writes durations such as `412ms`, `3.456s`, `2min 30.123s` and
+/// `1h 2min 3s`. The previous extractor stopped at the `min` of `2min`, so a
+/// boot longer than a minute lost its seconds: `2min 31.3s` read as 120 seconds.
+/// Tokens that are not a number followed by a known unit are skipped.
+#[cfg(any(target_os = "linux", test))]
+fn parse_systemd_duration(text: &str) -> Option<f64> {
+    let mut total = 0.0;
+    let mut found = false;
+    for token in text.split_whitespace() {
+        let Some(unit_at) = token.find(|c: char| c.is_ascii_alphabetic()) else {
+            continue;
+        };
+        let (number, unit) = token.split_at(unit_at);
+        let Ok(value) = number.parse::<f64>() else {
+            continue;
+        };
+        let scale = match unit {
+            "h" => 3600.0,
+            "min" => 60.0,
+            "s" => 1.0,
+            "ms" => 0.001,
+            "us" => 0.000_001,
+            _ => continue,
+        };
+        total += value * scale;
+        found = true;
     }
-
-    if result.is_empty() {
-        None
-    } else {
-        Some(result)
-    }
+    found.then_some(total)
 }
 
-/// Helper function to parse time string
-#[cfg(target_os = "linux")]
-fn parse_time_string(s: &str) -> std::result::Result<f64, std::num::ParseFloatError> {
-    if s.ends_with("min") {
-        let num = s.trim_end_matches("min").trim();
-        num.parse::<f64>().map(|v| v * 60.0)
-    } else if s.ends_with('s') {
-        s.trim_end_matches('s').trim().parse()
-    } else {
-        s.parse()
+/// Split one CSV record. Double quotes group a field, and `""` inside one is a
+/// literal quote, so a quoted command line may contain commas.
+#[cfg(any(windows, test))]
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => fields.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
     }
+    fields.push(current);
+    fields
+}
+
+/// Startup and logon scheduled tasks from `schtasks /query /fo csv /v`.
+///
+/// Columns are found by their header names, not by position. The old code
+/// tested column 7, which is `Author`, for "logon", so almost no startup task
+/// was listed. A header that does not match, as on a localised Windows, yields
+/// no tasks rather than tasks read from the wrong column.
+#[cfg(any(windows, test))]
+fn startup_tasks_from_csv(stdout: &str) -> Vec<StartupItem> {
+    let mut lines = stdout.lines();
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    let columns = split_csv_line(header);
+    let column = |name: &str| columns.iter().position(|c| c == name);
+    let (Some(name_at), Some(status_at), Some(schedule_at), Some(command_at)) = (
+        column("TaskName"),
+        column("Status"),
+        column("Schedule Type"),
+        column("Task To Run"),
+    ) else {
+        return Vec::new();
+    };
+
+    let mut items = Vec::new();
+    for line in lines {
+        let fields = split_csv_line(line);
+        let field = |at: usize| fields.get(at).map(String::as_str).unwrap_or("");
+        // The schedule type names the trigger: "At logon time", "At system start up".
+        let schedule = field(schedule_at).to_ascii_lowercase();
+        let at_startup = schedule.contains("logon")
+            || schedule.contains("start up")
+            || schedule.contains("startup")
+            || schedule.contains("boot");
+        if !at_startup {
+            continue;
+        }
+        let status = match field(status_at) {
+            "Ready" | "Running" => StartupItemStatus::Enabled,
+            "Disabled" => StartupItemStatus::Disabled,
+            _ => StartupItemStatus::Unknown,
+        };
+        items.push(StartupItem {
+            name: field(name_at).to_string(),
+            description: None,
+            item_type: StartupItemType::ScheduledTask,
+            status,
+            command: Some(field(command_at).to_string()).filter(|c| !c.is_empty()),
+            publisher: None,
+            location: Some("Task Scheduler".to_string()),
+            boot_impact: None,
+        });
+    }
+    items
 }
 
 /// Boot configuration summary
@@ -1129,5 +1168,45 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn systemd_duration_keeps_minutes_and_seconds() {
+        let close = |got: Option<f64>, want: f64| got.is_some_and(|v| (v - want).abs() < 1e-9);
+        // Captured shapes of `systemd-analyze` output.
+        assert!(close(parse_systemd_duration("2min 31.3s"), 151.3));
+        assert!(close(parse_systemd_duration("3.456s (firmware)"), 3.456));
+        assert!(close(parse_systemd_duration("412ms (kernel)"), 0.412));
+        assert!(close(parse_systemd_duration("1h 2min 3s"), 3723.0));
+        assert_eq!(parse_systemd_duration("no time here"), None);
+    }
+
+    #[test]
+    fn csv_quotes_group_commas_and_double_quotes_are_literal() {
+        assert_eq!(split_csv_line(r#""x,y",z"#), vec!["x,y", "z"]);
+        assert_eq!(
+            split_csv_line(r#"a,"he said ""hi""",b"#),
+            vec!["a", r#"he said "hi""#, "b"]
+        );
+    }
+
+    #[test]
+    fn startup_tasks_are_chosen_by_header_not_position() {
+        // Captured `schtasks /query /fo csv /v` layout, abridged to four columns
+        // used here. The old code tested the `Author` column for "logon".
+        let csv = r#""TaskName","Status","Author","Task To Run","Schedule Type"
+"\Logon Task","Ready","Contoso","C:\Tools\a.exe --x=1,2","At logon time"
+"\Boot Task","Disabled","Contoso","C:\c.exe","At system start up"
+"\Idle Task","Ready","Contoso","C:\d.exe","At idle time"
+"\Daily Task","Ready","logon author","C:\b.exe","Daily"
+"#;
+        let items = startup_tasks_from_csv(csv);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec![r"\Logon Task", r"\Boot Task"]);
+        assert_eq!(items[0].status, StartupItemStatus::Enabled);
+        assert_eq!(items[0].command.as_deref(), Some(r"C:\Tools\a.exe --x=1,2"));
+        assert_eq!(items[1].status, StartupItemStatus::Disabled);
+        // A header without these columns, as on a localised Windows, yields none.
+        assert!(startup_tasks_from_csv(r#""Nom de tâche","État""#).is_empty());
     }
 }
