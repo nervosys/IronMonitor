@@ -192,15 +192,30 @@ pub struct GpuState {
     /// Fan speed (%)
     pub fan_speed_percent: Option<u32>,
 
-    /// Number of processes using this GPU
-    pub process_count: usize,
+    /// Number of processes using this GPU, or `None` where the device's process
+    /// query failed.
+    ///
+    /// This was `dynamic_info.processes.len()`, but no adapter's dynamic sample fills
+    /// that list (AMD, Intel and Apple leave it empty), so every such GPU was
+    /// reported with zero processes. The count now comes from `Gpu::processes()`.
+    pub process_count: Option<usize>,
 }
 
 impl SystemState {
     /// Extract system state from monitor based on query
     pub fn from_monitor(monitor: &UnifiedMonitor, query: &Query) -> Result<Self> {
-        let (gpu_states, unreadable_gpus) =
-            Self::select_gpu_states(monitor.gpus().snapshot_all_partial(), query);
+        // Asked of each device, index-aligned with the snapshots. A failed query is `None`.
+        let process_counts: Vec<Option<usize>> = monitor
+            .gpus()
+            .gpus()
+            .iter()
+            .map(|gpu| gpu.processes().ok().map(|procs| procs.len()))
+            .collect();
+        let (gpu_states, unreadable_gpus) = Self::select_gpu_states(
+            monitor.gpus().snapshot_all_partial(),
+            &process_counts,
+            query,
+        );
 
         // Get CPU state (platform-specific)
         let cpu = Self::get_cpu_state();
@@ -222,6 +237,7 @@ impl SystemState {
 
     fn select_gpu_states(
         snapshots: Vec<std::result::Result<GpuInfo, crate::Error>>,
+        process_counts: &[Option<usize>],
         query: &Query,
     ) -> (Vec<GpuState>, Vec<UnreadableGpu>) {
         let indices: Vec<usize> = if query.all_gpus || query.gpu_indices.is_empty() {
@@ -233,7 +249,10 @@ impl SystemState {
         let mut errors = Vec::new();
         for index in indices {
             match snapshots.get(index) {
-                Some(Ok(info)) => gpus.push(Self::gpu_to_state(index, info.clone())),
+                Some(Ok(info)) => {
+                    let processes = process_counts.get(index).copied().flatten();
+                    gpus.push(Self::gpu_to_state(index, info.clone(), processes));
+                }
                 Some(Err(error)) => errors.push(UnreadableGpu {
                     index,
                     reason: error.to_string(),
@@ -242,6 +261,24 @@ impl SystemState {
             }
         }
         (gpus, errors)
+    }
+
+    /// Mean clock across the cores that reported one, or `None` when none did.
+    ///
+    /// This used to be the first core's clock, published as the CPU's. Each core
+    /// clocks independently, so core 0 is one sample of the package, not its
+    /// frequency. The mean is over measured per-core values, and the context
+    /// string says so.
+    fn mean_core_frequency_mhz(cores: &[crate::core::cpu::CpuCore]) -> Option<u64> {
+        let known: Vec<u64> = cores
+            .iter()
+            .filter_map(|c| c.frequency.as_ref().and_then(|f| f.current))
+            .map(u64::from)
+            .collect();
+        if known.is_empty() {
+            return None;
+        }
+        Some(known.iter().sum::<u64>() / known.len() as u64)
     }
 
     /// Get CPU state from platform-specific APIs
@@ -259,11 +296,7 @@ impl SystemState {
                     threads: num_cpus,
                     utilization: Some(utilization),
                     temperature_c: None, // Requires admin
-                    frequency_mhz: stats
-                        .cores
-                        .first()
-                        .and_then(|c| c.frequency.as_ref().and_then(|f| f.current))
-                        .map(u64::from),
+                    frequency_mhz: Self::mean_core_frequency_mhz(&stats.cores),
                     per_core_usage: stats
                         .cores
                         .iter()
@@ -286,11 +319,7 @@ impl SystemState {
                     threads: num_cpus,
                     utilization: Some(utilization),
                     temperature_c: None,
-                    frequency_mhz: stats
-                        .cores
-                        .first()
-                        .and_then(|c| c.frequency.as_ref().and_then(|f| f.current))
-                        .map(u64::from),
+                    frequency_mhz: Self::mean_core_frequency_mhz(&stats.cores),
                     per_core_usage: stats
                         .cores
                         .iter()
@@ -351,7 +380,7 @@ impl SystemState {
     }
 
     /// Convert GpuInfo to condensed GpuState
-    fn gpu_to_state(index: usize, info: GpuInfo) -> GpuState {
+    fn gpu_to_state(index: usize, info: GpuInfo, process_count: Option<usize>) -> GpuState {
         GpuState {
             index,
             name: info.static_info.name,
@@ -359,13 +388,19 @@ impl SystemState {
             utilization: info.dynamic_info.utilization.map(u32::from),
             memory_used_mb: info.dynamic_info.memory.used.map(|v| v / 1024 / 1024),
             memory_total_mb: info.dynamic_info.memory.total.map(|v| v / 1024 / 1024),
-            temperature_c: info.dynamic_info.thermal.temperature.map(|t| t as u32),
+            // The reader keeps this signed. `as u32` turned a negative reading into
+            // a value near 4.3 billion degrees, so a negative one is withheld instead.
+            temperature_c: info
+                .dynamic_info
+                .thermal
+                .temperature
+                .and_then(|t| u32::try_from(t).ok()),
             power_w: info.dynamic_info.power.draw.map(|d| d as f32 / 1000.0),
             power_limit_w: info.dynamic_info.power.limit.map(|l| l as f32 / 1000.0),
             clock_mhz: info.dynamic_info.clocks.graphics,
             memory_clock_mhz: info.dynamic_info.clocks.memory,
             fan_speed_percent: info.dynamic_info.thermal.fan_speed.map(|f| f as u32),
-            process_count: info.dynamic_info.processes.len(),
+            process_count,
         }
     }
 
@@ -390,7 +425,7 @@ impl SystemState {
                 None => context.push_str("  Utilization: not read on this platform\n"),
             }
             if let Some(freq) = cpu.frequency_mhz {
-                context.push_str(&format!("  Frequency: {} MHz\n", freq));
+                context.push_str(&format!("  Frequency: {} MHz (mean across cores)\n", freq));
             }
             if let Some(temp) = cpu.temperature_c {
                 context.push_str(&format!("  Temperature: {:.1}°C\n", temp));
@@ -469,8 +504,8 @@ impl SystemState {
             if let Some(mem_clock) = gpu.memory_clock_mhz {
                 context.push_str(&format!("  Memory Clock: {} MHz\n", mem_clock));
             }
-            if gpu.process_count > 0 {
-                context.push_str(&format!("  Active Processes: {}\n", gpu.process_count));
+            if let Some(count) = gpu.process_count.filter(|&n| n > 0) {
+                context.push_str(&format!("  Active Processes: {count}\n"));
             }
         }
 
@@ -671,7 +706,7 @@ mod tests {
     #[test]
     fn failed_gpu_preserves_other_readings_and_collection_indices() {
         let (gpus, unreadable_gpus) =
-            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("all GPUs"));
+            SystemState::select_gpu_states(mixed_snapshots(), &[], &Query::parse("all GPUs"));
         assert_eq!(gpus.iter().map(|g| g.index).collect::<Vec<_>>(), [0, 2]);
         assert_eq!(unreadable_gpus.len(), 1);
         assert_eq!(unreadable_gpus[0].index, 1);
@@ -717,12 +752,12 @@ mod tests {
     #[test]
     fn specific_gpu_query_keeps_its_failure_and_excludes_other_devices() {
         let (gpus, errors) =
-            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("GPU 1"));
+            SystemState::select_gpu_states(mixed_snapshots(), &[], &Query::parse("GPU 1"));
         assert!(gpus.is_empty());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].index, 1);
         let (gpus, errors) =
-            SystemState::select_gpu_states(mixed_snapshots(), &Query::parse("GPU 2"));
+            SystemState::select_gpu_states(mixed_snapshots(), &[], &Query::parse("GPU 2"));
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].index, 2);
         assert!(errors.is_empty());
@@ -734,6 +769,7 @@ mod tests {
             vec![Err(crate::Error::GpuError(
                 "driver unavailable".to_string(),
             ))],
+            &[],
             &Query::parse("all GPUs"),
         );
         let state = SystemState {
@@ -749,7 +785,8 @@ mod tests {
         assert_eq!(state.total_power_w(), None);
         assert_eq!(state.avg_utilization(), None);
         assert_eq!(state.avg_temperature(), None);
-        let (gpus, errors) = SystemState::select_gpu_states(Vec::new(), &Query::parse("all GPUs"));
+        let (gpus, errors) =
+            SystemState::select_gpu_states(Vec::new(), &[], &Query::parse("all GPUs"));
         assert!(gpus.is_empty());
         assert!(errors.is_empty());
     }
@@ -769,7 +806,7 @@ mod tests {
             clock_mhz: Some(1500),
             memory_clock_mhz: Some(6000),
             fan_speed_percent: Some(60),
-            process_count: 3,
+            process_count: Some(3),
         };
 
         assert_eq!(gpu.memory_usage_percent(), Some(50.0));
@@ -795,7 +832,7 @@ mod tests {
             clock_mhz: None,
             memory_clock_mhz: None,
             fan_speed_percent: None,
-            process_count: 0,
+            process_count: None,
         }
     }
 
@@ -837,6 +874,58 @@ mod tests {
         assert!(
             !context.contains("Temperature: 0°C"),
             "context reports an unmeasured device as 0°C:\n{context}"
+        );
+    }
+
+    /// A negative sensor value must not wrap to a huge unsigned temperature.
+    #[test]
+    fn negative_temperature_is_withheld_not_wrapped() {
+        let mut json = serde_json::json!({
+            "static_info": {
+                "index": 0, "vendor": "Nvidia", "name": "Test GPU",
+                "integrated": false
+            },
+            "dynamic_info": {
+                "memory": {}, "clocks": {}, "power": {},
+                "thermal": {"temperature": -1}, "pcie": {},
+                "engines": {"vendor_specific": []}, "processes": []
+            }
+        });
+        let info: GpuInfo = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(SystemState::gpu_to_state(0, info, None).temperature_c, None);
+        json["dynamic_info"]["thermal"]["temperature"] = serde_json::json!(61);
+        let info: GpuInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            SystemState::gpu_to_state(0, info, None).temperature_c,
+            Some(61)
+        );
+    }
+
+    /// The CPU clock is the mean of the cores that reported one, not core 0's.
+    #[test]
+    fn cpu_frequency_is_the_mean_of_reporting_cores() {
+        let core = |id: usize, current: Option<u32>| crate::core::cpu::CpuCore {
+            id,
+            online: None,
+            governor: None,
+            frequency: current.map(|current| crate::core::cpu::CpuFrequency {
+                current: Some(current),
+                current_is_derived: false,
+                min: None,
+                max: None,
+            }),
+            user: None,
+            nice: None,
+            system: None,
+            idle: None,
+            model: None,
+        };
+        let cores = [core(0, Some(4000)), core(1, Some(2000)), core(2, None)];
+        assert_eq!(SystemState::mean_core_frequency_mhz(&cores), Some(3000));
+        assert_eq!(
+            SystemState::mean_core_frequency_mhz(&[core(0, None)]),
+            None,
+            "no reporting core means no frequency, not zero"
         );
     }
 
@@ -1008,7 +1097,7 @@ mod tests {
                     clock_mhz: None,
                     memory_clock_mhz: None,
                     fan_speed_percent: None,
-                    process_count: 2,
+                    process_count: Some(2),
                 },
                 GpuState {
                     index: 1,
@@ -1023,7 +1112,7 @@ mod tests {
                     clock_mhz: None,
                     memory_clock_mhz: None,
                     fan_speed_percent: None,
-                    process_count: 1,
+                    process_count: Some(1),
                 },
             ],
             unreadable_gpus: Vec::new(),
