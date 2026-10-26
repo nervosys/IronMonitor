@@ -527,8 +527,23 @@ impl CpuMicroarchMonitor {
         // "RYZEN" contains "ZEN", so "AMD RYZEN 5" matched the "ZEN 5" marker and
         // every Ryzen 3, 4 or 5 part with no model-number hit was reported as Zen 3,
         // Zen 4 or Zen 5. The brand word is removed before the markers are tested.
+        //
+        // A mobile Ryzen SKU carries model numbers that are also desktop model
+        // numbers ("3700U" is Zen+ Picasso, "5800U" is Cezanne, and the desktop table
+        // says Matisse and Vermeer). Only desktop suffixes are matched against the
+        // table; a mobile SKU is unidentified rather than given a desktop identity.
+        let mobile_ryzen = name.contains("RYZEN")
+            && !name.contains("THREADRIPPER")
+            && ryzen_suffix_is_mobile(name);
         let name = &name.replace("RYZEN", " ");
-        let (uarch, codename, process, year) = if name.contains("9950")
+        let (uarch, codename, process, year) = if mobile_ryzen {
+            ("Unknown AMD", "", 0, 0)
+        } else if name.contains("EPYC") {
+            // The EPYC generation is the last digit of its 4-digit model number.
+            // An EPYC name whose model number does not parse is unidentified; it
+            // is never matched by the Ryzen-number markers below.
+            epyc_generation(name).unwrap_or(("Unknown AMD", "", 0, 0))
+        } else if name.contains("9950")
             || name.contains("9900")
             || name.contains("9700")
             || name.contains("9600")
@@ -566,14 +581,10 @@ impl CpuMicroarchMonitor {
             ("Zen+", "Pinnacle Ridge", 12, 2018)
         } else if name.contains("1800") || name.contains("1700") || name.contains("ZEN 1") {
             ("Zen", "Summit Ridge", 14, 2017)
-        } else if name.contains("EPYC 9") || name.contains("GENOA") {
+        } else if name.contains("GENOA") {
             ("Zen 4", "Genoa", 5, 2022)
-        } else if name.contains("EPYC 8") || name.contains("SIENA") {
+        } else if name.contains("SIENA") {
             ("Zen 4c", "Siena", 5, 2023)
-        } else if name.contains("EPYC 7")
-            && (name.contains("73") || name.contains("75") || name.contains("79"))
-        {
-            ("Zen 3", "Milan", 7, 2021)
         } else if name.contains("TURIN") {
             ("Zen 5", "Turin", 4, 2024)
         // `PRO 7` and `PRO 5` alone matched Ryzen PRO mobile parts: "Ryzen 7 PRO
@@ -1258,6 +1269,43 @@ impl CpuMicroarchMonitor {
     }
 }
 
+/// The generation of an EPYC part from its 4-digit model number, as AMD's model
+/// grammar defines it: the series digit (7, 8 or 9) and the last digit.
+/// `7xx1` Naples, `7xx2` Rome, `7xx3` Milan, `8xx4` Siena, `9xx4` Genoa,
+/// `9xx5` Turin. Any other number, or no number, is `None`.
+fn epyc_generation(name: &str) -> Option<(&'static str, &'static str, u32, u32)> {
+    let after = name.split("EPYC ").nth(1)?;
+    let digits: Vec<u8> = after.bytes().take_while(|b| b.is_ascii_digit()).collect();
+    if digits.len() != 4 {
+        return None;
+    }
+    Some(match (digits[0], digits[3]) {
+        (b'7', b'1') => ("Zen", "Naples", 14, 2017),
+        (b'7', b'2') => ("Zen 2", "Rome", 7, 2019),
+        (b'7', b'3') => ("Zen 3", "Milan", 7, 2021),
+        (b'8', b'4') => ("Zen 4c", "Siena", 5, 2023),
+        (b'9', b'4') => ("Zen 4", "Genoa", 5, 2022),
+        (b'9', b'5') => ("Zen 5", "Turin", 4, 2024),
+        _ => return None,
+    })
+}
+
+/// Whether a Ryzen name's model number carries a mobile suffix. The model number
+/// is the first token with four leading digits ("7840U", "9900X"). Its letters
+/// after the digits are desktop when they are X, XT, G, GE, GT, F, XE or X3D.
+/// Any other letters, such as U, H, HS, HX or HN, mark a mobile or other SKU.
+/// A name with no such token is not classed as mobile.
+fn ryzen_suffix_is_mobile(name: &str) -> bool {
+    let Some(token) = name
+        .split_whitespace()
+        .find(|t| t.bytes().take_while(|b| b.is_ascii_digit()).count() == 4)
+    else {
+        return false;
+    };
+    let suffix = token.trim_start_matches(|c: char| c.is_ascii_digit());
+    !suffix.is_empty() && !matches!(suffix, "X" | "XT" | "G" | "GE" | "GT" | "F" | "XE" | "X3D")
+}
+
 /// Whether the processor implements an x86 feature, from CPUID through
 /// `std::arch`. `None` for names the standard library cannot query, and on
 /// targets that are not x86.
@@ -1866,6 +1914,53 @@ mod tests {
         let m1 = CpuMicroarchMonitor::identify_microarch("Apple M1", None, None, None);
         assert_eq!(m1.p_core_uarch.as_deref(), Some("Firestorm"));
         assert_eq!(m1.e_core_uarch.as_deref(), Some("Icestorm"));
+    }
+
+    /// The EPYC generation is the last digit of the model number.
+    #[test]
+    fn epyc_generation_comes_from_the_model_number() {
+        let id = |n: &str| CpuMicroarchMonitor::identify_microarch(n, None, None, None);
+        let rome = id("AMD EPYC 7502 32-Core Processor");
+        assert_eq!(
+            (rome.name.as_deref(), rome.codename.as_str()),
+            (Some("Zen 2"), "Rome")
+        );
+        let milan = id("AMD EPYC 7763 64-Core Processor");
+        assert_eq!(
+            (milan.name.as_deref(), milan.codename.as_str()),
+            (Some("Zen 3"), "Milan")
+        );
+        let genoa = id("AMD EPYC 9654 96-Core Processor");
+        assert_eq!(
+            (genoa.name.as_deref(), genoa.codename.as_str()),
+            (Some("Zen 4"), "Genoa")
+        );
+        // A 5 on the series 9 part is Turin, and a model number that does not
+        // parse is unidentified rather than matched by a substring.
+        let turin = id("AMD EPYC 9655 96-Core Processor");
+        assert_eq!(turin.codename, "Turin");
+        let odd = id("AMD EPYC 7 Series Processor");
+        assert_eq!(odd.name, None);
+        assert_eq!(odd.codename, "");
+    }
+
+    /// Mobile Ryzen SKUs share model numbers with desktop parts, and must not take
+    /// the desktop identity. The desktop 9900X, which has an X suffix, keeps its own.
+    #[test]
+    fn mobile_ryzen_skus_do_not_take_desktop_identities() {
+        for name in ["AMD Ryzen 7 3700U", "AMD Ryzen 7 5800U"] {
+            let uarch = CpuMicroarchMonitor::identify_microarch(name, None, None, None);
+            assert_eq!(uarch.name, None, "{name} took a desktop generation");
+            assert_eq!(uarch.codename, "", "{name} took a desktop codename");
+        }
+        let x = CpuMicroarchMonitor::identify_microarch(
+            "AMD Ryzen 9 9900X 12-Core Processor",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(x.name.as_deref(), Some("Zen 5"));
+        assert_eq!(x.codename, "Granite Ridge");
     }
 
     #[test]
