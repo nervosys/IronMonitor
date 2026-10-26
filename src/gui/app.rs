@@ -8242,8 +8242,9 @@ impl IronMonitorApp {
         }
 
         // Detected backends section
-        let available = crate::agent::AgentConfig::list_available_backends();
-        if !available.is_empty() {
+        let (available, configured) =
+            crate::agent::AgentConfig::list_available_and_configured_backends();
+        if !available.is_empty() || !configured.is_empty() {
             egui::Frame::NONE
                 .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
                 .corner_radius(8)
@@ -8259,6 +8260,12 @@ impl IronMonitorApp {
                         ui.label(
                             RichText::new(format!("  • {:?}", backend))
                                 .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                        );
+                    }
+                    for backend in &configured {
+                        ui.label(
+                            RichText::new(format!("  • {:?} (API key set, not probed)", backend))
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                     }
                     ui.add_space(10.0);

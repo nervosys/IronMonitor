@@ -383,6 +383,17 @@ impl AgentConfig {
         let discovery = BackendDiscovery::discover();
         discovery.available().to_vec()
     }
+
+    /// Backends confirmed available, and those with only an API key set, from
+    /// one discovery pass. A key-only backend is not in the first list because
+    /// nothing probed it; callers that showed only the first list hid it.
+    pub fn list_available_and_configured_backends() -> (Vec<BackendType>, Vec<BackendType>) {
+        let discovery = BackendDiscovery::discover();
+        (
+            discovery.available().to_vec(),
+            discovery.configured().to_vec(),
+        )
+    }
 }
 
 impl Default for AgentConfig {

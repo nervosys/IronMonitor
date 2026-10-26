@@ -59,7 +59,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // List backends if requested
     if cli.list_backends {
         println!("[*] Available AI Backends:\n");
-        let backends = AgentConfig::list_available_backends();
+        let (backends, configured) = AgentConfig::list_available_and_configured_backends();
+        if !configured.is_empty() {
+            println!("API key set, not probed:");
+            for backend in &configured {
+                println!("  - {}", backend.display_name());
+            }
+            println!();
+        }
         for (i, backend) in backends.iter().enumerate() {
             println!("{}. {}", i + 1, backend.display_name());
             if let Some(env_var) = backend.api_key_env_var() {
