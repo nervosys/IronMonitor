@@ -154,18 +154,23 @@ fn main() -> Result<()> {
 
                 // Show IP addresses if available
                 let ipv4 = iface.ipv4_addresses.as_deref().unwrap_or(&[]);
+                let ipv6 = iface.ipv6_addresses.as_deref().unwrap_or(&[]);
                 if iface.ipv4_addresses.is_none()
+                    || iface.ipv6_addresses.is_none()
                     || !ipv4.is_empty()
-                    || !iface.ipv6_addresses.is_empty()
+                    || !ipv6.is_empty()
                 {
                     let mut ip_display = Vec::new();
                     if iface.ipv4_addresses.is_none() {
                         ip_display.push("IPv4: unknown".to_string());
                     }
+                    if iface.ipv6_addresses.is_none() {
+                        ip_display.push("IPv6: unknown".to_string());
+                    }
                     for ip in ipv4 {
                         ip_display.push(format!("IPv4: {}", ip));
                     }
-                    for ip in &iface.ipv6_addresses {
+                    for ip in ipv6 {
                         ip_display.push(format!("IPv6: {}", truncate_string(ip, 20)));
                     }
                     if !ip_display.is_empty() {

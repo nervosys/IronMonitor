@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Network, virtualization and datacenter readings no longer hold values that were not read. Loopback and WireGuard interfaces were reported `DOWN` because the kernel's `operstate` of `unknown` was read as down; Windows published `[]` as its IPv6 addresses though it reads none; a container's hostname fell back to the string `"unknown"`; cgroup v2 `cpu.weight` was stored in the v1 `cpu_shares` field; and chassis form factor was guessed from the product name. Each is now `None` where unread.
 - Boot and service readings no longer hold values that were not read.
   `system.boot.duration` lost its seconds past one minute (`2min 31.3s` read as
   120 seconds) and dropped millisecond phases; `BootTime.boot_timestamp` on

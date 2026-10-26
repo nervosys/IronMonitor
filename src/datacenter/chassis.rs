@@ -171,8 +171,8 @@ impl ChassisInfo {
 
         let chassis_type = Self::from_smbios_byte(chassis_type_byte);
         // Unknown means no source named a form factor, so it is not reported.
-        let form_factor = Some(Self::infer_form_factor(chassis_type, &read("product_name")))
-            .filter(|f| *f != FormFactor::Unknown);
+        let form_factor =
+            Some(Self::infer_form_factor(chassis_type)).filter(|f| *f != FormFactor::Unknown);
 
         Ok(ChassisInfo {
             chassis_type,
@@ -302,9 +302,12 @@ impl ChassisInfo {
         }
     }
 
+    /// The form factor the chassis type names. A type the table does not place
+    /// is `Unknown`: the product name used to be searched for "rack", "server",
+    /// "blade", "nuc" or "mini" and the match reported as the form factor, a
+    /// guess from a name rather than a reading.
     #[allow(dead_code)]
-    fn infer_form_factor(ct: ChassisType, product: &str) -> FormFactor {
-        let p = product.to_lowercase();
+    fn infer_form_factor(ct: ChassisType) -> FormFactor {
         match ct {
             ChassisType::RackMount | ChassisType::MainServer => FormFactor::RackMount,
             ChassisType::Tower | ChassisType::MiniTower => FormFactor::Tower,
@@ -320,17 +323,7 @@ impl ChassisInfo {
             ChassisType::Desktop | ChassisType::LowProfileDesktop | ChassisType::AllInOne => {
                 FormFactor::Desktop
             }
-            _ => {
-                if p.contains("rack") || p.contains("server") {
-                    FormFactor::RackMount
-                } else if p.contains("blade") {
-                    FormFactor::Blade
-                } else if p.contains("nuc") || p.contains("mini") {
-                    FormFactor::MiniPc
-                } else {
-                    FormFactor::Unknown
-                }
-            }
+            _ => FormFactor::Unknown,
         }
     }
 }
@@ -357,6 +350,24 @@ mod tests {
             assert!(is_firmware_placeholder(template), "{template:?}");
             assert_eq!(firmware_value(Some(template.into())), None, "{template:?}");
         }
+    }
+
+    /// A chassis type the table does not place has no form factor, whatever its
+    /// product name says.
+    #[test]
+    fn form_factor_is_not_guessed_from_the_product_name() {
+        assert_eq!(
+            ChassisInfo::infer_form_factor(ChassisType::Unknown),
+            FormFactor::Unknown
+        );
+        assert_eq!(
+            ChassisInfo::infer_form_factor(ChassisType::Other),
+            FormFactor::Unknown
+        );
+        assert_eq!(
+            ChassisInfo::infer_form_factor(ChassisType::Tower),
+            FormFactor::Tower
+        );
     }
 
     /// Real identity strings pass through, trimmed. A serial that happens to

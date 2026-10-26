@@ -252,8 +252,9 @@ pub struct NetworkInterfaceContext {
     /// IPv4 addresses, or `None` where the platform did not enumerate them.
     /// `Some(empty)` is enumerated and none present.
     pub ipv4_addresses: Option<Vec<String>>,
-    /// IPv6 addresses
-    pub ipv6_addresses: Vec<String>,
+    /// IPv6 addresses, or `None` where the platform did not enumerate them.
+    /// Windows reads neither family yet, and used to publish `[]` for it.
+    pub ipv6_addresses: Option<Vec<String>>,
     /// Link speed in Mbps
     pub speed_mbps: Option<u32>,
     /// MTU

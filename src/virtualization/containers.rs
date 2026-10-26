@@ -34,7 +34,12 @@ pub struct ContainerResources {
     pub cgroup_version: CgroupVersion,
     pub cpu_quota: Option<i64>,
     pub cpu_period: Option<u64>,
+    /// cgroup v1 `cpu.shares` (default 1024). Never holds a v2 value: the v2
+    /// `cpu.weight` (default 100) is on a different scale, and used to be
+    /// stored here as if it were shares.
     pub cpu_shares: Option<u64>,
+    /// cgroup v2 `cpu.weight` (default 100), `None` on v1.
+    pub cpu_weight: Option<u64>,
     pub memory_limit_bytes: Option<u64>,
     pub memory_usage_bytes: Option<u64>,
     pub pids_limit: Option<u64>,
@@ -47,7 +52,9 @@ pub struct ContainerInfo {
     pub engine: ContainerEngine,
     pub container_id: Option<String>,
     pub resources: Option<ContainerResources>,
-    pub hostname: String,
+    /// `None` when neither `HOSTNAME` nor the `hostname` command gave one. This
+    /// was `"unknown"`, a string that reads as a hostname.
+    pub hostname: Option<String>,
 }
 
 /// Kubernetes pod info (from Downward API)
@@ -224,7 +231,8 @@ fn detect_cgroupv2() -> Option<ContainerResources> {
         cgroup_version: CgroupVersion::V2,
         cpu_quota,
         cpu_period,
-        cpu_shares: read_u64("cpu.weight"),
+        cpu_shares: None,
+        cpu_weight: read_u64("cpu.weight"),
         memory_limit_bytes: read_limit("memory.max"),
         memory_usage_bytes: read_u64("memory.current"),
         pids_limit: read_limit("pids.max"),
@@ -251,6 +259,7 @@ fn detect_cgroupv1() -> Option<ContainerResources> {
         cpu_quota: read_i64("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
         cpu_period: read_u64("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
         cpu_shares: read_u64("/sys/fs/cgroup/cpu/cpu.shares"),
+        cpu_weight: None,
         memory_limit_bytes: read_u64("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
         memory_usage_bytes: read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
         pids_limit: read_u64("/sys/fs/cgroup/pids/pids.max"),
@@ -308,13 +317,18 @@ pub fn detect_orchestrator() -> Option<OrchestratorInfo> {
     None
 }
 
+/// The hostname, or `None` when neither source gives a non-empty one. This used
+/// to return `"unknown"` in that case, which reads as a hostname.
 #[allow(dead_code)]
-fn hostname() -> String {
+fn hostname() -> Option<String> {
+    let non_empty = |h: String| Some(h.trim().to_string()).filter(|h| !h.is_empty());
     std::env::var("HOSTNAME")
-        .or_else(|_| {
+        .ok()
+        .and_then(non_empty)
+        .or_else(|| {
             std::process::Command::new("hostname")
                 .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .ok()
+                .and_then(|o| non_empty(String::from_utf8_lossy(&o.stdout).into_owned()))
         })
-        .unwrap_or_else(|_| "unknown".into())
 }

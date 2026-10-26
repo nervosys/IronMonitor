@@ -183,10 +183,12 @@ use std::collections::HashMap;
 pub struct NetworkInterfaceInfo {
     /// Interface name (e.g., "eth0", "wlan0", "Ethernet0")
     pub name: String,
-    /// Interface is up/active, or `None` where the platform state was not read.
+    /// Interface is up/active, or `None` where the platform state was not read
+    /// or the kernel reports it as `unknown` (loopback, WireGuard).
     ///
     /// This used to be `false` when the Linux `operstate` file was unreadable,
-    /// which is a claim that the link is down.
+    /// which is a claim that the link is down. It was also `false` for
+    /// `unknown`, which showed loopback as DOWN.
     pub is_up: Option<bool>,
     /// Interface is running, or `None` where it was not read.
     ///
@@ -222,8 +224,11 @@ pub struct NetworkInterfaceInfo {
     /// return `None`: the field used to be an always-empty `Vec`, which read as
     /// "no addresses" on every machine.
     pub ipv4_addresses: Option<Vec<String>>,
-    /// IPv6 addresses
-    pub ipv6_addresses: Vec<String>,
+    /// IPv6 addresses, or `None` where the platform did not enumerate them.
+    /// `Some(empty)` means enumerated and none present. Windows returns `None`:
+    /// the field used to be an always-empty `Vec`, which the JSON API reported
+    /// as "no IPv6 addresses" on every Windows machine.
+    pub ipv6_addresses: Option<Vec<String>>,
 }
 
 impl NetworkInterfaceInfo {
@@ -402,6 +407,22 @@ impl Default for NetworkMonitor {
 #[cfg(any(target_os = "linux", test))]
 const IFF_RUNNING: u32 = 0x40;
 
+/// Whether the link is up, from the text of sysfs `operstate`.
+///
+/// `unknown` is `None`, not down. The kernel reports it for loopback and for
+/// tunnels such as WireGuard, which have no carrier to sense; it says the
+/// kernel does not know the state. Reading it as `false` showed `lo` and every
+/// WireGuard interface as DOWN in the GUI and in the JSON API.
+#[cfg(any(target_os = "linux", test))]
+fn parse_operstate(text: &str) -> Option<bool> {
+    let state = text.trim().to_ascii_lowercase();
+    if state == "unknown" {
+        None
+    } else {
+        Some(state.contains("up"))
+    }
+}
+
 /// Whether `IFF_RUNNING` is set, from the text of sysfs `flags`.
 ///
 /// The kernel writes this file as hex, for example `0x1003\n`. `None` if the
@@ -493,15 +514,14 @@ mod linux {
         })
     }
 
-    /// `None` when the file cannot be read. An `operstate` of `unknown` is a
-    /// real reading (the kernel reports it for loopback) and is `Some(false)`.
-    /// An unreadable file used to become `"unknown"` here, so it was reported
-    /// as the link being down.
+    /// `None` when the file cannot be read or says `unknown`. An unreadable
+    /// file used to become `"unknown"` here, so it was reported as the link
+    /// being down.
     fn read_operstate(base_path: &str) -> Option<bool> {
         let path = format!("{}/operstate", base_path);
         fs::read_to_string(&path)
             .ok()
-            .map(|s| s.trim().to_lowercase().contains("up"))
+            .and_then(|s| parse_operstate(&s))
     }
 
     /// `None` when the file cannot be read or is not hex. An unreadable file
@@ -540,7 +560,7 @@ mod linux {
     /// `/proc/net/route` carries gateways, not the host's own addresses. The
     /// reader used to return an always-empty list here, which read as "no
     /// addresses"; it did not look.
-    fn read_ip_addresses(iface_name: &str) -> (Option<Vec<String>>, Vec<String>) {
+    fn read_ip_addresses(iface_name: &str) -> (Option<Vec<String>>, Option<Vec<String>>) {
         let mut ipv6_addrs = Vec::new();
 
         // Read IPv6 addresses from /proc/net/if_inet6
@@ -568,7 +588,9 @@ mod linux {
             }
         }
 
-        (None, ipv6_addrs)
+        // /proc/net/if_inet6 names every interface, so an empty list here is
+        // a true "none assigned".
+        (None, Some(ipv6_addrs))
     }
 }
 
@@ -761,9 +783,10 @@ mod windows {
                     mac_address,
                     // Not read: the addresses would come from GetIpAddrTable, which
                     // this reader does not call. This was `Vec::new()`, which
-                    // reported "no addresses" on every Windows machine.
+                    // reported "no addresses" on every Windows machine. IPv6 is
+                    // not read here either, for the same reason.
                     ipv4_addresses: None,
-                    ipv6_addresses: Vec::new(),
+                    ipv6_addresses: None,
                 });
             }
 
@@ -888,7 +911,7 @@ mod macos {
                             // getifaddrs enumerates every address, so an empty list
                             // here is a true "none", unlike the Linux and Windows readers.
                             ipv4_addresses: Some(Vec::new()),
-                            ipv6_addresses: Vec::new(),
+                            ipv6_addresses: Some(Vec::new()),
                             is_up: Some((ifa.ifa_flags as i32 & libc::IFF_UP) != 0),
                             is_running: Some((ifa.ifa_flags as i32 & libc::IFF_RUNNING) != 0),
                             speed_mbps: None,
@@ -924,7 +947,10 @@ mod macos {
                             let ip = Ipv6Addr::from(sin6.sin6_addr.s6_addr);
                             // Skip link-local addresses
                             if !ip.is_loopback() {
-                                entry.ipv6_addresses.push(ip.to_string());
+                                entry
+                                    .ipv6_addresses
+                                    .get_or_insert_with(Vec::new)
+                                    .push(ip.to_string());
                             }
                         }
                         AF_LINK => {
@@ -1021,7 +1047,7 @@ mod tests {
             mtu: Some(1500),
             mac_address: Some("aa:bb:cc:dd:ee:ff".to_string()),
             ipv4_addresses: Some(vec!["192.168.1.10".to_string()]),
-            ipv6_addresses: vec![],
+            ipv6_addresses: Some(vec![]),
         }
     }
 
@@ -1081,6 +1107,16 @@ mod tests {
         assert!(!iface.is_active());
     }
 
+    /// `operstate` text as the kernel writes it. `unknown` is loopback's state
+    /// and a WireGuard device's, and it is not a reading of down.
+    #[test]
+    fn operstate_unknown_is_not_reported_as_down() {
+        assert_eq!(parse_operstate("up\n"), Some(true));
+        assert_eq!(parse_operstate("down\n"), Some(false));
+        assert_eq!(parse_operstate("unknown\n"), None);
+        assert_eq!(parse_operstate("UNKNOWN"), None);
+    }
+
     #[test]
     fn iff_running_is_read_from_the_hex_flags_file() {
         // Captured shapes of /sys/class/net/*/flags. 0x1003 has the 0x40 bit
@@ -1111,7 +1147,7 @@ mod tests {
             mtu: None,
             mac_address: None,
             ipv4_addresses: Some(vec![]),
-            ipv6_addresses: vec![],
+            ipv6_addresses: Some(vec![]),
         };
         assert_eq!(iface.total_bytes(), 0);
         assert_eq!(iface.total_packets(), 0);
