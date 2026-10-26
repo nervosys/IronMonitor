@@ -1292,9 +1292,10 @@ fn epyc_generation(name: &str) -> Option<(&'static str, &'static str, u32, u32)>
 
 /// Whether a Ryzen name's model number carries a mobile suffix. The model number
 /// is the first token with four leading digits ("7840U", "9900X"). Its letters
-/// after the digits are desktop when they are X, XT, G, GE, GT, F, XE or X3D.
-/// Any other letters, such as U, H, HS, HX or HN, mark a mobile or other SKU.
-/// A name with no such token is not classed as mobile.
+/// after the digits are a desktop CPU when they are X, XT, F, XE or X3D. G, GE
+/// and GT are desktop APUs built on the mobile die (5600G is Cezanne, not
+/// Vermeer), so they are treated like U, H, HS, HX or HN: not identified from
+/// the desktop table. A name with no such token is not classed as mobile.
 fn ryzen_suffix_is_mobile(name: &str) -> bool {
     let Some(token) = name
         .split_whitespace()
@@ -1303,7 +1304,7 @@ fn ryzen_suffix_is_mobile(name: &str) -> bool {
         return false;
     };
     let suffix = token.trim_start_matches(|c: char| c.is_ascii_digit());
-    !suffix.is_empty() && !matches!(suffix, "X" | "XT" | "G" | "GE" | "GT" | "F" | "XE" | "X3D")
+    !suffix.is_empty() && !matches!(suffix, "X" | "XT" | "F" | "XE" | "X3D")
 }
 
 /// Whether the processor implements an x86 feature, from CPUID through
@@ -1948,7 +1949,7 @@ mod tests {
     /// the desktop identity. The desktop 9900X, which has an X suffix, keeps its own.
     #[test]
     fn mobile_ryzen_skus_do_not_take_desktop_identities() {
-        for name in ["AMD Ryzen 7 3700U", "AMD Ryzen 7 5800U"] {
+        for name in ["AMD Ryzen 7 3700U", "AMD Ryzen 7 5800U", "AMD Ryzen 5 5600G"] {
             let uarch = CpuMicroarchMonitor::identify_microarch(name, None, None, None);
             assert_eq!(uarch.name, None, "{name} took a desktop generation");
             assert_eq!(uarch.codename, "", "{name} took a desktop codename");
