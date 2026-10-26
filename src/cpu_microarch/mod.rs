@@ -283,7 +283,11 @@ impl CpuMicroarchMonitor {
         let upper = model_name.to_uppercase();
 
         // Try vendor detection first — AMD checked before Intel to avoid
-        // "CORE" matching in "16-Core Processor" AMD strings
+        // "CORE" matching in "16-Core Processor" AMD strings.
+        //
+        // The Arm vendors are checked before Intel too. "CORE" is an Intel marker
+        // only by convention: "Snapdragon(R) X 12-core X1E80100" carries it, and
+        // was reported as an Intel part with its name unidentified.
         let vendor = if upper.contains("AMD")
             || upper.contains("RYZEN")
             || upper.contains("EPYC")
@@ -291,6 +295,12 @@ impl CpuMicroarchMonitor {
             || upper.contains("ATHLON")
         {
             CpuVendor::AMD
+        } else if upper.contains("GRAVITON") {
+            CpuVendor::AWS
+        } else if upper.contains("AMPERE") || upper.contains("ALTRA") {
+            CpuVendor::Ampere
+        } else if upper.contains("SNAPDRAGON") || upper.contains("QUALCOMM") {
+            CpuVendor::Qualcomm
         } else if upper.contains("INTEL")
             || upper.contains("CORE")
             || upper.contains("XEON")
@@ -306,12 +316,6 @@ impl CpuMicroarchMonitor {
             || upper.contains("M4")
         {
             CpuVendor::Apple
-        } else if upper.contains("GRAVITON") {
-            CpuVendor::AWS
-        } else if upper.contains("AMPERE") || upper.contains("ALTRA") {
-            CpuVendor::Ampere
-        } else if upper.contains("SNAPDRAGON") || upper.contains("QUALCOMM") {
-            CpuVendor::Qualcomm
         } else {
             CpuVendor::Unknown
         };
@@ -349,6 +353,20 @@ impl CpuMicroarchMonitor {
                     e_core_uarch: None,
                 }
             }
+            // Every Qualcomm and Ampere part is an Arm core, so the instruction set
+            // is known from the vendor. It used to come from the build target, which
+            // is x86_64 for an x64 build running under emulation on an Arm machine.
+            CpuVendor::Qualcomm | CpuVendor::Ampere => Microarchitecture {
+                name: None,
+                codename: String::new(),
+                process_nm: None,
+                year: None,
+                vendor,
+                arch: "aarch64".into(),
+                hybrid: None,
+                p_core_uarch: None,
+                e_core_uarch: None,
+            },
             _ => Microarchitecture {
                 // Not identified: no name, no node, no year, and no claim
                 // about hybrid design. A "Unknown" name used to pass as one.
@@ -506,6 +524,10 @@ impl CpuMicroarchMonitor {
     }
 
     fn identify_amd(name: &str, _family: Option<u32>, _model: Option<u32>) -> Microarchitecture {
+        // "RYZEN" contains "ZEN", so "AMD RYZEN 5" matched the "ZEN 5" marker and
+        // every Ryzen 3, 4 or 5 part with no model-number hit was reported as Zen 3,
+        // Zen 4 or Zen 5. The brand word is removed before the markers are tested.
+        let name = &name.replace("RYZEN", " ");
         let (uarch, codename, process, year) = if name.contains("9950")
             || name.contains("9900")
             || name.contains("9700")
@@ -554,9 +576,12 @@ impl CpuMicroarchMonitor {
             ("Zen 3", "Milan", 7, 2021)
         } else if name.contains("TURIN") {
             ("Zen 5", "Turin", 4, 2024)
-        } else if name.contains("THREADRIPPER 7") || name.contains("PRO 7") {
+        // `PRO 7` and `PRO 5` alone matched Ryzen PRO mobile parts: "Ryzen 7 PRO
+        // 7840U" is Phoenix, not Storm Peak, and "Ryzen 5 PRO 5650U" is not
+        // Chagall. The Threadripper PRO names are spelled out instead.
+        } else if name.contains("THREADRIPPER 7") || name.contains("THREADRIPPER PRO 7") {
             ("Zen 4", "Storm Peak", 5, 2023)
-        } else if name.contains("THREADRIPPER 5") || name.contains("PRO 5") {
+        } else if name.contains("THREADRIPPER 5") || name.contains("THREADRIPPER PRO 5") {
             ("Zen 3", "Chagall", 7, 2022)
         } else {
             ("Unknown AMD", "", 0, 0)
@@ -612,8 +637,15 @@ impl CpuMicroarchMonitor {
             vendor: CpuVendor::Apple,
             arch: "aarch64".into(),
             hybrid: identified.then_some(hybrid),
-            p_core_uarch: identified.then(|| uarch.split('/').next().unwrap_or("P-core").into()),
-            e_core_uarch: identified.then(|| uarch.split('/').nth(1).unwrap_or("E-core").into()),
+            // A single-name part ("Everest", "Ibiza") has no separate efficiency
+            // core name in the table. It used to be given the placeholder "E-core",
+            // which is not a microarchitecture.
+            p_core_uarch: identified
+                .then(|| uarch.split('/').next().map(String::from))
+                .flatten(),
+            e_core_uarch: identified
+                .then(|| uarch.split('/').nth(1).map(String::from))
+                .flatten(),
         }
     }
 
@@ -1778,6 +1810,62 @@ mod tests {
         assert_eq!(uarch.vendor, CpuVendor::Apple);
         assert_eq!(uarch.hybrid, Some(true));
         assert_eq!(uarch.process_nm, Some(3));
+    }
+
+    /// An Arm part whose name carries "core" is not an Intel part.
+    #[test]
+    fn an_arm_part_with_a_core_count_in_its_name_is_not_intel() {
+        let snapdragon = CpuMicroarchMonitor::identify_microarch(
+            "Snapdragon(R) X 12-core X1E80100 @ 3.40 GHz",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(snapdragon.vendor, CpuVendor::Qualcomm);
+        assert_eq!(snapdragon.arch, "aarch64");
+        assert_eq!(snapdragon.name, None);
+        assert_eq!(snapdragon.hybrid, None);
+    }
+
+    /// Ryzen PRO mobile parts share the "PRO 7" and "PRO 5" spellings with the
+    /// Threadripper PRO line, and must not take its codenames.
+    #[test]
+    fn ryzen_pro_mobile_parts_do_not_take_threadripper_codenames() {
+        for name in ["AMD Ryzen 7 PRO 7840U", "AMD Ryzen 5 PRO 5650U"] {
+            let uarch = CpuMicroarchMonitor::identify_microarch(name, None, None, None);
+            assert_eq!(uarch.name, None, "{name} was given a generation");
+            assert_eq!(uarch.codename, "", "{name} took a codename");
+            assert_eq!(uarch.process_nm, None, "{name} took a process node");
+        }
+
+        // "RYZEN" contains "ZEN": a Ryzen 3 with no model-number hit is not Zen 3.
+        let r3 = CpuMicroarchMonitor::identify_microarch("AMD Ryzen 3 3200G", None, None, None);
+        assert_eq!(r3.name, None, "a Ryzen 3 was matched by the ZEN 3 marker");
+
+        let wx = CpuMicroarchMonitor::identify_microarch(
+            "AMD Ryzen Threadripper PRO 7995WX",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(wx.codename, "Storm Peak");
+        let wx5 = CpuMicroarchMonitor::identify_microarch(
+            "AMD Ryzen Threadripper PRO 5995WX",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(wx5.codename, "Chagall");
+    }
+
+    /// A single-name Apple part has no efficiency-core name in the table.
+    #[test]
+    fn a_single_name_apple_part_has_no_efficiency_core_name() {
+        let m3 = CpuMicroarchMonitor::identify_microarch("Apple M3 Pro", None, None, None);
+        assert_eq!(m3.e_core_uarch, None);
+        let m1 = CpuMicroarchMonitor::identify_microarch("Apple M1", None, None, None);
+        assert_eq!(m1.p_core_uarch.as_deref(), Some("Firestorm"));
+        assert_eq!(m1.e_core_uarch.as_deref(), Some("Icestorm"));
     }
 
     #[test]
