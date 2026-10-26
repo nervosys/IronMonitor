@@ -1047,7 +1047,7 @@ impl ObservabilityApi {
                     temperature_c: zone.temp_celsius,
                     high_threshold_c: None,
                     critical_threshold_c: None,
-                    location: Some(zone.zone_type.clone()),
+                    location: zone.zone_type.clone(),
                 });
             }
         }

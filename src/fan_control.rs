@@ -415,8 +415,11 @@ impl FanCurve {
 pub struct ThermalZone {
     /// Zone name
     pub name: String,
-    /// Zone type (CPU, GPU, etc.)
-    pub zone_type: String,
+    /// Zone type (CPU, GPU, etc.), `None` where the platform did not name one.
+    ///
+    /// This was the string `"unknown"` when the `type` file was unreadable, and
+    /// on Windows the WMI instance path (a device identifier, not a type).
+    pub zone_type: Option<String>,
     /// Current temperature (°C), `None` where the zone's temperature could
     /// not be read. It was 0 °C, a reading a zone near freezing would give.
     pub temp_celsius: Option<f32>,
@@ -749,7 +752,12 @@ impl FanMonitor {
                 fan.available_profiles = vec![FanProfile::Manual, FanProfile::TempControl];
             }
 
-            fan.controllable = true;
+            // Controllable only if the duty file takes writes, as the hwmon path
+            // checks. This was a literal `true`, so every Jetson fan was offered
+            // as controllable whether or not the file could be written.
+            fan.controllable = fs::metadata(path.join("target_pwm"))
+                .map(|m| !m.permissions().readonly())
+                .unwrap_or(false);
             self.fans.push(fan);
         }
 
@@ -779,9 +787,10 @@ impl FanMonitor {
             }
 
             // Read zone type
+            // An unreadable `type` file is no type, not the type "unknown".
             let zone_type = fs::read_to_string(path.join("type"))
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+                .ok()
+                .map(|s| s.trim().to_string());
 
             // Read temperature
             let temp = fs::read_to_string(path.join("temp"))
@@ -1047,22 +1056,23 @@ impl FanMonitor {
             if let Ok(wmi) = WMIConnection::with_namespace_path("root\\WMI", com) {
                 if let Ok(zones) = wmi.query::<MsAcpiThermalZone>() {
                     for (idx, zone) in zones.iter().enumerate() {
-                        let name = zone
-                            .instance_name
-                            .clone()
-                            .unwrap_or_else(|| format!("thermal_zone{}", idx));
-
+                        // The instance name is a device path (ACPI\ThermalZone\...),
+                        // not a zone type. WMI does not say what the zone is, so the
+                        // type is None. This used to copy the instance path, or a
+                        // made-up "thermal_zone{idx}", into the type field.
                         let mut tz = ThermalZone {
                             name: format!("zone{}", idx),
-                            zone_type: name.clone(),
+                            zone_type: None,
                             temp_celsius: None,
                             trip_points: Vec::new(),
                             cooling_devices: Vec::new(),
                             policy: None,
                         };
 
-                        // Convert from tenths of Kelvin to Celsius
-                        if let Some(temp_tenths_k) = zone.current_temperature {
+                        // Convert from tenths of Kelvin to Celsius. Zero tenths of
+                        // a kelvin is -273.15 °C, below absolute zero: a zone that
+                        // reports 0 has no reading, and it is not published as one.
+                        if let Some(temp_tenths_k) = zone.current_temperature.filter(|&t| t > 0) {
                             let temp_c = (temp_tenths_k as f32 / 10.0) - 273.15;
                             tz.temp_celsius = Some(temp_c);
                         }

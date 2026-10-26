@@ -74,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero clients, an unreadable Windows adapter query as zero GPUs, or the first
   adapter as the primary driver, and the USB registry fallback no longer
   publishes a PnP instance suffix as the product name.
+- Sensors, fans and thermal zones no longer report values nobody read. Every
+  Linux IIO and hwmon sensor used to be published `active: true` (now
+  `board.sensor.{n}.active` is unavailable where the platform does not say);
+  Jetson fans were always `controllable`; a thermal zone with no `type` file was
+  typed `unknown`, and a Windows zone's WMI instance path was published as its
+  type; a Windows zone reporting 0 tenths of a kelvin was published at
+  -273.15 °C; and an unlabelled Linux CPU temperature input was named
+  `Core N` by its position.
 - Two AMD GPUs are reported as linked by xGMI only when both GPUs'
   `xgmi_hive_id` read and match; the existence of the first GPU's hive
   directory used to be enough. Apple codec rows publish no bit depth, and a

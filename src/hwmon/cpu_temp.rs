@@ -230,9 +230,14 @@ fn read_linux_cpu_temps() -> Vec<HwSensor> {
                         if let Ok(temp_millicelsius) = temp_str.trim().parse::<i32>() {
                             let temp_celsius = temp_millicelsius as f32 / 1000.0;
 
+                            // Without a label, `tempN` is not known to be core N-1:
+                            // temp1 is the package or Tctl on most chips, and the
+                            // label file is what says which. The old fallback
+                            // named it "Core {N-1}" regardless. Name it by the
+                            // input it came from instead.
                             let label = fs::read_to_string(&label_path)
                                 .map(|s| s.trim().to_string())
-                                .unwrap_or_else(|_| format!("Core {}", i - 1));
+                                .unwrap_or_else(|_| format!("{} temp{}", name, i));
 
                             sensors.push(HwSensor {
                                 name: label,

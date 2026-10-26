@@ -2743,11 +2743,18 @@ fn resolve_sensors(out: &mut Vec<Reading>) {
             format!("{base}.type"),
             &format!("{:?}", sensor.sensor_type).to_lowercase(),
         );
-        out.push(Reading::measured(
-            format!("{base}.active"),
-            serde_json::json!(sensor.active),
-            None,
-        ));
+        // Only a read flag is a measurement. Where the platform does not say,
+        // the reading is unavailable, not `false` and not `true`.
+        out.push(match sensor.active {
+            Some(active) => {
+                Reading::measured(format!("{base}.active"), serde_json::json!(active), None)
+            }
+            None => Reading::unavailable(
+                format!("{base}.active"),
+                None,
+                "this platform does not report whether the sensor is active",
+            ),
+        });
     }
 }
 

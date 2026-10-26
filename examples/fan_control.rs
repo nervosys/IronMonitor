@@ -165,7 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "\n{} {} ({}) - {}",
                     temp_icon,
                     zone.name,
-                    zone.zone_type,
+                    zone.zone_type.as_deref().unwrap_or("type not reported"),
                     celsius(zone.temp_celsius)
                 );
 

@@ -94,8 +94,10 @@ pub struct SensorInfo {
     pub values: Vec<SensorValue>,
     /// Sampling frequency in Hz (if available)
     pub sampling_frequency_hz: Option<f64>,
-    /// Whether the sensor is currently active
-    pub active: bool,
+    /// Whether the sensor is currently active, or `None` where the platform
+    /// does not say. This was a literal `true` on Linux, which no reader ever
+    /// checked, so every IIO and hwmon sensor reported itself active.
+    pub active: Option<bool>,
     /// Vendor/manufacturer
     pub vendor: String,
 }
@@ -281,7 +283,9 @@ impl SensorMonitor {
                 device: dev_name,
                 values,
                 sampling_frequency_hz: freq,
-                active: true,
+                // Nothing in the IIO attributes read here says whether the
+                // device is active. It used to be a literal `true`.
+                active: None,
                 vendor: String::new(),
             });
         }
@@ -326,7 +330,7 @@ impl SensorMonitor {
                                     unit: "V".to_string(),
                                 }],
                                 sampling_frequency_hz: None,
-                                active: true,
+                                active: None,
                                 vendor: String::new(),
                             });
                         }
@@ -354,7 +358,7 @@ impl SensorMonitor {
                                     unit: "A".to_string(),
                                 }],
                                 sampling_frequency_hz: None,
-                                active: true,
+                                active: None,
                                 vendor: String::new(),
                             });
                         }
@@ -514,7 +518,7 @@ impl SensorMonitor {
                     device: String::new(),
                     values: Vec::new(),
                     sampling_frequency_hz: None,
-                    active: item["CurrentState"].as_str() == Some("Ready"),
+                    active: item["CurrentState"].as_str().map(|s| s == "Ready"),
                     vendor: String::new(),
                 });
             }
@@ -537,7 +541,7 @@ impl SensorMonitor {
                     device: String::new(),
                     values: Vec::new(),
                     sampling_frequency_hz: None,
-                    active: item["Status"].as_str() == Some("OK"),
+                    active: item["Status"].as_str().map(|s| s == "OK"),
                     vendor: item["Manufacturer"].as_str().unwrap_or("").to_string(),
                 });
             }
@@ -599,7 +603,7 @@ impl SensorMonitor {
                     device: "built-in".into(),
                     values: Vec::new(),
                     sampling_frequency_hz: None,
-                    active: line.contains("Yes"),
+                    active: Some(line.contains("Yes")),
                     vendor: "Apple".into(),
                 });
             }
@@ -610,7 +614,7 @@ impl SensorMonitor {
                     device: "built-in".into(),
                     values: Vec::new(),
                     sampling_frequency_hz: None,
-                    active: line.contains("Yes"),
+                    active: Some(line.contains("Yes")),
                     vendor: "Apple".into(),
                 });
             }
@@ -742,7 +746,7 @@ mod tests {
                 unit: "m/s²".into(),
             }],
             sampling_frequency_hz: Some(100.0),
-            active: true,
+            active: Some(true),
             vendor: "Bosch".into(),
         };
         let json = serde_json::to_string(&sensor).unwrap();

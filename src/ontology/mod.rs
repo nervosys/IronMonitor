@@ -2723,7 +2723,7 @@ impl Ontology {
             K::Identity,
             None,
             P::Measured,
-            false,
+            true,
             "Whether the platform reports this sensor as ready. A present but inactive sensor is a different fact from an absent one.",
         ));
 
