@@ -366,8 +366,17 @@ impl NvidiaGpu {
 
         let mut processes = Vec::new();
 
+        // Each query's failure used to be dropped by `if let Ok`, so a GPU whose
+        // process queries both failed reported no processes. With both failing
+        // nothing was read, and that is an error, not an empty list.
+        let graphics = self.device.running_graphics_processes();
+        let compute = self.device.running_compute_processes();
+        if let (Err(e), Err(_)) = (&graphics, &compute) {
+            return Err(Error::GpuError(format!("NVML process queries failed: {e}")));
+        }
+
         // Get graphics processes
-        if let Ok(graphics_procs) = self.device.running_graphics_processes() {
+        if let Ok(graphics_procs) = graphics {
             for proc in graphics_procs {
                 let memory_usage = match proc.used_gpu_memory {
                     UsedGpuMemory::Used(bytes) => Some(bytes),
@@ -391,7 +400,7 @@ impl NvidiaGpu {
         }
 
         // Get compute processes
-        if let Ok(compute_procs) = self.device.running_compute_processes() {
+        if let Ok(compute_procs) = compute {
             for proc in compute_procs {
                 // Check if already in list (some processes are both graphics and compute)
                 if let Some(existing) = processes.iter_mut().find(|p| p.pid == proc.pid) {
