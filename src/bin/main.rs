@@ -2877,7 +2877,9 @@ fn print_process_info(processes: &ironmonitor::core::process::ProcessStats) {
                 proc.pid,
                 proc.user,
                 proc.gpu,
-                proc.process_type.as_deref().unwrap_or("-"),
+                // "-" read as "no process type". `None` is a type that was not
+                // read, and the state column beside it already says "unknown".
+                proc.process_type.as_deref().unwrap_or("unknown"),
                 proc.state
                     .map_or_else(|| "unknown".to_string(), String::from),
                 proc.cpu_percent
@@ -5343,7 +5345,17 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         }
         ProfileSubcommand::Audit { lines, json } => {
             let path = ironmonitor::profile::apply::audit_log_path();
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            // A missing log is an empty history. Any other read failure used to
+            // print "(no entries)" too, which claimed the log was empty when it
+            // could not be read at all.
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    eprintln!("Could not read audit log {}: {e}", path.display());
+                    std::process::exit(1);
+                }
+            };
             let all: Vec<&str> = content.lines().collect();
             let tail = if all.len() > *lines {
                 &all[all.len() - lines..]

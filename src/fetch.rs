@@ -262,7 +262,11 @@ fn as_text(v: &serde_json::Value) -> String {
 /// carries QUDT units through its ontology should not lose them in the one line
 /// most people read.
 fn as_bytes(v: &serde_json::Value) -> String {
-    let b = v.as_f64().unwrap_or(0.0);
+    // A value that is not a number is shown as it is. It used to fall back to
+    // `0.0`, which printed "0.0 B" for a memory size that was never a number.
+    let Some(b) = v.as_f64() else {
+        return as_text(v);
+    };
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut n = b;
     let mut i = 0;
@@ -274,7 +278,11 @@ fn as_bytes(v: &serde_json::Value) -> String {
 }
 
 fn as_percent(v: &serde_json::Value) -> String {
-    format!("{:.1}%", v.as_f64().unwrap_or(0.0))
+    // As for `as_bytes`: a non-number is shown as it is, not as `0.0%`.
+    match v.as_f64() {
+        Some(p) => format!("{p:.1}%"),
+        None => as_text(v),
+    }
 }
 
 /// The summary lines, in display order.
@@ -290,9 +298,12 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
         line(readings, "Host", "system.hostname", as_text),
         line(readings, "Kernel", "system.kernel.version", as_text),
         line(readings, "Arch", "system.architecture", as_text),
-        line(readings, "Uptime", "system.uptime", |v| {
-            let secs = v.as_f64().unwrap_or(0.0) as u64;
-            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        line(readings, "Uptime", "system.uptime", |v| match v.as_f64() {
+            Some(s) => {
+                let secs = s as u64;
+                format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+            }
+            None => as_text(v),
         }),
         line(readings, "CPU", "cpu.model", as_text),
         // The logical count under a "Cores" label put "Cores 24" directly
@@ -309,13 +320,47 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
     // none gets the `gpu.<none>` diagnostic and its reason, which is the whole
     // point: "no GPU here" and "IronMonitor cannot read GPUs here" look different.
     // A failed enumeration is `gpu.<unreadable>`, which says whether GPUs exist is unknown.
-    let gpus: BTreeMap<&str, &Reading> = readings
+    // Keyed by adapter index, taken from the id, so a label names the same
+    // adapter the ids do.
+    let mut adapters: BTreeMap<usize, Line> = BTreeMap::new();
+    for r in readings
         .iter()
         .filter(|r| r.id.starts_with("gpu.") && r.id.ends_with(".name"))
-        .map(|r| (r.id.as_str(), r))
-        .collect();
+    {
+        if let Some(n) = r.id.split('.').nth(1).and_then(|s| s.parse::<usize>().ok()) {
+            adapters.insert(
+                n,
+                Line {
+                    label: String::new(),
+                    value: r.value.as_ref().map(as_text),
+                    reason: r.note.clone(),
+                },
+            );
+        }
+    }
+    // An adapter that was enumerated but whose query failed is listed even when
+    // it has no name of its own. Before this, `gpu.1.<unreadable>` was ignored
+    // whenever another GPU was readable, so a machine with one good and one
+    // failed adapter showed a single GPU line, as if that were the whole machine.
+    for r in readings {
+        let index =
+            r.id.strip_prefix("gpu.")
+                .and_then(|s| s.strip_suffix(".<unreadable>"))
+                .and_then(|s| s.parse::<usize>().ok());
+        if let Some(n) = index {
+            adapters.entry(n).or_insert_with(|| Line {
+                label: String::new(),
+                value: None,
+                reason: Some(
+                    r.note
+                        .clone()
+                        .unwrap_or_else(|| "this adapter could not be read".to_string()),
+                ),
+            });
+        }
+    }
 
-    if gpus.is_empty() {
+    if adapters.is_empty() {
         let reason = find(readings, "gpu.<unreadable>")
             .or_else(|| find(readings, "gpu.<none>"))
             .and_then(|r| r.note.clone())
@@ -326,16 +371,13 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
             reason: Some(reason),
         });
     } else {
-        for (i, (_, r)) in gpus.iter().enumerate() {
-            out.push(Line {
-                label: if i == 0 {
-                    "GPU".into()
-                } else {
-                    format!("GPU {i}")
-                },
-                value: r.value.as_ref().map(as_text),
-                reason: r.note.clone(),
-            });
+        for (n, mut line) in adapters {
+            line.label = if n == 0 {
+                "GPU".into()
+            } else {
+                format!("GPU {n}")
+            };
+            out.push(line);
         }
     }
 
@@ -503,6 +545,32 @@ mod tests {
         let lines = summary(&readings);
         let gpu = lines.iter().find(|l| l.label == "GPU").unwrap();
         assert_eq!(gpu.value.as_deref(), Some("RTX 4090"));
+    }
+
+    #[test]
+    fn a_failed_adapter_is_listed_beside_a_readable_one() {
+        let readings = [
+            measured("gpu.0.name", serde_json::json!("A")),
+            unavailable("gpu.1.<unreadable>", "NVML: driver not loaded"),
+        ];
+        let gpu: Vec<Line> = summary(&readings)
+            .into_iter()
+            .filter(|l| l.label.starts_with("GPU"))
+            .collect();
+        assert_eq!(gpu.len(), 2, "the failed adapter must not be dropped");
+        assert_eq!(gpu[1].label, "GPU 1");
+        assert_eq!(gpu[1].value, None);
+        assert!(gpu[1].render().contains("NVML: driver not loaded"));
+    }
+
+    #[test]
+    fn a_non_numeric_memory_value_is_shown_not_zeroed() {
+        let readings = [measured("memory.total", serde_json::json!("unknown size"))];
+        let mem = summary(&readings)
+            .into_iter()
+            .find(|l| l.label == "Memory")
+            .unwrap();
+        assert_eq!(mem.value.as_deref(), Some("unknown size"));
     }
 
     #[test]
