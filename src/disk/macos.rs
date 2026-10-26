@@ -61,14 +61,16 @@ impl DiskDevice for MacDisk {
             capacity: self.size_bytes,
             block_size: None,
             disk_type: self.disk_type,
-            interface_type: Some(match self.disk_type {
-                DiskType::NvmeSsd => "NVMe (PCIe)".to_string(),
-                DiskType::SataSsd | DiskType::SataHdd => "SATA".to_string(),
-                DiskType::Usb => "USB".to_string(),
-                DiskType::Scsi => "SCSI".to_string(),
-                DiskType::Virtual => "Virtual".to_string(),
-                DiskType::Unknown => "Unknown".to_string(),
-            }),
+            // An unknown type has no interface to name. This used to be the string
+            // "Unknown", which is not an interface.
+            interface_type: match self.disk_type {
+                DiskType::NvmeSsd => Some("NVMe (PCIe)".to_string()),
+                DiskType::SataSsd | DiskType::SataHdd => Some("SATA".to_string()),
+                DiskType::Usb => Some("USB".to_string()),
+                DiskType::Scsi => Some("SCSI".to_string()),
+                DiskType::Virtual => Some("Virtual".to_string()),
+                DiskType::Unknown => None,
+            },
             // Not read. These asserted an Advanced Format layout — 512
             // logical over 4096 physical — for every disk on every Mac.
             physical_sector_size: None,

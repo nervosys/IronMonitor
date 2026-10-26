@@ -27,9 +27,14 @@ pub trait DiskDevice: Send + Sync {
         Err(Error::NotSupported)
     }
 
-    /// Get filesystem information for mounted devices
+    /// Get filesystem information for mounted devices.
+    ///
+    /// The default is `NotSupported`, not an empty list. An empty list says the
+    /// device has no mounted filesystem, which no reader that inherits this
+    /// default checked. macOS does not override it and was reporting "no mounted
+    /// filesystem" for every disk.
     fn filesystem_info(&self) -> Result<Vec<FilesystemInfo>, Error> {
-        Ok(Vec::new())
+        Err(Error::NotSupported)
     }
 
     /// Get current temperature in Celsius (if available)
@@ -289,9 +294,10 @@ pub struct NvmeInfo {
     pub available_power_states: Vec<NvmePowerState>,
     /// Percentage used (wear indicator, 0-100)
     pub percentage_used: Option<u8>,
-    /// Data units read (512-byte units)
+    /// Data units read, in NVMe's units of 1000 x 512 bytes. Not 512-byte units:
+    /// a count in 512-byte units is 1000 times this one.
     pub data_units_read: Option<u64>,
-    /// Data units written (512-byte units)
+    /// Data units written, in NVMe's units of 1000 x 512 bytes.
     pub data_units_written: Option<u64>,
     /// Host read commands
     pub host_read_commands: Option<u64>,

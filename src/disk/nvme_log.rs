@@ -53,6 +53,10 @@ pub struct HealthLog {
     pub media_errors: u128,
 }
 
+/// One NVMe data unit: the spec counts host data in thousands of 512-byte blocks.
+/// A reader that holds bytes and needs data units divides by this, not by 512.
+pub const BYTES_PER_DATA_UNIT: u128 = 1000 * 512;
+
 /// The health log page is 512 bytes; every field this parses lives below 192.
 const HEALTH_LOG_MIN_LEN: usize = 192;
 
@@ -128,12 +132,12 @@ impl HealthLog {
 
     /// Bytes read, derived from data units of 1000×512 bytes.
     pub fn bytes_read(&self) -> u128 {
-        self.data_units_read * 1000 * 512
+        self.data_units_read * BYTES_PER_DATA_UNIT
     }
 
     /// Bytes written, derived from data units of 1000×512 bytes.
     pub fn bytes_written(&self) -> u128 {
-        self.data_units_written * 1000 * 512
+        self.data_units_written * BYTES_PER_DATA_UNIT
     }
 }
 

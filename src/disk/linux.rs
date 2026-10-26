@@ -356,14 +356,16 @@ impl DiskDevice for LinuxDisk {
             power_state: None,
             available_power_states: Vec::new(),
             percentage_used: smart.as_ref().and_then(|d| d.nvme_percentage_used),
+            // Bytes into NVMe data units of 1000 x 512 bytes, the same unit as the
+            // Windows controller path. Dividing by 512 gave a count 1000 times too large.
             data_units_read: smart
                 .as_ref()
                 .and_then(|d| d.total_bytes_read)
-                .map(|b| b / 512),
+                .map(|b| b / (crate::disk::nvme_log::BYTES_PER_DATA_UNIT as u64)),
             data_units_written: smart
                 .as_ref()
                 .and_then(|d| d.total_bytes_written)
-                .map(|b| b / 512),
+                .map(|b| b / (crate::disk::nvme_log::BYTES_PER_DATA_UNIT as u64)),
             // The same `nvme smart-log` run as the wear and temperature fields
             // above, parsed by the SMART collector. Absent keys stay None.
             host_read_commands: smart.as_ref().and_then(|d| d.nvme_host_read_commands),
