@@ -1949,7 +1949,11 @@ mod tests {
     /// the desktop identity. The desktop 9900X, which has an X suffix, keeps its own.
     #[test]
     fn mobile_ryzen_skus_do_not_take_desktop_identities() {
-        for name in ["AMD Ryzen 7 3700U", "AMD Ryzen 7 5800U", "AMD Ryzen 5 5600G"] {
+        for name in [
+            "AMD Ryzen 7 3700U",
+            "AMD Ryzen 7 5800U",
+            "AMD Ryzen 5 5600G",
+        ] {
             let uarch = CpuMicroarchMonitor::identify_microarch(name, None, None, None);
             assert_eq!(uarch.name, None, "{name} took a desktop generation");
             assert_eq!(uarch.codename, "", "{name} took a desktop codename");
