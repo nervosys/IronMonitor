@@ -1444,12 +1444,14 @@ impl MonitoringBackend {
 
         // Disk states
         // `None` when enumeration failed; `Some(vec![])` only for a machine with
-        // no disks. A disk whose info query fails is left out of the list.
+        // no disks. A disk whose info query fails stays in the list with its
+        // capacity unread; it used to be dropped, so an enumerated disk that
+        // could not be read looked like one that was never there.
         state.disks = self.disks.as_ref().map(|disks| {
             disks
                 .iter()
-                .filter_map(|disk| {
-                    let disk_info = disk.info().ok()?;
+                .map(|disk| {
+                    let capacity = disk.info().ok().and_then(|info| info.capacity);
                     // Try to get filesystem info for mount point
                     let (mount_point, fs_type, used) = if let Ok(fs_info) = disk.filesystem_info() {
                         if let Some(first_fs) = fs_info.first() {
@@ -1468,21 +1470,21 @@ impl MonitoringBackend {
                     // `capacity > 0` was a sentinel for "not read", and the `0.0`
                     // it produced was a usage percentage of a disk nobody measured.
                     // Both sides must be readings for there to be a percentage.
-                    let usage = match (used, disk_info.capacity.filter(|c| *c > 0)) {
+                    let usage = match (used, capacity.filter(|c| *c > 0)) {
                         (Some(used), Some(capacity)) => {
                             Some((used as f32 / capacity as f32) * 100.0)
                         }
                         _ => None,
                     };
 
-                    Some(DiskState {
+                    DiskState {
                         name: disk.name().to_string(),
                         mount_point,
                         filesystem: fs_type,
-                        total_bytes: disk_info.capacity,
+                        total_bytes: capacity,
                         used_bytes: used,
                         usage_percent: usage,
-                    })
+                    }
                 })
                 .collect()
         });
