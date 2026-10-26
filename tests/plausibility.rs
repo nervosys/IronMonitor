@@ -116,14 +116,12 @@ fn cpu_readings_are_physically_possible() {
         sum <= 100.5,
         "aggregate user+system+idle = {sum}%, which exceeds the whole"
     );
-    // A reading of exactly zero across all three means nothing was measured, which
-    // is the honest answer where no CPU reader exists.
-    if platform_has_hardware_readers() {
-        assert!(
-            sum > 0.0,
-            "aggregate user+system+idle is 0% — no CPU time was accounted for at all"
-        );
-    }
+    // This used to also require the three to sum above zero, as a check that
+    // something was measured. It failed on an Ubuntu CI runner: Linux takes these
+    // from tick deltas over a short window, and a window whose few ticks all
+    // land in iowait or steal is a real 0% for all three. A window with no
+    // ticks at all is already `None` in the reader, so the check guarded nothing
+    // the reader does not.
 
     // Per-core figures must be per-core, not one number replicated. Identical
     // cumulative values across every core is the signature of the system aggregate
