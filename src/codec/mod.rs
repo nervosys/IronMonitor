@@ -18,7 +18,7 @@
 //!
 //! let monitor = CodecMonitor::new().unwrap();
 //! for cap in monitor.capabilities() {
-//!     println!("{}: {} {:?} (max {})",
+//!     println!("{}: {} {:?} (max {:?})",
 //!         cap.device, cap.codec, cap.direction, cap.max_resolution);
 //! }
 //! ```
