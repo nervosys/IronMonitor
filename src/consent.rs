@@ -660,9 +660,12 @@ impl ConsentManager {
 
 /// Format timestamp as human-readable string
 fn format_timestamp(timestamp: u64) -> String {
-    let datetime = chrono::DateTime::from_timestamp(timestamp as i64, 0)
-        .unwrap_or(chrono::DateTime::UNIX_EPOCH);
-    datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+    // An unrepresentable timestamp used to fall back to the Unix epoch, which
+    // displayed as 1970-01-01 and read like a real date. Say it is unknown.
+    match chrono::DateTime::from_timestamp(timestamp as i64, 0) {
+        Some(datetime) => datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        None => "unknown time".to_string(),
+    }
 }
 
 #[cfg(test)]

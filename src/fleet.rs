@@ -196,6 +196,12 @@ impl FleetManager {
 
     /// Record metrics for a host
     pub fn record_metrics(&mut self, host_id: &str, metrics: HostMetrics) {
+        // A report in which every field is unread is not evidence the host is up.
+        // It used to mark the host Online anyway. Keep the host's prior status,
+        // last-seen time and metrics instead.
+        if !Self::has_any_reading(&metrics) {
+            return;
+        }
         let now = now_secs();
         if let Some(host) = self.hosts.get_mut(host_id) {
             host.status = HostStatus::Online;
@@ -204,6 +210,19 @@ impl FleetManager {
             Self::check_thresholds(&mut self.alerts, &self.config.thresholds, host_id, &metrics);
             host.latest_metrics = Some(metrics);
         }
+    }
+
+    /// Whether at least one metric in the report was actually read.
+    fn has_any_reading(m: &HostMetrics) -> bool {
+        m.cpu_usage_percent.is_some()
+            || m.memory_usage_percent.is_some()
+            || m.gpu_temperature_max.is_some()
+            || m.gpu_utilization_max.is_some()
+            || m.disk_usage_percent.is_some()
+            || m.network_rx_bytes_sec.is_some()
+            || m.network_tx_bytes_sec.is_some()
+            || m.process_count.is_some()
+            || m.uptime_seconds.is_some()
     }
 
     fn check_thresholds(
@@ -624,6 +643,54 @@ mod tests {
             ..host(Some(40.0))
         };
         assert_eq!(FleetManager::host_health_score(&unknown), None);
+    }
+
+    /// A report with no reading at all must not mark a host Online. The host keeps
+    /// its prior status, and a host that was never heard from stays unheard.
+    #[test]
+    fn a_report_with_no_readings_does_not_mark_host_online() {
+        let mut fleet = FleetManager::new(FleetConfig {
+            fleet_name: "f".into(),
+            thresholds: FleetThresholds::default(),
+        });
+        fleet.register_host("a", "a");
+        let empty = HostMetrics {
+            cpu_usage_percent: None,
+            memory_usage_percent: None,
+            gpu_temperature_max: None,
+            gpu_utilization_max: None,
+            disk_usage_percent: None,
+            network_rx_bytes_sec: None,
+            network_tx_bytes_sec: None,
+            process_count: None,
+            uptime_seconds: None,
+            timestamp: 0,
+        };
+        fleet.record_metrics("a", empty);
+        let a = &fleet.hosts["a"];
+        assert_eq!(a.status, HostStatus::Unknown);
+        assert!(a.latest_metrics.is_none());
+
+        // A host already Offline stays Offline after an empty report.
+        fleet.hosts.get_mut("a").unwrap().status = HostStatus::Offline;
+        let empty_again = HostMetrics {
+            cpu_usage_percent: None,
+            memory_usage_percent: None,
+            gpu_temperature_max: None,
+            gpu_utilization_max: None,
+            disk_usage_percent: None,
+            network_rx_bytes_sec: None,
+            network_tx_bytes_sec: None,
+            process_count: None,
+            uptime_seconds: None,
+            timestamp: 0,
+        };
+        fleet.record_metrics("a", empty_again);
+        assert_eq!(fleet.hosts["a"].status, HostStatus::Offline);
+
+        // One real reading is enough to mark it Online.
+        fleet.record_metrics("a", host(None).latest_metrics.unwrap());
+        assert_eq!(fleet.hosts["a"].status, HostStatus::Online);
     }
 
     /// The weights still sum to one when every component is present.

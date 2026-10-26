@@ -1063,7 +1063,7 @@ fn resolve_cache_detail(out: &mut Vec<Reading>) {
             format!("{base}.associativity"),
             cache.associativity.map(|w| serde_json::json!(w)),
             Some(U::Count),
-            "the platform reported no way count for this cache; Windows reports a fully associative cache as none",
+            "the platform reported no way count for this cache; a fully associative cache is not this case, since Windows reports it as 0xFF, which reads as 0",
         );
         push_opt(
             out,

@@ -417,6 +417,7 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
     #[serde(rename_all = "PascalCase")]
     struct Win32Fan {
         name: Option<String>,
+        device_id: Option<String>,
     }
 
     let mut fans = HashMap::new();
@@ -426,15 +427,20 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
         if let Ok(wmi_con) = WMIConnection::with_namespace_path("root\\CIMV2", com_con) {
             // Try Win32_Fan class (may not be populated on all systems). No rows
             // means no fans; a failed query is an error, not an empty list.
-            let wmi_fans: Vec<Win32Fan> =
-                wmi_con
-                    .raw_query("SELECT Name FROM Win32_Fan")
-                    .map_err(|e| {
-                        crate::error::IronError::System(format!("WMI query `Win32_Fan`: {e}"))
-                    })?;
+            let wmi_fans: Vec<Win32Fan> = wmi_con
+                .raw_query("SELECT Name, DeviceID FROM Win32_Fan")
+                .map_err(|e| {
+                    crate::error::IronError::System(format!("WMI query `Win32_Fan`: {e}"))
+                })?;
 
-            for (idx, fan) in wmi_fans.iter().enumerate() {
-                let name = fan.name.clone().unwrap_or_else(|| format!("Fan{}", idx));
+            for fan in wmi_fans.iter() {
+                // The map is keyed by name. A fan with neither a Name nor a DeviceID
+                // is skipped rather than given an invented one: a positional
+                // "Fan{idx}" used to be made up here and named nothing the hardware
+                // reported.
+                let Some(name) = fan.name.clone().or_else(|| fan.device_id.clone()) else {
+                    continue;
+                };
                 // Win32_Fan reports no speed, RPM or profile. Its `ActiveCooling` boolean
                 // used to be written as the profile "active" or "idle"; it says whether the
                 // fan is working, not what mode it is in, and FanInfo has no field for it,

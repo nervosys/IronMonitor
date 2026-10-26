@@ -225,6 +225,25 @@ impl SystemStats {
     }
 }
 
+/// Whether a `/proc` entry name is a process id. Only numeric names are processes;
+/// the rest of `/proc` is kernel and bookkeeping entries.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_proc_pid_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Count the processes in `/proc`, or `None` if it cannot be listed.
+#[cfg(target_os = "linux")]
+fn count_proc_processes() -> Option<u32> {
+    use std::fs;
+    let entries = fs::read_dir("/proc").ok()?;
+    let count = entries
+        .flatten()
+        .filter(|e| is_proc_pid_name(&e.file_name().to_string_lossy()))
+        .count();
+    u32::try_from(count).ok()
+}
+
 /// Parse the three averages at the start of `/proc/loadavg`. All three or none:
 /// a `LoadAverage` with one figure unread would pass off a guess as a reading.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -289,11 +308,14 @@ mod linux {
             if parts.len() >= 5 {
                 stats.load_average = parse_loadavg(&content);
 
-                // Parse running/total processes from "1/234" format
-                if let Some((running, total)) = parts[3].split_once('/') {
+                // Running count from "1/234": the first figure is `procs_running`.
+                // The second is the number of scheduling entities, which are threads,
+                // so it is not the process count. It used to be reported as one.
+                if let Some((running, _threads)) = parts[3].split_once('/') {
                     stats.running_processes = running.parse().ok();
-                    stats.total_processes = total.parse().ok();
                 }
+                // Count one entry per process in /proc, as Windows counts them.
+                stats.total_processes = count_proc_processes();
             }
         }
 
@@ -519,6 +541,25 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_numeric_proc_entries_are_processes() {
+        assert!(is_proc_pid_name("1"));
+        assert!(is_proc_pid_name("4242"));
+        assert!(!is_proc_pid_name(""));
+        assert!(!is_proc_pid_name("self"));
+        assert!(!is_proc_pid_name("cpuinfo"));
+        assert!(!is_proc_pid_name("12a"));
+    }
+
+    /// Linux lists every process under /proc, so a live system has at least the
+    /// running test process. The count is the number of pids, not loadavg's threads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_count_includes_the_running_process() {
+        let count = count_proc_processes().expect("/proc is readable");
+        assert!(count >= 1);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

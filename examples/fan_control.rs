@@ -120,7 +120,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   Control: {:?}", fan.control_mode);
                 println!(
                     "   Controllable: {}",
-                    if fan.controllable { "✅" } else { "❌" }
+                    match fan.controllable {
+                        Some(true) => "✅",
+                        Some(false) => "❌",
+                        None => "unknown",
+                    }
                 );
 
                 // Linked temperature
@@ -236,7 +240,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Thermal zones: {}", monitor.thermal_zones().len());
 
             // Show controllable fans
-            let controllable: Vec<_> = monitor.fans().iter().filter(|f| f.controllable).collect();
+            let controllable: Vec<_> = monitor
+                .fans()
+                .iter()
+                .filter(|f| f.controllable == Some(true))
+                .collect();
             if !controllable.is_empty() {
                 println!("\n   Controllable fans:");
                 for fan in controllable {

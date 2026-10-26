@@ -171,8 +171,10 @@ pub struct FanInfo {
     pub available_profiles: Vec<FanProfile>,
     /// Control mode
     pub control_mode: FanControlMode,
-    /// Is fan controllable
-    pub controllable: bool,
+    /// Whether the fan can be commanded. `None` when the reader could not establish
+    /// it: a failed metadata read on the PWM file used to report `false`, which
+    /// read as a fact about the fan.
+    pub controllable: Option<bool>,
     /// PWM enable state (for hwmon)
     pub pwm_enable: Option<u8>,
     /// Linked thermal zone
@@ -202,7 +204,7 @@ impl FanInfo {
             // controlled at all.
             available_profiles: Vec::new(),
             control_mode: FanControlMode::Auto,
-            controllable: false,
+            controllable: None,
             pwm_enable: None,
             thermal_zone: None,
             linked_temp_celsius: None,
@@ -656,14 +658,15 @@ impl FanMonitor {
                     if let Ok(enable) = enable_str.trim().parse::<u8>() {
                         fan.pwm_enable = Some(enable);
                         fan.control_mode = hwmon_enable_mode(enable);
-                        let pwm_writable = fs::metadata(&pwm_file)
-                            .map(|m| !m.permissions().readonly())
-                            .unwrap_or(false);
-                        fan.controllable = hwmon_controllable(enable, pwm_writable);
+                        // An unreadable PWM file leaves controllability unknown (`None`),
+                        // not false.
+                        fan.controllable = fs::metadata(&pwm_file)
+                            .ok()
+                            .map(|m| hwmon_controllable(enable, !m.permissions().readonly()));
                         if fan.control_mode == FanControlMode::Pwm {
                             fan.profile = FanProfile::Manual;
                         }
-                        if fan.controllable {
+                        if fan.controllable == Some(true) {
                             fan.available_profiles = vec![FanProfile::Manual, FanProfile::Auto];
                         }
                     }
@@ -754,10 +757,11 @@ impl FanMonitor {
 
             // Controllable only if the duty file takes writes, as the hwmon path
             // checks. This was a literal `true`, so every Jetson fan was offered
-            // as controllable whether or not the file could be written.
+            // as controllable whether or not the file could be written. A failed
+            // metadata read leaves it unknown (`None`), not false.
             fan.controllable = fs::metadata(path.join("target_pwm"))
-                .map(|m| !m.permissions().readonly())
-                .unwrap_or(false);
+                .ok()
+                .map(|m| !m.permissions().readonly());
             self.fans.push(fan);
         }
 
@@ -970,7 +974,8 @@ impl FanMonitor {
 
                     let mut fan = FanInfo::new(&name);
                     fan.fan_type = FanType::System;
-                    fan.controllable = false; // WMI doesn't support control
+                    // Not read: this query does not check control. It used to be `false`.
+                    fan.controllable = None;
 
                     // Win32_Fan exposes no tachometer reading, so `rpm` stays None.
                     //
@@ -1025,7 +1030,8 @@ impl FanMonitor {
                         if !self.fans.iter().any(|f| f.name == name) {
                             let mut fan = FanInfo::new(&name);
                             fan.fan_type = FanType::System;
-                            fan.controllable = false;
+                            // Not read, as for the Win32_Fan entries above.
+                            fan.controllable = None;
                             self.fans.push(fan);
                         }
                     }
@@ -1311,7 +1317,7 @@ mod tests {
             fan.speed_percent, None,
             "a fan with no speed source has no speed, not a speed of zero"
         );
-        assert!(!fan.controllable);
+        assert_eq!(fan.controllable, None);
     }
 
     #[test]

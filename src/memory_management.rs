@@ -1091,44 +1091,19 @@ impl MemoryMonitor {
     fn macos_top_processes(&self, limit: usize) -> Vec<ProcessMemory> {
         use std::process::Command;
 
-        let mut processes = Vec::new();
-
+        // No `-r`: that sorts by CPU, and the list must rank by memory. The sort
+        // happens in `parse_ps_memory_rows`, before `limit` is applied.
         let output = Command::new("ps")
-            .args(["-axo", "pid,rss,vsz,comm", "-r"])
+            .args(["-axo", "pid,rss,vsz,comm"])
             .output();
 
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1).take(limit) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    // A row whose pid or RSS did not parse is skipped, not ranked as pid 0.
-                    let (Ok(pid), Ok(rss_kb)) = (parts[0].parse::<u32>(), parts[1].parse::<u64>())
-                    else {
-                        continue;
-                    };
-                    let rss = rss_kb * 1024;
-                    let vms = parts[2].parse::<u64>().ok().map(|kb| kb * 1024);
-                    let name = parts[3..].join(" ");
-
-                    let memory_percent = (self.memory.total > 0)
-                        .then(|| (rss as f64 / self.memory.total as f64) * 100.0);
-
-                    processes.push(ProcessMemory {
-                        pid,
-                        name,
-                        rss: Some(rss),
-                        vms,
-                        shared: None,
-                        private: None,
-                        swap: None,
-                        memory_percent,
-                    });
-                }
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                parse_ps_memory_rows(&stdout, self.memory.total, limit)
             }
+            Err(_) => Vec::new(),
         }
-
-        processes
     }
 
     // ==================== Control Functions ====================
@@ -1289,6 +1264,43 @@ pub fn format_bytes(bytes: u64) -> String {
 /// Parse `/proc/vmstat` into the counters. A counter whose line is absent or does not
 /// parse stays `None`.
 ///
+/// Parse `ps -axo pid,rss,vsz,comm` output (header line first, RSS in KiB) into the
+/// `limit` largest processes by resident memory. The rows are sorted before the
+/// limit is applied. The list used to come from `ps -r`, which sorts by CPU, so
+/// the "top memory consumers" were the top CPU users.
+#[cfg(any(target_os = "macos", test))]
+fn parse_ps_memory_rows(stdout: &str, memory_total: u64, limit: usize) -> Vec<ProcessMemory> {
+    let mut processes: Vec<ProcessMemory> = Vec::new();
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        // A row whose pid or RSS did not parse is skipped, not ranked as pid 0.
+        let (Ok(pid), Ok(rss_kb)) = (parts[0].parse::<u32>(), parts[1].parse::<u64>()) else {
+            continue;
+        };
+        let rss = rss_kb * 1024;
+        let vms = parts[2].parse::<u64>().ok().map(|kb| kb * 1024);
+        let name = parts[3..].join(" ");
+        let memory_percent = (memory_total > 0).then(|| (rss as f64 / memory_total as f64) * 100.0);
+
+        processes.push(ProcessMemory {
+            pid,
+            name,
+            rss: Some(rss),
+            vms,
+            shared: None,
+            private: None,
+            swap: None,
+            memory_percent,
+        });
+    }
+    processes.sort_by_key(|p| std::cmp::Reverse(p.rss));
+    processes.truncate(limit);
+    processes
+}
+
 /// `pages_allocated` sums every `pgalloc_*` zone. It used to take `pgalloc_normal`
 /// alone, which is one zone; the DMA, DMA32, movable and device zones are pages too.
 #[cfg(target_os = "linux")]
@@ -1433,5 +1445,34 @@ mod tests {
         assert!(!MemoryMonitor::is_zram_device("zramx"));
         assert!(!MemoryMonitor::is_zram_device("sda"));
         assert!(!MemoryMonitor::is_zram_device("nvme0n1"));
+    }
+
+    /// Captured shape of `ps -axo pid,rss,vsz,comm`, where the CPU-busiest process
+    /// is not the largest. The list must be ordered by RSS, and the limit must apply
+    /// after that ordering, not to the first rows `ps` happened to print.
+    #[test]
+    fn ps_rows_are_ranked_by_memory_before_the_limit() {
+        let stdout = concat!(
+            "  PID   RSS      VSZ COMM\n",
+            "  101  2048   400000 /usr/bin/busy\n",
+            "  102 900000 1200000 /Applications/Big App.app/Contents/MacOS/Big\n",
+            "  103 150000  600000 kernel_task\n",
+            "  104  not-a-number 1 broken\n",
+            "  105 300000  700000 /usr/sbin/mid\n",
+        );
+        let rows = parse_ps_memory_rows(stdout, 16 * 1024 * 1024 * 1024, 2);
+        let names: Vec<&str> = rows.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "/Applications/Big App.app/Contents/MacOS/Big",
+                "/usr/sbin/mid"
+            ]
+        );
+        assert_eq!(rows[0].rss, Some(900000 * 1024));
+        assert_eq!(rows[0].pid, 102);
+        // The name keeps its spaces and the percentage is taken from the total.
+        let pct = rows[0].memory_percent.expect("total is known");
+        assert!((pct - 900000.0 * 1024.0 / (16.0 * 1024.0 * 1024.0 * 1024.0) * 100.0).abs() < 1e-9);
     }
 }

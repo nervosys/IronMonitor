@@ -60,10 +60,28 @@ pub struct IommuGroup {
     pub id: u32,
     /// Devices in this group.
     pub devices: Vec<IommuDevice>,
-    /// Whether this group has good isolation (single device or ACS).
-    pub isolated: bool,
-    /// Whether suitable for VFIO passthrough.
-    pub passthrough_candidate: bool,
+    /// Whether devices in this group are isolated from one another.
+    ///
+    /// `Some(true)` only for a single-device group, where isolation is definitional.
+    /// `None` for a multi-device group: whether they are isolated depends on PCIe
+    /// ACS, which this reader does not read. It used to be `devices.len() <= 1`,
+    /// which reported a multi-device group as `false` as if ACS had been checked.
+    pub isolated: Option<bool>,
+    /// Whether suitable for VFIO passthrough. Follows `isolated`: `None` where
+    /// isolation is unknown, so such a group is not counted as a candidate.
+    pub passthrough_candidate: Option<bool>,
+}
+
+/// Isolation and passthrough suitability for a group's devices. Only a
+/// single-device group is known to be isolated; for any other group the answer
+/// depends on ACS, which is not read, so both values are `None`.
+#[cfg(any(target_os = "linux", test))]
+fn group_isolation(devices: &[IommuDevice]) -> (Option<bool>, Option<bool>) {
+    if devices.len() != 1 {
+        return (None, None);
+    }
+    let candidate = !devices[0].bdf.ends_with(".0") || devices[0].driver.is_some();
+    (Some(true), Some(candidate))
 }
 
 /// IOMMU overview.
@@ -134,7 +152,7 @@ impl IommuMonitor {
         self.overview
             .groups
             .iter()
-            .filter(|g| g.passthrough_candidate)
+            .filter(|g| g.passthrough_candidate == Some(true))
             .collect()
     }
 
@@ -178,7 +196,10 @@ impl IommuMonitor {
         }
 
         let total = groups.len() as u32;
-        let passthrough = groups.iter().filter(|g| g.passthrough_candidate).count() as u32;
+        let passthrough = groups
+            .iter()
+            .filter(|g| g.passthrough_candidate == Some(true))
+            .count() as u32;
 
         // Not read. See the field's doc: `/sys/class/iommu` existing is not
         // evidence of remapping, so no value is inferred from it.
@@ -280,11 +301,7 @@ impl IommuMonitor {
             }
         }
 
-        let isolated = devices.len() <= 1;
-        let passthrough_candidate = isolated
-            && devices
-                .iter()
-                .any(|d| !d.bdf.ends_with(".0") || d.driver.is_some());
+        let (isolated, passthrough_candidate) = group_isolation(&devices);
 
         Ok(IommuGroup {
             id: gid,
@@ -408,11 +425,36 @@ mod tests {
                 driver: Some("nvidia".into()),
                 vfio_bound: false,
             }],
-            isolated: true,
-            passthrough_candidate: true,
+            isolated: Some(true),
+            passthrough_candidate: Some(true),
         };
-        assert!(group.isolated);
+        assert_eq!(group.isolated, Some(true));
         assert_eq!(group.devices.len(), 1);
+    }
+
+    /// ACS is not read, so a multi-device group's isolation is unknown, not false.
+    #[test]
+    fn multi_device_group_isolation_is_unknown_not_false() {
+        let dev = |bdf: &str| IommuDevice {
+            bdf: bdf.into(),
+            description: "d".into(),
+            driver: None,
+            vfio_bound: false,
+        };
+        let multi = vec![dev("0000:01:00.0"), dev("0000:01:00.1")];
+        assert_eq!(group_isolation(&multi), (None, None));
+        assert_eq!(group_isolation(&[]), (None, None));
+
+        // A single device at function 0 with no driver is not a candidate; with a
+        // driver, or at a non-zero function, it is.
+        assert_eq!(
+            group_isolation(&[dev("0000:02:00.0")]),
+            (Some(true), Some(false))
+        );
+        assert_eq!(
+            group_isolation(&[dev("0000:02:00.1")]),
+            (Some(true), Some(true))
+        );
     }
 
     #[test]
@@ -433,10 +475,10 @@ mod tests {
                     vfio_bound: false,
                 },
             ],
-            isolated: false,
-            passthrough_candidate: false,
+            isolated: None,
+            passthrough_candidate: None,
         };
-        assert!(!group.isolated);
+        assert_eq!(group.isolated, None);
     }
 
     #[test]
