@@ -2492,6 +2492,41 @@ fn handle_jetson_command(cmd: &JetsonSubcommand) -> Result<(), Box<dyn std::erro
     }
 }
 
+/// The decision `run_jetson_write` takes before any side effect.
+///
+/// Kept free of printing, auditing and sudo, so the refusal can be tested on
+/// any platform. `run_jetson_write` returns on `Refuse` before it calls the
+/// action, so nothing that writes system state is reached without confirmation.
+#[cfg_attr(
+    not(all(feature = "cli", feature = "jetson-utils", target_os = "linux")),
+    allow(dead_code)
+)]
+#[derive(Debug, PartialEq, Eq)]
+enum WriteGate {
+    /// Not confirmed: nothing runs, and the attempt is audited with this status.
+    Refuse {
+        status: ironmonitor::profile::apply::ApplyStatus,
+        message: &'static str,
+    },
+    /// Confirmed: the operation may run.
+    Proceed,
+}
+
+#[cfg_attr(
+    not(all(feature = "cli", feature = "jetson-utils", target_os = "linux")),
+    allow(dead_code)
+)]
+fn write_gate(confirm: bool) -> WriteGate {
+    if confirm {
+        WriteGate::Proceed
+    } else {
+        WriteGate::Refuse {
+            status: ironmonitor::profile::apply::ApplyStatus::NeedsConfirm,
+            message: "Apply rejected: explicit confirmation required (pass --confirm).",
+        }
+    }
+}
+
 /// Run a Jetson write behind `--confirm`, and audit the attempt either way.
 ///
 /// This is the gate `ironmon profile set` uses. Without `--confirm` the
@@ -2512,16 +2547,9 @@ fn run_jetson_write<T>(
     use ironmonitor::IronError;
 
     let requested = SettingValue::Text(requested.to_string());
-    if !confirm {
+    if let WriteGate::Refuse { status, message } = write_gate(confirm) {
         println!("Would {}. Nothing was written.", description);
-        let message = "Apply rejected: explicit confirmation required (pass --confirm).";
-        record_attempt(
-            setting_id,
-            subsystem,
-            requested,
-            ApplyStatus::NeedsConfirm,
-            message,
-        );
+        record_attempt(setting_id, subsystem, requested, status, message);
         return Err(message.into());
     }
 
@@ -2819,7 +2847,14 @@ fn format_size(kb: u64) -> String {
 #[allow(dead_code)]
 fn print_process_info(processes: &ironmonitor::core::process::ProcessStats) {
     println!("=== Process Information ===");
-    println!("Total Processes: {}", processes.process_count());
+    // The list is the GPU process table, which only the Jetson nvmap reader fills.
+    // Where that table is absent nothing was read, and an empty list is not a
+    // count of zero processes. It used to print `0` there.
+    if processes.processes.is_empty() && processes.total_gpu_memory_kb.is_none() {
+        println!("Total Processes: unknown");
+    } else {
+        println!("Total Processes: {}", processes.process_count());
+    }
     match processes.total_gpu_memory_kb {
         Some(kb) => println!("Total GPU Memory: {:.2} MB\n", kb as f64 / 1024.0),
         None => println!("Total GPU Memory: unknown\n"),
@@ -3080,6 +3115,28 @@ mod ai_input_tests {
             Some("quit".into())
         );
         assert_eq!(super::read_ai_input(&mut input).unwrap(), None);
+    }
+}
+
+#[cfg(all(test, feature = "cli"))]
+mod jetson_write_gate_tests {
+    use super::{write_gate, WriteGate};
+    use ironmonitor::profile::apply::ApplyStatus;
+
+    #[test]
+    fn unconfirmed_write_is_refused_and_audited_as_needs_confirm() {
+        match write_gate(false) {
+            WriteGate::Refuse { status, message } => {
+                assert_eq!(status, ApplyStatus::NeedsConfirm);
+                assert!(message.contains("--confirm"), "message was: {message}");
+            }
+            WriteGate::Proceed => panic!("a write without --confirm must not proceed"),
+        }
+    }
+
+    #[test]
+    fn confirmed_write_may_proceed() {
+        assert_eq!(write_gate(true), WriteGate::Proceed);
     }
 }
 

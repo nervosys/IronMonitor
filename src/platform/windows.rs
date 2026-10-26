@@ -1439,7 +1439,7 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
     };
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
 
     let mut stats = ProcessStats::empty();
@@ -1467,7 +1467,6 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
 
                 // Try to open process for more info
                 let mut memory_kb = 0u64;
-                let mut cpu_percent: Option<f32> = None;
 
                 if let Ok(process_handle) =
                     OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
@@ -1486,37 +1485,18 @@ pub fn read_process_stats() -> Result<crate::core::process::ProcessStats> {
                         memory_kb = mem_counters.WorkingSetSize as u64 / 1024;
                     }
 
-                    // Get CPU times for utilization calculation
-                    let mut creation_time = mem::zeroed();
-                    let mut exit_time = mem::zeroed();
-                    let mut kernel_time = mem::zeroed();
-                    let mut user_time = mem::zeroed();
-
-                    if GetProcessTimes(
-                        process_handle,
-                        &mut creation_time,
-                        &mut exit_time,
-                        &mut kernel_time,
-                        &mut user_time,
-                    )
-                    .is_ok()
-                    {
-                        let kernel = (kernel_time.dwHighDateTime as u64) << 32
-                            | kernel_time.dwLowDateTime as u64;
-                        let user = (user_time.dwHighDateTime as u64) << 32
-                            | user_time.dwLowDateTime as u64;
-
-                        // Simple estimate: total CPU time / uptime
-                        let total_time = kernel + user;
-                        let uptime_100ns = get_system_uptime().as_nanos() as u64 / 100;
-                        if uptime_100ns > 0 {
-                            let percent = (total_time as f64 / uptime_100ns as f64 * 100.0) as f32;
-                            cpu_percent = Some(percent.min(100.0));
-                        }
-                    }
-
                     let _ = CloseHandle(process_handle);
                 }
+
+                // Not read. This was (kernel + user time) / system uptime, clamped
+                // to 100. That is neither current load nor a lifetime average: the
+                // denominator was the machine's uptime rather than the process's
+                // lifetime, and the clamp hid every multi-core value above 100.
+                // A CPU share is a rate, and a rate needs two samples; this
+                // snapshot reader keeps no previous sample per pid. The ontology's
+                // `process.{pid}.cpu` is differenced over an interval by the
+                // process monitor.
+                let cpu_percent: Option<f32> = None;
 
                 // Not read. This was `R` whenever the process had a thread, which
                 // is every process, so the R/S split it produced was a constant.
