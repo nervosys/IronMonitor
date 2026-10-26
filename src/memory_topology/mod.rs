@@ -791,9 +791,11 @@ impl MemoryTopologyMonitor {
             None
         };
 
+        // Only the configured voltage is the operating voltage. "Minimum Voltage"
+        // is the lowest the module is rated to accept, a specification, and it
+        // used to stand in here when the configured figure was absent.
         let voltage = fields
             .get("Configured Voltage")
-            .or(fields.get("Minimum Voltage"))
             .and_then(|s| {
                 s.split_whitespace()
                     .next()
@@ -965,8 +967,16 @@ impl MemoryTopologyMonitor {
                     .as_u64()
                     .filter(|v| *v > 0)
                     .map(|v| v as u32);
-                let data_width = item["DataWidth"].as_u64().map(|w| w as u32);
-                let total_width = item["TotalWidth"].as_u64().map(|w| w as u32);
+                // A zero width is no width. Kept, it made a module with unread
+                // widths answer "no ECC" (equal zeros).
+                let data_width = item["DataWidth"]
+                    .as_u64()
+                    .filter(|w| *w > 0)
+                    .map(|w| w as u32);
+                let total_width = item["TotalWidth"]
+                    .as_u64()
+                    .filter(|w| *w > 0)
+                    .map(|w| w as u32);
 
                 let smbios_type = item["SMBIOSMemoryType"].as_u64().unwrap_or(0);
                 let memory_type = match smbios_type {
@@ -1649,6 +1659,51 @@ Physical Memory Array\n\
             MemoryTopologyMonitor::parse_dmidecode_max_capacity(""),
             None
         );
+    }
+
+    /// The configured voltage is the operating voltage. The rated minimum is a
+    /// specification and is not published in its place.
+    #[test]
+    fn voltage_is_the_configured_voltage_and_never_the_minimum() {
+        let fields = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let only_minimum = fields(&[
+            ("Locator", "DIMM_A1"),
+            ("Size", "16 GB"),
+            ("Minimum Voltage", "1.2 V"),
+        ]);
+        let dimm = MemoryTopologyMonitor::dimm_from_fields(&only_minimum).unwrap();
+        assert_eq!(dimm.voltage, None, "a minimum is not an operating voltage");
+
+        let configured = fields(&[
+            ("Locator", "DIMM_A1"),
+            ("Size", "16 GB"),
+            ("Minimum Voltage", "1.2 V"),
+            ("Configured Voltage", "1.35 V"),
+        ]);
+        let dimm = MemoryTopologyMonitor::dimm_from_fields(&configured).unwrap();
+        assert_eq!(dimm.voltage, Some(1.35));
+    }
+
+    /// WMI's zero width is no width, so no ECC answer is given for it.
+    #[test]
+    fn zero_widths_from_wmi_are_unread_not_equal_widths() {
+        let unread = MemoryTopologyMonitor::parse_windows_wmi(
+            r#"{"Capacity": 17179869184, "DataWidth": 0, "TotalWidth": 0}"#,
+        )
+        .unwrap();
+        assert_eq!(unread[0].data_width_bits, None);
+        assert_eq!(unread[0].is_ecc(), None);
+
+        let ecc = MemoryTopologyMonitor::parse_windows_wmi(
+            r#"[{"Capacity": 17179869184, "DataWidth": 64, "TotalWidth": 72}]"#,
+        )
+        .unwrap();
+        assert_eq!(ecc[0].is_ecc(), Some(true));
     }
 
     #[test]

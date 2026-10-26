@@ -82,9 +82,30 @@ pub struct PciLinkInfo {
     pub max_speed: Option<String>,
     /// Maximum supported width, or `None` when the platform did not report it.
     pub max_width: Option<String>,
-    /// PCIe generation (1-6), from the transfer rate in GT/s. `None` when the
-    /// rate was not read or is not one PCIe defines.
+    /// PCIe generation (1-6) of the device's maximum link speed, on every
+    /// platform. `None` when the rate was not read or is not one PCIe defines.
+    /// Windows used to take it from the current speed, so the same field meant
+    /// the negotiated generation there and the maximum on Linux.
     pub generation: Option<u8>,
+}
+
+/// The PCIe generation for a Windows link-speed encoding, which is the
+/// generation number itself (4 is Gen 4). Only 1 to 6 are generations PCIe
+/// defines. A zero is no reading, and used to be stored as generation 0.
+#[cfg(any(target_os = "windows", test))]
+fn pcie_generation_of_encoding(encoding: u32) -> Option<u8> {
+    u8::try_from(encoding)
+        .ok()
+        .filter(|generation| (1..=6).contains(generation))
+}
+
+/// A Linux `power_state` attribute as a power state. The kernel writes
+/// `unknown` when it cannot tell the state and `error` when the read failed;
+/// neither is a D-state, so neither is kept.
+#[cfg(any(target_os = "linux", test))]
+fn power_state_of(text: &str) -> Option<String> {
+    let state = text.trim();
+    (!state.is_empty() && !matches!(state, "unknown" | "error")).then(|| state.to_string())
 }
 
 /// Parse the transfer rate, in GT/s, from a sysfs link-speed attribute such as
@@ -378,7 +399,7 @@ impl PciDeviceMonitor {
                 .and_then(|n| u32::try_from(n).ok());
 
             // Power state
-            let power_state = Self::present(Self::read_trimmed(&base.join("power_state")));
+            let power_state = power_state_of(&Self::read_trimmed(&base.join("power_state")));
 
             // SR-IOV
             let sriov_capable = base.join("sriov_totalvfs").exists();
@@ -719,7 +740,8 @@ impl PciDeviceMonitor {
         let current_width = read_u32(PID_CURRENT_LINK_WIDTH)?;
         let max_width = read_u32(PID_MAX_LINK_WIDTH).map(|w| format!("x{w}"));
         let current_speed = read_u32(PID_CURRENT_LINK_SPEED);
-        let max_speed = read_u32(PID_MAX_LINK_SPEED).map(Self::link_speed_label);
+        let max_encoding = read_u32(PID_MAX_LINK_SPEED);
+        let max_speed = max_encoding.map(Self::link_speed_label);
 
         Some(PciLinkInfo {
             speed: current_speed
@@ -728,7 +750,8 @@ impl PciDeviceMonitor {
             width: format!("x{current_width}"),
             max_speed,
             max_width,
-            generation: current_speed.map(|s| s.min(u8::MAX as u32) as u8),
+            // The device's maximum, as on Linux, so the field has one meaning.
+            generation: max_encoding.and_then(pcie_generation_of_encoding),
         })
     }
 
@@ -842,7 +865,10 @@ impl PciDeviceMonitor {
                 };
 
                 self.devices.push(PciDeviceInfo {
-                    address: Some(slot),
+                    // A record with no slot name has no location. `""` used to
+                    // become the address, and the ontology then keyed the device
+                    // under `pci.unnamed`.
+                    address: (!slot.is_empty()).then_some(slot),
                     vendor_id,
                     device_id,
                     subsystem_vendor_id: None,
@@ -1146,6 +1172,27 @@ mod tests {
         );
         assert_eq!(base_class_of_hardware_ids(""), None);
         assert_eq!(base_class_of_hardware_ids("PCI\\VEN_8086&CC_zz0000"), None);
+    }
+
+    /// The kernel's `unknown` and `error` are not D-states. Real ones are kept.
+    #[test]
+    fn power_state_keeps_only_a_d_state() {
+        assert_eq!(power_state_of("D0\n").as_deref(), Some("D0"));
+        assert_eq!(power_state_of("D3hot").as_deref(), Some("D3hot"));
+        assert_eq!(power_state_of("unknown"), None);
+        assert_eq!(power_state_of("error"), None);
+        assert_eq!(power_state_of(""), None);
+    }
+
+    /// The encoding is the generation number. Only 1 to 6 are generations.
+    #[test]
+    fn windows_link_encoding_is_a_generation_only_within_one_to_six() {
+        assert_eq!(pcie_generation_of_encoding(1), Some(1));
+        assert_eq!(pcie_generation_of_encoding(4), Some(4));
+        assert_eq!(pcie_generation_of_encoding(6), Some(6));
+        assert_eq!(pcie_generation_of_encoding(0), None);
+        assert_eq!(pcie_generation_of_encoding(7), None);
+        assert_eq!(pcie_generation_of_encoding(u32::MAX), None);
     }
 
     #[test]

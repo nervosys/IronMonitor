@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PCI and memory readings no longer hold values that were not read. A DIMM's operating voltage fell back to its rated minimum voltage when the configured one was absent; Windows took a zero data or total width as a real width, so an unread module answered "no ECC"; the PCIe generation was the negotiated one on Windows but the maximum on Linux, and was stored as generation 0 when unread; Linux stored the kernel's `error` as a power state; and macOS gave a PCI device with no slot name the empty string as its address. Each is now `None` where unread.
 - Network, virtualization and datacenter readings no longer hold values that were not read. Loopback and WireGuard interfaces were reported `DOWN` because the kernel's `operstate` of `unknown` was read as down; Windows published `[]` as its IPv6 addresses though it reads none; a container's hostname fell back to the string `"unknown"`; cgroup v2 `cpu.weight` was stored in the v1 `cpu_shares` field; and chassis form factor was guessed from the product name. Each is now `None` where unread.
 - Printer, fan, engine and memory readings no longer report values that were not
   read: a failed `lpstat -d` made every queue `default: false`, a missing `lpstat`
