@@ -82,11 +82,11 @@ impl AmdGpu {
 
         let memory_critical = self.read_hwmon_temp(hwmon_path, "temp3_crit");
 
-        // AMD doesn't expose slowdown threshold directly
-        // Estimate as 85-90% of critical temp if available
-        let slowdown = critical.map(|c| c * 0.85);
+        // AMD exposes no slowdown threshold through hwmon. This used to be
+        // `critical * 0.85`, a guess presented as a read limit; it is `None`.
+        let slowdown = None;
 
-        if critical.is_some() || shutdown.is_some() || slowdown.is_some() {
+        if critical.is_some() || shutdown.is_some() || memory_critical.is_some() {
             Some(TemperatureThresholds {
                 slowdown,
                 shutdown,
@@ -146,15 +146,10 @@ impl Device for AmdGpu {
         Ok(format!("AMD GPU #{}", self.index))
     }
     fn uuid(&self) -> Result<String, Error> {
-        // AMD GPUs don't typically expose a UUID via sysfs
-        // Use a combination of vendor, device, and serial if available
-        let vendor = self.read_sysfs_string("vendor").unwrap_or_default();
-        let device = self.read_sysfs_string("device").unwrap_or_default();
-        let serial = self
-            .read_sysfs_string("serial")
-            .unwrap_or_else(|| format!("{}", self.index));
-
-        Ok(format!("GPU-{}-{}-{}", vendor, device, serial))
+        // sysfs exposes no UUID for AMD GPUs. This used to build one from the
+        // vendor and device IDs with the card index standing in for a serial,
+        // which reached the snapshot as a UUID. There is nothing read to report.
+        Err(Error::NotSupported)
     }
     fn pci_info(&self) -> Result<PciInfo, Error> {
         // Parse PCI address from the sysfs path
@@ -184,17 +179,17 @@ impl Device for AmdGpu {
         Err(Error::QueryFailed("Could not parse PCI info".to_string()))
     }
     fn driver_version(&self) -> Result<String, Error> {
-        // Try to read from module version
-        if let Ok(version) = fs::read_to_string("/sys/module/amdgpu/version") {
-            return Ok(version.trim().to_string());
+        // Only the module's version is a version. This used to fall back to
+        // the driver's name, and then to the literal "amdgpu", both published
+        // in the version field. Neither is a version, so an unreadable one is
+        // an error.
+        match fs::read_to_string("/sys/module/amdgpu/version") {
+            Ok(version) => Ok(version.trim().to_string()),
+            Err(e) => Err(Error::QueryFailed(format!(
+                "amdgpu module version not readable: {}",
+                e
+            ))),
         }
-
-        // Fallback to driver name
-        if let Some(driver) = self.read_sysfs_string("driver") {
-            return Ok(driver);
-        }
-
-        Ok("amdgpu".to_string())
     }
     fn temperature(&self) -> Result<Temperature, Error> {
         // AMD GPUs expose temperature via hwmon (cached path)
@@ -239,6 +234,10 @@ impl Device for AmdGpu {
         let limit = read_power("power1_cap");
         let max_limit = read_power("power1_cap_max");
         let min_limit = read_power("power1_cap_min");
+        // The factory cap. `power1_cap` is the cap in force, which
+        // `set_power_limit` overwrites, so it was reported as the default
+        // after any change. `power1_cap_default` is the driver's own value.
+        let default_limit = read_power("power1_cap_default");
 
         // `average` used to be `if current > 0.0 { Some(current) } else
         // { None }`, which is the inverse mistake to the one above: a card
@@ -248,7 +247,7 @@ impl Device for AmdGpu {
             current,
             average: current,
             limit,
-            default_limit: limit,
+            default_limit,
             min_limit,
             max_limit,
             enforced_limit: limit,

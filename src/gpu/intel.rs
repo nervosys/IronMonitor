@@ -40,7 +40,8 @@ pub enum IntelDriver {
 pub struct IntelGpu {
     index: usize,
     name: String,
-    pci_bus_id: String,
+    /// `domain:bus:device.function`, or `None` when no address could be read.
+    pci_bus_id: Option<String>,
     driver: IntelDriver,
     #[cfg(target_os = "linux")]
     card_path: String,
@@ -53,7 +54,7 @@ impl IntelGpu {
     #[cfg(target_os = "linux")]
     pub fn new(
         index: usize,
-        pci_bus_id: String,
+        pci_bus_id: Option<String>,
         card_path: String,
         driver: IntelDriver,
     ) -> Result<Self, Error> {
@@ -78,7 +79,11 @@ impl IntelGpu {
 
     /// Create new Intel GPU instance (non-Linux stub)
     #[cfg(not(target_os = "linux"))]
-    pub fn new(index: usize, pci_bus_id: String, driver: IntelDriver) -> Result<Self, Error> {
+    pub fn new(
+        index: usize,
+        pci_bus_id: Option<String>,
+        driver: IntelDriver,
+    ) -> Result<Self, Error> {
         let name = format!("Intel GPU {} ({})", index, driver.name());
         Ok(Self {
             index,
@@ -169,7 +174,7 @@ impl Gpu for IntelGpu {
                 index: self.index,
                 vendor: GpuVendor::Intel,
                 name: self.name.clone(),
-                pci_bus_id: Some(self.pci_bus_id.clone()),
+                pci_bus_id: self.pci_bus_id.clone(),
                 uuid: None,
                 vbios_version: None,
                 driver_version,
@@ -187,10 +192,11 @@ impl Gpu for IntelGpu {
             index: self.index,
             vendor: GpuVendor::Intel,
             name: self.name.clone(),
-            pci_bus_id: Some(self.pci_bus_id.clone()),
+            pci_bus_id: self.pci_bus_id.clone(),
             uuid: None,
             vbios_version: None,
-            driver_version: Some(self.driver.name().to_string()),
+            // The driver's name is not its version. This used to be `Some(name)`.
+            driver_version: None,
             compute_capability: None,
             shader_cores: None,
             l2_cache: None,
@@ -223,23 +229,13 @@ impl Gpu for IntelGpu {
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok());
 
-            // Utilization from the frequency ratio.
-            //
-            // **This is a proxy, not a measurement**, and it is left in place
-            // only because it is the sole signal this path has. A GPU sitting
-            // at its maximum clock is not necessarily busy, and one being
-            // throttled while fully loaded reads low. Intel exposes real
-            // engine-busy counters through `i915` PMU perf events, which is
-            // what this should read; nobody has written that.
-            //
-            // What has changed is the failure case: with no clocks to divide,
-            // there is no ratio, and this now says so instead of answering 0%.
-            let utilization = match (graphics_clock, graphics_max) {
-                (Some(cur), Some(max)) if max > 0 => {
-                    Some(((cur as f32 / max as f32) * 100.0) as u8)
-                }
-                _ => None,
-            };
+            // Utilization is not read on this path. This used to be the ratio
+            // of the current clock to the maximum clock, labelled as utilization
+            // and as the graphics engine's. A GPU at its maximum clock is not
+            // necessarily busy, and a throttled one under full load reads low.
+            // i915 PMU engine-busy counters would be the real source; nothing
+            // reads them yet, so this is `None`.
+            let utilization: Option<u8> = None;
 
             // Read power from hwmon (if available)
             let power_draw = self.hwmon_path.as_ref().and_then(|hwmon| {
@@ -531,18 +527,18 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
                 };
 
                 if let Some(driver) = driver {
-                    // Get PCI bus ID
-                    let pci_bus_id = if let Ok(dev_link) = fs::read_link(&device_path) {
+                    // PCI bus ID from the device link's file name. A link that
+                    // cannot be read is `None`, not the string "unknown".
+                    let pci_bus_id = fs::read_link(&device_path).ok().and_then(|dev_link| {
                         dev_link
                             .file_name()
                             .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string()
-                    } else {
-                        "unknown".to_string()
-                    };
+                            .map(str::to_string)
+                    });
 
-                    let bus_id = pci_bus_id.clone();
+                    let label = pci_bus_id
+                        .clone()
+                        .unwrap_or_else(|| card_path.to_string_lossy().to_string());
                     match IntelGpu::new(
                         gpu_index,
                         pci_bus_id,
@@ -558,7 +554,7 @@ pub fn detect_gpus(collection: &mut GpuCollection) -> Result<(), Error> {
                             // still advances so that later devices keep their indices.
                             collection
                                 .detection_failures
-                                .push(("intel", format!("{}: {}", bus_id, e)));
+                                .push(("intel", format!("{}: {}", label, e)));
                             gpu_index += 1;
                         }
                     }
@@ -621,11 +617,12 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
             continue;
         }
 
-        let pci_bus_id = ctrl
-            .pnp_device_i_d
-            .as_deref()
-            .unwrap_or("unknown")
-            .to_string();
+        // WMI's PNPDeviceID is a PnP instance path, not a PCI address. This used
+        // to be stored as the bus id. The address comes from the PCI enumerator,
+        // and is `None` when Windows records no PCI location.
+        let pnp_id = ctrl.pnp_device_i_d.as_deref().unwrap_or("");
+        let pci_bus_id = crate::pci_devices::pci_address_of(pnp_id);
+        let label = pci_bus_id.clone().unwrap_or_else(|| pnp_id.to_string());
 
         // Determine driver type from name
         let driver = if name_lower.contains("arc") {
@@ -636,12 +633,12 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
 
         // A controller that fails is recorded and the rest are still read; the
         // index still advances so later adapters keep theirs.
-        let mut gpu = match IntelGpu::new(gpu_index, pci_bus_id.clone(), driver) {
+        let mut gpu = match IntelGpu::new(gpu_index, pci_bus_id, driver) {
             Ok(gpu) => gpu,
             Err(e) => {
                 collection
                     .detection_failures
-                    .push(("intel", format!("{pci_bus_id}: {e}")));
+                    .push(("intel", format!("{label}: {e}")));
                 gpu_index += 1;
                 continue;
             }
@@ -657,6 +654,9 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
                 super::windows_helpers::find_dxgi_adapter_by_vendor(&dxgi_adapters, 0x8086)
             });
 
+        // Without DXGI there is no trustworthy capacity. WMI's AdapterRAM is a
+        // 32-bit field that wraps for adapters of 4 GB and more, so it was
+        // published as the total for cards it misreports. It is not used here.
         let (dedicated_video_memory, shared_system_memory, luid_filter) =
             if let Some(dxgi) = &dxgi_match {
                 let luid = super::windows_helpers::format_luid(dxgi.luid_high, dxgi.luid_low);
@@ -666,7 +666,7 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
                     Some(luid),
                 )
             } else {
-                (ctrl.adapter_r_a_m.unwrap_or(0), 0, None)
+                (0, 0, None)
             };
 
         collection.add_gpu(Box::new(WmiIntelGpu {
@@ -749,7 +749,7 @@ impl Gpu for WmiIntelGpu {
             index: self.inner.index,
             vendor: GpuVendor::Intel,
             name: self.inner.name.clone(),
-            pci_bus_id: Some(self.inner.pci_bus_id.clone()),
+            pci_bus_id: self.inner.pci_bus_id.clone(),
             uuid: None,
             vbios_version: None,
             driver_version: self.driver_version.clone(),
@@ -883,7 +883,7 @@ mod tests {
         {
             let result = IntelGpu::new(
                 0,
-                "0000:00:02.0".to_string(),
+                Some("0000:00:02.0".to_string()),
                 "/sys/class/drm/card0".to_string(),
                 IntelDriver::I915,
             );

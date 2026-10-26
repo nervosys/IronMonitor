@@ -114,17 +114,14 @@ impl IntelGpu {
         // temp1_crit = GPU critical temperature
         // temp1_max = Max operating temperature
 
+        // temp1_max is the maximum operating temperature, not the shutdown point,
+        // so it is not published as one. This used to fall back to it for
+        // `shutdown`, and to `critical * 0.85` for `slowdown`, a guess.
         let critical = self.read_hwmon_temp(hwmon_path, "temp1_crit");
-        let max_temp = self.read_hwmon_temp(hwmon_path, "temp1_max");
+        let shutdown = critical;
+        let slowdown = None;
 
-        // Use max_temp as shutdown if critical not available
-        let shutdown = critical.or(max_temp);
-
-        // Intel doesn't expose slowdown directly
-        // Estimate as 85% of critical/max if available
-        let slowdown = critical.or(max_temp).map(|c| c * 0.85);
-
-        if critical.is_some() || shutdown.is_some() || slowdown.is_some() {
+        if critical.is_some() || shutdown.is_some() {
             Some(TemperatureThresholds {
                 slowdown,
                 shutdown,
@@ -163,15 +160,9 @@ impl Device for IntelGpu {
             return Ok(name);
         }
 
-        // Try uevent for model info
-        if let Ok(uevent) = fs::read_to_string(self.device_path.join("uevent")) {
-            for line in uevent.lines() {
-                if line.starts_with("DRIVER=") {
-                    let driver = line.strip_prefix("DRIVER=").unwrap_or("");
-                    return Ok(format!("Intel {} GPU", driver));
-                }
-            }
-        }
+        // The uevent's DRIVER= line names the driver (i915, xe). It was once
+        // used as the product name, which read as "Intel i915 GPU". It is not
+        // a model, so the device-ID table below is the source instead.
 
         // Read device ID
         if let Some(device_id) = self.read_sysfs_string("device") {
@@ -192,21 +183,11 @@ impl Device for IntelGpu {
     }
 
     fn uuid(&self) -> Result<String, Error> {
-        // Intel GPUs don't expose UUIDs via sysfs
-        // Generate one from vendor, device, and subsystem IDs
-        let vendor = self.read_sysfs_string("vendor").unwrap_or_default();
-        let device = self.read_sysfs_string("device").unwrap_or_default();
-        let subsystem_vendor = self
-            .read_sysfs_string("subsystem_vendor")
-            .unwrap_or_default();
-        let subsystem_device = self
-            .read_sysfs_string("subsystem_device")
-            .unwrap_or_default();
-
-        Ok(format!(
-            "GPU-{}-{}-{}-{}",
-            vendor, device, subsystem_vendor, subsystem_device
-        ))
+        // sysfs exposes no UUID for Intel GPUs. This used to build a "GPU-..."
+        // string from the vendor and device IDs, with empty fields where a read
+        // failed, and it reached the snapshot as a UUID. There is nothing read
+        // to report.
+        Err(Error::NotSupported)
     }
 
     fn pci_info(&self) -> Result<PciInfo, Error> {
@@ -236,15 +217,17 @@ impl Device for IntelGpu {
     }
 
     fn driver_version(&self) -> Result<String, Error> {
-        // Try to read module version
-        if let Some(driver) = self.get_driver_name() {
-            if let Ok(version) = fs::read_to_string(format!("/sys/module/{}/version", driver)) {
-                return Ok(version.trim().to_string());
-            }
-            return Ok(driver);
-        }
-
-        Ok("i915".to_string())
+        // Only the module's version is a version. This used to return the
+        // driver's name when the version was unreadable, and the literal "i915"
+        // when the driver link was missing. Neither is a version.
+        let driver = self
+            .get_driver_name()
+            .ok_or_else(|| Error::QueryFailed("no driver is bound to this device".to_string()))?;
+        fs::read_to_string(format!("/sys/module/{}/version", driver))
+            .map(|version| version.trim().to_string())
+            .map_err(|e| {
+                Error::QueryFailed(format!("{} module version not readable: {}", driver, e))
+            })
     }
 
     fn temperature(&self) -> Result<Temperature, Error> {
@@ -340,11 +323,13 @@ impl Device for IntelGpu {
 
         // See the AMD reader for `average`. `min_limit` was a hardcoded
         // `0.0`: this path reads no minimum at all, and 0 W is not one.
+        // `default_limit` used to be `power1_cap`, the cap in force, which
+        // reads as the factory default after any change. No default is read.
         Ok(Power {
             current,
             average: current,
             limit,
-            default_limit: limit,
+            default_limit: None,
             min_limit: None,
             max_limit,
             enforced_limit: limit,

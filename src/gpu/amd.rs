@@ -688,11 +688,14 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
                 super::windows_helpers::find_dxgi_adapter_by_vendor(&dxgi_adapters, 0x1002)
             });
 
+        // Without DXGI there is no trustworthy capacity. WMI's AdapterRAM is a
+        // 32-bit field that wraps for adapters of 4 GB and more, so it was
+        // published as the total for cards it misreports. It is not used here.
         let (dedicated_video_memory, luid_filter) = if let Some(dxgi) = &dxgi_match {
             let luid = super::windows_helpers::format_luid(dxgi.luid_high, dxgi.luid_low);
             (dxgi.dedicated_video_memory, Some(luid))
         } else {
-            (ctrl.adapter_r_a_m.unwrap_or(0), None)
+            (0, None)
         };
 
         // Store WMI data for static_info/dynamic_info with perf counter support
@@ -713,7 +716,7 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
 #[cfg(windows)]
 struct WmiAmdGpu {
     inner: AmdGpu,
-    /// Accurate VRAM from DXGI (64-bit, no 4GB cap). Falls back to WMI AdapterRAM.
+    /// Accurate VRAM from DXGI (64-bit, no 4GB cap). Zero when DXGI did not match.
     dedicated_video_memory: u64,
     driver_version: Option<String>,
     /// LUID hex string for matching with GPU performance counters
