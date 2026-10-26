@@ -413,10 +413,12 @@ impl BootMonitor {
                     }
                 }
             }
-
-            // Parse total time
+            // Parse total time. Only the rest of the first line: the next line,
+            // "graphical.target reached after 10.1s in userspace", would add to it.
             if let Some(eq_pos) = stdout.find('=') {
-                if let Some(secs) = parse_systemd_duration(&stdout[eq_pos + 1..]) {
+                if let Some(secs) =
+                    parse_systemd_duration(stdout[eq_pos + 1..].lines().next().unwrap_or(""))
+                {
                     self.boot_time.total = Duration::from_secs_f64(secs);
                 }
             }
