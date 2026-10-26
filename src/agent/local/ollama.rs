@@ -134,9 +134,12 @@ impl OllamaClient {
         Ok(InferenceResponse {
             text: ollama_response.message.content,
             model: ollama_response.model,
-            tokens_generated: None,
+            tokens_generated: ollama_response.eval_count.map(|n| n as usize),
             duration_ms: start.elapsed().as_millis() as u64,
-            truncated: false,
+            truncated: ollama_response
+                .done_reason
+                .as_deref()
+                .map(|reason| reason == "length"),
         })
     }
 
@@ -178,8 +181,17 @@ impl LocalInferenceClient for OllamaClient {
     async fn is_available(&self) -> bool {
         #[cfg(feature = "remote-backends")]
         {
+            // Any HTTP answer used to count. An unrelated server on the port was then
+            // reported as Ollama, so the listing's shape is required too.
             let url = format!("{}/api/tags", self.endpoint);
-            self.client.get(&url).send().await.is_ok()
+            match self.client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => response
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .is_some_and(|body| body.get("models").is_some_and(|m| m.is_array())),
+                _ => false,
+            }
         }
 
         #[cfg(not(feature = "remote-backends"))]
@@ -273,12 +285,20 @@ impl LocalInferenceClient for OllamaClient {
                 .await
                 .map_err(|e| IronError::Agent(format!("Failed to parse response: {}", e)))?;
 
+            // `done` is true for every completed generation, including a normal stop,
+            // so `truncated` used to be inverted: every complete answer read as cut
+            // off. The stop reason is `done_reason`, "length" when the token limit hit.
+            // A missing eval_count used to become a measured zero tokens; it is now
+            // unknown.
             Ok(InferenceResponse {
                 text: ollama_response.response,
                 model: ollama_response.model,
-                tokens_generated: Some(ollama_response.eval_count.unwrap_or(0) as usize),
+                tokens_generated: ollama_response.eval_count.map(|n| n as usize),
                 duration_ms: start.elapsed().as_millis() as u64,
-                truncated: ollama_response.done,
+                truncated: ollama_response
+                    .done_reason
+                    .as_deref()
+                    .map(|reason| reason == "length"),
             })
         }
 
@@ -351,6 +371,8 @@ struct OllamaGenerateResponse {
     model: String,
     response: String,
     done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    done_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     eval_count: Option<i32>,
 }
@@ -376,6 +398,10 @@ pub struct ChatMessage {
 struct OllamaChatResponse {
     model: String,
     message: ChatMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    done_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eval_count: Option<i32>,
 }
 
 #[allow(dead_code)]
@@ -432,6 +458,33 @@ mod tests {
         assert!(result.is_ok());
         #[cfg(not(feature = "remote-backends"))]
         assert!(result.is_err());
+    }
+
+    /// A completed generation reports `done: true` whether it stopped naturally or
+    /// hit the token limit, so `done` says nothing about truncation. The stop reason
+    /// is `done_reason`, and a response without it must not be read as a stop.
+    #[test]
+    fn stop_reason_comes_from_done_reason_not_done() {
+        let natural: OllamaGenerateResponse = serde_json::from_str(
+            r#"{"model":"m","response":"ok","done":true,"done_reason":"stop","eval_count":12}"#,
+        )
+        .expect("captured-shape response parses");
+        assert!(natural.done);
+        assert_eq!(natural.done_reason.as_deref(), Some("stop"));
+        assert_eq!(natural.eval_count, Some(12));
+
+        let cut_off: OllamaGenerateResponse = serde_json::from_str(
+            r#"{"model":"m","response":"partial","done":true,"done_reason":"length"}"#,
+        )
+        .expect("length-stopped response parses");
+        assert_eq!(cut_off.done_reason.as_deref(), Some("length"));
+        // No eval_count in the body: the token count is unknown, not zero.
+        assert_eq!(cut_off.eval_count, None);
+
+        let unreported: OllamaGenerateResponse =
+            serde_json::from_str(r#"{"model":"m","response":"x","done":true}"#)
+                .expect("response without a stop reason parses");
+        assert_eq!(unreported.done_reason, None);
     }
 
     #[test]

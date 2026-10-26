@@ -220,11 +220,20 @@ impl LocalInferenceClient for LlamaCppClient {
             model: self.model_name.clone(),
             tokens_generated: None, // Would need to parse llama.cpp output
             duration_ms: start.elapsed().as_millis() as u64,
-            truncated: false,
+            // The CLI does not report its stop reason, so this is not known.
+            truncated: None,
         })
     }
 
-    async fn model_info(&self, _model_name: &str) -> Result<ModelInfo> {
+    async fn model_info(&self, model_name: &str) -> Result<ModelInfo> {
+        // One model is loaded per client. This used to return the loaded model's
+        // info for any requested name, so a model that was not loaded looked present.
+        if model_name != self.model_name {
+            return Err(IronError::Agent(format!(
+                "llama.cpp has {} loaded, not {model_name}",
+                self.model_name
+            )));
+        }
         Ok(ModelInfo {
             name: self.model_name.clone(),
             size: std::fs::metadata(&self.model_path).ok().map(|m| m.len()),

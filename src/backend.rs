@@ -183,9 +183,11 @@ pub struct AcceleratorState {
     /// Memory clock (MHz)
     pub memory_clock_mhz: Option<u32>,
 
-    /// Number of processes using this accelerator, or `None` when its sample
-    /// failed. Was `dynamic_info.processes.len()` over a default sample, which
-    /// reported a failed read as zero processes.
+    /// Number of processes using this accelerator, or `None` when its process
+    /// list could not be read. Was `dynamic_info.processes.len()`, but no dynamic
+    /// sample carries a process list (every adapter leaves it empty and reports
+    /// processes through its own `processes()` call), so it read `0` for every
+    /// device, a measured-looking count of nothing.
     pub process_count: Option<usize>,
 }
 
@@ -1406,6 +1408,14 @@ impl MonitoringBackend {
             };
             // A failed dynamic sample leaves every reading unknown, not zero.
             let dynamic = self.gpu_dynamic_info.get(i).and_then(|slot| slot.as_ref());
+            // Slot `i` is the `i`th device of the collection, so the process list is
+            // asked of that device directly.
+            let process_count = self
+                .gpu_collection
+                .as_ref()
+                .and_then(|collection| collection.gpus().get(i))
+                .and_then(|gpu| gpu.processes().ok())
+                .map(|procs| procs.len());
             state.accelerators.push(AcceleratorState {
                 index: i,
                 accel_type: "GPU".to_string(), // Could be extended for NPU/FPGA
@@ -1428,7 +1438,7 @@ impl MonitoringBackend {
                     .map(|p| p as f32 / 1000.0),
                 clock_mhz: dynamic.and_then(|d| d.clocks.graphics),
                 memory_clock_mhz: dynamic.and_then(|d| d.clocks.memory),
-                process_count: dynamic.map(|d| d.processes.len()),
+                process_count,
             });
         }
 

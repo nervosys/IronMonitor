@@ -395,8 +395,13 @@ impl LocalInferenceClient for CliClient {
         // Only Ollama exposes a machine-readable model list without a round trip to a
         // hosted API. For the rest, the model is whatever the tool is configured for,
         // which IronMonitor cannot enumerate.
+        // Returning an empty list here used to read as "no models installed". For
+        // the others it means only that the listing is not available.
         if self.provider != CliProvider::Ollama {
-            return Ok(Vec::new());
+            return Err(IronError::NotImplemented(format!(
+                "{} does not expose a model listing; its model is set in the tool's own configuration",
+                self.provider.display_name()
+            )));
         }
 
         let output = self.run(&["list".to_string()])?;
@@ -424,16 +429,15 @@ impl LocalInferenceClient for CliClient {
 
         Ok(InferenceResponse {
             text,
-            model: if request.model.is_empty() {
-                "default".to_string()
-            } else {
-                request.model
-            },
+            // An empty model means the tool used whatever it is configured with, and
+            // that name was not read. It was reported as the literal "default", which
+            // is not a model anyone chose.
+            model: request.model,
             // CLI tools do not report token counts on stdout.
             tokens_generated: None,
             duration_ms,
-            // No way to distinguish a natural stop from a truncated one here.
-            truncated: false,
+            // The tools do not say whether an answer was cut short.
+            truncated: None,
         })
     }
 

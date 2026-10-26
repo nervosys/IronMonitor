@@ -628,7 +628,11 @@ impl BackendDiscovery {
         //
         // This previously returned a hardcoded false, so a working llama.cpp install
         // was never discovered despite the client being implemented.
-        ["llama-cli", "llama-server", "main"]
+        //
+        // `main` was once listed too, as llama.cpp's old binary name. Used here it
+        // reported llama.cpp available for any unrelated executable called `main` on
+        // PATH, so the name is no longer accepted as evidence.
+        ["llama-cli", "llama-server"]
             .iter()
             .any(|name| crate::agent::local::cli::binary_on_path(name))
     }
@@ -869,7 +873,10 @@ impl BackendCapabilities {
                 supports_functions: true,
                 supports_vision: true,
                 max_context_length: None,
-                cost_per_million_tokens: Some(5.0),
+                // Was `Some(5.0)`, a flat rate with no model, date or source behind
+                // it. Azure bills per deployed model, so the same reasoning as
+                // RemoteOpenAI above applies: report no rate rather than a guess.
+                cost_per_million_tokens: None,
             },
             BackendType::Custom(_) => Self {
                 supports_streaming: false,

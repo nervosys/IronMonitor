@@ -324,8 +324,12 @@ impl LocalInferenceClient for IronWorksClient {
                 .ok_or_else(|| IronError::Agent("IronWorks returned no assistant text".into()))?;
 
             // OpenAI-compatible servers report "length" when the token cap cut the
-            // answer short; anything else means the model stopped on its own.
-            let truncated = choice.finish_reason.as_deref() == Some("length");
+            // answer short. A missing finish_reason used to read as a natural stop;
+            // it is unknown, so it stays `None`.
+            let truncated = choice
+                .finish_reason
+                .as_deref()
+                .map(|reason| reason == "length");
 
             Ok(InferenceResponse {
                 text: text.trim().to_string(),
@@ -463,7 +467,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.text, "fixture answer");
         assert_eq!(response.tokens_generated, Some(7));
-        assert!(response.truncated);
+        assert_eq!(response.truncated, Some(true));
         let request = server.join().unwrap();
         assert_eq!(request["messages"][0]["role"], "system");
         assert_eq!(request["messages"][1]["content"], "question");

@@ -110,8 +110,16 @@ impl LocalInferenceClient for TensorRtClient {
         #[cfg(feature = "remote-backends")]
         {
             // Check if Triton server is running
+            // A 2xx from the health endpoint is required; any answer, including an
+            // error page from another service on the port, used to count.
             let url = format!("http://{}/v2/health/ready", self.triton_url);
-            self.client.get(&url).send().await.is_ok() && Self::check_gpu_support()
+            let healthy = self
+                .client
+                .get(&url)
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success());
+            healthy && Self::check_gpu_support()
         }
 
         #[cfg(not(feature = "remote-backends"))]
@@ -147,14 +155,20 @@ impl LocalInferenceClient for TensorRtClient {
                     .map(|m| ModelInfo {
                         name: m.name,
                         size: None,
-                        family: Some("TensorRT-LLM".to_string()),
+                        // Not a model family: the backend's own name was written here
+                        // as if the server had reported it.
+                        family: None,
                         parameter_count: None,
                         quantization: None,
                     })
                     .collect());
             }
 
-            Ok(vec![])
+            // An unrecognised body used to return an empty list, which read as "no
+            // models are loaded" when the response was simply not understood.
+            Err(IronError::Agent(
+                "Triton model repository response did not match the expected shape".to_string(),
+            ))
         }
 
         #[cfg(not(feature = "remote-backends"))]
@@ -217,20 +231,24 @@ impl LocalInferenceClient for TensorRtClient {
                 .await
                 .map_err(|e| IronError::Agent(format!("Failed to parse Triton response: {}", e)))?;
 
-            // Extract text from response
+            // Extract text from response. A missing output used to become an empty
+            // answer, which the agent would present as the model's reply.
             let text = triton_response
                 .outputs
                 .iter()
                 .find(|o| o.name == "text_output")
                 .and_then(|o| o.data.first().cloned())
-                .unwrap_or_default();
+                .ok_or_else(|| {
+                    IronError::Agent("Triton response has no text_output".to_string())
+                })?;
 
             Ok(InferenceResponse {
                 text,
                 model: request.model,
                 tokens_generated: None, // Triton doesn't easily expose this
                 duration_ms: start.elapsed().as_millis() as u64,
-                truncated: false,
+                // Triton does not report a stop reason here.
+                truncated: None,
             })
         }
 
@@ -241,13 +259,15 @@ impl LocalInferenceClient for TensorRtClient {
     }
 
     async fn model_info(&self, model_name: &str) -> Result<ModelInfo> {
-        Ok(ModelInfo {
-            name: model_name.to_string(),
-            size: None,
-            family: Some("TensorRT-LLM".to_string()),
-            parameter_count: None,
-            quantization: None,
-        })
+        // Answered from the repository listing, so a model Triton does not serve is
+        // an error rather than an empty record.
+        self.list_models()
+            .await?
+            .into_iter()
+            .find(|m| m.name == model_name)
+            .ok_or_else(|| {
+                IronError::Agent(format!("Triton is not serving a model named {model_name}"))
+            })
     }
 }
 

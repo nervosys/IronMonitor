@@ -93,8 +93,17 @@ impl LocalInferenceClient for VllmClient {
     async fn is_available(&self) -> bool {
         #[cfg(feature = "remote-backends")]
         {
+            // Any answer used to count, so an unrelated server on port 8000 was
+            // reported as vLLM. The model listing's shape is required.
             let url = format!("{}/v1/models", self.endpoint);
-            self.client.get(&url).send().await.is_ok()
+            match self.client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => response
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .is_some_and(|body| body.get("data").is_some_and(|d| d.is_array())),
+                _ => false,
+            }
         }
 
         #[cfg(not(feature = "remote-backends"))]
@@ -188,7 +197,7 @@ impl LocalInferenceClient for VllmClient {
                 model: vllm_response.model,
                 tokens_generated: Some(vllm_response.usage.completion_tokens),
                 duration_ms: start.elapsed().as_millis() as u64,
-                truncated: choice.finish_reason == "length",
+                truncated: Some(choice.finish_reason == "length"),
             })
         }
 
@@ -199,13 +208,15 @@ impl LocalInferenceClient for VllmClient {
     }
 
     async fn model_info(&self, model_name: &str) -> Result<ModelInfo> {
-        Ok(ModelInfo {
-            name: model_name.to_string(),
-            size: None,
-            family: None,
-            parameter_count: None,
-            quantization: None,
-        })
+        // Answered from the server's own listing. A name the server does not serve
+        // used to succeed with an empty record.
+        self.list_models()
+            .await?
+            .into_iter()
+            .find(|m| m.name == model_name)
+            .ok_or_else(|| {
+                IronError::Agent(format!("vLLM is not serving a model named {model_name}"))
+            })
     }
 }
 

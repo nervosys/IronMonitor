@@ -158,8 +158,13 @@ pub struct InferenceResponse {
     /// Inference duration in milliseconds
     pub duration_ms: u64,
 
-    /// Whether response was truncated
-    pub truncated: bool,
+    /// Whether the backend stopped because it hit its token limit.
+    ///
+    /// `Some(true)` for a cut-off answer, `Some(false)` for a natural stop, and
+    /// `None` where the backend did not report a stop reason. Several clients used
+    /// to write `false` here, which read as "the answer is complete" when nothing
+    /// had said so.
+    pub truncated: Option<bool>,
 }
 
 /// Model information

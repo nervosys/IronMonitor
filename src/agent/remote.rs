@@ -277,17 +277,29 @@ impl RemoteClient {
     }
 
     /// Check if backend is available (health check)
+    ///
+    /// Any HTTP answer used to count, so a 404 or 500 from whatever else was on the
+    /// port reported the backend as available. Only a 2xx from the model listing
+    /// counts now. Ollama's listing is `/api/tags`, not the OpenAI `/models` path.
     pub fn is_available(&self) -> bool {
         #[cfg(feature = "remote-backends")]
         {
             if let Some(ref endpoint) = self.config.endpoint {
-                // Simple GET request to check availability
-                let url = format!("{}/models", endpoint);
+                let path = if matches!(
+                    self.config.backend_type,
+                    crate::agent::backend::BackendType::RemoteOllama
+                ) {
+                    "/api/tags"
+                } else {
+                    "/models"
+                };
+                let url = format!("{}{}", endpoint, path);
                 self.http_client
                     .get(&url)
                     .timeout(std::time::Duration::from_secs(2))
                     .send()
-                    .is_ok()
+                    .map(|response| response.status().is_success())
+                    .unwrap_or(false)
             } else {
                 false
             }
@@ -349,7 +361,12 @@ impl RemoteClient {
                 return Ok(model_names);
             }
 
-            Ok(vec![])
+            // Neither listing shape matched. This used to return an empty list, which
+            // reads as "no models are installed" when the response was simply not
+            // understood.
+            Err(IronError::Parse(
+                "model listing has neither a `data` nor a `models` array".into(),
+            ))
         }
 
         #[cfg(not(feature = "remote-backends"))]
