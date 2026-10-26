@@ -5297,10 +5297,11 @@ impl IronMonitorApp {
                     ui.add_space(6.0);
 
                     for fs in filesystems.iter().take(3) {
-                        // An unread filesystem draws an empty bar in the
-                        // neutral colour and labels itself `--%`. The red/
-                        // orange thresholds are judgements about a reading and
-                        // there is nothing here to judge.
+                        // An unread filesystem draws no bar at all and labels
+                        // itself `--%`. The old `unwrap_or(0.0)` drew an empty
+                        // track, which reads as 0% used. The red/orange
+                        // thresholds are judgements about a reading and there
+                        // is nothing here to judge.
                         let pct = fs.usage_percent();
                         let color = match pct {
                             Some(p) if p > 90.0 => {
@@ -5312,7 +5313,6 @@ impl IronMonitorApp {
                             Some(_) => theme::color(&palette_ctx, CyberColors::NEON_GREEN),
                             None => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                         };
-                        let bar_fraction = pct.unwrap_or(0.0);
                         let pct_label = match pct {
                             Some(p) => format!("{:.0}%", p),
                             None => "--%".to_string(),
@@ -5352,20 +5352,24 @@ impl IronMonitorApp {
                                 egui::Sense::hover(),
                             );
                             if ui.is_rect_visible(rect) {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    3.0,
-                                    theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK),
-                                );
-                                let w = rect.width() * bar_fraction / 100.0;
-                                ui.painter().rect_filled(
-                                    egui::Rect::from_min_size(
-                                        rect.min,
-                                        egui::vec2(w, rect.height()),
-                                    ),
-                                    3.0,
-                                    color.gamma_multiply(0.8),
-                                );
+                                // No track or fill without a reading; the label
+                                // below carries the `--%`.
+                                if let Some(fraction) = pct {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        3.0,
+                                        theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK),
+                                    );
+                                    let w = rect.width() * fraction / 100.0;
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_size(
+                                            rect.min,
+                                            egui::vec2(w, rect.height()),
+                                        ),
+                                        3.0,
+                                        color.gamma_multiply(0.8),
+                                    );
+                                }
                                 ui.painter().text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
