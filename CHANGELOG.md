@@ -54,6 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two AMD GPUs are reported as linked by xGMI only when both GPUs'
+  `xgmi_hive_id` read and match; the existence of the first GPU's hive
+  directory used to be enough. Apple codec rows publish no bit depth, and a
+  VA-API profile's depth comes only from what its name states, so 10- and
+  12-bit profiles are no longer reported as 8-bit.
+- The Windows per-process `cpu_percent` was process CPU time over system
+  uptime, clamped to 100; a rate needs two samples, so it is `None`. The
+  Jetson write gate's `--confirm` decision is a tested function, and the CLI
+  prints "unknown" rather than zero processes where no GPU process table was
+  read.
+- The observability context's CPU `features` and GPU `capabilities` are
+  `None` rather than empty lists nothing filled, AI tool fields that are null
+  because they were unread carry a `<field>_unavailable_reason`, and
+  `board.display.{n}.connector` is published.
 - Peripheral readers no longer report values they did not read: the Linux
   Bluetooth adapter name is `None` rather than "Bluetooth Adapter (hciN)"; Windows
   pointing devices take their type from `PointingType` instead of the product
