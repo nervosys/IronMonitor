@@ -1455,9 +1455,11 @@ fn draw_network_bar(f: &mut Frame, app: &App, area: Rect) {
     // Use logarithmic scale for better visualization
     // With neither rate read there is no activity to plot: the bar stays empty and
     // grey. It used to floor the total at 1 B/s, which drew a 30% bar.
+    // A total needs both directions: with one unread, the sum would count that
+    // direction as idle and plot a bar for traffic that was only half measured.
     let known_total = match (net_info.total_rx_rate, net_info.total_tx_rate) {
-        (None, None) => None,
-        (rx, tx) => Some(rx.unwrap_or(0.0) + tx.unwrap_or(0.0)),
+        (Some(rx), Some(tx)) => Some(rx + tx),
+        _ => None,
     };
     let gauge_percent = known_total.map_or(0, |total| {
         let max_rate = total.max(1.0);
@@ -2978,8 +2980,15 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Agent info header
-    let info_lines = if let Some(ref _agent) = app.agent {
+    let info_lines = if let Some(ref agent) = app.agent {
         let cache_stats = app.agent_cache_stats().unwrap_or_default();
+        // The model is whatever the configured backend names. This line used to
+        // say "Medium (500M params)" unconditionally: remote backends ignore
+        // `model_size`, and with no backend the agent is rule-based.
+        let model = match &agent.config().backend {
+            Some(b) => format!("{} via {}", b.model_id, b.backend_type),
+            None => "none configured (rule-based)".to_string(),
+        };
         vec![
             Line::from(vec![Span::styled(
                 "[AI Agent Active]",
@@ -2987,7 +2996,7 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )]),
-            Line::from(format!("Model: Medium (500M params) | {}", cache_stats)),
+            Line::from(format!("Model: {} | {}", model, cache_stats)),
             Line::from(""),
             Line::from(vec![
                 Span::raw("Press "),

@@ -1579,12 +1579,18 @@ impl App {
             let dynamic = snapshot.gpu_dynamic.get(idx).and_then(|d| d.as_ref());
 
             let Some(dynamic) = dynamic else {
-                // This device failed its query this tick. Keep the previous reading
-                // rather than dropping the GPU out of the list, which would renumber
-                // every panel after it.
-                if let Some(prev) = prev {
-                    self.gpu_info.push(prev.clone());
-                }
+                // This device failed its query this tick. It stays in the list, so
+                // later panels are not renumbered, but it publishes no reading: the
+                // previous frame's values are not this tick's, and carrying them
+                // forward drew a stale utilization as if it were live. The "last
+                // active" times are kept, since they record an earlier observation.
+                self.gpu_info.push(GpuInfo {
+                    name: static_info.name.clone(),
+                    vendor: format!("{}", static_info.vendor),
+                    encoder_last_active: prev.and_then(|p| p.encoder_last_active),
+                    decoder_last_active: prev.and_then(|p| p.decoder_last_active),
+                    ..GpuInfo::default()
+                });
                 continue;
             };
 
