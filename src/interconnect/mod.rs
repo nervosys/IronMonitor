@@ -164,8 +164,8 @@ pub struct InterconnectTopology {
     /// bandwidth of the links that carry a figure, or `None` where none does.
     /// A sum of specification figures, not a measurement.
     pub total_bandwidth_gbs: Option<f64>,
-    /// Whether the system is NUMA, or `None` where the socket count is unknown
-    /// and no die count settles it.
+    /// Whether the system is NUMA: more than one socket. `None` where the socket
+    /// count was not read. Compute dies on one package do not count.
     pub is_numa: Option<bool>,
     /// Inferred interconnect generation/version.
     pub generation: String,
@@ -530,13 +530,12 @@ impl InterconnectMonitor {
             chiplet_topology: chiplet,
             coherence_protocol: Some(CoherenceProtocol::MOESI),
             total_bandwidth_gbs: total_bw,
-            // Two compute dies are NUMA whatever the socket count; otherwise the
-            // socket count decides, and is unknown where it was not read.
-            is_numa: if compute_dies > 1 {
-                Some(true)
-            } else {
-                sockets.map(|s| s > 1)
-            },
+            // The socket count decides, and is unknown where it was not read. Two
+            // compute dies on one package do not make a NUMA system: they share
+            // one memory controller, so the OS reports one node. This used to
+            // return `true` for every multi-CCD part, including a single-socket
+            // Ryzen 9 9900X.
+            is_numa: sockets.map(|s| s > 1),
             generation: gen.into(),
         }
     }
@@ -1009,8 +1008,8 @@ mod tests {
         assert_eq!(topo.is_numa, Some(false));
     }
 
-    /// An unknown socket count is unknown, not one socket. NUMA is settled
-    /// only where the die count settles it.
+    /// An unknown socket count is unknown, not one socket. NUMA follows the
+    /// socket count alone; the die count does not settle it.
     #[test]
     fn an_unknown_socket_count_leaves_numa_unknown() {
         let intel = InterconnectMonitor::infer_intel("INTEL XEON GOLD 6348 SAPPHIRE RAPIDS", None);
@@ -1022,9 +1021,13 @@ mod tests {
         let single_ccd = InterconnectMonitor::infer_amd("AMD RYZEN 7 5700X", None, Some(8));
         assert_eq!(single_ccd.is_numa, None);
 
-        // Two compute dies are NUMA whatever the socket count.
+        // Two compute dies on one socket share one memory controller: one NUMA
+        // node, not two. The die count does not decide NUMA.
         let two_ccd = InterconnectMonitor::infer_amd("AMD RYZEN 9 9900X", None, Some(12));
-        assert_eq!(two_ccd.is_numa, Some(true));
+        assert_eq!(two_ccd.is_numa, None);
+        let two_ccd_one_socket =
+            InterconnectMonitor::infer_amd("AMD RYZEN 9 9900X", Some(1), Some(12));
+        assert_eq!(two_ccd_one_socket.is_numa, Some(false));
 
         let unknown = InterconnectMonitor::infer_topology("SOME UNKNOWN CPU", None, None);
         assert_eq!(unknown.sockets, None);

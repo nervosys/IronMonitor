@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows warm-up printers showed as paused, Windows fans carried `ActiveCooling` as
   a profile, unnamed hwmon fans collided under "unknown", Windows engines were zero
   groups (now `null` in `stats`), and macOS total memory fell back to a page sum.
+- CPU frequency and interconnect readers no longer report figures they did not
+  read. On Windows, `cpu.turbo.boost_mhz` was the WMI maximum clock minus the
+  boot-time clock (8 MHz on a Ryzen 9 9900X that boosts to about 5.6 GHz) and is
+  now unavailable; the active power plan was mapped to a governor (`Balanced`
+  became `schedutil`) and that became the only "available" governor, so the
+  governor is now unread there; the Linux `cpu.turbo.available` is unavailable
+  when the reader reached no verdict. Interconnect `is_numa` no longer reports
+  every multi-CCD Ryzen as NUMA; it follows the socket count.
 - Boot and service readings no longer hold values that were not read.
   `system.boot.duration` lost its seconds past one minute (`2min 31.3s` read as
   120 seconds) and dropped millisecond phases; `BootTime.boot_timestamp` on

@@ -124,7 +124,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let turbo = monitor.turbo_status();
     println!(
         "   Available: {}",
-        if turbo.available { "✅ Yes" } else { "❌ No" }
+        match turbo.available {
+            Some(true) => "✅ Yes",
+            Some(false) => "❌ No",
+            None => "unknown (not read on this platform)",
+        }
     );
     println!(
         "   Enabled: {}",

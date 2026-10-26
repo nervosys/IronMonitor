@@ -323,8 +323,13 @@ pub struct CpuFreqPolicy {
 /// Turbo boost status
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TurboStatus {
-    /// Is turbo available on this system
-    pub available: bool,
+    /// Whether a turbo or boost control exists. Linux: `Some(true)` where one of
+    /// the kernel's boost files exists, `Some(false)` where none does. `None` on
+    /// Windows and macOS: this reader never inferred availability there. It used
+    /// to be a `bool` set to `true` on Windows whenever the WMI maximum clock
+    /// exceeded the registry's boot-time clock, which is two nominal figures
+    /// compared, not a boost control.
+    pub available: Option<bool>,
     /// Whether turbo is enabled. Linux: the kernel's current state. Windows:
     /// whether the active power scheme permits boost (the processor performance
     /// boost mode is not 0), which is not the same as boost running now. `None`
@@ -334,7 +339,11 @@ pub struct TurboStatus {
     pub enabled: Option<bool>,
     /// Can turbo be controlled
     pub controllable: bool,
-    /// Turbo frequency boost (MHz above base)
+    /// Turbo frequency boost (MHz above base). Always `None` on every platform.
+    /// Windows used to report the WMI `MaxClockSpeed` minus the registry's
+    /// boot-time `~MHz`. Both are nominal clocks, so this was 8 MHz on a Ryzen 9
+    /// 9900X whose boost ceiling is about 5.6 GHz. No reader here reads a turbo
+    /// ceiling, so none is reported.
     pub boost_mhz: Option<u32>,
 }
 
@@ -360,7 +369,7 @@ impl CpuFreqMonitor {
             cpus: Vec::new(),
             policies: Vec::new(),
             turbo: TurboStatus {
-                available: false,
+                available: None,
                 enabled: None,
                 controllable: false,
                 boost_mhz: None,
@@ -418,6 +427,9 @@ impl CpuFreqMonitor {
             .iter()
             .find(|c| c.online != Some(false))
             .map(|c| c.governor.clone())
+            // The `unknown` placeholder is what an unread governor holds; it is
+            // no governor, so it is not returned as one.
+            .filter(|g| !matches!(g, Governor::Unknown(name) if name == "unknown"))
     }
 
     /// Get available governors (from the first CPU not known to be offline)
@@ -851,7 +863,7 @@ impl CpuFreqMonitor {
         // Intel P-state no_turbo
         let intel_turbo = std::path::Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
         if intel_turbo.exists() {
-            self.turbo.available = true;
+            self.turbo.available = Some(true);
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(intel_turbo) {
                 self.turbo.enabled = Some(val.trim() == "0"); // no_turbo=0 means turbo enabled
@@ -862,7 +874,7 @@ impl CpuFreqMonitor {
         // AMD P-state boost
         let amd_boost = std::path::Path::new("/sys/devices/system/cpu/amd_pstate/cpufreq/boost");
         if amd_boost.exists() {
-            self.turbo.available = true;
+            self.turbo.available = Some(true);
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(amd_boost) {
                 self.turbo.enabled = Some(val.trim() == "1");
@@ -873,11 +885,14 @@ impl CpuFreqMonitor {
         // Generic cpufreq boost
         let generic_boost = std::path::Path::new("/sys/devices/system/cpu/cpufreq/boost");
         if generic_boost.exists() {
-            self.turbo.available = true;
+            self.turbo.available = Some(true);
             self.turbo.controllable = true;
             if let Ok(val) = fs::read_to_string(generic_boost) {
                 self.turbo.enabled = Some(val.trim() == "1");
             }
+        } else {
+            // None of the three control files exists: a checked absence on Linux.
+            self.turbo.available = Some(false);
         }
 
         Ok(())
@@ -1120,15 +1135,15 @@ impl CpuFreqMonitor {
         // Get base frequency from registry
         let base_freq_mhz = windows_get_base_frequency();
 
-        // Get current power scheme
-        let (power_plan, governor) = windows_get_power_scheme();
-
         // Create CPU entries
         for id in 0..num_cpus {
             let mut cpu = CpuFreqInfo::new(id);
             // GetSystemInfo gives a processor count, not the online state of
             // each processor, so `online` stays `None` (from `CpuFreqInfo::new`).
-            cpu.governor = governor.clone();
+            // The governor stays unread too. Windows has no cpufreq governor: the
+            // active power plan used to be mapped onto one (`Balanced` became
+            // schedutil, and that became the only "available" governor), which
+            // was a table, not a reading. The plan name is not a governor either.
 
             // Apply WMI info if available
             if let Some(current) = current_mhz {
@@ -1152,7 +1167,6 @@ impl CpuFreqMonitor {
                 // for "not read" because the field could not say so. It can now.
                 cpu.min_freq_khz = None;
                 cpu.scaling_driver = Some("windows-wmi".to_string());
-                cpu.available_governors.push(governor.clone());
             } else if id == 0 && base_freq_mhz > 0 {
                 // Registry `~MHz` under `CentralProcessor\0` is the boot-time
                 // nominal clock of CPU 0. It is not a current reading, so
@@ -1166,37 +1180,10 @@ impl CpuFreqMonitor {
             self.cpus.push(cpu);
         }
 
-        // Set system policy
-        if let Some(plan_name) = power_plan {
-            self.policies.push(CpuFreqPolicy {
-                id: 0,
-                affected_cpus: (0..num_cpus).collect(),
-                related_cpus: (0..num_cpus).collect(),
-                governor: governor.clone(),
-                min_freq_khz: self.cpus.first().and_then(|c| c.min_freq_khz),
-                max_freq_khz: self.cpus.first().and_then(|c| c.max_freq_khz),
-                scaling_driver: Some(plan_name),
-            });
-        }
-
         // Boost mode is a setting of the active power scheme, not a clock, so it
-        // is read whether or not a clock above base was seen. Reading it only
-        // inside the clock check left `enabled` unread on a machine with no
-        // such clock, even though powercfg reports it.
+        // is read on its own. Windows exposes no turbo ceiling or control here,
+        // so `available`, `controllable` and `boost_mhz` stay unread.
         self.turbo.enabled = windows_boost_permitted();
-
-        // Try to detect turbo
-        if let (Some(_current), Some(max)) = (current_mhz, max_mhz) {
-            let base = windows_get_base_frequency();
-            if max > base {
-                self.turbo = TurboStatus {
-                    available: true,
-                    enabled: self.turbo.enabled,
-                    controllable: false,
-                    boost_mhz: Some(max - base),
-                };
-            }
-        }
 
         Ok(())
     }
@@ -1318,40 +1305,6 @@ fn windows_get_base_frequency() -> u32 {
         }
     }
     0
-}
-
-/// Get Windows power scheme and map to Governor
-#[cfg(target_os = "windows")]
-fn windows_get_power_scheme() -> (Option<String>, Governor) {
-    use std::process::Command;
-
-    // Use powercfg to get active scheme
-    if let Ok(output) = Command::new("powercfg").args(["/getactivescheme"]).output() {
-        if output.status.success() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                let lower = stdout.to_lowercase();
-
-                // Look for well-known scheme names
-                if lower.contains("high performance") {
-                    return (Some("High Performance".to_string()), Governor::Performance);
-                } else if lower.contains("balanced") {
-                    return (Some("Balanced".to_string()), Governor::Schedutil);
-                } else if lower.contains("power saver") {
-                    return (Some("Power Saver".to_string()), Governor::Powersave);
-                }
-
-                // Extract scheme name from output (format: "Power Scheme GUID: xxx  (Name)")
-                if let Some(start) = stdout.find('(') {
-                    if let Some(end) = stdout.find(')') {
-                        let name = stdout[start + 1..end].trim().to_string();
-                        return (Some(name), Governor::Unknown("custom".to_string()));
-                    }
-                }
-            }
-        }
-    }
-
-    (None, Governor::Unknown("unknown".to_string()))
 }
 
 /// Whether the active power scheme permits processor boost, from the AC value
@@ -1663,5 +1616,32 @@ Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
         assert_eq!(cpu.is_max_freq(), Some(true));
         assert_eq!(cpu.is_min_freq(), Some(false));
         assert_eq!(cpu.is_turbo(), Some(true));
+    }
+
+    #[test]
+    fn an_unread_governor_is_not_reported_as_one() {
+        // Windows and macOS leave the governor unread. The placeholder must not
+        // come back from `current_governor` as though a governor had been read.
+        let monitor = CpuFreqMonitor {
+            cpus: vec![CpuFreqInfo::new(0)],
+            policies: Vec::new(),
+            turbo: TurboStatus {
+                available: None,
+                enabled: None,
+                controllable: false,
+                boost_mhz: None,
+            },
+            last_update: Instant::now(),
+            pstate_driver: None,
+        };
+        assert_eq!(monitor.current_governor(), None);
+
+        let mut read = CpuFreqInfo::new(0);
+        read.governor = Governor::Performance;
+        let monitor = CpuFreqMonitor {
+            cpus: vec![read],
+            ..monitor
+        };
+        assert_eq!(monitor.current_governor(), Some(Governor::Performance));
     }
 }

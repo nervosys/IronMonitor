@@ -233,8 +233,9 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Megahertz),
         P::Derived,
         true,
-        "Clock the turbo ceiling sits above base, in MHz. Windows only, computed as \
-         the rated maximum minus the base clock.",
+        "Clock the turbo ceiling sits above base, in MHz. Not read on any platform: \
+         Windows used to subtract its boot-time clock from its rated maximum, which \
+         is not a boost figure.",
     )
     .derived(&["cpu.core.{n}.frequency.max", "cpu.core.{n}.frequency.base"]));
 
@@ -929,18 +930,25 @@ fn push_turbo(out: &mut Vec<Reading>, turbo: Option<crate::cpufreq::TurboStatus>
     };
 
     if cfg!(target_os = "linux") {
-        out.push(Reading::measured(
-            "cpu.turbo.available",
-            serde_json::json!(turbo.available),
-            None,
-        ));
-        if let (true, Some(enabled)) = (turbo.available, turbo.enabled) {
+        match turbo.available {
+            Some(available) => out.push(Reading::measured(
+                "cpu.turbo.available",
+                serde_json::json!(available),
+                None,
+            )),
+            None => out.push(Reading::unavailable(
+                "cpu.turbo.available",
+                None,
+                "the turbo reader did not reach a verdict on this kernel",
+            )),
+        }
+        if let (Some(true), Some(enabled)) = (turbo.available, turbo.enabled) {
             out.push(Reading::measured(
                 "cpu.turbo.enabled",
                 serde_json::json!(enabled),
                 None,
             ));
-        } else if turbo.available {
+        } else if turbo.available == Some(true) {
             // The control exists but its file could not be read. Reporting
             // `false` here would present an unread state as a disabled one.
             out.push(Reading::unavailable(
@@ -971,7 +979,7 @@ fn push_turbo(out: &mut Vec<Reading>, turbo: Option<crate::cpufreq::TurboStatus>
         // boost mode the active power scheme permits, read with powercfg. It is
         // not whether boost is running now.
         let why = if cfg!(windows) {
-            "the Windows turbo reader infers boost from WMI clock values and reads no boost control"
+            "the Windows turbo reader reads no boost control and no turbo ceiling"
         } else {
             "this platform's turbo reader does not detect boost state"
         };
@@ -1003,7 +1011,8 @@ fn push_turbo(out: &mut Vec<Reading>, turbo: Option<crate::cpufreq::TurboStatus>
             None => out.push(Reading::unavailable(
                 "cpu.turbo.boost_mhz",
                 Some(U::Megahertz),
-                "the platform reader found no clock above the base clock to report",
+                "no turbo ceiling is read on this platform: the Windows clocks it would be \
+                 derived from are both nominal, so their difference is not a boost figure",
             )),
         }
     }
