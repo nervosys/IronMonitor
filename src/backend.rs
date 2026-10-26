@@ -849,6 +849,11 @@ impl MonitoringBackend {
     // === CPU ===
 
     fn update_cpu(&mut self) -> Result<()> {
+        // Cleared before the read, not after it. The previous sample used to survive
+        // a failed read, so `get_full_system_state` reported an old sample as the
+        // current one. A failed read now leaves `None`, which renders as unknown.
+        self.cpu_stats = None;
+
         #[cfg(target_os = "windows")]
         {
             if let Ok(stats) = crate::platform::windows::read_cpu_stats() {

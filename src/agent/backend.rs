@@ -474,9 +474,21 @@ impl BackendConfig {
     }
 }
 
+/// Outcome of one server probe: `Ok(true)` answered as the backend, `Ok(false)` did
+/// not, and `Err` names why no answer was possible. The crate's `Result` is
+/// `IronError`-typed, so this spells out the standard one.
+type ProbeResult = std::result::Result<bool, &'static str>;
+
 /// Backend discovery and availability
 pub struct BackendDiscovery {
+    /// Backends a probe or a local check confirmed.
     available_backends: Vec<BackendType>,
+    /// Hosted backends whose API-key variable is set. Nothing contacted the
+    /// service, so a key proves configuration, not that the backend answers.
+    configured_backends: Vec<BackendType>,
+    /// Server probes that could not run to completion, with the reason. These are
+    /// neither available nor known to be absent.
+    unknown_probes: Vec<(BackendType, &'static str)>,
 }
 
 impl BackendDiscovery {
@@ -494,7 +506,7 @@ impl BackendDiscovery {
         // Order the results deterministically regardless of which probe finishes
         // first: IronWorks is the default backend and must stay ahead of the others,
         // because `recommended()` takes the first available entry.
-        let probes: [(BackendType, fn() -> bool); 6] = [
+        let probes: [(BackendType, fn() -> ProbeResult); 6] = [
             (BackendType::IronWorks, Self::check_ironworks_available),
             (BackendType::RemoteOllama, Self::check_ollama_available),
             (BackendType::RemoteLMStudio, Self::check_lm_studio_available),
@@ -502,16 +514,23 @@ impl BackendDiscovery {
             (BackendType::RemoteVllm, Self::check_vllm_available),
             (BackendType::RemoteTensorRT, Self::check_tensorrt_available),
         ];
-        let server_results: Vec<bool> = std::thread::scope(|scope| {
+        let server_results: Vec<ProbeResult> = std::thread::scope(|scope| {
             let handles: Vec<_> = probes.iter().map(|(_, probe)| scope.spawn(probe)).collect();
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or(false))
+                // A panicked probe used to read as `false`, which reported the server as
+                // not installed. It did not finish, so it is unknown.
+                .map(|h| h.join().unwrap_or(Err("probe thread panicked")))
                 .collect()
         });
 
-        if server_results[0] {
-            available.push(BackendType::IronWorks);
+        let mut unknown_probes = Vec::new();
+        for ((backend, _), result) in probes.iter().zip(server_results) {
+            match result {
+                Ok(true) => available.push(backend.clone()),
+                Ok(false) => {}
+                Err(reason) => unknown_probes.push((backend.clone(), reason)),
+            }
         }
 
         // Check for local backends
@@ -525,12 +544,15 @@ impl BackendDiscovery {
             available.push(BackendType::LocalCandle);
         }
 
-        // Check for remote backends (via environment variables or local servers)
+        // Hosted backends are only configured here, never probed. An API key in the
+        // environment does not show that the service answers, so it is not
+        // `available`.
+        let mut configured_backends = Vec::new();
         if std::env::var("OPENAI_API_KEY").is_ok() {
-            available.push(BackendType::RemoteOpenAI);
+            configured_backends.push(BackendType::RemoteOpenAI);
         }
         if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-            available.push(BackendType::RemoteAnthropic);
+            configured_backends.push(BackendType::RemoteAnthropic);
         }
         // GitHub Models is deliberately not discovered. GitHub retired the service
         // on 2026-07-30 — catalogue, inference API, and BYOK are all gone — so a
@@ -539,18 +561,7 @@ impl BackendDiscovery {
         // and treating its presence as an available backend handed those users a
         // provider guaranteed to fail, presented as one that was ready to use.
         if std::env::var("AZURE_OPENAI_API_KEY").is_ok() {
-            available.push(BackendType::RemoteAzure);
-        }
-
-        // Local server backends, from the probes run concurrently above.
-        for (backend, _) in probes.iter().skip(1) {
-            let idx = probes
-                .iter()
-                .position(|(b, _)| b == backend)
-                .expect("backend came from this array");
-            if server_results[idx] {
-                available.push(backend.clone());
-            }
+            configured_backends.push(BackendType::RemoteAzure);
         }
 
         // Command-line tools. Detection is a PATH lookup, so unlike the server probes
@@ -563,17 +574,42 @@ impl BackendDiscovery {
 
         Self {
             available_backends: available,
+            configured_backends,
+            unknown_probes,
         }
     }
 
-    /// Get list of available backends
+    /// Get list of backends confirmed available: a probe answered, a local check
+    /// passed, or a CLI is on PATH. An API key alone is not included; see
+    /// [`BackendDiscovery::configured`].
     pub fn available(&self) -> &[BackendType] {
         &self.available_backends
     }
 
-    /// Check if specific backend is available
+    /// Hosted backends whose API-key variable is set, without any check that the
+    /// service answers.
+    pub fn configured(&self) -> &[BackendType] {
+        &self.configured_backends
+    }
+
+    /// Check if a backend was confirmed available. `false` also covers a backend
+    /// that could not be checked; see [`BackendDiscovery::unknown_reason`].
     pub fn is_available(&self, backend: &BackendType) -> bool {
         self.available_backends.contains(backend)
+    }
+
+    /// Check if a hosted backend has its API key set. This is configuration only.
+    pub fn is_configured(&self, backend: &BackendType) -> bool {
+        self.configured_backends.contains(backend)
+    }
+
+    /// Why a server could not be checked, when its probe did not finish. `None`
+    /// means it was checked, or was never a probed backend.
+    pub fn unknown_reason(&self, backend: &BackendType) -> Option<&'static str> {
+        self.unknown_probes
+            .iter()
+            .find(|(b, _)| b == backend)
+            .map(|(_, reason)| *reason)
     }
 
     /// Get recommended backend (prefer local, fallback to remote)
@@ -606,7 +642,12 @@ impl BackendDiscovery {
             BackendType::Cli(CliProvider::Gemini),
             BackendType::RemoteOpenAI,
         ] {
-            if self.is_available(backend) {
+            // The hosted key is the last resort, so a configured key still ranks
+            // where it always did. It is not confirmed, which is why it is checked
+            // here rather than through `is_available`.
+            if self.is_available(backend)
+                || (*backend == BackendType::RemoteOpenAI && self.is_configured(backend))
+            {
                 return backend.clone();
             }
         }
@@ -617,7 +658,7 @@ impl BackendDiscovery {
     }
 
     /// Check if an IronWorks server is running.
-    fn check_ironworks_available() -> bool {
+    fn check_ironworks_available() -> ProbeResult {
         Self::check_http_endpoint_shape("http://localhost:8080/v1/models", Some("data"))
     }
 
@@ -654,29 +695,29 @@ impl BackendDiscovery {
     }
 
     /// Check if Ollama is running
-    fn check_ollama_available() -> bool {
+    fn check_ollama_available() -> ProbeResult {
         // Try to connect to Ollama server
         Self::check_http_endpoint_shape("http://localhost:11434/api/tags", Some("models"))
     }
 
     /// Check if LM Studio is running
-    fn check_lm_studio_available() -> bool {
+    fn check_lm_studio_available() -> ProbeResult {
         // Try to connect to LM Studio server
         Self::check_http_endpoint_shape("http://localhost:1234/v1/models", Some("data"))
     }
 
-    fn check_mlx_available() -> bool {
+    fn check_mlx_available() -> ProbeResult {
         Self::check_http_endpoint_shape("http://localhost:8082/v1/models", Some("data"))
     }
 
     /// Check if vLLM is running
-    fn check_vllm_available() -> bool {
+    fn check_vllm_available() -> ProbeResult {
         // Try to connect to vLLM server
         Self::check_http_endpoint_shape("http://localhost:8000/v1/models", Some("data"))
     }
 
     /// Check if TensorRT-LLM is running
-    fn check_tensorrt_available() -> bool {
+    fn check_tensorrt_available() -> ProbeResult {
         // Try to connect to TensorRT-LLM/Triton server
         // Triton health returns an empty 200 body, so there is no shape to check.
         Self::check_http_endpoint_shape("http://localhost:8001/v2/health/ready", None)
@@ -704,39 +745,48 @@ impl BackendDiscovery {
         body.get(key).is_some_and(|v| v.is_array())
     }
 
-    fn check_http_endpoint_shape(_url: &str, _expect_key: Option<&str>) -> bool {
+    ///
+    /// Returns `Err` with a reason when no answer is possible at all. Without the
+    /// `remote-backends` feature nothing is sent, so the server is unknown, not absent.
+    /// A connection that is refused or times out is a real answer: nothing is listening.
+    fn check_http_endpoint_shape(_url: &str, _expect_key: Option<&str>) -> ProbeResult {
         #[cfg(feature = "remote-backends")]
         {
             use std::time::Duration;
-            let client = reqwest::blocking::Client::builder()
+            let Ok(client) = reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(2)) // 2s timeout for discovery
                 .connect_timeout(Duration::from_secs(1)) // 1s connect timeout
-                .build();
+                .build()
+            else {
+                return Err("HTTP client could not be built");
+            };
 
-            if let Ok(client) = client {
-                match client.get(_url).send() {
-                    Ok(response) => {
-                        if !response.status().is_success() {
-                            log::debug!("Backend check {}: status={}", _url, response.status());
-                            return false;
-                        }
-                        let Some(key) = _expect_key else {
-                            return true;
-                        };
-                        let matched = response
-                            .json::<serde_json::Value>()
-                            .ok()
-                            .is_some_and(|body| Self::body_has_array(&body, key));
-                        log::debug!("Backend check {}: has array `{}` = {}", _url, key, matched);
-                        return matched;
+            match client.get(_url).send() {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        log::debug!("Backend check {}: status={}", _url, response.status());
+                        return Ok(false);
                     }
-                    Err(e) => {
-                        log::debug!("Backend check {} failed: {}", _url, e);
-                    }
+                    let Some(key) = _expect_key else {
+                        return Ok(true);
+                    };
+                    let matched = response
+                        .json::<serde_json::Value>()
+                        .ok()
+                        .is_some_and(|body| Self::body_has_array(&body, key));
+                    log::debug!("Backend check {}: has array `{}` = {}", _url, key, matched);
+                    Ok(matched)
+                }
+                Err(e) => {
+                    log::debug!("Backend check {} failed: {}", _url, e);
+                    Ok(false)
                 }
             }
         }
-        false
+        #[cfg(not(feature = "remote-backends"))]
+        {
+            Err("remote-backends feature not enabled in this build")
+        }
     }
 }
 
@@ -749,14 +799,19 @@ impl Default for BackendDiscovery {
 /// Backend capabilities
 #[derive(Debug, Clone)]
 pub struct BackendCapabilities {
-    /// Supports streaming responses
-    pub supports_streaming: bool,
+    /// Supports streaming responses.
+    ///
+    /// `None` means not probed. These flags used to be per-vendor literals
+    /// presented as facts, and nothing in this crate queries a backend for them,
+    /// so a value here describes what the vendor's product once offered, not
+    /// what this server exposes.
+    pub supports_streaming: Option<bool>,
 
-    /// Supports function calling
-    pub supports_functions: bool,
+    /// Supports function calling. `None` means not probed; see `supports_streaming`.
+    pub supports_functions: Option<bool>,
 
-    /// Supports vision (image input)
-    pub supports_vision: bool,
+    /// Supports vision (image input). `None` means not probed; see `supports_streaming`.
+    pub supports_vision: Option<bool>,
 
     /// Maximum context length, in tokens.
     ///
@@ -784,22 +839,22 @@ impl BackendCapabilities {
     pub fn for_backend(backend: &BackendType) -> Self {
         match backend {
             BackendType::IronWorks => Self {
-                supports_streaming: true,
+                supports_streaming: None, // not probed
                 // IronWorks supports multimodal and tool use behind its own feature
                 // flags, so what a given server offers depends on how it was built.
                 // Report the conservative baseline rather than advertising a
                 // capability a stock server may not have.
-                supports_functions: false,
-                supports_vision: false,
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // Runs on your hardware
             },
             BackendType::Cli(_) => Self {
                 // A subprocess returns one complete stdout buffer, so nothing can be
                 // streamed regardless of what the underlying model supports.
-                supports_streaming: false,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 // Ollama runs locally and is free. The others bill through the vendor
                 // account the tool is signed in to, at rates IronMonitor cannot observe —
@@ -812,9 +867,9 @@ impl BackendCapabilities {
             // here; the authority is the model's own entry in the `/v1/models`
             // listing.
             BackendType::RemoteOpenAI => Self {
-                supports_streaming: true,
-                supports_functions: true,
-                supports_vision: true,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 // Was `Some(5.0)`, labelled "GPT-4o pricing". Beyond being stale,
                 // one number cannot express a hosted provider's rate: input and
@@ -825,53 +880,53 @@ impl BackendCapabilities {
                 cost_per_million_tokens: None,
             },
             BackendType::RemoteAnthropic => Self {
-                supports_streaming: true,
-                supports_functions: true,
-                supports_vision: true,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // See the note on RemoteOpenAI.
             },
             BackendType::RemoteOllama | BackendType::RemoteLMStudio | BackendType::RemoteMlx => {
                 Self {
-                    supports_streaming: true,
-                    supports_functions: false,
-                    supports_vision: false,
+                    supports_streaming: None, // not probed
+                    supports_functions: None, // not probed
+                    supports_vision: None,    // not probed
                     max_context_length: None,
                     cost_per_million_tokens: None, // Local/free
                 }
             }
             BackendType::RemoteVllm => Self {
-                supports_streaming: true,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::RemoteTensorRT => Self {
-                supports_streaming: true,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::LocalGGML | BackendType::LocalONNX | BackendType::LocalCandle => Self {
-                supports_streaming: false,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // Local/free
             },
             BackendType::RemoteGitHub => Self {
-                supports_streaming: true,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None, // Free for personal use
             },
             BackendType::RemoteAzure => Self {
-                supports_streaming: true,
-                supports_functions: true,
-                supports_vision: true,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 // Was `Some(5.0)`, a flat rate with no model, date or source behind
                 // it. Azure bills per deployed model, so the same reasoning as
@@ -879,9 +934,9 @@ impl BackendCapabilities {
                 cost_per_million_tokens: None,
             },
             BackendType::Custom(_) => Self {
-                supports_streaming: false,
-                supports_functions: false,
-                supports_vision: false,
+                supports_streaming: None, // not probed
+                supports_functions: None, // not probed
+                supports_vision: None,    // not probed
                 max_context_length: None,
                 cost_per_million_tokens: None,
             },
@@ -912,6 +967,8 @@ mod tests {
         assert!(!config.backend_type.is_builtin_engine());
         let discovery = BackendDiscovery {
             available_backends: vec![BackendType::RemoteMlx],
+            configured_backends: Vec::new(),
+            unknown_probes: Vec::new(),
         };
         assert_eq!(discovery.recommended(), BackendType::RemoteMlx);
         assert_eq!(

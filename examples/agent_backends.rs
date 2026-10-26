@@ -131,7 +131,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{}", "=".repeat(60));
     println!("\n4. Checking OpenAI Backend\n");
 
-    if discovery.is_available(&BackendType::RemoteOpenAI) {
+    // A key proves configuration, not that the service answers; `is_configured`, not
+    // `is_available`, is the right test here.
+    if discovery.is_configured(&BackendType::RemoteOpenAI) {
         println!("✓ OpenAI API key configured (OPENAI_API_KEY)");
 
         #[cfg(feature = "remote-backends")]

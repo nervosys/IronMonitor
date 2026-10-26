@@ -128,6 +128,13 @@ pub struct SystemState {
     #[serde(default, alias = "gpu_errors")]
     pub unreadable_gpus: Vec<UnreadableGpu>,
 
+    /// GPU indices the query asked for that this system does not have.
+    ///
+    /// These were dropped silently, so the model answered as if the request had
+    /// been read. They are named here, with the count the system does have.
+    #[serde(default)]
+    pub absent_gpus: Vec<AbsentGpu>,
+
     /// Timestamp of state capture
     pub timestamp: u64,
 }
@@ -140,6 +147,16 @@ pub struct UnreadableGpu {
 
     /// The error its query returned.
     pub reason: String,
+}
+
+/// A GPU index that was requested but is not present on this system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbsentGpu {
+    /// The index the query asked for.
+    pub index: usize,
+
+    /// How many GPUs this system has, so the reply can say what does exist.
+    pub gpu_count: usize,
 }
 
 /// Condensed GPU state
@@ -211,11 +228,10 @@ impl SystemState {
             .iter()
             .map(|gpu| gpu.processes().ok().map(|procs| procs.len()))
             .collect();
-        let (gpu_states, unreadable_gpus) = Self::select_gpu_states(
-            monitor.gpus().snapshot_all_partial(),
-            &process_counts,
-            query,
-        );
+        let snapshots = monitor.gpus().snapshot_all_partial();
+        let absent_gpus = Self::absent_gpus(query, snapshots.len());
+        let (gpu_states, unreadable_gpus) =
+            Self::select_gpu_states(snapshots, &process_counts, query);
 
         // Get CPU state (platform-specific)
         let cpu = Self::get_cpu_state();
@@ -228,6 +244,7 @@ impl SystemState {
             memory,
             gpus: gpu_states,
             unreadable_gpus,
+            absent_gpus,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -261,6 +278,24 @@ impl SystemState {
             }
         }
         (gpus, errors)
+    }
+
+    /// Requested GPU indices at or beyond the adapters the system enumerated.
+    ///
+    /// `select_gpu_states` drops these without a trace, so a question about GPU 3 on
+    /// a two-GPU system was answered as if it had been read. Only an explicit list
+    /// can name a missing index; an all-GPUs or unqualified query asks for whatever
+    /// exists and has nothing to be absent.
+    fn absent_gpus(query: &Query, gpu_count: usize) -> Vec<AbsentGpu> {
+        if query.all_gpus || query.gpu_indices.is_empty() {
+            return Vec::new();
+        }
+        query
+            .gpu_indices
+            .iter()
+            .filter(|&&index| index >= gpu_count)
+            .map(|&index| AbsentGpu { index, gpu_count })
+            .collect()
     }
 
     /// Mean clock across the cores that reported one, or `None` when none did.
@@ -519,6 +554,15 @@ impl SystemState {
             ));
         }
 
+        for gpu in &self.absent_gpus {
+            context.push_str(&format!(
+                "\nGPU {}: not present on this system, which has {} GPU{}. Nothing is known about it.\n",
+                gpu.index,
+                gpu.gpu_count,
+                if gpu.gpu_count == 1 { "" } else { "s" }
+            ));
+        }
+
         // Give the model the same thresholds IronMonitor uses for its own warnings. Without
         // them it substitutes a guess, and the guess runs cold: a 3090 Ti at 52 °C —
         // an ordinary idle-to-light-load reading — was reported to the user as
@@ -704,6 +748,36 @@ mod tests {
     }
 
     #[test]
+    fn explicit_gpu_index_that_does_not_exist_is_named_in_the_context() {
+        // Two adapters, the second asked for explicitly as GPU 3 and not present.
+        let query = Query::parse("What is GPU 3 temperature?");
+        let absent = SystemState::absent_gpus(&query, 2);
+        assert_eq!(absent.len(), 1);
+        assert_eq!(absent[0].index, 3);
+        assert_eq!(absent[0].gpu_count, 2);
+
+        // An all-GPUs question asks for what exists, so nothing is absent.
+        let all = Query::parse("What is the temperature of all GPUs?");
+        assert!(SystemState::absent_gpus(&all, 2).is_empty());
+
+        let state = SystemState {
+            cpu: None,
+            memory: None,
+            gpus: Vec::new(),
+            unreadable_gpus: Vec::new(),
+            absent_gpus: absent,
+            timestamp: 0,
+        };
+        let context = state.to_context_string();
+        assert!(
+            context.contains(
+                "GPU 3: not present on this system, which has 2 GPUs. Nothing is known about it."
+            ),
+            "{context}"
+        );
+    }
+
+    #[test]
     fn failed_gpu_preserves_other_readings_and_collection_indices() {
         let (gpus, unreadable_gpus) =
             SystemState::select_gpu_states(mixed_snapshots(), &[], &Query::parse("all GPUs"));
@@ -720,6 +794,7 @@ mod tests {
             }),
             gpus,
             unreadable_gpus,
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
         let context = state.to_context_string();
@@ -777,6 +852,7 @@ mod tests {
             memory: None,
             gpus,
             unreadable_gpus,
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
         assert!(state
@@ -851,6 +927,7 @@ mod tests {
             memory: None,
             gpus: vec![gpu(0, Some(50)), gpu(1, Some(36)), gpu(2, None)],
             unreadable_gpus: Vec::new(),
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -942,6 +1019,7 @@ mod tests {
             memory: None,
             gpus: vec![gpu(0, Some(52))],
             unreadable_gpus: Vec::new(),
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -961,6 +1039,7 @@ mod tests {
             memory: None,
             gpus: Vec::new(),
             unreadable_gpus: Vec::new(),
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
         assert!(!empty.to_context_string().contains("Reference thresholds"));
@@ -979,6 +1058,7 @@ mod tests {
                 index: 1,
                 reason: "NVML: driver not loaded".to_string(),
             }],
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
         let context = state.to_context_string();
@@ -1011,6 +1091,7 @@ mod tests {
             memory: None,
             gpus: Vec::new(),
             unreadable_gpus: Vec::new(),
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
 
@@ -1116,6 +1197,7 @@ mod tests {
                 },
             ],
             unreadable_gpus: Vec::new(),
+            absent_gpus: Vec::new(),
             timestamp: 0,
         };
 

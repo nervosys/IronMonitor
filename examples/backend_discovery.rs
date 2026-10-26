@@ -27,10 +27,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(tokens) => println!("    - Context length: {} tokens", tokens),
             None => println!("    - Context length: not reported"),
         }
-        println!(
-            "    - Streaming: {}",
-            if caps.supports_streaming { "Yes" } else { "No" }
-        );
+        // `None` is "not probed", not "no": nothing here queries the backend.
+        match caps.supports_streaming {
+            Some(true) => println!("    - Streaming: Yes"),
+            Some(false) => println!("    - Streaming: No"),
+            None => println!("    - Streaming: not probed"),
+        }
 
         // `None` means "IronMonitor does not know the rate", which is only the same as
         // "free" when inference happens on this machine. Printing "Free" for a
@@ -91,15 +93,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for backend in all_backends {
         let available = discovery.is_available(&backend);
         let status = if available {
-            "[+] Available"
+            "[+] Available".to_string()
+        } else if let Some(reason) = discovery.unknown_reason(&backend) {
+            // The probe could not finish, so this is not a finding of absence.
+            format!("[?] Unknown: {reason}")
+        } else if discovery.is_configured(&backend) {
+            // The key is set, but nothing has contacted the service.
+            "[~] Configured (key set, not checked)".to_string()
         } else {
-            "[-] Not available"
+            "[-] Not available".to_string()
         };
 
         println!("{:<35} {}", backend.display_name(), status);
 
-        // Show why it's not available
-        if !available {
+        // Show why it's not available. A configured or unknown backend already said
+        // what is known about it above.
+        if !available
+            && !discovery.is_configured(&backend)
+            && discovery.unknown_reason(&backend).is_none()
+        {
             let reason = match backend {
                 BackendType::LocalGGML | BackendType::LocalONNX | BackendType::LocalCandle => {
                     "   Reason: No local model files detected"

@@ -333,11 +333,11 @@ impl LocalInferenceClient for IronWorksClient {
 
             Ok(InferenceResponse {
                 text: text.trim().to_string(),
-                model: if completion.model.is_empty() {
-                    request.model
-                } else {
-                    completion.model
-                },
+                // The server's own report. An omitted `model` stays empty, meaning
+                // unknown, the same convention `cli.rs` uses for a model it did not
+                // read. It used to fall back to the requested name, which reported a
+                // model the server never said had answered.
+                model: completion.model,
                 tokens_generated: completion.usage.and_then(|u| u.completion_tokens),
                 duration_ms: start.elapsed().as_millis() as u64,
                 truncated,

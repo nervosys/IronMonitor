@@ -292,9 +292,9 @@ impl AgentConfig {
     #[allow(deprecated)]
     pub fn auto_detect() -> Result<Self> {
         let discovery = BackendDiscovery::discover();
-        let available_backends = discovery.available();
-
-        if available_backends.is_empty() {
+        // A configured hosted key is usable here, as before the split, so the error
+        // below is raised only when nothing is set up at all.
+        if discovery.available().is_empty() && discovery.configured().is_empty() {
             return Err(IronError::Configuration(
                 "No AI backends available. Please install Ollama (https://ollama.com), \
                 configure an API key (OPENAI_API_KEY or GITHUB_TOKEN), or set up another backend."

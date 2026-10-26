@@ -84,8 +84,10 @@ impl LlamaCppClient {
 
     /// Find llama.cpp executable in common locations
     fn find_llamacpp_executable() -> Option<PathBuf> {
-        // Common executable names
-        let exe_names = ["llama-cli", "main", "llama.cpp"];
+        // Common executable names. `main` used to be listed as llama.cpp's old binary
+        // name, but it is generic: any unrelated executable called `main` on PATH was
+        // taken for llama.cpp. The same reason removes `llama.cpp/main` below.
+        let exe_names = ["llama-cli", "llama.cpp"];
 
         // Check PATH
         for name in &exe_names {
@@ -109,7 +111,6 @@ impl LlamaCppClient {
         // Check common installation paths
         let common_paths = [
             PathBuf::from("llama.cpp/build/bin/llama-cli"),
-            PathBuf::from("llama.cpp/main"),
             PathBuf::from("/usr/local/bin/llama-cli"),
             PathBuf::from("C:\\llama.cpp\\build\\bin\\Release\\llama-cli.exe"),
         ];
@@ -158,6 +159,9 @@ impl LocalInferenceClient for LlamaCppClient {
         "llama.cpp"
     }
 
+    /// True when the model file and a llama.cpp executable are present. This is an
+    /// installation check only: it does not load the model or run the binary, so
+    /// `true` does not mean inference will succeed.
     async fn is_available(&self) -> bool {
         self.model_path.exists() && self.executable.is_some()
     }
