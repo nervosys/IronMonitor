@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduled startup tasks were picked by the `Author` column; a service's start
   time was its exit time; a unit with an empty unit-file state read as disabled;
   and a failed service listing on Windows or macOS read as no services.
+- `SystemHealth` no longer passes swap whose use was not read: a total with no
+  used figure is an Unknown "Swap Usage" check, not "Swap usage minimal: 0.0%".
+  A machine with no GPU adapters or no block devices now has an Unknown row for
+  that domain, so the overall verdict is not Healthy over a check that never ran.
 - Two AMD GPUs are reported as linked by xGMI only when both GPUs'
   `xgmi_hive_id` read and match; the existence of the first GPU's hive
   directory used to be enough. Apple codec rows publish no bit depth, and a

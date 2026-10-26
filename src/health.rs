@@ -300,6 +300,15 @@ impl SystemHealth {
                     HealthStatus::Unknown,
                     "swap was not reported by this platform",
                 ));
+            } else if mem.swap.total_or_zero() > 0 && mem.swap.used.is_none() {
+                // The total was read and the used figure was not. Taking the used
+                // figure as zero reported "Swap usage minimal: 0.0%" as a passed
+                // check for swap whose use was never read.
+                checks.push(unreadable(
+                    "Swap Usage",
+                    "Memory",
+                    "swap usage was not reported",
+                ));
             } else if mem.swap.total_or_zero() > 0 {
                 let swap_usage =
                     (mem.swap.used_or_zero() as f64 / mem.swap.total_or_zero() as f64) * 100.0;
@@ -343,6 +352,15 @@ impl SystemHealth {
             ));
         }
         if let Ok(gpus) = gpu_read {
+            // An enumeration that found no adapters is reported, not left out: a
+            // report with no GPU row would read as a GPU check that passed.
+            if gpus.gpus().is_empty() {
+                checks.push(unreadable(
+                    "GPU Detection",
+                    "GPU",
+                    "no GPU adapters were enumerated",
+                ));
+            }
             for (idx, gpu) in gpus.gpus().iter().enumerate() {
                 let dynamic_read = gpu.dynamic_info();
                 if let Err(e) = &dynamic_read {
@@ -478,6 +496,14 @@ impl SystemHealth {
             ));
         }
         if let Ok(disks) = disk_read {
+            // Same as the GPU case: no block devices is a row, not an absence.
+            if disks.is_empty() {
+                checks.push(unreadable(
+                    "Disks",
+                    "Storage",
+                    "no block devices were enumerated",
+                ));
+            }
             for disk in disks {
                 let disk_name = disk.name();
                 // Get disk health status
