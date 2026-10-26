@@ -589,9 +589,20 @@ impl ConsentManager {
         loop {
             println!("Do you consent to this data collection? [y/N]: ");
             let mut input = String::new();
-            std::io::stdin()
+            let bytes = std::io::stdin()
                 .read_line(&mut input)
                 .map_err(|e| IronError::Configuration(format!("Failed to read input: {}", e)))?;
+
+            // End of input is not an answer. It used to fall through to the
+            // `""` arm below, which recorded a timestamped denial nobody gave,
+            // and which also moved the review date forward and suppressed the
+            // reminder. Leave the scope unrecorded instead.
+            if bytes == 0 {
+                return Err(IronError::Configuration(format!(
+                    "no answer for {} on standard input; consent was not recorded",
+                    scope.name()
+                )));
+            }
 
             let input = input.trim().to_lowercase();
             match input.as_str() {

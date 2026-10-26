@@ -508,15 +508,6 @@ const JUDGED: &[(&str, &str, &str, &str)] = &[
         ),
     ),
     (
-        "src/fleet.rs",
-        "HostMetrics",
-        "uptime_seconds",
-        concat!(
-            "supplied by the caller through record_metrics, and deserialised with ",
-            "no serde defaults; the only literal is a test fixture"
-        ),
-    ),
-    (
         "src/network_tools.rs",
         "PingResult",
         "packets_sent packets_received packets_lost packet_loss_percent",

@@ -63,7 +63,9 @@ pub struct HostMetrics {
     pub network_rx_bytes_sec: Option<f64>,
     pub network_tx_bytes_sec: Option<f64>,
     pub process_count: Option<u32>,
-    pub uptime_seconds: u64,
+    /// `None` when the host did not report uptime. A caller must not pass 0: an
+    /// unread uptime is not a host that has just booted.
+    pub uptime_seconds: Option<u64>,
     pub timestamp: u64,
 }
 
@@ -282,6 +284,12 @@ impl FleetManager {
     /// the fleet's score as though it had been measured.
     fn host_health_score(host: &HostInfo) -> Option<f64> {
         match host.status {
+            // A host that went quiet after reporting is scored 0 as offline. One
+            // that was registered and never heard from is `Offline` too, once the
+            // timeout passes, but nothing about it was ever observed: it used to
+            // score 0 and drag the fleet mean down, where the rule for an unheard
+            // host is no score at all.
+            HostStatus::Offline if host.latest_metrics.is_none() => None,
             HostStatus::Offline => Some(0.0),
             HostStatus::Unknown => None,
             _ => {
@@ -484,7 +492,7 @@ mod tests {
                 network_rx_bytes_sec: Some(0.0),
                 network_tx_bytes_sec: Some(0.0),
                 process_count: Some(0),
-                uptime_seconds: 0,
+                uptime_seconds: None,
                 timestamp: 0,
             }),
         }
@@ -598,6 +606,19 @@ mod tests {
             ..host(None)
         };
         assert_eq!(FleetManager::host_health_score(&silent), None);
+        // Registered, never heard from, then timed out: still unscored, not 0.
+        let timed_out_unheard = HostInfo {
+            latest_metrics: None,
+            status: HostStatus::Offline,
+            ..host(None)
+        };
+        assert_eq!(FleetManager::host_health_score(&timed_out_unheard), None);
+        // A host that reported and then went quiet is genuinely offline: 0.
+        let went_quiet = HostInfo {
+            status: HostStatus::Offline,
+            ..host(Some(40.0))
+        };
+        assert_eq!(FleetManager::host_health_score(&went_quiet), Some(0.0));
         let unknown = HostInfo {
             status: HostStatus::Unknown,
             ..host(Some(40.0))
