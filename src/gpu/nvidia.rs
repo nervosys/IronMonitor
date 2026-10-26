@@ -483,6 +483,11 @@ fn get_process_name(pid: u32) -> String {
     }
 }
 
+/// The owner of a process, or the empty string where it could not be read.
+///
+/// Empty is the codebase's "not read" marker for `GpuProcess::user`, and
+/// `process_monitor` only copies a non-empty value. This used to return the
+/// literal `"<unknown>"`, which passed that check and showed up as a user name.
 #[cfg(feature = "nvidia")]
 fn get_process_user(pid: u32) -> String {
     #[cfg(unix)]
@@ -498,7 +503,7 @@ fn get_process_user(pid: u32) -> String {
                     .flatten()
                     .map(|u| u.name)
             })
-            .unwrap_or_else(|| "<unknown>".to_string())
+            .unwrap_or_default()
     }
     #[cfg(windows)]
     {
@@ -554,13 +559,13 @@ fn get_process_user(pid: u32) -> String {
         unsafe {
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if process.is_null() {
-                return "<unknown>".to_string();
+                return String::new();
             }
 
             let mut token: *mut std::ffi::c_void = std::ptr::null_mut();
             if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
                 CloseHandle(process);
-                return "<unknown>".to_string();
+                return String::new();
             }
 
             // Get required buffer size
@@ -576,7 +581,7 @@ fn get_process_user(pid: u32) -> String {
             if return_length == 0 {
                 CloseHandle(token);
                 CloseHandle(process);
-                return "<unknown>".to_string();
+                return String::new();
             }
 
             let mut buffer = vec![0u8; return_length as usize];
@@ -590,7 +595,7 @@ fn get_process_user(pid: u32) -> String {
             {
                 CloseHandle(token);
                 CloseHandle(process);
-                return "<unknown>".to_string();
+                return String::new();
             }
 
             let token_user = &*(buffer.as_ptr() as *const TokenUser);
@@ -614,7 +619,7 @@ fn get_process_user(pid: u32) -> String {
             {
                 CloseHandle(token);
                 CloseHandle(process);
-                return "<unknown>".to_string();
+                return String::new();
             }
 
             CloseHandle(token);

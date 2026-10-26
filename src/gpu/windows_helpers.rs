@@ -331,21 +331,11 @@ pub fn query_gpu_perf_counters(luid_filter: Option<&str>) -> WinGpuPerfData {
         data.engines.video_encode = avg(venc_total, venc_count);
         data.engines.copy = avg(copy_total, copy_count);
 
-        // Overall = graphics where it answered, else the mean across every
-        // engine that did. No engine answering means no overall figure; the
-        // `else { 0 }` here reported an idle GPU.
-        let total_sum = gfx_total + compute_total + vdec_total + venc_total + copy_total;
-        let total_count = gfx_count + compute_count + vdec_count + venc_count + copy_count;
-        data.engines.overall = if total_count > 0 {
-            // Use the graphics engine as primary, fall back to average
-            Some(
-                data.engines
-                    .graphics
-                    .unwrap_or((total_sum / total_count as f64).min(100.0) as u8),
-            )
-        } else {
-            None
-        };
+        // Overall is the graphics engine and nothing else. A mean of the compute,
+        // copy and video engines used to stand in when graphics did not answer.
+        // That average is not this GPU's utilization, and it was published as a
+        // measurement.
+        data.engines.overall = data.engines.graphics;
     }
 
     // ── Adapter memory usage ────────────────────────────────────────────
@@ -357,8 +347,14 @@ pub fn query_gpu_perf_counters(luid_filter: Option<&str>) -> WinGpuPerfData {
             }
         }
 
-        data.dedicated_used = *dedicated;
-        data.shared_used = *shared;
+        // A counter that was absent in this row does not erase a reading an
+        // earlier row gave.
+        if dedicated.is_some() {
+            data.dedicated_used = *dedicated;
+        }
+        if shared.is_some() {
+            data.shared_used = *shared;
+        }
 
         // Keep looking while this row reported nothing in use: a later row may
         // be the adapter actually in use. A row that reported zero is still a
