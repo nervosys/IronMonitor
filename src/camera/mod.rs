@@ -298,7 +298,7 @@ impl CameraMonitor {
                 max_height: 0,
                 formats,
                 capabilities,
-                is_active: Some(Self::is_device_busy(&format!("/dev/{}", dev_name))),
+                is_active: Self::is_device_busy(&format!("/dev/{}", dev_name)),
                 index,
             });
         }
@@ -379,13 +379,18 @@ impl CameraMonitor {
         None
     }
 
+    /// `Some(true)` when the open fails with EBUSY, `Some(false)` when it
+    /// succeeds, and `None` for any other failure. A permission error on a
+    /// device node says nothing about whether it is streaming; the old code
+    /// read every such error as idle, which is the wrong answer for a privacy
+    /// signal.
     #[cfg(target_os = "linux")]
-    fn is_device_busy(dev: &str) -> bool {
-        // Try opening exclusively — if it fails with EBUSY, it's in use
+    fn is_device_busy(dev: &str) -> Option<bool> {
         use std::fs::OpenOptions;
         match OpenOptions::new().read(true).open(dev) {
-            Ok(_) => false,
-            Err(e) => e.raw_os_error() == Some(16), // EBUSY
+            Ok(_) => Some(false),
+            Err(e) if e.raw_os_error() == Some(16) => Some(true), // EBUSY
+            Err(_) => None,
         }
     }
 
@@ -480,10 +485,11 @@ impl CameraMonitor {
         };
         let items = crate::core::command::json_items(&val);
         for (i, item) in items.iter().enumerate() {
-            let name = item["Name"]
-                .as_str()
-                .unwrap_or("Unknown Camera")
-                .to_string();
+            // A device with no Name is not given one. The old fallback was the
+            // literal "Unknown Camera", which the ontology published as the name.
+            let Some(name) = item["Name"].as_str().map(str::to_string) else {
+                continue;
+            };
             let vendor = item["Manufacturer"]
                 .as_str()
                 .filter(|s| !s.trim().is_empty())
@@ -498,7 +504,10 @@ impl CameraMonitor {
             {
                 CameraConnection::Virtual
             } else {
-                CameraConnection::Internal
+                // Not established from the device ID. The old fallback called every
+                // other camera Internal, including ones on buses this reader does not
+                // recognise.
+                CameraConnection::Unknown
             };
 
             self.cameras.push(CameraInfo {

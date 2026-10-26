@@ -25,6 +25,8 @@ pub enum AudioDeviceType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioState {
     Active,
+    /// Disabled by the user or an administrator (`DeviceState` 2 on Windows).
+    Disabled,
     Idle,
     Suspended,
     Unavailable,
@@ -343,15 +345,22 @@ impl AudioMonitor {
                 volume
             )));
         }
-        if let Some(device) = self.devices.iter_mut().find(|d| d.id == device_id) {
-            device.volume = Some(volume);
-            Ok(())
-        } else {
-            Err(crate::error::IronError::NotFound(format!(
+        if !self.devices.iter().any(|d| d.id == device_id) {
+            return Err(crate::error::IronError::NotFound(format!(
                 "Audio device '{}' not found",
                 device_id
-            )))
+            )));
         }
+        // Not implemented: this used to store the value in the device record and
+        // return Ok, so the next read reported a volume the hardware never had.
+        Err(crate::error::IronError::NotImplemented(
+            concat!(
+                "setting a device's volume: IronMonitor has no mixer binding on this ",
+                "platform, and this call previously changed only its own copy of ",
+                "the value"
+            )
+            .to_string(),
+        ))
     }
 
     /// Set mute state for a specific device by ID.
@@ -536,7 +545,9 @@ impl AudioMonitor {
                         .ok()
                         .and_then(|raw| match raw & 0xF {
                             1 => Some(AudioState::Active),
-                            2 => Some(AudioState::Suspended),
+                            // Disabled is not suspended. The old mapping labelled a
+                            // disabled endpoint "Suspended".
+                            2 => Some(AudioState::Disabled),
                             4 | 8 => Some(AudioState::Unavailable),
                             _ => None,
                         });
@@ -591,10 +602,14 @@ impl AudioMonitor {
 
                         // Check for playback/capture devices
                         let pcm_path = format!("/proc/asound/card{}", card_num);
-                        let has_playback =
-                            std::path::Path::new(&format!("{}/pcm0p", pcm_path)).exists();
-                        let has_capture =
-                            std::path::Path::new(&format!("{}/pcm0c", pcm_path)).exists();
+                        let pcm_names: Vec<String> = fs::read_dir(&pcm_path)
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect();
+                        let (has_playback, has_capture) =
+                            alsa_pcm_directions(pcm_names.iter().map(String::as_str));
 
                         let device_type = match (has_playback, has_capture) {
                             (true, true) => AudioDeviceType::Duplex,
@@ -660,10 +675,11 @@ impl AudioMonitor {
                     {
                         let mut idx = 0u32;
                         for device in audio_data {
-                            let name = device
-                                .get("_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Audio Device");
+                            // A device with no name is skipped, as the Windows path
+                            // skips one. The old fallback was the literal "Audio Device".
+                            let Some(name) = device.get("_name").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
                             let has_output = device
                                 .get("coreaudio_default_audio_output_device")
                                 .and_then(|v| v.as_str())
@@ -727,6 +743,36 @@ fn pactl_stdout(args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Whether an ALSA card has a playback and a capture PCM, from the `pcmNp` and
+/// `pcmNc` entries under its `/proc/asound/cardN` directory.
+///
+/// Any PCM number counts. The reader used to look only at `pcm0`, and a card
+/// whose playback lives on another device number (an NVIDIA HDMI card uses
+/// pcm3, pcm7 and so on) was then reported as having no playback at all.
+#[cfg(any(target_os = "linux", test))]
+fn alsa_pcm_directions<'a>(entries: impl IntoIterator<Item = &'a str>) -> (bool, bool) {
+    let mut playback = false;
+    let mut capture = false;
+    for entry in entries {
+        let Some(rest) = entry.strip_prefix("pcm") else {
+            continue;
+        };
+        let Some(direction) = rest.chars().last() else {
+            continue;
+        };
+        let digits = &rest[..rest.len() - direction.len_utf8()];
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        match direction {
+            'p' => playback = true,
+            'c' => capture = true,
+            _ => {}
+        }
+    }
+    (playback, capture)
 }
 
 /// The ALSA card number of the default sink, from `pactl info` and
@@ -891,6 +937,23 @@ mod tests {
         assert_eq!(default_sink_alsa_card("Default Sink: gone\n", sinks), None);
         // No default reported at all.
         assert_eq!(default_sink_alsa_card("Server Version: 15\n", sinks), None);
+    }
+
+    /// An NVIDIA HDMI card has playback PCMs only on device numbers other than 0,
+    /// and the reader used to report it as having no playback at all.
+    #[test]
+    fn alsa_card_directions_look_at_every_pcm_not_only_pcm0() {
+        assert_eq!(
+            alsa_pcm_directions(["info", "id", "pcm3p", "pcm7p", "pcm8p"]),
+            (true, false)
+        );
+        assert_eq!(alsa_pcm_directions(["pcm0c"]), (false, true));
+        assert_eq!(alsa_pcm_directions(["pcm0p", "pcm0c"]), (true, true));
+        // Names that only look like PCM entries are not devices.
+        assert_eq!(
+            alsa_pcm_directions(["pcm", "pcmxp", "pcm0", "pcm1x"]),
+            (false, false)
+        );
     }
 
     #[test]
