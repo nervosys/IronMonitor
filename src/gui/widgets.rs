@@ -1030,8 +1030,10 @@ impl Widget for QuickLookPanel {
                 ("CPU", self.cpu_percent, self.cpu_trend),
                 ("MEM", self.mem_percent, self.mem_trend),
                 ("SWAP", self.swap_percent, None),
-                // Scale load to 0-100
-                ("LOAD", self.load_1m.map(|l| (l * 10.0).min(100.0)), None),
+                // LOAD has no percentage. The load average is not a share of
+                // anything, and the x10 scale this used to draw against was a
+                // constant guess, so LOAD shows its value and no bar.
+                ("LOAD", None, None),
             ];
 
             for (i, (label, percent, trend)) in metrics.iter().enumerate() {
@@ -1039,6 +1041,7 @@ impl Widget for QuickLookPanel {
                 // bar at all -- an empty bar is indistinguishable from a bar at
                 // zero, and only one of those is something that was measured.
                 let percent = *percent;
+                let has_bar = *label != "LOAD";
                 let x_start = rect.min.x + 4.0 + i as f32 * (section_width + 8.0);
 
                 // Label with trend
@@ -1059,18 +1062,18 @@ impl Widget for QuickLookPanel {
                     ),
                 );
 
-                // Mini bar
-                let bar_rect = Rect::from_min_size(
-                    Pos2::new(x_start, y_center),
-                    Vec2::new(section_width * 0.6, bar_height),
-                );
-                painter.rect_filled(
-                    bar_rect,
-                    2.0,
-                    theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK),
-                );
-
-                if let Some(pct) = percent {
+                // Mini bar. Drawn only for a reading that has a percentage; the
+                // track of an unread metric or of LOAD is left out, not emptied.
+                if let (true, Some(pct)) = (has_bar, percent) {
+                    let bar_rect = Rect::from_min_size(
+                        Pos2::new(x_start, y_center),
+                        Vec2::new(section_width * 0.6, bar_height),
+                    );
+                    painter.rect_filled(
+                        bar_rect,
+                        2.0,
+                        theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK),
+                    );
                     let fill_width = bar_rect.width() * (pct / 100.0);
                     if fill_width > 0.0 {
                         let fill_rect = Rect::from_min_size(
@@ -1099,9 +1102,15 @@ impl Widget for QuickLookPanel {
                     egui::Align2::LEFT_CENTER,
                     percent_text,
                     theme::data_font(ui.ctx(), 13.0),
+                    // An unread value takes the neutral text colour. Coloring
+                    // the dash by threshold_color(0.0) gave it the "healthy"
+                    // green, which reads as a measured low reading.
                     theme::legible(
                         ui.ctx(),
-                        theme::color(ui.ctx(), threshold_color(percent.unwrap_or(0.0))),
+                        match percent {
+                            Some(pct) if has_bar => theme::color(ui.ctx(), threshold_color(pct)),
+                            _ => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                        },
                     ),
                 );
             }

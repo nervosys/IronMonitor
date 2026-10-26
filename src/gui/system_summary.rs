@@ -74,11 +74,10 @@ fn rows(snapshot: &Snapshot) -> [(&'static str, String); 7] {
     } else {
         accelerator_names.join("\n")
     };
-    let cpu_label = if cfg!(any(target_os = "linux", target_os = "macos")) {
-        "CPU utilization (since boot):"
-    } else {
-        "CPU utilization:"
-    };
+    // Not "(since boot)": the Linux reader computes this from tick deltas over
+    // the sampling interval (the cumulative since-boot average was replaced
+    // for that reason), so the suffix described a number this does not show.
+    let cpu_label = "CPU utilization:";
     [
         ("OS uptime:", uptime),
         ("CPU:", processor),

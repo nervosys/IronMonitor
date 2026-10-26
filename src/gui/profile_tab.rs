@@ -248,11 +248,24 @@ fn draw_profile_contents(
 
             // ── Audit log tail panel ─────────────────────────────────────────
             let audit_path = crate::profile::apply::audit_log_path();
-            let audit_heading = RichText::new(format!(
-                "Apply audit log · last {} entr{}",
-                audit_tail.len(),
-                if audit_tail.len() == 1 { "y" } else { "ies" }
-            ))
+            // An empty tail is "no entries" only if the log was read and was
+            // empty or absent. A read that failed for any other reason (for
+            // example permissions) was swallowed by `unwrap_or_default()` when
+            // the cache was filled, and the panel used to say no apply attempts
+            // had been made, which the log's contents never showed.
+            let audit_unreadable = audit_tail.is_empty()
+                && std::fs::read_to_string(&audit_path)
+                    .err()
+                    .is_some_and(|e| e.kind() != std::io::ErrorKind::NotFound);
+            let audit_heading = RichText::new(if audit_unreadable {
+                "Apply audit log · not readable".to_string()
+            } else {
+                format!(
+                    "Apply audit log · last {} entr{}",
+                    audit_tail.len(),
+                    if audit_tail.len() == 1 { "y" } else { "ies" }
+                )
+            })
             .color(theme::color(ui.ctx(), CyberColors::CYAN));
             egui::CollapsingHeader::new(audit_heading)
                 .default_open(false)
@@ -266,9 +279,14 @@ fn draw_profile_contents(
                             .small(),
                     );
                     if audit_tail.is_empty() {
+                        let note = if audit_unreadable {
+                            "(the log exists but could not be read; whether attempts were made is unknown)"
+                        } else {
+                            "(no entries — no apply attempts have been made)"
+                        };
                         wrapped_label(
                             ui,
-                            RichText::new("(no entries — no apply attempts have been made)")
+                            RichText::new(note)
                                 .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
                         );
                     } else {
