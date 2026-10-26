@@ -14,7 +14,7 @@
 //! let monitor = CameraMonitor::new().unwrap();
 //! for cam in monitor.cameras() {
 //!     println!("{} ({:?}) - {}",
-//!         cam.name, cam.connection, match cam.is_active {
+//!         cam.name.as_deref().unwrap_or("name not read"), cam.connection, match cam.is_active {
 //!             Some(true) => "streaming", Some(false) => "idle", None => "unknown" });
 //! }
 //! ```
