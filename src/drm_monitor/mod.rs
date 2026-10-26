@@ -90,8 +90,10 @@ pub struct DrmConnector {
 pub struct DrmDevice {
     /// Card name (e.g. "card0").
     pub card_name: String,
-    /// Driver name (e.g. "amdgpu", "i915", "nouveau").
-    pub driver: String,
+    /// Driver name (e.g. "amdgpu", "i915", "nouveau"), or `None` where no
+    /// driver is bound or its link could not be read. It was a `String` that
+    /// was empty in both cases, which reads as a driver with no name.
+    pub driver: Option<String>,
     /// Device path in sysfs.
     pub sysfs_path: String,
     /// PCI device ID.
@@ -151,8 +153,13 @@ pub struct DrmClient {
 pub struct DrmOverview {
     /// All DRM devices.
     pub devices: Vec<DrmDevice>,
-    /// Active DRM clients.
-    pub clients: Vec<DrmClient>,
+    /// Active DRM clients, or `None` where the client lists were not read.
+    ///
+    /// The lists live in debugfs, which is usually readable only by root. An
+    /// unreadable list used to be an empty `Vec`, which reads as "no clients
+    /// are using the GPU". `Some(vec![])` now means a list was read and was
+    /// empty.
+    pub clients: Option<Vec<DrmClient>>,
     /// Total connected displays. `None` where connectors were not enumerated
     /// (Windows, macOS): a `0` there would claim no displays are attached.
     pub total_connected_displays: Option<u32>,
@@ -205,7 +212,7 @@ impl DrmMonitor {
             // zero, not an unread count.
             return Ok(DrmOverview {
                 devices: Vec::new(),
-                clients: Vec::new(),
+                clients: Some(Vec::new()),
                 total_connected_displays: Some(0),
                 total_devices: Some(0),
                 primary_driver: None,
@@ -236,7 +243,7 @@ impl DrmMonitor {
         let primary_driver = devices
             .iter()
             .find(|d| d.is_boot_gpu == Some(true))
-            .map(|d| d.driver.clone());
+            .and_then(|d| d.driver.clone());
         let clients = Self::read_clients();
 
         Ok(DrmOverview {
@@ -254,14 +261,11 @@ impl DrmMonitor {
 
         // Read driver
         let driver_link = device_path.join("driver");
-        let driver = if driver_link.exists() {
-            std::fs::read_link(&driver_link)
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        // `None` when no driver is bound or its link is unreadable. Neither is
+        // a driver with an empty name.
+        let driver = std::fs::read_link(&driver_link)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
         // Read PCI ID
         let pci_id = std::fs::read_to_string(device_path.join("device"))
@@ -409,18 +413,21 @@ impl DrmMonitor {
     }
 
     #[cfg(target_os = "linux")]
-    fn read_clients() -> Vec<DrmClient> {
+    fn read_clients() -> Option<Vec<DrmClient>> {
         let mut clients = Vec::new();
+        let mut read_any = false;
 
         // Try debugfs /sys/kernel/debug/dri/*/clients
         for card_num in 0..8u32 {
             let clients_path = format!("/sys/kernel/debug/dri/{}/clients", card_num);
             if let Ok(content) = std::fs::read_to_string(&clients_path) {
+                read_any = true;
                 clients.extend(Self::parse_clients(&content, &format!("card{}", card_num)));
             }
         }
 
-        clients
+        // No list could be read, so the client count is unknown, not zero.
+        read_any.then_some(clients)
     }
 
     /// Parse a debugfs `clients` file. Columns: `command tgid dev master a uid magic`.
@@ -461,88 +468,105 @@ impl DrmMonitor {
     #[cfg(target_os = "windows")]
     fn scan() -> Result<DrmOverview, IronError> {
         // Windows uses WDDM, not DRM. Provide basic info via WMI.
-        let mut devices = Vec::new();
-
         let output = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
                 "Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, AdapterRAM, VideoProcessor | ConvertTo-Json",
             ])
-            .output();
-
-        if let Ok(out) = output {
-            let text = String::from_utf8_lossy(&out.stdout);
+            .output()
+            .map_err(|e| {
+                IronError::System(format!("Win32_VideoController query did not run: {e}"))
+            })?;
+        // A failed query is an error, not a machine with no GPUs. It used to
+        // fall through to `total_devices: Some(0)`, which claims there are none.
+        if !output.status.success() {
+            return Err(IronError::System(format!(
+                "Win32_VideoController query exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // `ConvertTo-Json` given no adapters prints nothing, and the query
+        // succeeded: that is an enumeration that found none.
+        let items: Vec<serde_json::Value> = if text.trim().is_empty() {
+            Vec::new()
+        } else {
             // Parse JSON array or single object
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                let items = if val.is_array() {
-                    val.as_array().cloned().unwrap_or_default()
-                } else {
-                    vec![val]
-                };
-
-                // `Win32_VideoController.AdapterRAM` is a 32-bit field: an RTX
-                // 3090 Ti with 24GB reports 4293918720, one byte under 4GiB.
-                // That was fixed in `hardware_ai` and `platform::windows` at
-                // 7607401 and left here, in a module with no internal callers
-                // and a public re-export — so a library user got the capped
-                // figure. Prefer the registry's REG_QWORD, by adapter name.
-                let by_name = crate::platform::windows::adapter_vram_bytes();
-
-                for (i, item) in items.iter().enumerate() {
-                    let name = item["Name"].as_str().unwrap_or("Unknown GPU");
-                    let driver_version = item["DriverVersion"].as_str().unwrap_or("");
-                    let vram = by_name
-                        .iter()
-                        .find(|(desc, _)| desc == name)
-                        .map(|(_, bytes)| *bytes)
-                        .or_else(|| {
-                            // No registry entry for this adapter. AdapterRAM is
-                            // still capped, so anything at or above the cap is
-                            // withheld rather than published as ~4GB.
-                            item["AdapterRAM"].as_u64().filter(|b| *b < 4_293_918_720)
-                        });
-
-                    // The WDDM driver version is the only driver fact read here. An
-                    // empty DriverVersion used to produce "WDDM ()".
-                    let driver = if driver_version.is_empty() {
-                        "WDDM".to_string()
-                    } else {
-                        format!("WDDM ({})", driver_version)
-                    };
-
-                    devices.push(DrmDevice {
-                        card_name: format!("card{}", i),
-                        driver,
-                        sysfs_path: String::new(),
-                        pci_id: None,
-                        render_node: None,
-                        connectors: Vec::new(),
-                        // No CRTC or plane count on WDDM through this query.
-                        crtc_count: None,
-                        plane_count: None,
-                        // Win32_VideoController carries no boot flag. Index 0 is
-                        // only enumeration order, so it is not reported as boot.
-                        is_boot_gpu: None,
-                        vram_total_bytes: vram,
-                        vram_used_bytes: None,
-                    });
-                    let _name = name; // suppress unused warning
-                }
+            let val = serde_json::from_str::<serde_json::Value>(text.trim()).map_err(|e| {
+                IronError::System(format!("Win32_VideoController output did not parse: {e}"))
+            })?;
+            if val.is_array() {
+                val.as_array().cloned().unwrap_or_default()
+            } else {
+                vec![val]
             }
+        };
+
+        // `Win32_VideoController.AdapterRAM` is a 32-bit field: an RTX
+        // 3090 Ti with 24GB reports 4293918720, one byte under 4GiB.
+        // That was fixed in `hardware_ai` and `platform::windows` at
+        // 7607401 and left here, in a module with no internal callers
+        // and a public re-export — so a library user got the capped
+        // figure. Prefer the registry's REG_QWORD, by adapter name.
+        let by_name = crate::platform::windows::adapter_vram_bytes();
+
+        let mut devices = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let name = item["Name"].as_str().unwrap_or("Unknown GPU");
+            let driver_version = item["DriverVersion"].as_str().unwrap_or("");
+            let vram = by_name
+                .iter()
+                .find(|(desc, _)| desc == name)
+                .map(|(_, bytes)| *bytes)
+                .or_else(|| {
+                    // No registry entry for this adapter. AdapterRAM is
+                    // still capped, so anything at or above the cap is
+                    // withheld rather than published as ~4GB.
+                    item["AdapterRAM"].as_u64().filter(|b| *b < 4_293_918_720)
+                });
+
+            // The WDDM driver version is the only driver fact read here. An
+            // empty DriverVersion used to produce "WDDM ()".
+            let driver = if driver_version.is_empty() {
+                "WDDM".to_string()
+            } else {
+                format!("WDDM ({})", driver_version)
+            };
+
+            devices.push(DrmDevice {
+                card_name: format!("card{}", i),
+                driver: Some(driver),
+                sysfs_path: String::new(),
+                pci_id: None,
+                render_node: None,
+                connectors: Vec::new(),
+                // No CRTC or plane count on WDDM through this query.
+                crtc_count: None,
+                plane_count: None,
+                // Win32_VideoController carries no boot flag. Index 0 is
+                // only enumeration order, so it is not reported as boot.
+                is_boot_gpu: None,
+                vram_total_bytes: vram,
+                vram_used_bytes: None,
+            });
         }
 
         let total = devices.len() as u32;
-        let primary = devices.first().map(|d| d.driver.clone());
 
         Ok(DrmOverview {
             devices,
-            clients: Vec::new(),
+            // No client list is read on Windows.
+            clients: None,
             // Connectors are not enumerated on Windows, so no display count
             // is read. A 0 here would claim that no displays are attached.
             total_connected_displays: None,
             total_devices: Some(total),
-            primary_driver: primary,
+            // Enumeration order is not the boot adapter, and this query carries
+            // no boot flag, so no adapter is named the primary one. The first
+            // card used to stand here.
+            primary_driver: None,
         })
     }
 
@@ -551,7 +575,7 @@ impl DrmMonitor {
         // IOKit enumeration is not implemented, so no count is read.
         Ok(DrmOverview {
             devices: Vec::new(),
-            clients: Vec::new(),
+            clients: None,
             total_connected_displays: None,
             total_devices: None,
             primary_driver: None,
@@ -562,7 +586,7 @@ impl DrmMonitor {
     fn scan() -> Result<DrmOverview, IronError> {
         Ok(DrmOverview {
             devices: Vec::new(),
-            clients: Vec::new(),
+            clients: None,
             total_connected_displays: None,
             total_devices: None,
             primary_driver: None,
@@ -575,7 +599,7 @@ impl Default for DrmMonitor {
         Self::new().unwrap_or(Self {
             overview: DrmOverview {
                 devices: Vec::new(),
-                clients: Vec::new(),
+                clients: None,
                 // The scan failed, so nothing was counted.
                 total_connected_displays: None,
                 total_devices: None,
@@ -600,7 +624,7 @@ mod tests {
     fn test_vram_usage() {
         let dev = DrmDevice {
             card_name: "card0".into(),
-            driver: "amdgpu".into(),
+            driver: Some("amdgpu".into()),
             sysfs_path: String::new(),
             pci_id: None,
             render_node: Some("renderD128".into()),

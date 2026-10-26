@@ -101,14 +101,20 @@ impl BatteryMonitor {
                 crate::power_supply::ChargingStatus::Unknown => ChargingState::Unknown,
             });
 
-            let health = supply.health.map(|h| match h {
-                crate::power_supply::BatteryHealth::Good => BatteryHealth::Good,
+            // Overheat, over-voltage and cold describe the battery's condition at
+            // the moment it was read, not a grade of its wear. They used to map
+            // to `Fair`, which told a hot battery it was degraded. They are `None`
+            // now, so health is not reported rather than given a verdict.
+            let health = supply.health.and_then(|h| match h {
+                crate::power_supply::BatteryHealth::Good => Some(BatteryHealth::Good),
                 crate::power_supply::BatteryHealth::Dead
-                | crate::power_supply::BatteryHealth::UnspecifiedFailure => BatteryHealth::Poor,
+                | crate::power_supply::BatteryHealth::UnspecifiedFailure => {
+                    Some(BatteryHealth::Poor)
+                }
                 crate::power_supply::BatteryHealth::Overheat
                 | crate::power_supply::BatteryHealth::OverVoltage
-                | crate::power_supply::BatteryHealth::Cold => BatteryHealth::Fair,
-                _ => BatteryHealth::Unknown,
+                | crate::power_supply::BatteryHealth::Cold => None,
+                _ => Some(BatteryHealth::Unknown),
             });
 
             self.batteries.push(BatteryInfo {

@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used figure is an Unknown "Swap Usage" check, not "Swap usage minimal: 0.0%".
   A machine with no GPU adapters or no block devices now has an Unknown row for
   that domain, so the overall verdict is not Healthy over a check that never ran.
+- A battery that reports overheat, over-voltage or cold no longer has its
+  health published as `Fair`; those are conditions at the moment of reading,
+  not a grade of wear, so health is unreported for them. DRM readers no longer
+  publish an unread driver name as empty, an unreadable debugfs client list as
+  zero clients, an unreadable Windows adapter query as zero GPUs, or the first
+  adapter as the primary driver, and the USB registry fallback no longer
+  publishes a PnP instance suffix as the product name.
 - Two AMD GPUs are reported as linked by xGMI only when both GPUs'
   `xgmi_hive_id` read and match; the existence of the first GPU's hive
   directory used to be enough. Apple codec rows publish no bit depth, and a

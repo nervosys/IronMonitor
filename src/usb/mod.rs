@@ -688,12 +688,11 @@ impl UsbMonitor {
                     vendor_id: vid,
                     product_id: pid,
                     manufacturer: None,
-                    product: Some(
-                        dep.split('\\')
-                            .next_back()
-                            .unwrap_or("USB Device")
-                            .to_string(),
-                    ),
+                    // This reference names no product. Its last `\`-separated
+                    // piece is the instance suffix of the PnP path, such as
+                    // `6&1a2b3c&0&2"`, which was published as the product name
+                    // and is `None` now.
+                    product: None,
                     description: None,
                     serial_number: None,
                     class: UsbDeviceClass::Unknown,

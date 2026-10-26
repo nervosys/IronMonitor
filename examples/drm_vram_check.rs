@@ -10,7 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(b) => format!("{:.1} GiB", b as f64 / 1024.0 / 1024.0 / 1024.0),
             None => "not read".to_string(),
         };
-        println!("{:<12} {:<28} {}", device.card_name, device.driver, vram);
+        let driver = device.driver.as_deref().unwrap_or("not read");
+        println!("{:<12} {:<28} {}", device.card_name, driver, vram);
     }
     Ok(())
 }
