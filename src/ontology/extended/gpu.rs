@@ -554,7 +554,7 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
         Some(U::Identifier),
         P::Derived,
         true,
-        "The interconnect between two GPUs: nvlink, xgmi, pcie_peer_to_peer, pcie_through_cpu, pcie_through_host_bridge or same_board. NVIDIA pairs are read from NVML (an active NVLink, or NVML's topology level); other pairs from sysfs NUMA placement. Unavailable where no reader reports the pair.",
+        "The interconnect between two GPUs: nvlink, xgmi, pcie_peer_to_peer, pcie_through_cpu, pcie_through_host_bridge or same_board. NVIDIA pairs are read from NVML (an active NVLink, or NVML's topology level). AMD pairs report xgmi only when both GPUs' xgmi_hive_id was read from sysfs and the two ids match; otherwise pairs are read from sysfs NUMA placement. Unavailable where no reader reports the pair.",
     )
     .derived(&["gpu.{n}.topology.numa_node", "gpu.{n}.vendor"]));
     add(Entity::new(

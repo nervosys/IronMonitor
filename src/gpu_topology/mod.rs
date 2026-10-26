@@ -508,17 +508,19 @@ impl GpuTopologyMonitor {
         let numa_pair = (gpu_a.numa_node, gpu_b.numa_node);
         let different_numa = matches!(numa_pair, (Some(a), Some(b)) if a != b);
 
-        // Check for xGMI (both AMD)
+        // xGMI: both AMD, on one NUMA node, and both in the same hive. The
+        // hive ids are read for both GPUs. The existence of one GPU's
+        // `xgmi_hive_info` directory says nothing about the other GPU.
         #[cfg(target_os = "linux")]
         if gpu_a.vendor == "amd"
             && gpu_b.vendor == "amd"
             && matches!(numa_pair, (Some(a), Some(b)) if a == b)
+            && xgmi_pair_in_one_hive(
+                Self::read_xgmi_hive_id(&gpu_a.bdf),
+                Self::read_xgmi_hive_id(&gpu_b.bdf),
+            )
         {
-            // AMD GPUs on same NUMA node may have xGMI
-            let xgmi_path = format!("/sys/bus/pci/devices/{}/xgmi_hive_info", gpu_a.bdf);
-            if std::path::Path::new(&xgmi_path).exists() {
-                return GpuInterconnectType::XGmi;
-            }
+            return GpuInterconnectType::XGmi;
         }
 
         if let Some(kind) = nvml.and_then(|facts| facts.ancestor.get(&pair)) {
@@ -577,6 +579,17 @@ impl GpuTopologyMonitor {
         std::fs::read_to_string(path)
             .ok()
             .and_then(|s| s.trim().parse().ok())
+    }
+
+    /// The xGMI hive id the amdgpu driver reports for one GPU, or `None` when
+    /// the file is absent or does not parse.
+    #[cfg(target_os = "linux")]
+    fn read_xgmi_hive_id(bdf: &str) -> Option<u64> {
+        let path = std::path::Path::new("/sys/bus/pci/devices")
+            .join(bdf)
+            .join("xgmi_hive_info")
+            .join("xgmi_hive_id");
+        Self::read_sysfs(&path).and_then(|s| parse_xgmi_hive_id(&s))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -640,6 +653,25 @@ fn parse_link(speed: &str, width: &str) -> (Option<u8>, Option<u8>, Option<f64>)
     };
 
     (Some(generation), width, Some(speed_gts))
+}
+
+/// Parses the amdgpu `xgmi_hive_id` file, which is decimal, or hex with a `0x`
+/// prefix.
+#[cfg(any(target_os = "linux", test))]
+fn parse_xgmi_hive_id(text: &str) -> Option<u64> {
+    let text = text.trim();
+    match text.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
+/// Whether two GPUs are read to be in one xGMI hive: both ids were read, they
+/// are equal, and they are nonzero. An id that was not read, or a zero one, is
+/// not evidence of a shared hive.
+#[cfg(any(target_os = "linux", test))]
+fn xgmi_pair_in_one_hive(a: Option<u64>, b: Option<u64>) -> bool {
+    matches!((a, b), (Some(x), Some(y)) if x != 0 && x == y)
 }
 
 /// Theoretical one-direction PCIe bandwidth in GB/s: the per-lane rate of the
@@ -864,6 +896,30 @@ mod tests {
             GpuTopologyMonitor::detect_link_type(&a, &c, (0, 2), None),
             GpuInterconnectType::Unknown
         );
+    }
+
+    #[test]
+    fn xgmi_pair_needs_both_hive_ids_read_and_equal() {
+        assert!(xgmi_pair_in_one_hive(Some(7), Some(7)));
+        // Different hives.
+        assert!(!xgmi_pair_in_one_hive(Some(7), Some(8)));
+        // One GPU's id was not read: the other GPU's presence proves nothing.
+        assert!(!xgmi_pair_in_one_hive(Some(7), None));
+        assert!(!xgmi_pair_in_one_hive(None, Some(7)));
+        assert!(!xgmi_pair_in_one_hive(None, None));
+        // Zero is not a hive id.
+        assert!(!xgmi_pair_in_one_hive(Some(0), Some(0)));
+    }
+
+    #[test]
+    fn xgmi_hive_id_parses_decimal_and_hex() {
+        assert_eq!(
+            parse_xgmi_hive_id("1234567890123456789\n"),
+            Some(1234567890123456789)
+        );
+        assert_eq!(parse_xgmi_hive_id("0x1a2b\n"), Some(0x1a2b));
+        assert_eq!(parse_xgmi_hive_id(""), None);
+        assert_eq!(parse_xgmi_hive_id("not a hive"), None);
     }
 
     #[test]

@@ -684,23 +684,24 @@ impl CodecMonitor {
     }
 
     fn infer_apple_codecs(&mut self, gpu_name: &str) {
-        // No frame class is read for these rows, so `max_resolution` is `None`.
-        // The rows used to name a literal 4K or 8K class per codec, which no
+        // No frame class or bit depth is read for these rows, so `max_resolution`
+        // and `max_bit_depth` are `None`. The rows used to name a literal 4K or
+        // 8K class per codec, and a literal 8- or 10-bit depth per codec, which no
         // platform query reported for this chip.
         let codecs = vec![
-            (VideoCodec::H264, CodecDirection::Both, BitDepth::Bit8),
-            (VideoCodec::H265, CodecDirection::Both, BitDepth::Bit10),
-            (VideoCodec::VP9, CodecDirection::Decode, BitDepth::Bit10),
-            (VideoCodec::ProRes, CodecDirection::Both, BitDepth::Bit10),
+            (VideoCodec::H264, CodecDirection::Both),
+            (VideoCodec::H265, CodecDirection::Both),
+            (VideoCodec::VP9, CodecDirection::Decode),
+            (VideoCodec::ProRes, CodecDirection::Both),
         ];
 
-        for (codec, dir, depth) in codecs {
+        for (codec, dir) in codecs {
             self.codec_caps.push(CodecCapability {
                 device: gpu_name.to_string(),
                 codec,
                 direction: dir,
                 max_resolution: None,
-                max_bit_depth: depth,
+                max_bit_depth: BitDepth::Unknown,
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
                 source: CapabilitySource::Inferred,
@@ -720,7 +721,10 @@ impl CodecMonitor {
                 codec: VideoCodec::AV1,
                 direction: CodecDirection::Decode,
                 max_resolution: None,
-                max_bit_depth: BitDepth::Bit10,
+                // Not read from the chip. The AV1 engine's bit depth is not
+                // queried here, so it is `Unknown`. This used to be a literal
+                // `Bit10`, which the resolver published as a specification.
+                max_bit_depth: BitDepth::Unknown,
                 max_fps: None,
                 engine: "Apple Media Engine".into(),
                 source: CapabilitySource::Inferred,
@@ -881,11 +885,9 @@ impl CodecMonitor {
                     // and this reader does not query one. It used to be the
                     // literal UHD4K on every row.
                     max_resolution: None,
-                    max_bit_depth: if profile.contains("10") {
-                        BitDepth::Bit10
-                    } else {
-                        BitDepth::Bit8
-                    },
+                    // The depth follows from the profile name vainfo printed.
+                    // An unrecognised name is `Unknown`, not 8-bit.
+                    max_bit_depth: vaapi_profile_bit_depth(profile),
                     max_fps: None,
                     engine: "VA-API".into(),
                     source: CapabilitySource::DirectQuery,
@@ -950,9 +952,70 @@ impl std::fmt::Display for MaxResolution {
     }
 }
 
+/// Bit depth implied by a vainfo profile name such as `VAProfileHEVCMain10`.
+///
+/// Only names that state the depth, or that are known to be 8-bit only, get a
+/// value. Anything else, such as `VAProfileVP9Profile2` (10-bit) or
+/// `VAProfileAV1Profile0`, is `Unknown`: the name does not say what the engine
+/// supports, and an 8-bit guess would be wrong for those.
+#[cfg(any(target_os = "linux", test))]
+fn vaapi_profile_bit_depth(profile: &str) -> BitDepth {
+    const EIGHT_BIT_ONLY: &[&str] = &[
+        "MPEG2Simple",
+        "MPEG2Main",
+        "H264Baseline",
+        "H264ConstrainedBaseline",
+        "H264Main",
+        "H264High",
+        "HEVCMain",
+        "VP8Version0_3",
+        "VP9Profile0",
+        "JPEGBaseline",
+        "VC1Simple",
+        "VC1Main",
+        "VC1Advanced",
+    ];
+    let name = profile.trim().trim_start_matches("VAProfile");
+    if name.contains("12") {
+        BitDepth::Bit12
+    } else if name.contains("10") {
+        BitDepth::Bit10
+    } else if EIGHT_BIT_ONLY.contains(&name) {
+        BitDepth::Bit8
+    } else {
+        BitDepth::Unknown
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vaapi_profile_names_give_only_the_depth_they_state() {
+        let cases = [
+            ("VAProfileMPEG2Simple", BitDepth::Bit8),
+            ("VAProfileMPEG2Main", BitDepth::Bit8),
+            ("VAProfileH264Main", BitDepth::Bit8),
+            ("VAProfileH264High", BitDepth::Bit8),
+            ("VAProfileH264High10", BitDepth::Bit10),
+            ("VAProfileH264ConstrainedBaseline", BitDepth::Bit8),
+            ("VAProfileHEVCMain", BitDepth::Bit8),
+            ("VAProfileHEVCMain10", BitDepth::Bit10),
+            ("VAProfileHEVCMain12", BitDepth::Bit12),
+            ("VAProfileVP8Version0_3", BitDepth::Bit8),
+            ("VAProfileVP9Profile0", BitDepth::Bit8),
+            // VP9 profile 2 is 10-bit, but the name is not read as a depth here.
+            ("VAProfileVP9Profile2", BitDepth::Unknown),
+            ("VAProfileAV1Profile0", BitDepth::Unknown),
+            ("VAProfileJPEGBaseline", BitDepth::Bit8),
+            ("VAProfileVC1Advanced", BitDepth::Bit8),
+            ("VAProfileNone", BitDepth::Unknown),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(vaapi_profile_bit_depth(name), expected, "{name}");
+        }
+    }
 
     fn decode_row(res: Option<MaxResolution>) -> CodecCapability {
         CodecCapability {
@@ -1196,6 +1259,11 @@ mod tests {
             .codec_caps
             .iter()
             .all(|c| c.max_resolution.is_none()));
+        // Nor a bit depth: the chip name does not fix one, so none is published.
+        assert!(monitor
+            .codec_caps
+            .iter()
+            .all(|c| c.max_bit_depth == BitDepth::Unknown));
         assert!(monitor
             .codec_caps
             .iter()
