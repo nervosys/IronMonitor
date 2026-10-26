@@ -185,14 +185,21 @@ fn cores_are_not_all_reporting_the_same_number() {
     if idles.len() < 2 {
         return;
     }
+    // Every core fully busy or fully idle is a legitimate identical reading, and
+    // the one the doc comment above excuses. Only a shared figure strictly
+    // between the bounds suggests copying.
+    if idles.iter().all(|&i| i <= 0.0) || idles.iter().all(|&i| i >= 100.0) {
+        return;
+    }
     let spread = idles.iter().cloned().fold(f32::MIN, f32::max)
         - idles.iter().cloned().fold(f32::MAX, f32::min);
 
     assert!(
         spread > 0.0,
-        "all {} cores report identical idle time, which means one figure was \
-         copied across them rather than each core being read",
-        cpu.cores.len()
+        "all {} cores report identical idle time ({:?}), which means one figure \
+         was copied across them rather than each core being read",
+        cpu.cores.len(),
+        idles
     );
 }
 
