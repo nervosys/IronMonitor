@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "  {} {}{}{}",
             if device.is_output { "🔊" } else { "🎤" },
-            device.name,
+            device.name.as_deref().unwrap_or("name not read"),
             default,
             enabled
         );

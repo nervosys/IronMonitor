@@ -395,7 +395,8 @@ impl PeripheralCache {
                     } else {
                         ""
                     };
-                    lines.push(format!("  {} {}{}", icon, dev.name, dflt));
+                    let name = dev.name.as_deref().unwrap_or("name not read");
+                    lines.push(format!("  {} {}{}", icon, name, dflt));
                 }
                 if devices.len() > 4 {
                     lines.push(format!("  ... and {} more", devices.len() - 4));

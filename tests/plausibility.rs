@@ -455,8 +455,8 @@ fn readers_that_find_nothing_invent_nothing() {
         for device in monitor.devices() {
             let invented = matches!(device.id.as_str(), "default_output" | "default")
                 && matches!(
-                    device.name.as_str(),
-                    "Default Audio Output" | "Default Audio Device"
+                    device.name.as_deref(),
+                    Some("Default Audio Output") | Some("Default Audio Device")
                 );
             assert!(
                 !invented,
@@ -464,7 +464,7 @@ fn readers_that_find_nothing_invent_nothing() {
                     "the synthetic audio endpoint is back ({}): enumeration ",
                     "that finds nothing must report nothing"
                 ),
-                device.name
+                device.name.as_deref().unwrap_or("unnamed")
             );
 
             // A volume that is read is a percentage. This does not catch the
@@ -474,7 +474,7 @@ fn readers_that_find_nothing_invent_nothing() {
                 assert!(
                     volume <= 100,
                     "{}: volume {volume} is not a percentage",
-                    device.name
+                    device.name.as_deref().unwrap_or("unnamed")
                 );
             }
         }
@@ -489,13 +489,13 @@ fn readers_that_find_nothing_invent_nothing() {
             .devices()
             .iter()
             .filter(|d| d.volume.is_some())
-            .map(|d| d.name.as_str())
+            .map(|d| d.name.as_deref().unwrap_or(""))
             .collect();
         let defaults: Vec<&str> = monitor
             .devices()
             .iter()
             .filter(|d| d.is_default == Some(true))
-            .map(|d| d.name.as_str())
+            .map(|d| d.name.as_deref().unwrap_or(""))
             .collect();
         if !with_volume.is_empty() && with_volume == defaults {
             assert!(

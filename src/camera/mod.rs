@@ -66,8 +66,9 @@ pub enum CameraCapability {
 /// Information about a single camera device
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameraInfo {
-    /// Device name
-    pub name: String,
+    /// Device name, `None` where the platform did not give one. The device is
+    /// still reported, so a nameless camera is not folded into "no cameras".
+    pub name: Option<String>,
     /// Connection type
     pub connection: CameraConnection,
     /// Device path (/dev/video0, device instance, etc.)
@@ -285,11 +286,9 @@ impl CameraMonitor {
             let vendor = Self::read_usb_vendor(&base);
 
             self.cameras.push(CameraInfo {
-                name: if name.is_empty() {
-                    dev_name.clone()
-                } else {
-                    name
-                },
+                // An unreadable name is `None`. The device node's name (`video0`)
+                // used to stand in for it, which is an identifier, not a name.
+                name: (!name.is_empty()).then_some(name),
                 connection,
                 device_path: dev_file,
                 driver,
@@ -485,11 +484,10 @@ impl CameraMonitor {
         };
         let items = crate::core::command::json_items(&val);
         for (i, item) in items.iter().enumerate() {
-            // A device with no Name is not given one. The old fallback was the
-            // literal "Unknown Camera", which the ontology published as the name.
-            let Some(name) = item["Name"].as_str().map(str::to_string) else {
-                continue;
-            };
+            // A device with no Name keeps its place with the name unread. The old
+            // fallback was the literal "Unknown Camera", which the ontology published.
+            let name = item["Name"].as_str().map(str::to_string);
+            let name_lower = name.as_deref().unwrap_or("").to_lowercase();
             let vendor = item["Manufacturer"]
                 .as_str()
                 .filter(|s| !s.trim().is_empty())
@@ -500,8 +498,7 @@ impl CameraMonitor {
                 CameraConnection::USB
             } else if lower.contains("pci") {
                 CameraConnection::Internal
-            } else if name.to_lowercase().contains("virtual") || name.to_lowercase().contains("obs")
-            {
+            } else if name_lower.contains("virtual") || name_lower.contains("obs") {
                 CameraConnection::Virtual
             } else {
                 // Not established from the device ID. The old fallback called every
@@ -607,7 +604,7 @@ fn parse_macos_cameras(text: &str) -> Vec<CameraInfo> {
                 CameraConnection::Internal
             };
             CameraInfo {
-                name: b.name,
+                name: Some(b.name),
                 connection,
                 device_path: b.unique_id,
                 driver: String::new(),
@@ -678,7 +675,7 @@ mod tests {
     #[test]
     fn test_camera_info_resolution() {
         let cam = CameraInfo {
-            name: "Test".into(),
+            name: Some("Test".into()),
             connection: CameraConnection::USB,
             device_path: String::new(),
             driver: String::new(),
@@ -697,7 +694,7 @@ mod tests {
     #[test]
     fn test_camera_serialization() {
         let cam = CameraInfo {
-            name: "Test Camera".into(),
+            name: Some("Test Camera".into()),
             connection: CameraConnection::Internal,
             device_path: "/dev/video0".into(),
             driver: "uvcvideo".into(),
@@ -756,13 +753,13 @@ mod tests {
         let cams = parse_macos_cameras(MACOS_CAMERAS);
         assert_eq!(cams.len(), 2);
 
-        assert_eq!(cams[0].name, "FaceTime HD Camera");
+        assert_eq!(cams[0].name.as_deref(), Some("FaceTime HD Camera"));
         assert_eq!(cams[0].index, 0);
         assert_eq!(cams[0].connection, CameraConnection::Internal);
         assert_eq!(cams[0].device_path, "3F2A0000000000000000000000000001");
 
         // The last device gets the same connection rule as the rest.
-        assert_eq!(cams[1].name, "Logi C920 HD Pro Webcam");
+        assert_eq!(cams[1].name.as_deref(), Some("Logi C920 HD Pro Webcam"));
         assert_eq!(cams[1].index, 1);
         assert_eq!(cams[1].connection, CameraConnection::USB);
         assert_eq!(cams[1].device_path, "0x14100000046d08e5");

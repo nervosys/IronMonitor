@@ -3212,7 +3212,16 @@ fn resolve_audio(out: &mut Vec<Reading>) {
 
     for (i, d) in devices.iter().enumerate() {
         let base = format!("board.audio.{i}");
-        push_text(out, format!("{base}.name"), &d.name);
+        push_opt(
+            out,
+            format!("{base}.name"),
+            d.name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| serde_json::json!(n)),
+            Some(Unit::Text),
+            "the platform gave this endpoint no name",
+        );
         push_id(
             out,
             format!("{base}.direction"),
@@ -3286,7 +3295,16 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
 
     for (i, c) in cameras.iter().enumerate() {
         let base = format!("board.camera.{i}");
-        push_text(out, format!("{base}.name"), &c.name);
+        push_opt(
+            out,
+            format!("{base}.name"),
+            c.name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| serde_json::json!(n)),
+            Some(Unit::Text),
+            "the platform gave this camera no name",
+        );
         push_id(
             out,
             format!("{base}.connection"),

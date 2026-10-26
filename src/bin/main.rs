@@ -1185,7 +1185,8 @@ fn handle_cli_command(
                             Some(s) => format!("{s:?}"),
                             None => "state not read".to_string(),
                         };
-                        println!("  {} ({:?}) - {}", device.name, device.device_type, state);
+                        let name = device.name.as_deref().unwrap_or("name not read");
+                        println!("  {} ({:?}) - {}", name, device.device_type, state);
                     }
                 }
                 Ok(())

@@ -35,7 +35,8 @@ pub enum AudioState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDevice {
     pub id: String,
-    pub name: String,
+    /// Endpoint name as the platform presents it, `None` where it was not read.
+    pub name: Option<String>,
     pub device_type: AudioDeviceType,
     /// Endpoint state, where the platform reports one.
     ///
@@ -459,9 +460,9 @@ impl AudioMonitor {
         };
 
         for (idx, item) in crate::core::command::json_items(&value).iter().enumerate() {
-            let Some(name) = item["Name"].as_str().map(str::to_string) else {
-                continue;
-            };
+            // An endpoint with no Name is kept with its name unread, not dropped:
+            // it still has a registry entry, a direction and a state.
+            let name = item["Name"].as_str().map(str::to_string);
             let pnp_id = item["PNPDeviceID"].as_str().unwrap_or("");
 
             // `SWD\MMDEVAPI\{0.0.0.00000000}.{116ba9f0-...}` — the endpoint's
@@ -620,7 +621,7 @@ impl AudioMonitor {
 
                         self.devices.push(AudioDevice {
                             id: format!("hw:{}", card_num),
-                            name: full_name,
+                            name: Some(full_name),
                             device_type,
                             state: None,
                             // Set below from the PulseAudio/PipeWire default sink, where
@@ -675,11 +676,9 @@ impl AudioMonitor {
                     {
                         let mut idx = 0u32;
                         for device in audio_data {
-                            // A device with no name is skipped, as the Windows path
-                            // skips one. The old fallback was the literal "Audio Device".
-                            let Some(name) = device.get("_name").and_then(|v| v.as_str()) else {
-                                continue;
-                            };
+                            // No name is kept as unread. The old fallback was the
+                            // literal "Audio Device".
+                            let name = device.get("_name").and_then(|v| v.as_str());
                             let has_output = device
                                 .get("coreaudio_default_audio_output_device")
                                 .and_then(|v| v.as_str())
@@ -709,7 +708,7 @@ impl AudioMonitor {
 
                             self.devices.push(AudioDevice {
                                 id: format!("audio{}", idx),
-                                name: name.to_string(),
+                                name: name.map(str::to_string),
                                 device_type,
                                 state: None,
                                 is_default: Some(has_output || has_input),
@@ -871,7 +870,7 @@ mod tests {
             if let Some(volume) = device.volume {
                 assert!(
                     volume <= 100,
-                    "{}: volume {volume} is not a percentage",
+                    "{:?}: volume {volume} is not a percentage",
                     device.name
                 );
             }
@@ -990,11 +989,14 @@ mod tests {
                 !device.id.is_empty(),
                 "an audio device was reported with no id"
             );
-            assert!(
-                !device.name.is_empty(),
-                "audio device {} was reported with no name",
-                device.id
-            );
+            // A name is either read or absent; an empty string is neither.
+            if let Some(name) = &device.name {
+                assert!(
+                    !name.trim().is_empty(),
+                    "audio device {} was reported with an empty name",
+                    device.id
+                );
+            }
         }
     }
 
@@ -1010,7 +1012,7 @@ mod tests {
     fn test_audio_device_serialization() {
         let device = AudioDevice {
             id: "test".to_string(),
-            name: "Test Device".to_string(),
+            name: Some("Test Device".to_string()),
             device_type: AudioDeviceType::Output,
             state: Some(AudioState::Active),
             is_default: Some(true),

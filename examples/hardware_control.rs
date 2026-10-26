@@ -49,11 +49,13 @@ Muting audio..."
             .devices()
             .iter()
             .find(|d| d.id == id)
-            .map(|d| d.name.clone())
-            .unwrap_or_default();
+            .and_then(|d| d.name.clone())
+            .unwrap_or_else(|| "name not read".to_string());
         println!("\nSetting volume for device '{}' to 50%...", name);
-        audio.set_device_volume(&id, 50)?;
-        println!("Device volume updated");
+        match audio.set_device_volume(&id, 50) {
+            Ok(()) => println!("Device volume updated"),
+            Err(e) => println!("  declined: {e}"),
+        }
     }
 
     // Try invalid volume (will error)
