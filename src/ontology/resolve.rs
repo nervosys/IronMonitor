@@ -2650,6 +2650,13 @@ fn resolve_displays(out: &mut Vec<Reading>) {
             Some(Unit::Text),
             "this display publishes no name",
         );
+        push_opt(
+            out,
+            format!("{base}.connector"),
+            d.connector.as_ref().map(|c| serde_json::json!(c)),
+            Some(Unit::Text),
+            "the platform gave this display no connector name",
+        );
         push_id(
             out,
             format!("{base}.connection"),

@@ -2626,6 +2626,15 @@ impl Ontology {
             "Display name as the platform reports it. Nullable: a monitor that publishes no EDID name genuinely has none to report.",
         ));
         add(Entity::new(
+            "board.display.{n}.connector",
+            D::Board,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "Port the display is attached to, as the platform names it (for example eDP-1 or HDMI-A-1). Nullable: where the platform gives no connector name it is unknown, not a guessed port.",
+        ));
+        add(Entity::new(
             "board.display.{n}.connection",
             D::Board,
             K::Identity,

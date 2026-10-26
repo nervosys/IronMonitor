@@ -158,8 +158,9 @@ pub struct CpuContext {
     pub l2_cache_kb: Option<u32>,
     /// L3 cache size
     pub l3_cache_kb: Option<u32>,
-    /// CPU features
-    pub features: Vec<String>,
+    /// CPU feature flags, or `None`: no feature list is read here. This used to
+    /// be an empty list, which read as "this CPU has no features".
+    pub features: Option<Vec<String>>,
 }
 
 /// GPU context
@@ -180,8 +181,9 @@ pub struct GpuContext {
     pub compute_version: Option<String>,
     /// PCIe information
     pub pcie: Option<PcieContext>,
-    /// Supported capabilities
-    pub capabilities: Vec<String>,
+    /// Supported capabilities, or `None`: none are read here. This used to be an
+    /// empty list, which read as "this GPU has no capabilities".
+    pub capabilities: Option<Vec<String>>,
 }
 
 /// PCIe context

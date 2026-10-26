@@ -817,7 +817,7 @@ impl ObservabilityApi {
                     l1_cache_kb: None,
                     l2_cache_kb: None,
                     l3_cache_kb: None,
-                    features: Vec::new(),
+                    features: None,
                 });
             }
         }
@@ -843,7 +843,7 @@ impl ObservabilityApi {
                     l1_cache_kb: None,
                     l2_cache_kb: None,
                     l3_cache_kb: None,
-                    features: Vec::new(),
+                    features: None,
                 });
             }
         }
@@ -874,7 +874,7 @@ impl ObservabilityApi {
                                 bus_id: Some(bus_id.clone()),
                             }
                         }),
-                        capabilities: Vec::new(),
+                        capabilities: None,
                     });
                 }
             }

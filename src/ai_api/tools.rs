@@ -40,6 +40,23 @@ fn usb_speed_text(speed: crate::usb::UsbSpeed) -> Option<String> {
     (speed != UsbSpeed::Unknown).then(|| format!("{speed:?}"))
 }
 
+/// One USB device as the tools report it. Shared by the list and the details
+/// tool so both carry the same reasons for an unknown class or speed.
+fn usb_device_json(device: &crate::usb::UsbDevice) -> serde_json::Value {
+    use crate::usb::{UsbDeviceClass, UsbSpeed};
+    json!({
+        "address": device.address,
+        "vendor_id": device.vendor_id.map(|v| format!("{v:04x}")),
+        "product_id": device.product_id.map(|p| format!("{p:04x}")),
+        "vendor_name": device.manufacturer,
+        "product_name": device.product,
+        "class": usb_class_text(device.class),
+        "class_unavailable_reason": (device.class == UsbDeviceClass::Unknown).then_some("no class was declared by the device"),
+        "speed": usb_speed_text(device.speed),
+        "speed_unavailable_reason": (device.speed == UsbSpeed::Unknown).then_some("no hub reported a negotiated speed"),
+    })
+}
+
 /// The disk type as text, or `None` for `Unknown`. The `Debug` form of
 /// `Unknown` used to reach agents as the string "Unknown", a classification
 /// nobody made.
@@ -1240,6 +1257,9 @@ impl AiDataApi {
                     "usage_percent": 100.0 - stats.total.idle,
                 },
                 "model": stats.cores.first().and_then(|c| c.model.clone()),
+                // Null `model` carries its reason, as the other nullable
+                // fields in this file do.
+                "model_unavailable_reason": stats.cores.first().and_then(|c| c.model.as_ref()).is_none().then_some("the platform reported no CPU model name"),
             }))
         }
 
@@ -1259,6 +1279,9 @@ impl AiDataApi {
                     "usage_percent": 100.0 - stats.total.idle,
                 },
                 "model": stats.cores.first().and_then(|c| c.model.clone()),
+                // Null `model` carries its reason, as the other nullable
+                // fields in this file do.
+                "model_unavailable_reason": stats.cores.first().and_then(|c| c.model.as_ref()).is_none().then_some("the platform reported no CPU model name"),
             }))
         }
 
@@ -1289,6 +1312,9 @@ impl AiDataApi {
                     "usage_percent": 100.0 - stats.total.idle,
                 },
                 "model": stats.cores.first().and_then(|c| c.model.clone()),
+                // Null `model` carries its reason, as the other nullable
+                // fields in this file do.
+                "model_unavailable_reason": stats.cores.first().and_then(|c| c.model.as_ref()).is_none().then_some("the platform reported no CPU model name"),
             }))
         }
     }
@@ -1309,8 +1335,10 @@ impl AiDataApi {
                     json!({
                         "id": c.id,
                         "online": c.online,
+                        "online_unavailable_reason": c.online.is_none().then_some("core online state was not read"),
                         "governor": c.governor,
                         "model": c.model,
+                        "model_unavailable_reason": c.model.is_none().then_some("the platform reported no CPU model name"),
                         "frequency_mhz": c.frequency.as_ref().map(|f| f.current),
                         "user_percent": c.user,
                         "system_percent": c.system,
@@ -1335,8 +1363,10 @@ impl AiDataApi {
                     json!({
                         "id": c.id,
                         "online": c.online,
+                        "online_unavailable_reason": c.online.is_none().then_some("core online state was not read"),
                         "governor": c.governor,
                         "model": c.model,
+                        "model_unavailable_reason": c.model.is_none().then_some("the platform reported no CPU model name"),
                         "frequency_mhz": c.frequency.as_ref().map(|f| f.current),
                         "user_percent": c.user,
                         "system_percent": c.system,
@@ -1389,6 +1419,8 @@ impl AiDataApi {
                 .map(|i| {
                     json!({
                         "id": i, "online": null, "model": model,
+                        "online_unavailable_reason": "core online state is not read on this platform",
+                        "model_unavailable_reason": model.is_none().then_some("machdep.cpu.brand_string was not readable"),
                         "frequency_mhz": freq_mhz,
                     })
                 })
@@ -1794,6 +1826,7 @@ impl AiDataApi {
                     "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
                     // `Unknown` is a classification nobody made, so it is null.
                     "disk_type": disk_type_text(info.disk_type),
+"disk_type_unavailable_reason": (info.disk_type == crate::disk::DiskType::Unknown).then_some("the driver did not classify this disk"),
                 }),
                 Err(e) => json!({
                     "index": index,
@@ -1841,6 +1874,7 @@ impl AiDataApi {
             "size_bytes": info.capacity,
             "size_gb": info.capacity.map(|c| c as f64 / 1024.0 / 1024.0 / 1024.0),
             "disk_type": disk_type_text(info.disk_type),
+        "disk_type_unavailable_reason": (info.disk_type == crate::disk::DiskType::Unknown).then_some("the driver did not classify this disk"),
             "temperature_c": disk.temperature().ok().flatten(),
         }))
     }
@@ -2547,7 +2581,7 @@ impl AiDataApi {
             // `state` is `Option` and was formatted with `{:?}` directly, so an
             // unread state reached agents as the text "None" and a read one as
             // "Some(Active)". Both are null now when not read.
-            .map(|d| json!({"id": d.id, "name": d.name, "type": (d.device_type != AudioDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": d.state.map(|s| format!("{s:?}")), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
+            .map(|d| json!({"id": d.id, "name": d.name, "type": (d.device_type != AudioDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": d.state.map(|s| format!("{s:?}")), "state_unavailable_reason": d.state.is_none().then_some("the endpoint state was not read"), "type_unavailable_reason": (d.device_type == AudioDeviceType::Unknown).then_some("the device type was not classified"), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
             .collect();
         Ok(json!(devices))
     }
@@ -2599,7 +2633,7 @@ impl AiDataApi {
             .unwrap_or(false);
         let monitor =
             BluetoothMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
-        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": (d.device_type != BluetoothDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": (d.state != BluetoothState::Unknown).then(|| format!("{:?}", d.state)), "battery_percent": d.battery_percent})).collect();
+        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": (d.device_type != BluetoothDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": (d.state != BluetoothState::Unknown).then(|| format!("{:?}", d.state)), "state_unavailable_reason": (d.state == BluetoothState::Unknown).then_some("the connection state was not read"), "type_unavailable_reason": (d.device_type == BluetoothDeviceType::Unknown).then_some("the device type was not classified"), "battery_percent": d.battery_percent})).collect();
         Ok(json!(devices))
     }
     // ============== Display Tools ==============
@@ -2622,6 +2656,7 @@ impl AiDataApi {
                     "name": d.name,
                     "manufacturer": d.manufacturer,
                     "connection": connection_text(d.connection),
+                    "connection_unavailable_reason": (d.connection == crate::display::DisplayConnection::Unknown).then_some("the display query did not identify the connection"),
                     "is_primary": d.is_primary,
                     "resolution": resolution_text(d),
                     "aspect_ratio": d.aspect_ratio(),
@@ -2629,6 +2664,7 @@ impl AiDataApi {
                     "brightness": d.brightness,
                     // Null where HDR state was not read, never a mode.
                     "hdr": hdr_text(d.hdr),
+                    "hdr_unavailable_reason": hdr_text(d.hdr).is_none().then_some("HDR state was not read"),
                 })
             })
             .collect();
@@ -2656,6 +2692,7 @@ impl AiDataApi {
             "name": display.name,
             "manufacturer": display.manufacturer,
             "connection": connection_text(display.connection),
+            "connection_unavailable_reason": (display.connection == crate::display::DisplayConnection::Unknown).then_some("the display query did not identify the connection"),
             "is_primary": display.is_primary,
             "width": display.width,
             "height": display.height,
@@ -2677,7 +2714,22 @@ impl AiDataApi {
             .and_then(|v| v.as_str())
             .unwrap_or("all");
         let monitor = UsbMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
-        let devices: Vec<_> = monitor.devices().iter().filter(|d| class_filter == "all" || matches!((&d.class, class_filter), (UsbDeviceClass::Audio, "audio") | (UsbDeviceClass::Hid, "hid") | (UsbDeviceClass::MassStorage, "storage") | (UsbDeviceClass::Hub, "hub") | (UsbDeviceClass::Video, "video"))).map(|d| json!({"address": d.address, "vendor_id": d.vendor_id.map(|v| format!("{v:04x}")), "product_id": d.product_id.map(|p| format!("{p:04x}")), "vendor_name": d.manufacturer, "product_name": d.product, "class": usb_class_text(d.class), "speed": usb_speed_text(d.speed)})).collect();
+        let devices: Vec<_> = monitor
+            .devices()
+            .iter()
+            .filter(|d| {
+                class_filter == "all"
+                    || matches!(
+                        (&d.class, class_filter),
+                        (UsbDeviceClass::Audio, "audio")
+                            | (UsbDeviceClass::Hid, "hid")
+                            | (UsbDeviceClass::MassStorage, "storage")
+                            | (UsbDeviceClass::Hub, "hub")
+                            | (UsbDeviceClass::Video, "video")
+                    )
+            })
+            .map(usb_device_json)
+            .collect();
         Ok(json!(devices))
     }
     pub(crate) fn tool_get_usb_device_details(
@@ -2719,9 +2771,7 @@ impl AiDataApi {
             .ok_or_else(|| {
                 IronError::DeviceNotFound(format!("no USB device with address {address}"))
             })?;
-        Ok(
-            json!({"address": device.address, "vendor_id": device.vendor_id.map(|v| format!("{v:04x}")), "product_id": device.product_id.map(|p| format!("{p:04x}")), "vendor_name": device.manufacturer, "product_name": device.product, "class": usb_class_text(device.class), "speed": usb_speed_text(device.speed)}),
-        )
+        Ok(usb_device_json(device))
     }
 
     // ============== Profile Inspector Tools ==============
@@ -3011,5 +3061,45 @@ mod tests {
         assert_eq!(partial["fans"], json!([]));
         assert_eq!(partial["errors"][0]["source"], "nct6798/fans");
         assert_eq!(partial["errors"][0]["error"], "driver not loaded");
+    }
+
+    /// An unclassified USB device carries a null class and speed, each with a reason.
+    ///
+    /// The reason key is always present, as the other `*_unavailable_reason` keys in this
+    /// file are, and is null when the field it explains was read.
+    #[test]
+    fn usb_device_json_gives_a_reason_for_each_null_field() {
+        use crate::usb::{UsbDevice, UsbDeviceClass, UsbSpeed};
+        let device = |class, speed| UsbDevice {
+            address: "usb_test_0_1".into(),
+            bus_number: None,
+            port_number: None,
+            vendor_id: Some(0x046d),
+            product_id: None,
+            manufacturer: None,
+            product: None,
+            description: None,
+            serial_number: None,
+            class,
+            speed,
+        };
+
+        let unknown = usb_device_json(&device(UsbDeviceClass::Unknown, UsbSpeed::Unknown));
+        assert!(unknown["class"].is_null());
+        assert_eq!(
+            unknown["class_unavailable_reason"],
+            "no class was declared by the device"
+        );
+        assert!(unknown["speed"].is_null());
+        assert_eq!(
+            unknown["speed_unavailable_reason"],
+            "no hub reported a negotiated speed"
+        );
+
+        let read = usb_device_json(&device(UsbDeviceClass::Hub, UsbSpeed::High));
+        assert_eq!(read["speed"], "High");
+        assert_eq!(read["class"], "Hub");
+        assert!(read["speed_unavailable_reason"].is_null());
+        assert!(read["class_unavailable_reason"].is_null());
     }
 }
