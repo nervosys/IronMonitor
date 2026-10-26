@@ -95,8 +95,9 @@ pub struct PrinterInfo {
     pub status: PrinterStatus,
     /// Printer type
     pub printer_type: PrinterType,
-    /// Whether this is the default printer
-    pub is_default: bool,
+    /// Whether this is the default printer, or `None` where the default could not be
+    /// read. A failed `lpstat -d` used to make every queue read as not default.
+    pub is_default: Option<bool>,
     /// Whether the printer accepts new jobs.
     ///
     /// `None` on Windows. CUPS reports it directly -- `lpstat -a` says
@@ -163,9 +164,10 @@ fn status_from_cim(extended: u64, basic: u64) -> PrinterStatus {
         match code {
             3 => Some(PrinterStatus::Idle),
             4 => Some(PrinterStatus::Printing),
-            // 5 is Warmup and 6 is Stopped Printing in both enumerations; 8 is
-            // Paused, and exists in the extended one only.
-            5 | 6 | 8 => Some(PrinterStatus::Paused),
+            // 6 is Stopped Printing in both enumerations; 8 is Paused, and exists in the
+            // extended one only. 5 is Warmup, which is not a pause: it has no variant, so
+            // it falls through to the other column or to Unknown. It used to map to Paused.
+            6 | 8 => Some(PrinterStatus::Paused),
             7 => Some(PrinterStatus::Offline),
             _ => None,
         }
@@ -212,7 +214,7 @@ impl PrinterMonitor {
 
     /// Get the default printer, if any.
     pub fn default_printer(&self) -> Option<&PrinterInfo> {
-        self.printers.iter().find(|p| p.is_default)
+        self.printers.iter().find(|p| p.is_default == Some(true))
     }
 
     /// Get printers with a specific status.
@@ -250,14 +252,22 @@ impl PrinterMonitor {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn refresh_cups(&mut self) -> Result<(), IronError> {
-        // Get default printer
-        let default_name = std::process::Command::new("lpstat")
+        // Get default printer. `None` when `lpstat -d` did not run successfully: the
+        // default is then unknown, and no queue is marked default. This used to be
+        // `unwrap_or_default()`, so a failed query published `default: false` for every
+        // printer. `Some("")` is a successful answer that names no default.
+        let default_name: Option<String> = std::process::Command::new("lpstat")
             .args(["-d"])
             .output()
             .ok()
+            .filter(|o| o.status.success())
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.split(':').nth(1).map(|n| n.trim().to_string()))
-            .unwrap_or_default();
+            .map(|s| {
+                s.split(':')
+                    .nth(1)
+                    .map(|n| n.trim().to_string())
+                    .unwrap_or_default()
+            });
 
         // List printers with lpstat -p -l.
         //
@@ -270,12 +280,20 @@ impl PrinterMonitor {
         //   scheduler is not answering. That is not a machine without
         //   printers, and it is what CI runners do.
         // * It runs and prints a list.
+        // `lpstat` missing is not "no printers": CUPS is what enumerates them here, so
+        // without it the queues were never read. This used to return `Ok` with an empty
+        // list, which the ontology published as "the spooler was reachable and holds
+        // no queue".
         let raw = match std::process::Command::new("lpstat")
             .args(["-p", "-l"])
             .output()
         {
             Ok(o) => o,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(IronError::CommandFailed(
+                    "lpstat is not installed, so CUPS printers were not enumerated".to_string(),
+                ))
+            }
             Err(e) => return Err(IronError::CommandFailed(format!("lpstat: {e}"))),
         };
         if !raw.status.success() {
@@ -351,7 +369,7 @@ impl PrinterMonitor {
                         connection,
                         status: current_status.clone(),
                         printer_type: PrinterType::Unknown,
-                        is_default: current_name == default_name,
+                        is_default: default_name.as_deref().map(|d| d == current_name.as_str()),
                         accepting_jobs: accepting,
                         shared: None,
                         // Not read on this path.
@@ -394,7 +412,7 @@ impl PrinterMonitor {
                 connection,
                 status: current_status,
                 printer_type: PrinterType::Unknown,
-                is_default: current_name == default_name,
+                is_default: default_name.as_deref().map(|d| d == current_name.as_str()),
                 accepting_jobs: accepting,
                 shared: None,
                 // Not read on this path.
@@ -489,18 +507,24 @@ impl PrinterMonitor {
                 let port = item["PortName"].as_str().unwrap_or("").to_string();
                 let location = item["Location"].as_str().unwrap_or("").to_string();
                 let description = item["Comment"].as_str().unwrap_or("").to_string();
-                let shared = item["Shared"].as_bool().unwrap_or(false);
+                // Null is unread, not "not shared". This used to be `unwrap_or(false)`
+                // wrapped in `Some`, which published a literal false.
+                let shared = item["Shared"].as_bool();
                 // `Win32_Printer` publishes no `Color` property. Colour lives in
                 // `Capabilities`, a `uint16[]` where 2 means Color --- the same
                 // array whose `CapabilityDescriptions` spell it out. A printer
                 // that reports no capabilities at all has said nothing about
                 // colour, and `None` says that.
-                let color = item["Capabilities"].as_array().map(|caps| {
-                    caps.iter()
-                        .filter_map(serde_json::Value::as_u64)
-                        .any(|c| c == 2)
-                });
-                let is_default = item["Default"].as_bool().unwrap_or(false);
+                // An empty array says nothing about colour either, so it is unread too.
+                let color = item["Capabilities"]
+                    .as_array()
+                    .filter(|caps| !caps.is_empty())
+                    .map(|caps| {
+                        caps.iter()
+                            .filter_map(serde_json::Value::as_u64)
+                            .any(|c| c == 2)
+                    });
+                let is_default = item["Default"].as_bool();
                 let is_network = item["Network"].as_bool().unwrap_or(false);
 
                 let status = status_from_cim(
@@ -543,7 +567,7 @@ impl PrinterMonitor {
                     status,
                     printer_type,
                     is_default,
-                    shared: Some(shared),
+                    shared,
                     color,
                     duplex: None,
                     jobs_in_queue: None,
@@ -662,7 +686,7 @@ mod tests {
             connection: PrinterConnection::USB,
             status: PrinterStatus::Idle,
             printer_type: PrinterType::Laser,
-            is_default: true,
+            is_default: Some(true),
             accepting_jobs: Some(true),
             shared: Some(false),
             color: Some(true),

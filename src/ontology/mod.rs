@@ -1625,8 +1625,8 @@ impl Ontology {
             K::Identity,
             None,
             P::Measured,
-            false,
-            "Whether this is the queue a job goes to when none is named.",
+            true,
+            "Whether this is the queue a job goes to when none is named. Unavailable where the default could not be read.",
         ));
         add(Entity::new(
             "system.printer.{n}.accepting_jobs",

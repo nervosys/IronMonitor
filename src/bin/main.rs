@@ -1132,7 +1132,10 @@ fn handle_cli_command(
             if format == "json" {
                 println!("{}", serde_json::to_string_pretty(&snapshot.engines)?);
             } else {
-                print_engine_info(&snapshot.engines);
+                match &snapshot.engines {
+                    Some(engines) => print_engine_info(engines),
+                    None => println!("Engine statistics are not read on this platform."),
+                }
             }
         }
         CliSubcommand::All => {

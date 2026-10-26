@@ -30,8 +30,9 @@ pub struct Snapshot {
     pub board: BoardInfo,
     /// Process statistics
     pub processes: ProcessStats,
-    /// Engine statistics
-    pub engines: EngineStats,
+    /// Engine statistics, or `None` where the platform does not read them. An empty
+    /// `EngineStats` means no engines were found, which is not the same thing.
+    pub engines: Option<EngineStats>,
     /// Uptime in seconds
     pub uptime: Duration,
 }
@@ -115,8 +116,9 @@ impl IronMonitor {
         // Read process stats
         let processes = read_process_stats()?;
 
-        // Read engine stats
-        let engines = read_engine_stats()?;
+        // Read engine stats. Where they are not read the field is `None`, so the rest of
+        // the snapshot still comes back.
+        let engines = read_engine_stats().ok();
 
         // Read uptime
         let uptime = read_uptime()?;
@@ -282,9 +284,11 @@ fn read_process_stats() -> Result<ProcessStats> {
 
 #[cfg(windows)]
 fn read_engine_stats() -> Result<EngineStats> {
-    // Windows doesn't have the same engine concept as Jetson
-    // Return empty stats
-    Ok(EngineStats::default())
+    // Windows has no engine concept like Jetson's. This returned an empty `EngineStats`,
+    // which the CLI printed as zero engine groups. Nothing was read, so it is an error.
+    Err(crate::error::IronError::UnsupportedPlatform(
+        "engine statistics are not read on Windows".to_string(),
+    ))
 }
 
 /// Read fan stats. A value that cannot be read is `None`, never zero.
@@ -303,10 +307,12 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
         for entry in entries.flatten() {
             let hwmon_dir = entry.path();
 
-            // Get device name
+            // Get device name. When `name` is unreadable the sysfs directory name
+            // (`hwmonN`) keys the fans instead. This used to be the literal "unknown",
+            // which gave every such device the same keys, so one overwrote the others.
             let name = fs::read_to_string(hwmon_dir.join("name"))
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+                .unwrap_or_else(|_| entry.file_name().to_string_lossy().into_owned());
 
             // Look for fan inputs (fan1_input, fan2_input, etc.)
             for i in 1..=10 {
@@ -411,7 +417,6 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
     #[serde(rename_all = "PascalCase")]
     struct Win32Fan {
         name: Option<String>,
-        active_cooling: Option<bool>,
     }
 
     let mut fans = HashMap::new();
@@ -421,24 +426,25 @@ fn read_fan_stats() -> Result<std::collections::HashMap<String, crate::core::fan
         if let Ok(wmi_con) = WMIConnection::with_namespace_path("root\\CIMV2", com_con) {
             // Try Win32_Fan class (may not be populated on all systems). No rows
             // means no fans; a failed query is an error, not an empty list.
-            let wmi_fans: Vec<Win32Fan> = wmi_con
-                .raw_query("SELECT Name, ActiveCooling FROM Win32_Fan")
-                .map_err(|e| {
-                    crate::error::IronError::System(format!("WMI query `Win32_Fan`: {e}"))
-                })?;
+            let wmi_fans: Vec<Win32Fan> =
+                wmi_con
+                    .raw_query("SELECT Name FROM Win32_Fan")
+                    .map_err(|e| {
+                        crate::error::IronError::System(format!("WMI query `Win32_Fan`: {e}"))
+                    })?;
 
             for (idx, fan) in wmi_fans.iter().enumerate() {
                 let name = fan.name.clone().unwrap_or_else(|| format!("Fan{}", idx));
-                // ActiveCooling is a boolean, not a speed, so `speed` stays None. The
-                // profile is set only when the boolean was actually reported.
+                // Win32_Fan reports no speed, RPM or profile. Its `ActiveCooling` boolean
+                // used to be written as the profile "active" or "idle"; it says whether the
+                // fan is working, not what mode it is in, and FanInfo has no field for it,
+                // so it is not read here.
                 fans.insert(
                     name.clone(),
                     FanInfo {
                         speed: None,
                         rpm: None,
-                        profile: fan
-                            .active_cooling
-                            .map(|active| (if active { "active" } else { "idle" }).to_string()),
+                        profile: None,
                         governor: None,
                         control: None,
                     },
@@ -652,10 +658,11 @@ mod macos_stats {
         // hw.memsize is the installed RAM. Summing vm_stat's pages gives a slightly
         // different figure — the kernel's own footprint is not in the page counts —
         // so the installed size is the one to report as total.
-        let total = macos::sysctl_u64("hw.memsize").unwrap_or_else(|| {
-            (vm.free + vm.active + vm.inactive + vm.speculative + vm.wired + vm.compressed)
-                * vm.page_size
-        });
+        // Installed RAM only. The page-count sum used to stand in when `hw.memsize` was
+        // unreadable, and it leaves out the kernel's own footprint, so it reported a
+        // smaller total than the machine has. Unread is an error, as it is for CPU.
+        let total = macos::sysctl_u64("hw.memsize")
+            .ok_or_else(|| unsupported("memory statistics: hw.memsize was not read"))?;
 
         // Swap being unreadable is different from swap being off: the first is
         // unknown, the second is a real zero. `SwapInfo` carries that

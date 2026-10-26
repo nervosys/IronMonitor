@@ -702,25 +702,7 @@ impl MemoryMonitor {
         self.stats = MemoryStats::default();
 
         let content = fs::read_to_string("/proc/vmstat").unwrap_or_default();
-
-        for line in content.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let Ok(value) = parts[1].parse::<u64>() else {
-                    continue;
-                };
-                match parts[0] {
-                    "pgfault" => self.stats.page_faults_minor = Some(value),
-                    "pgmajfault" => self.stats.page_faults_major = Some(value),
-                    "pswpin" => self.stats.swap_in = Some(value),
-                    "pswpout" => self.stats.swap_out = Some(value),
-                    "pgalloc_normal" => self.stats.pages_allocated = Some(value),
-                    "pgfree" => self.stats.pages_freed = Some(value),
-                    "oom_kill" => self.stats.oom_kills = Some(value),
-                    _ => {}
-                }
-            }
-        }
+        self.stats = parse_vmstat(&content);
 
         Ok(())
     }
@@ -1304,6 +1286,42 @@ pub fn format_bytes(bytes: u64) -> String {
     SwapDevice::format_size(bytes)
 }
 
+/// Parse `/proc/vmstat` into the counters. A counter whose line is absent or does not
+/// parse stays `None`.
+///
+/// `pages_allocated` sums every `pgalloc_*` zone. It used to take `pgalloc_normal`
+/// alone, which is one zone; the DMA, DMA32, movable and device zones are pages too.
+#[cfg(target_os = "linux")]
+fn parse_vmstat(content: &str) -> MemoryStats {
+    let mut stats = MemoryStats::default();
+    let mut allocated: Option<u64> = None;
+
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let Ok(value) = parts[1].parse::<u64>() else {
+                continue;
+            };
+            if parts[0].starts_with("pgalloc_") {
+                allocated = Some(allocated.unwrap_or(0).saturating_add(value));
+                continue;
+            }
+            match parts[0] {
+                "pgfault" => stats.page_faults_minor = Some(value),
+                "pgmajfault" => stats.page_faults_major = Some(value),
+                "pswpin" => stats.swap_in = Some(value),
+                "pswpout" => stats.swap_out = Some(value),
+                "pgfree" => stats.pages_freed = Some(value),
+                "oom_kill" => stats.oom_kills = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    stats.pages_allocated = allocated;
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1378,6 +1396,29 @@ mod tests {
         };
         assert!(swap.has_swap());
         assert_eq!(swap.usage_percent(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vmstat_allocations_sum_every_zone() {
+        // Captured shape of /proc/vmstat; the zone counters are the allocation total.
+        let stats = parse_vmstat(concat!(
+            "pgfault 900\npgmajfault 3\npgalloc_dma 10\npgalloc_dma32 20\n",
+            "pgalloc_normal 300\npgalloc_movable 4\npgfree 500\noom_kill 0\n",
+        ));
+        assert_eq!(stats.pages_allocated, Some(334));
+        assert_eq!(stats.page_faults_minor, Some(900));
+        assert_eq!(stats.page_faults_major, Some(3));
+        assert_eq!(stats.pages_freed, Some(500));
+        assert_eq!(stats.oom_kills, Some(0));
+        assert_eq!(stats.swap_in, None, "absent from the text, so unread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vmstat_without_allocation_lines_leaves_them_unread() {
+        let stats = parse_vmstat("pgfault 5\n");
+        assert_eq!(stats.pages_allocated, None);
     }
 
     #[cfg(target_os = "linux")]

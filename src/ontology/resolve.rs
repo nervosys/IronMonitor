@@ -3639,11 +3639,13 @@ fn resolve_printers(out: &mut Vec<Reading>) {
         // why the status goes through the guarded helper rather than being
         // pushed directly.
         push_id(out, format!("{base}.status"), &format!("{:?}", p.status));
-        out.push(Reading::measured(
+        push_opt(
+            out,
             format!("{base}.default"),
-            serde_json::json!(p.is_default),
+            p.is_default.map(|d| serde_json::json!(d)),
             None,
-        ));
+            "the default queue could not be read: `lpstat -d` did not succeed",
+        );
         push_opt(
             out,
             format!("{base}.accepting_jobs"),
