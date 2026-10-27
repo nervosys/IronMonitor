@@ -487,17 +487,13 @@ impl FirmwareInventory {
                         let version = dev.get("Version").and_then(|v| v.as_str()).unwrap_or("");
 
                         if !name.is_empty() && !version.is_empty() {
-                            let component = if name.to_lowercase().contains("thunderbolt") {
-                                FirmwareComponent::Thunderbolt
-                            } else if name.to_lowercase().contains("tpm") {
-                                FirmwareComponent::Tpm
-                            } else if name.to_lowercase().contains("bmc")
-                                || name.to_lowercase().contains("ipmi")
-                            {
-                                FirmwareComponent::Bmc
-                            } else {
-                                FirmwareComponent::Other(name.to_string())
-                            };
+                            // The component is the device name. fwupd publishes no
+                            // component class in this output, so a substring of the
+                            // name ("tpm", "thunderbolt") is not a classification.
+                            // It used to pick Thunderbolt, Tpm or Bmc from that
+                            // substring, and any device whose name merely contained
+                            // one of those words was filed as that component.
+                            let component = FirmwareComponent::Other(name.to_string());
 
                             self.entries.push(FirmwareEntry {
                                 component,

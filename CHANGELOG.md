@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `system.security.lsm.{i}.mode` published the status strings `active` and
   `unknown` and now carries only SELinux's enforcing or permissive; and the Windows
   CPU model and vendor were `""` when WMI returned nothing, and are now absent.
+- Firmware, battery, VM and audio readers no longer classify from names or unread
+  flags: fwupd components keep their device name rather than a substring match, a
+  Windows battery with an unread discharge flag is "Battery" rather than "idle",
+  `features.is_virtual` is unknown when unread (and chassis is not inferred from it),
+  Windows audio endpoints have no direction rather than one guessed from the name,
+  a multi-socket Windows CPU reports its identity when the sockets agree, and macOS
+  audio devices are parsed from `system_profiler` output, which the old header test
+  dropped entirely.
 - The Linux CPU reader no longer takes a percentage from a `/proc/stat` window
   shorter than 200 ms. A one-tick window let the aggregate and per-core lines
   round differently, so a snapshot could report the machine as fully idle while a

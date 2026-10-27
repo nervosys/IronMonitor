@@ -1143,12 +1143,15 @@ pub fn read_power_stats() -> Result<PowerStats> {
         let (rate_mw, sensor_type) = match (battery.discharge_rate, battery.charge_rate) {
             (Some(d), _) if d > 0 => (d, "Battery (discharging)"),
             (_, Some(c)) if c > 0 => (c, "Battery (charging)"),
+            // Zero rates with an unread `Discharging` flag: the state is not known,
+            // so the label says only "Battery". It used to fall back to "idle", which
+            // was a guess taken from a missing flag.
             (Some(_), _) | (_, Some(_)) => (
                 0,
-                if battery.discharging.unwrap_or(false) {
-                    "Battery (discharging)"
-                } else {
-                    "Battery (idle)"
+                match battery.discharging {
+                    Some(true) => "Battery (discharging)",
+                    Some(false) => "Battery (idle)",
+                    None => "Battery",
                 },
             ),
             // Neither rate was reported: nothing was measured, so emit nothing.

@@ -772,48 +772,63 @@ fn merge_direction(current: Option<AudioDeviceType>, added: AudioDeviceType) -> 
 }
 
 fn get_audio_devices() -> Vec<AudioDeviceInfo> {
-    let mut devices = Vec::new();
-    if let Some(text) = run_cmd("system_profiler", &["SPAudioDataType"]) {
-        let mut current_name = String::new();
-        // `None` until a channel line establishes a direction. It used to start
-        // as `Unknown`, which is a classification the platform never made.
-        let mut device_type: Option<AudioDeviceType> = None;
-        let mut manufacturer = None;
-        let mut is_default = false;
+    run_cmd("system_profiler", &["SPAudioDataType"])
+        .map(|text| parse_audio_devices(&text))
+        .unwrap_or_default()
+}
 
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if !trimmed.contains(':') && !trimmed.is_empty() && !trimmed.starts_with("Audio:") {
-                if !current_name.is_empty() {
-                    devices.push(AudioDeviceInfo {
-                        name: current_name.clone(),
-                        device_type,
-                        manufacturer: manufacturer.take(),
-                        status: Some("Active".to_string()),
-                        is_default,
-                    });
-                    device_type = None;
-                    is_default = false;
-                }
-                current_name = trimmed.trim_end_matches(':').to_string();
-            } else if let Some(direction) = channel_direction(trimmed) {
-                device_type = Some(merge_direction(device_type, direction));
-            } else if trimmed.starts_with("Manufacturer:") {
-                manufacturer = trimmed.split(':').nth(1).map(|s| s.trim().to_string());
-            } else if trimmed.starts_with("Default Output Device:") && trimmed.contains("Yes") {
-                is_default = true;
+/// Parse `system_profiler SPAudioDataType` text. Device names are the lines under
+/// `Devices:` that end in `:`, indented one level deeper than that heading. Every
+/// other line is a `Key: value` property of the current device. A device name ends
+/// with a colon too, so a colon alone does not tell a name from a property: it used
+/// to test for the absence of `:`, which dropped every device.
+fn parse_audio_devices(text: &str) -> Vec<AudioDeviceInfo> {
+    let mut devices = Vec::new();
+    let mut current_name = String::new();
+    // `None` until a channel line establishes a direction. It used to start
+    // as `Unknown`, which is a classification the platform never made.
+    let mut device_type: Option<AudioDeviceType> = None;
+    let mut manufacturer = None;
+    let mut is_default = false;
+    // Indentation of the `Devices:` heading. Without one, the device names are taken
+    // to sit below column 0, which is where `Audio:` is.
+    let mut devices_indent: usize = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        if trimmed == "Devices:" {
+            devices_indent = indent;
+        } else if trimmed.ends_with(':') && indent > devices_indent {
+            if !current_name.is_empty() {
+                devices.push(AudioDeviceInfo {
+                    name: current_name.clone(),
+                    device_type,
+                    manufacturer: manufacturer.take(),
+                    status: Some("Active".to_string()),
+                    is_default,
+                });
+                device_type = None;
+                is_default = false;
             }
+            current_name = trimmed.trim_end_matches(':').to_string();
+        } else if let Some(direction) = channel_direction(trimmed) {
+            device_type = Some(merge_direction(device_type, direction));
+        } else if trimmed.starts_with("Manufacturer:") {
+            manufacturer = trimmed.split(':').nth(1).map(|s| s.trim().to_string());
+        } else if trimmed.starts_with("Default Output Device:") && trimmed.contains("Yes") {
+            is_default = true;
         }
-        // Push last device
-        if !current_name.is_empty() {
-            devices.push(AudioDeviceInfo {
-                name: current_name,
-                device_type,
-                manufacturer,
-                status: Some("Active".to_string()),
-                is_default,
-            });
-        }
+    }
+    // Push last device
+    if !current_name.is_empty() {
+        devices.push(AudioDeviceInfo {
+            name: current_name,
+            device_type,
+            manufacturer,
+            status: Some("Active".to_string()),
+            is_default,
+        });
     }
     devices
 }
@@ -1039,6 +1054,54 @@ fn kext_description(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_devices_are_read_from_system_profiler_text() {
+        // Captured shape of `system_profiler SPAudioDataType` on a laptop.
+        let out = r#"Audio:
+
+    Devices:
+
+        MacBook Pro Microphone:
+
+          Default Input Device: Yes
+          Input Channels: 1
+          Manufacturer: Apple Inc.
+          Current SampleRate: 48000
+          Transport: Built-in
+          Input Source: MacBook Pro Microphone
+
+        MacBook Pro Speakers:
+
+          Default Output Device: Yes
+          Default System Output Device: Yes
+          Manufacturer: Apple Inc.
+          Output Channels: 2
+          Current SampleRate: 48000
+          Transport: Built-in
+          Output Source: MacBook Pro Speakers
+"#;
+        let devices = parse_audio_devices(out);
+        assert_eq!(devices.len(), 2);
+
+        let mic = &devices[0];
+        assert_eq!(mic.name, "MacBook Pro Microphone");
+        assert_eq!(mic.device_type, Some(AudioDeviceType::Input));
+        assert_eq!(mic.manufacturer.as_deref(), Some("Apple Inc."));
+        assert!(!mic.is_default);
+
+        let speakers = &devices[1];
+        assert_eq!(speakers.name, "MacBook Pro Speakers");
+        assert_eq!(speakers.device_type, Some(AudioDeviceType::Output));
+        assert_eq!(speakers.manufacturer.as_deref(), Some("Apple Inc."));
+        assert!(speakers.is_default);
+
+        // No channel line means no direction was established: `None`, not a guess.
+        let no_channels = "Audio:\n\n    Devices:\n\n        Thing:\n\n          Manufacturer: X\n";
+        let devices = parse_audio_devices(no_channels);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_type, None);
+    }
 
     #[test]
     fn ifconfig_status_reads_only_the_named_interface() {

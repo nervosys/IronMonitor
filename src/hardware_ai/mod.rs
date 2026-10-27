@@ -519,7 +519,10 @@ struct HardwareFeatures {
     /// its code is not one the reader maps. Used to be a `"Unknown"` string, and
     /// a Windows fallback guessed "Desktop" or "Laptop" from the battery.
     chassis_type: Option<String>,
-    is_virtual: bool,
+    /// Whether this is a virtual machine, or `None` when the product name or model
+    /// was not read (the query failed or returned nothing). Used to be a `bool` that
+    /// stayed `false` when unread, which counted as a physical-machine reading.
+    is_virtual: Option<bool>,
     /// NUMA node count, or `None` when not read. Windows used to store a constant 1.
     numa_nodes: Option<u32>,
     pcie_gen: u32,
@@ -616,7 +619,7 @@ fn anything_read(f: &HardwareFeatures) -> bool {
         || f.gpu_count > 0
         || !f.gpu_model.is_empty()
         || f.has_battery
-        || f.is_virtual
+        || f.is_virtual == Some(true)
         || f.chassis_type.is_some()
         || f.nic_count.is_some_and(|n| n > 0)
         || f.max_nic_speed_gbps.is_some_and(|v| v > 0.0)
@@ -792,15 +795,32 @@ impl HardwareInferenceEngine {
     /// Name and manufacturer from the `Win32_Processor` JSON. Each is `None` when
     /// absent, not a string, or blank after trimming. WMI pads `Name` with spaces,
     /// so it is trimmed before the emptiness check.
+    ///
+    /// `ConvertTo-Json` emits an array rather than an object when there is more than
+    /// one socket. Every socket in one machine carries the same model, so a field is
+    /// taken only when all elements agree; if they disagree, or one lacks it, it is
+    /// `None`. This used to read only the object form, so a multi-socket machine had
+    /// no CPU identity at all.
     #[cfg(any(target_os = "windows", test))]
     fn windows_cpu_identity(json: &serde_json::Value) -> (Option<String>, Option<String>) {
-        let text = |key: &str| {
-            json.get(key)
+        let elements: Vec<&serde_json::Value> = match json.as_array() {
+            Some(items) => items.iter().collect(),
+            None => vec![json],
+        };
+        let text = |item: &serde_json::Value, key: &str| {
+            item.get(key)
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        (text("Name"), text("Manufacturer"))
+        let agreed = |key: &str| {
+            let mut values = elements.iter().map(|item| text(item, key));
+            let first = values.next()??;
+            values
+                .all(|v| v.as_deref() == Some(first.as_str()))
+                .then_some(first)
+        };
+        (agreed("Name"), agreed("Manufacturer"))
     }
 
     fn extract_cpu_features(&mut self) {
@@ -1355,14 +1375,17 @@ impl HardwareInferenceEngine {
             }
 
             // VM detection
+            // Absent when the DMI product name is unreadable: `None`, not `false`.
             if let Ok(product) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
                 let lower = product.to_lowercase();
-                self.features.is_virtual = lower.contains("virtual")
-                    || lower.contains("vmware")
-                    || lower.contains("kvm")
-                    || lower.contains("qemu")
-                    || lower.contains("hyperv")
-                    || lower.contains("xen");
+                self.features.is_virtual = Some(
+                    lower.contains("virtual")
+                        || lower.contains("vmware")
+                        || lower.contains("kvm")
+                        || lower.contains("qemu")
+                        || lower.contains("hyperv")
+                        || lower.contains("xen"),
+                );
             }
 
             // NUMA nodes
@@ -1394,7 +1417,9 @@ impl HardwareInferenceEngine {
                 self.features.has_battery = !text.is_empty();
             }
 
-            // VM detection
+            // VM detection. A failed query, or an empty model, is unread: `None`.
+            // The exit status is checked, since a failed PowerShell run still
+            // produces an `Ok` output with nothing usable in it.
             if let Ok(output) = std::process::Command::new("powershell")
                 .args([
                     "-NoProfile",
@@ -1407,9 +1432,12 @@ impl HardwareInferenceEngine {
                     .unwrap_or_default()
                     .trim()
                     .to_lowercase();
-                self.features.is_virtual = model.contains("virtual")
-                    || model.contains("vmware")
-                    || model.contains("hyper-v");
+                self.features.is_virtual =
+                    (output.status.success() && !model.is_empty()).then(|| {
+                        model.contains("virtual")
+                            || model.contains("vmware")
+                            || model.contains("hyper-v")
+                    });
             }
 
             // Chassis type, read rather than guessed.
@@ -1450,7 +1478,7 @@ impl HardwareInferenceEngine {
 
                 // A code this does not map is unread. The battery used to decide
                 // "Laptop" or "Desktop" here, a guess that scored as a reading.
-                self.features.chassis_type = if self.features.is_virtual {
+                self.features.chassis_type = if self.features.is_virtual == Some(true) {
                     Some("Virtual".into())
                 } else {
                     read.map(Into::into)
@@ -1552,8 +1580,9 @@ impl HardwareInferenceEngine {
         let f = &self.features;
         let mut scores: Vec<(SystemClass, f32)> = Vec::new();
 
-        // Virtual machine
-        if f.is_virtual {
+        // Virtual machine. Only a reading of `true` scores; `None` is unknown and
+        // says nothing about the chassis.
+        if f.is_virtual == Some(true) {
             scores.push((
                 SystemClass::VirtualMachine,
                 CLASSIFICATION_CONFIDENCE_VIRTUAL_MACHINE,
@@ -1652,7 +1681,9 @@ impl HardwareInferenceEngine {
         // This was gated on `!f.has_battery`, so a desktop with a UPS was never
         // scored as a desktop at all --- not merely outvoted, but absent from the
         // ballot. The gate is now the chassis.
-        if !f.is_virtual && !chassis_is_mobile && !f.chassis().contains("Server") {
+        // Only a reading of `false` lets this score: an unread `is_virtual` does not
+        // establish that the machine is physical.
+        if f.is_virtual == Some(false) && !chassis_is_mobile && !f.chassis().contains("Server") {
             let gpu_lower = f.gpu_model.to_lowercase();
             let is_gaming_gpu = gpu_lower.contains("rtx")
                 || gpu_lower.contains("gtx")
@@ -3104,8 +3135,9 @@ mod tests {
         assert_eq!(report.performance_score, None);
         assert_eq!(report.performance_tier, None);
 
-        // One reading is enough for the rules to run, and the desktop fallback then
-        // scores as it always did.
+        // One reading is enough for the rules to run. An unread virtualization flag
+        // is not a reading that the machine is physical, so the desktop indicator
+        // does not score from it: no rule matched, which is Unknown.
         let one_reading = HardwareInferenceEngine {
             features: HardwareFeatures {
                 ram_total_gb: Some(32.0),
@@ -3113,6 +3145,18 @@ mod tests {
             },
         };
         let (class, confidence) = one_reading.classify_system();
+        assert_eq!(class, SystemClass::Unknown);
+        assert_eq!(confidence, None);
+
+        // Once virtualization has been read as absent, the desktop indicator scores.
+        let read_physical = HardwareInferenceEngine {
+            features: HardwareFeatures {
+                ram_total_gb: Some(32.0),
+                is_virtual: Some(false),
+                ..HardwareFeatures::default()
+            },
+        };
+        let (class, confidence) = read_physical.classify_system();
         assert_eq!(class, SystemClass::Desktop);
         assert_eq!(confidence, Some(CLASSIFICATION_CONFIDENCE_DESKTOP));
     }
@@ -3158,7 +3202,7 @@ mod tests {
                 boot_drive_type: Some("NVMe".into()),
                 has_battery: false,
                 chassis_type: Some("Desktop".into()),
-                is_virtual: false,
+                is_virtual: Some(false),
                 numa_nodes: Some(1),
                 pcie_gen: 4,
                 max_nic_speed_gbps: Some(2.5),
@@ -3209,7 +3253,7 @@ mod tests {
                 boot_drive_type: Some("NVMe".into()),
                 has_battery: false,
                 chassis_type: Some("Server".into()),
-                is_virtual: false,
+                is_virtual: Some(false),
                 numa_nodes: Some(2),
                 pcie_gen: 5,
                 max_nic_speed_gbps: Some(25.0),
@@ -3262,7 +3306,7 @@ mod tests {
                 boot_drive_type: Some("NVMe".into()),
                 has_battery: true,
                 chassis_type: Some("Laptop".into()),
-                is_virtual: false,
+                is_virtual: Some(false),
                 numa_nodes: Some(1),
                 pcie_gen: 4,
                 max_nic_speed_gbps: Some(1.0),
@@ -3638,6 +3682,42 @@ mod tests {
         let wrong_type: serde_json::Value = serde_json::from_str(r#"{"Name":42}"#).unwrap();
         assert_eq!(
             HardwareInferenceEngine::windows_cpu_identity(&wrong_type),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn cpu_identity_reads_a_multi_socket_array_when_sockets_agree() {
+        // Two sockets of one model: ConvertTo-Json emits an array.
+        let agreeing: serde_json::Value = serde_json::from_str(
+            r#"[{"Name":"Intel Xeon Gold 6248R CPU @ 3.00GHz   ","Manufacturer":"GenuineIntel"},
+                {"Name":"Intel Xeon Gold 6248R CPU @ 3.00GHz   ","Manufacturer":"GenuineIntel"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&agreeing),
+            (
+                Some("Intel Xeon Gold 6248R CPU @ 3.00GHz".to_string()),
+                Some("GenuineIntel".to_string())
+            )
+        );
+
+        // Sockets that disagree on the name have no single identity; the
+        // manufacturer that they share still reads.
+        let mixed: serde_json::Value = serde_json::from_str(
+            r#"[{"Name":"Intel Xeon Gold 6248R","Manufacturer":"GenuineIntel"},
+                {"Name":"Intel Xeon Silver 4210","Manufacturer":"GenuineIntel"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&mixed),
+            (None, Some("GenuineIntel".to_string()))
+        );
+
+        // An empty array is nothing read.
+        let empty: serde_json::Value = serde_json::from_str("[]").unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&empty),
             (None, None)
         );
     }

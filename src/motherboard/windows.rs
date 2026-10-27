@@ -1476,10 +1476,10 @@ fn get_audio_devices(wmi_conn: &WMIConnection) -> Vec<AudioDeviceInfo> {
         for device in sound_devices {
             let name = device.name.unwrap_or_else(|| "Audio Device".to_string());
 
-            // Determine device type from name
-            // Still a name-based guess (see `detect_audio_device_type`), kept as it
-            // was: the Windows audio direction is not read in this change.
-            let device_type = Some(detect_audio_device_type(&name));
+            // Direction is not read. `Win32_SoundDevice` carries no data-flow field
+            // (input or output), so `None`. This used to be guessed from the name
+            // ("microphone", "speaker", ...), which is not a reading of the device.
+            let device_type = None;
 
             devices.push(AudioDeviceInfo {
                 name,
@@ -1492,27 +1492,6 @@ fn get_audio_devices(wmi_conn: &WMIConnection) -> Vec<AudioDeviceInfo> {
     }
 
     devices
-}
-
-/// Detect audio device type from name
-fn detect_audio_device_type(name: &str) -> AudioDeviceType {
-    let name_lower = name.to_lowercase();
-
-    if name_lower.contains("microphone")
-        || name_lower.contains("mic")
-        || name_lower.contains("input")
-    {
-        AudioDeviceType::Input
-    } else if name_lower.contains("headset") || name_lower.contains("headphone") {
-        AudioDeviceType::OutputInput
-    } else if name_lower.contains("speaker")
-        || name_lower.contains("output")
-        || name_lower.contains("audio")
-    {
-        AudioDeviceType::Output
-    } else {
-        AudioDeviceType::Unknown
-    }
 }
 
 /// Map `Win32_NetworkAdapter.NetConnectionStatus` to a link state. Only 2 (Connected),
