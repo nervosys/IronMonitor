@@ -104,11 +104,52 @@ pub fn hyperv_partition() -> HyperVPartition {
 /// The distinction a bare `detect_hypervisor().is_some()` cannot make: a
 /// Hyper-V root partition has a hypervisor beneath it and is still the physical
 /// machine. Every "am I virtualized" question routes through here.
-pub fn hypervisor_indicates_vm() -> bool {
+///
+/// `None` when nothing was read that could decide it. A missing hypervisor is
+/// only a determination when a signal that would have found one was readable:
+/// on a non-x86 machine with no readable DMI, `false` used to be reported as
+/// bare metal although no check had run.
+pub fn hypervisor_indicates_vm() -> Option<bool> {
     if hyperv_partition() == HyperVPartition::Root {
-        return false;
+        return Some(false);
     }
-    detect_hypervisor().is_some()
+    if detect_hypervisor().is_some() {
+        return Some(true);
+    }
+    if hypervisor_signals_readable() {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether any signal `detect_hypervisor` consults could be read. CPUID answers
+/// on every x86 machine; elsewhere the only signal is the Linux DMI table.
+fn hypervisor_signals_readable() -> bool {
+    if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+        return true;
+    }
+    dmi_readable()
+}
+
+/// One DMI identification file, lowercased and trimmed; `None` when unreadable.
+#[cfg(target_os = "linux")]
+fn dmi_field(name: &str) -> Option<String> {
+    std::fs::read_to_string(format!("/sys/class/dmi/id/{name}"))
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+}
+
+#[cfg(target_os = "linux")]
+fn dmi_readable() -> bool {
+    ["product_name", "sys_vendor", "bios_vendor"]
+        .iter()
+        .any(|f| dmi_field(f).is_some())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dmi_readable() -> bool {
+    false
 }
 
 /// Known hypervisors
@@ -173,6 +214,9 @@ pub struct CpuVirtCapability {
 }
 
 /// Detect the overall virtualization platform
+///
+/// `Unknown` when the hypervisor question could not be answered; it is never
+/// `BareMetal` by default.
 pub fn detect_platform() -> VirtPlatform {
     #[cfg(target_os = "linux")]
     {
@@ -182,23 +226,12 @@ pub fn detect_platform() -> VirtPlatform {
         if is_container_env() {
             return VirtPlatform::Container;
         }
-        if hypervisor_indicates_vm() {
-            return VirtPlatform::VirtualMachine;
-        }
     }
-    #[cfg(target_os = "windows")]
-    {
-        if hypervisor_indicates_vm() {
-            return VirtPlatform::VirtualMachine;
-        }
+    match hypervisor_indicates_vm() {
+        Some(true) => VirtPlatform::VirtualMachine,
+        Some(false) => VirtPlatform::BareMetal,
+        None => VirtPlatform::Unknown,
     }
-    #[cfg(target_os = "macos")]
-    {
-        if hypervisor_indicates_vm() {
-            return VirtPlatform::VirtualMachine;
-        }
-    }
-    VirtPlatform::BareMetal
 }
 
 /// Detect the hypervisor
@@ -415,10 +448,11 @@ mod partition_tests {
     #[test]
     fn root_partition_is_not_reported_as_a_vm() {
         if hyperv_partition() == HyperVPartition::Root {
-            assert!(
-                !crate::virtualization::VirtMonitor::new()
+            assert_eq!(
+                crate::virtualization::VirtMonitor::new()
                     .expect("VirtMonitor::new")
                     .is_virtual_machine(),
+                Some(false),
                 "a Hyper-V root partition is bare metal, not a VM"
             );
         }

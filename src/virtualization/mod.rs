@@ -66,18 +66,36 @@ impl VirtMonitor {
     /// "Microsoft Hv". Windows 11 turns on virtualization-based security by
     /// default, so an ordinary desktop carries the hypervisor signature; before
     /// 3.10.0 this method returned true on bare metal for that reason.
-    pub fn is_virtual_machine(&self) -> bool {
+    ///
+    /// `None` when no signal could be read to decide it.
+    pub fn is_virtual_machine(&self) -> Option<bool> {
         detect::hypervisor_indicates_vm()
     }
 
-    /// Check if running inside a container
-    pub fn is_container(&self) -> bool {
-        containers::detect_container().is_some()
+    /// Check if running inside a container.
+    ///
+    /// `None` on platforms where container detection is not implemented (only
+    /// Linux is). Reporting `false` there would claim a container check that
+    /// never ran.
+    pub fn is_container(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            Some(containers::detect_container().is_some())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     }
 
-    /// Check if running on bare metal
-    pub fn is_bare_metal(&self) -> bool {
-        !self.is_virtual_machine() && !self.is_container()
+    /// Check if running on bare metal. Known only when both the VM and the
+    /// container questions were answered.
+    pub fn is_bare_metal(&self) -> Option<bool> {
+        match (self.is_virtual_machine(), self.is_container()) {
+            (Some(true), _) | (_, Some(true)) => Some(false),
+            (Some(false), Some(false)) => Some(true),
+            _ => None,
+        }
     }
 
     /// Get guest resource info

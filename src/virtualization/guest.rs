@@ -116,7 +116,9 @@ fn detect_linux_guest() -> Option<GuestResources> {
     // Gate on virtualization evidence. A readable /proc/cpuinfo, a physical disk
     // or a physical NIC says nothing about whether this kernel is a guest.
     // Used to return GuestResources on bare metal whenever cpuinfo was readable.
-    if !super::detect::hypervisor_indicates_vm() {
+    // Only a positive answer makes this a guest. An undetermined answer (`None`)
+    // reports no guest resources, the same as a determined bare-metal one.
+    if super::detect::hypervisor_indicates_vm() != Some(true) {
         return None;
     }
 

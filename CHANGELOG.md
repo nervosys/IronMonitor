@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Camera and audio readers no longer publish guesses as readings: the macOS camera connection is unknown rather than `Internal`, the macOS audio direction comes from the reported channel counts rather than a default of `Output`, and the Linux infrared flag comes from the camera's luminance-only pixel formats rather than its name. `board.camera.{n}.connection` and `board.audio.{n}.direction` are now nullable.
+- Virtualization, LSM mode and CPU identity no longer report unread values as
+  determinations. `system.virtualization.platform` was published as `bare_metal`
+  when no VM signal could be read, and is now unavailable with a reason;
+  `system.security.lsm.{i}.mode` published the status strings `active` and
+  `unknown` and now carries only SELinux's enforcing or permissive; and the Windows
+  CPU model and vendor were `""` when WMI returned nothing, and are now absent.
 - The Linux CPU reader no longer takes a percentage from a `/proc/stat` window
   shorter than 200 ms. A one-tick window let the aggregate and per-core lines
   round differently, so a snapshot could report the machine as fully idle while a

@@ -891,15 +891,30 @@ fn resolve_virtualization(out: &mut Vec<Reading>) {
         Some(crate::virtualization::Hypervisor::HyperV)
     );
 
-    // Bare metal is a determination, not a failure to detect one.
-    let platform = if monitor.is_container() {
-        "container"
-    } else if monitor.is_virtual_machine() {
-        "virtual_machine"
-    } else {
-        "bare_metal"
-    };
-    push_id(out, "system.virtualization.platform", platform);
+    // Bare metal is a determination only when both questions were answered "no".
+    // It used to be the fallback for every case, so a VM check that could not
+    // read its signals (non-x86 with no DMI, or a platform with no container
+    // check) was published as a determined bare_metal.
+    let is_container = monitor.is_container();
+    let is_vm = monitor.is_virtual_machine();
+    match (is_container, is_vm) {
+        (Some(true), _) => push_id(out, "system.virtualization.platform", "container"),
+        (_, Some(true)) => push_id(out, "system.virtualization.platform", "virtual_machine"),
+        (Some(false), Some(false)) => push_id(out, "system.virtualization.platform", "bare_metal"),
+        (None, _) | (_, None) => {
+            let reason = if is_vm.is_none() {
+                "neither CPUID nor DMI could be read to tell whether this is a virtual machine"
+            } else {
+                "container detection is not implemented on this platform, so bare metal \
+                 cannot be told apart from a container"
+            };
+            out.push(Reading::unavailable(
+                "system.virtualization.platform",
+                Some(Unit::Identifier),
+                reason,
+            ));
+        }
+    }
 
     match hypervisor {
         Some(h) => {
@@ -918,7 +933,7 @@ fn resolve_virtualization(out: &mut Vec<Reading>) {
             out.push(Reading::unavailable(
                 "system.virtualization.hypervisor",
                 Some(Unit::Identifier),
-                "no hypervisor detected; this machine appears to be bare metal",
+                "no hypervisor detected",
             ));
             out.push(Reading::unavailable(
                 "system.virtualization.detection_method",

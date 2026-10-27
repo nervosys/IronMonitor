@@ -1245,14 +1245,18 @@ fn resolve_security(out: &mut Vec<Reading>) {
             serde_json::json!(lsm.enabled),
             None,
         ));
-        if lsm.module == SecurityModule::SELinux {
-            push_id(out, format!("{base}.mode"), &lsm.mode);
-        } else {
-            out.push(Reading::unavailable(
+        match (&lsm.mode, lsm.module == SecurityModule::SELinux) {
+            (Some(mode), _) => push_id(out, format!("{base}.mode"), mode),
+            (None, true) => out.push(Reading::unavailable(
+                format!("{base}.mode"),
+                Some(U::Identifier),
+                "SELinux is listed, but /sys/fs/selinux/enforce could not be read as enforcing or permissive",
+            )),
+            (None, false) => out.push(Reading::unavailable(
                 format!("{base}.mode"),
                 Some(U::Identifier),
                 "the kernel lists this module, but the reader reads a mode only for SELinux",
-            ));
+            )),
         }
     }
 

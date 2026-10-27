@@ -459,8 +459,10 @@ struct HardwareFeatures {
     cpu_cores_physical: Option<u32>,
     cpu_cores_logical: Option<u32>,
     cpu_max_freq_mhz: Option<u32>,
-    cpu_model: String,
-    cpu_vendor: String,
+    // `None` when no non-empty name or vendor was read. These were `""` when the
+    // reader found nothing, which every consumer treated as a value.
+    cpu_model: Option<String>,
+    cpu_vendor: Option<String>,
     is_server_cpu: bool,
     /// ECC state. No reader sets it yet, so it is `None` everywhere. It used to be
     /// a `bool` that defaulted to `false`, which read as "no ECC".
@@ -607,8 +609,8 @@ fn anything_read(f: &HardwareFeatures) -> bool {
     f.cpu_cores_physical.is_some_and(|c| c > 0)
         || f.cpu_cores_logical.is_some_and(|c| c > 0)
         || f.cpu_max_freq_mhz.is_some_and(|c| c > 0)
-        || !f.cpu_model.is_empty()
-        || !f.cpu_vendor.is_empty()
+        || f.cpu_model.is_some()
+        || f.cpu_vendor.is_some()
         || f.ram_total_gb.is_some_and(|v| v > 0.0)
         || f.is_discrete_gpu()
         || f.gpu_count > 0
@@ -787,6 +789,20 @@ impl HardwareInferenceEngine {
         self.extract_network_features();
     }
 
+    /// Name and manufacturer from the `Win32_Processor` JSON. Each is `None` when
+    /// absent, not a string, or blank after trimming. WMI pads `Name` with spaces,
+    /// so it is trimmed before the emptiness check.
+    #[cfg(any(target_os = "windows", test))]
+    fn windows_cpu_identity(json: &serde_json::Value) -> (Option<String>, Option<String>) {
+        let text = |key: &str| {
+            json.get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        (text("Name"), text("Manufacturer"))
+    }
+
     fn extract_cpu_features(&mut self) {
         #[cfg(target_os = "linux")]
         {
@@ -819,8 +835,8 @@ impl HardwareInferenceEngine {
                     }
                 }
 
-                self.features.cpu_model = model;
-                self.features.cpu_vendor = vendor;
+                self.features.cpu_model = (!model.is_empty()).then_some(model);
+                self.features.cpu_vendor = (!vendor.is_empty()).then_some(vendor);
                 let physical = if cores.is_empty() {
                     logical
                 } else {
@@ -855,13 +871,9 @@ impl HardwareInferenceEngine {
                     // padding reached the age-estimate `reasoning` string and the
                     // hardware fingerprint, so two machines differing only in how
                     // WMI padded them would fingerprint apart.
-                    self.features.cpu_model = json
-                        .get("Name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    self.features.cpu_vendor = json.get("Manufacturer").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // Absent or empty is unread: `None`, never `""`.
+                    (self.features.cpu_model, self.features.cpu_vendor) =
+                        Self::windows_cpu_identity(&json);
                     // Absent from the JSON is unread, not 0 cores or 0 MHz.
                     self.features.cpu_cores_physical = json
                         .get("NumberOfCores")
@@ -886,9 +898,9 @@ impl HardwareInferenceEngine {
                 .output()
             {
                 self.features.cpu_model = String::from_utf8(output.stdout)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
             }
             if let Ok(output) = std::process::Command::new("sysctl")
                 .args(["-n", "hw.physicalcpu"])
@@ -913,7 +925,12 @@ impl HardwareInferenceEngine {
         }
 
         // Infer CPU class
-        let model_lower = self.features.cpu_model.to_lowercase();
+        let model_lower = self
+            .features
+            .cpu_model
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase();
         self.features.is_server_cpu = model_lower.contains("xeon")
             || model_lower.contains("epyc")
             || model_lower.contains("threadripper")
@@ -1660,7 +1677,7 @@ impl HardwareInferenceEngine {
         // Embedded
         if f.cpu_cores_physical.is_some_and(|v| v <= 4) && f.ram_total_gb.is_some_and(|v| v <= 4.0)
         {
-            let model = f.cpu_model.to_lowercase();
+            let model = f.cpu_model.as_deref().unwrap_or("").to_lowercase();
             if model.contains("arm") || model.contains("cortex") || model.contains("tegra") {
                 scores.push((SystemClass::Embedded, CLASSIFICATION_CONFIDENCE_EMBEDDED));
             }
@@ -2299,7 +2316,7 @@ impl HardwareInferenceEngine {
 
     fn estimate_hardware_age(&self) -> HardwareAge {
         let f = &self.features;
-        let cpu_lower = f.cpu_model.to_lowercase();
+        let cpu_lower = f.cpu_model.as_deref().unwrap_or("").to_lowercase();
         let gpu_lower = f.gpu_model.to_lowercase();
 
         let cpu_year = Self::infer_cpu_year(&cpu_lower);
@@ -2334,7 +2351,7 @@ impl HardwareInferenceEngine {
 
         let reasoning = format!(
             "CPU: {} (est. {}), GPU: {} (est. {})",
-            f.cpu_model,
+            f.cpu_model.as_deref().unwrap_or("unknown"),
             cpu_year.map_or("unknown".to_string(), |y| y.to_string()),
             f.gpu_model,
             gpu_year.map_or("unknown".to_string(), |y| y.to_string()),
@@ -2885,7 +2902,7 @@ impl HardwareInferenceEngine {
                 BottleneckType::CpuBound if bn.severity > 50 => {
                     recs.push(UpgradeRecommendation {
                         component: "CPU".into(),
-                        current: f.cpu_model.clone(),
+                        current: f.cpu_model.clone().unwrap_or_else(|| "unknown".into()),
                         recommended: "Higher core-count CPU".into(),
                         description: "CPU bottlenecks the system".into(),
                         expected_impact: "20-50% improvement in CPU-bound workloads".into(),
@@ -3115,8 +3132,8 @@ mod tests {
                 cpu_cores_physical: Some(8),
                 cpu_cores_logical: Some(16),
                 cpu_max_freq_mhz: Some(5000),
-                cpu_model: "Intel Core i7-14700K".into(),
-                cpu_vendor: "Intel".into(),
+                cpu_model: Some("Intel Core i7-14700K".into()),
+                cpu_vendor: Some("Intel".into()),
                 is_server_cpu: false,
                 has_ecc: Some(false),
                 cpu_tdp_watts: Some(125.0),
@@ -3166,8 +3183,8 @@ mod tests {
                 cpu_cores_physical: Some(64),
                 cpu_cores_logical: Some(128),
                 cpu_max_freq_mhz: Some(2800),
-                cpu_model: "AMD EPYC 9554".into(),
-                cpu_vendor: "AMD".into(),
+                cpu_model: Some("AMD EPYC 9554".into()),
+                cpu_vendor: Some("AMD".into()),
                 is_server_cpu: true,
                 has_ecc: Some(true),
                 cpu_tdp_watts: Some(225.0),
@@ -3219,8 +3236,8 @@ mod tests {
                 cpu_cores_physical: Some(4),
                 cpu_cores_logical: Some(8),
                 cpu_max_freq_mhz: Some(2800),
-                cpu_model: "Intel Core i5".into(),
-                cpu_vendor: "Intel".into(),
+                cpu_model: Some("Intel Core i5".into()),
+                cpu_vendor: Some("Intel".into()),
                 is_server_cpu: false,
                 has_ecc: Some(false),
                 cpu_tdp_watts: Some(15.0),
@@ -3589,6 +3606,40 @@ mod tests {
         assert_eq!(wmi_enum(Some(&unspecified), table), None);
         let ssd = serde_json::Value::String("SSD".into());
         assert_eq!(wmi_enum(Some(&ssd), table), Some(4));
+    }
+
+    #[test]
+    fn cpu_identity_is_none_unless_a_name_or_vendor_was_read() {
+        // WMI pads Name to a fixed width; the padding is trimmed away.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"Name":"AMD Ryzen 9 9900X 12-Core Processor            ","Manufacturer":"AuthenticAMD"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&json),
+            (
+                Some("AMD Ryzen 9 9900X 12-Core Processor".to_string()),
+                Some("AuthenticAMD".to_string())
+            )
+        );
+
+        // Absent fields, blank fields and non-string fields are unread, not "".
+        let missing: serde_json::Value = serde_json::from_str(r#"{"NumberOfCores":8}"#).unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&missing),
+            (None, None)
+        );
+        let blank: serde_json::Value =
+            serde_json::from_str(r#"{"Name":"   ","Manufacturer":""}"#).unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&blank),
+            (None, None)
+        );
+        let wrong_type: serde_json::Value = serde_json::from_str(r#"{"Name":42}"#).unwrap();
+        assert_eq!(
+            HardwareInferenceEngine::windows_cpu_identity(&wrong_type),
+            (None, None)
+        );
     }
 
     #[test]

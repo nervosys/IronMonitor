@@ -108,8 +108,10 @@ pub struct LsmStatus {
     pub module: SecurityModule,
     /// Whether the module is enabled/active.
     pub enabled: bool,
-    /// Mode (e.g. "enforcing", "permissive", "disabled").
-    pub mode: String,
+    /// Mode (e.g. "enforcing", "permissive"), where a reader could read one.
+    /// `None` when no mode was read: Linux reads one for SELinux only, and a
+    /// module whose mode file is unreadable has no mode to report.
+    pub mode: Option<String>,
 }
 
 /// Kernel hardening features.
@@ -555,19 +557,15 @@ impl SecurityMitigationsMonitor {
                     _ => continue,
                 };
 
+                // Only SELinux has a mode this reader can read. Other modules used
+                // to be given the literal "active" and an unreadable SELinux
+                // enforce file the literal "unknown": both were status strings in
+                // a mode field, not modes. They are `None` now.
                 let mode = match module {
                     SecurityModule::SELinux => std::fs::read_to_string("/sys/fs/selinux/enforce")
                         .ok()
-                        .map(|s| {
-                            if s.trim() == "1" {
-                                "enforcing"
-                            } else {
-                                "permissive"
-                            }
-                        })
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    _ => "active".to_string(),
+                        .and_then(|s| selinux_mode(&s)),
+                    _ => None,
                 };
 
                 modules.push(LsmStatus {
@@ -600,11 +598,11 @@ impl SecurityMitigationsMonitor {
                 modules.push(LsmStatus {
                     module: SecurityModule::WindowsDefender,
                     enabled,
-                    mode: if enabled {
+                    mode: Some(if enabled {
                         "real-time".into()
                     } else {
                         "disabled".into()
-                    },
+                    }),
                 });
             }
         }
@@ -625,11 +623,11 @@ impl SecurityMitigationsMonitor {
             modules.push(LsmStatus {
                 module: SecurityModule::SIP,
                 enabled,
-                mode: if enabled {
+                mode: Some(if enabled {
                     "enabled".into()
                 } else {
                     "disabled".into()
-                },
+                }),
             });
         }
 
@@ -806,6 +804,17 @@ impl Default for SecurityMitigationsMonitor {
     }
 }
 
+/// The SELinux mode from `/sys/fs/selinux/enforce`: `1` is enforcing, `0` is
+/// permissive. Any other content is not a mode, so it is `None`.
+#[cfg(any(target_os = "linux", test))]
+fn selinux_mode(enforce: &str) -> Option<String> {
+    match enforce.trim() {
+        "1" => Some("enforcing".into()),
+        "0" => Some("permissive".into()),
+        _ => None,
+    }
+}
+
 /// The active kernel lockdown mode from `/sys/kernel/security/lockdown`.
 ///
 /// The file lists every mode and brackets the active one, as in
@@ -855,7 +864,7 @@ mod tests {
         let lsms = vec![LsmStatus {
             module: SecurityModule::AppArmor,
             enabled: true,
-            mode: "enforce".into(),
+            mode: Some("enforce".into()),
         }];
 
         let hardening = KernelHardening {
@@ -888,6 +897,16 @@ mod tests {
         // Not a lockdown file: no bracket, so no mode.
         assert_eq!(active_lockdown_mode("none integrity confidentiality"), None);
         assert_eq!(active_lockdown_mode(""), None);
+    }
+
+    #[test]
+    fn selinux_enforce_file_is_a_mode_only_when_it_says_so() {
+        assert_eq!(selinux_mode("1\n").as_deref(), Some("enforcing"));
+        assert_eq!(selinux_mode("0\n").as_deref(), Some("permissive"));
+        // Any other content is not a mode; it must not become a status string.
+        assert_eq!(selinux_mode(""), None);
+        assert_eq!(selinux_mode("unknown"), None);
+        assert_eq!(selinux_mode("2"), None);
     }
 
     #[test]
