@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Linux CPU reader no longer takes a percentage from a `/proc/stat` window
+  shorter than 200 ms. A one-tick window let the aggregate and per-core lines
+  round differently, so a snapshot could report the machine as fully idle while a
+  core read fully busy; a short window now waits out the rest before reading.
 - When every GPU backend fails, each one is now published as its own
   `gpu.backend.<vendor>.<unreadable>` row with its reason, alongside
   `gpu.<unreadable>`, instead of the failing vendors appearing only in that

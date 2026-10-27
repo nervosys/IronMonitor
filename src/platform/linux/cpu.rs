@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Read CPU statistics
 pub fn read_cpu_stats() -> Result<CpuStats> {
@@ -48,13 +48,27 @@ pub fn read_cpu_stats() -> Result<CpuStats> {
 /// one-shot command does not feel the wait.
 const PRIME_INTERVAL: Duration = Duration::from_millis(200);
 
+/// The shortest gap between the two readings a percentage is taken from.
+///
+/// Each `/proc/stat` line rounds its nanosecond counter down to whole ticks on its
+/// own, so over a window of a tick or two the rounding is the whole delta. The
+/// aggregate line and a per-core line then disagree with no load change at all:
+/// one core reads fully busy while the aggregate reads fully idle, and the mean of
+/// the cores says the machine was half loaded. Two hundred milliseconds is about
+/// twenty ticks per CPU, which keeps that rounding to a few percent.
+///
+/// It used to difference against whatever reading came before, however recent.
+/// The collector's first tick after its warm-up publish did exactly that, so the
+/// first real snapshot could be a one-tick window reported as a measurement.
+const MIN_WINDOW: Duration = PRIME_INTERVAL;
+
 /// The `cpu` aggregate and each `cpuN` line of one `/proc/stat` reading, as
 /// `(name, cumulative ticks)`.
 type CpuTicks = Vec<(String, Vec<u64>)>;
 
-/// The most recent `/proc/stat` reading in this process, which the next call
-/// differences against.
-static PREVIOUS_TICKS: Mutex<Option<CpuTicks>> = Mutex::new(None);
+/// The most recent `/proc/stat` reading in this process and when it was taken,
+/// which the next call differences against.
+static PREVIOUS_TICKS: Mutex<Option<(Instant, CpuTicks)>> = Mutex::new(None);
 
 /// Read `/proc/stat` and return it with the tick deltas since the previous
 /// reading, as `(latest reading, deltas)`.
@@ -68,15 +82,25 @@ static PREVIOUS_TICKS: Mutex<Option<CpuTicks>> = Mutex::new(None);
 /// The first read in a process has nothing to difference against, so it reads,
 /// waits `PRIME_INTERVAL`, and reads again.
 fn sample_cpu_ticks() -> Result<(CpuTicks, CpuTicks)> {
-    let before = match previous_ticks() {
+    let (before_at, before) = match previous_ticks() {
         Some(previous) => previous,
         None => {
             let first = read_ticks()?;
+            let first_at = Instant::now();
             thread::sleep(PRIME_INTERVAL);
-            first
+            (first_at, first)
         }
     };
     let mut latest = read_ticks()?;
+
+    // A reading taken too soon after the base is not a measurement, however many
+    // ticks it shows. Wait out the rest of `MIN_WINDOW` and read again from the
+    // same base, so the window is never shorter than that.
+    let shortfall = window_shortfall(before_at.elapsed());
+    if !shortfall.is_zero() {
+        thread::sleep(shortfall);
+        latest = read_ticks()?;
+    }
     let mut deltas = tick_deltas(&before, &latest);
 
     // Two reads inside one tick difference to zero. Wait once more and difference
@@ -92,8 +116,14 @@ fn sample_cpu_ticks() -> Result<(CpuTicks, CpuTicks)> {
         deltas = tick_deltas(&before, &latest);
     }
 
-    store_previous_ticks(latest.clone());
+    store_previous_ticks(Instant::now(), latest.clone());
     Ok((latest, deltas))
+}
+
+/// How much longer a window that is already `elapsed` long must wait to reach
+/// `MIN_WINDOW`. Zero when it is long enough.
+fn window_shortfall(elapsed: Duration) -> Duration {
+    MIN_WINDOW.saturating_sub(elapsed)
 }
 
 fn read_ticks() -> Result<CpuTicks> {
@@ -101,17 +131,17 @@ fn read_ticks() -> Result<CpuTicks> {
     parse_proc_stat(&content)
 }
 
-fn previous_ticks() -> Option<CpuTicks> {
+fn previous_ticks() -> Option<(Instant, CpuTicks)> {
     PREVIOUS_TICKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
-fn store_previous_ticks(ticks: CpuTicks) {
+fn store_previous_ticks(taken: Instant, ticks: CpuTicks) {
     *PREVIOUS_TICKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ticks);
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((taken, ticks));
 }
 
 /// The ticks each line gained between two readings.
@@ -676,6 +706,32 @@ mod tests {
         let deltas = tick_deltas(&before, &after);
         assert_eq!(deltas.len(), 1);
         assert_eq!(read_cpu_core(1, &deltas).unwrap().idle, None);
+    }
+
+    #[test]
+    fn a_window_shorter_than_the_minimum_waits_out_the_rest() {
+        // A reading one tick behind the collector's warm-up is not a measurement.
+        assert_eq!(
+            window_shortfall(Duration::from_millis(10)),
+            MIN_WINDOW - Duration::from_millis(10)
+        );
+        assert_eq!(window_shortfall(MIN_WINDOW), Duration::ZERO);
+        assert_eq!(window_shortfall(Duration::from_secs(1)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_one_tick_window_can_show_a_busy_core_beside_an_idle_aggregate() {
+        // The rounding `MIN_WINDOW` exists for: the aggregate line rounded down to
+        // an idle tick while cpu1 rounded up to a user tick. Both lines are real
+        // reads, and together they say the machine is 100% idle and cpu1 is 100%
+        // busy at once.
+        let before = ticks("cpu  100 0 50 900\ncpu0 50 0 25 450\ncpu1 50 0 25 450\n");
+        let after = ticks("cpu  100 0 50 901\ncpu0 50 0 25 451\ncpu1 51 0 25 450\n");
+        let deltas = tick_deltas(&before, &after);
+        let total = calculate_total(&deltas, &[]).expect("the aggregate line was read");
+        assert!((total.idle - 100.0).abs() < 0.01, "{total:?}");
+        let busy_core = read_cpu_core(1, &deltas).unwrap();
+        assert!(busy_core.idle.unwrap().abs() < 0.01, "{busy_core:?}");
     }
 
     #[test]
