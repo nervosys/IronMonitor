@@ -505,7 +505,8 @@ pub use memory_management::{
 
 // Re-export anomaly detection
 pub use anomaly::{
-    Anomaly, AnomalyConfig, AnomalyDetector, AnomalySeverity, AnomalySummary, Recommendation,
+    Anomaly, AnomalyConfig, AnomalyDetector, AnomalyReport, AnomalySeverity, AnomalySummary,
+    CheckGap, NotChecked, Recommendation,
 };
 
 // Re-export process tree

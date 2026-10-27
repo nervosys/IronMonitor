@@ -121,20 +121,30 @@ pub struct IsaExtension {
     pub description: String,
 }
 
-/// Inferred performance characteristics.
+/// Performance characteristics derived from the microarchitecture and core count.
+///
+/// The four figures are all `None`. They used to come from a table keyed on the
+/// microarchitecture name (a per-generation IPC, score, boost and TDP), and the
+/// table was a guess presented under a "model inference" label: nothing this
+/// crate holds is a published figure for the SKU actually installed. Reporting
+/// `None` means "not known here", which is what an agent must see rather than a
+/// plausible score. Only the workload classification and notes, which follow
+/// from facts already read (core count, vendor, hybrid flag, process node), are
+/// filled in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferredPerformance {
-    /// Estimated single-thread performance score (0-100).
-    pub single_thread_score: u32,
-    /// Estimated multi-thread scaling efficiency (0-100).
-    pub mt_scaling_efficiency: u32,
-    /// Estimated IPC (instructions per clock) relative to baseline.
-    pub relative_ipc: f64,
-    /// Estimated max boost clock in MHz (from model inference).
-    pub estimated_boost_mhz: u32,
-    /// Estimated TDP in watts.
-    pub estimated_tdp_watts: u32,
-    /// Target workload classification.
+    /// Single-thread performance score (0-100). Always `None`; see the type docs.
+    pub single_thread_score: Option<u32>,
+    /// Multi-thread scaling efficiency (0-100). Always `None`; see the type docs.
+    pub mt_scaling_efficiency: Option<u32>,
+    /// Instructions per clock relative to baseline. Always `None`; see the type docs.
+    pub relative_ipc: Option<f64>,
+    /// Max boost clock in MHz. Always `None`; the table value was not a reading of
+    /// this part. The clock is read by the frequency readers, not here.
+    pub estimated_boost_mhz: Option<u32>,
+    /// TDP in watts. Always `None`; see [`Self::estimated_boost_mhz`].
+    pub estimated_tdp_watts: Option<u32>,
+    /// Target workload classification, from the core count and vendor.
     pub target_workloads: Vec<String>,
     /// Known limitations or notes.
     pub notes: Vec<String>,
@@ -997,7 +1007,11 @@ impl CpuMicroarchMonitor {
         extensions
     }
 
-    /// Infer performance characteristics from microarchitecture.
+    /// Describe the workload fit of a processor from facts already read.
+    ///
+    /// Performance figures are not produced here: see [`InferredPerformance`].
+    /// The per-generation table this function used to consult is gone, and the
+    /// "Gaming" workload that depended on its score went with it.
     fn infer_performance(
         model_name: &str,
         microarch: &Microarchitecture,
@@ -1005,66 +1019,8 @@ impl CpuMicroarchMonitor {
     ) -> InferredPerformance {
         let upper = model_name.to_uppercase();
 
-        // Base IPC by microarchitecture
-        let (base_ipc, st_score, tdp, boost) = match microarch.name.as_deref().unwrap_or("") {
-            // Intel
-            "Arrow Lake" | "Lion Cove" => (2.1, 92, 125, 5800),
-            "Raptor Lake" | "Raptor Cove" => (2.0, 90, 125, 5800),
-            "Alder Lake" | "Golden Cove" => (1.9, 85, 125, 5200),
-            "Cypress Cove" => (1.7, 78, 125, 5300),
-            "Willow Cove" => (1.8, 80, 28, 4800),
-            "Sunny Cove" => (1.6, 72, 28, 3900),
-            "Skylake" => (1.5, 68, 95, 5000),
-            "Redwood Cove" => (2.0, 88, 350, 5300),
-            "Crestmont" => (1.4, 55, 270, 3200),
-            // AMD
-            "Zen 5" => (2.2, 95, 170, 5700),
-            "Zen 4" => (2.0, 90, 170, 5700),
-            "Zen 3" => (1.9, 85, 105, 4900),
-            "Zen 2" => (1.7, 77, 105, 4700),
-            "Zen+" => (1.5, 68, 105, 4350),
-            "Zen" => (1.4, 64, 95, 4100),
-            "Zen 4c" => (1.8, 75, 225, 3700),
-            // Apple
-            "Everest" => (2.3, 98, 30, 4400),
-            "Ibiza" => (2.2, 95, 22, 4100),
-            "Avalanche/Blizzard" => (2.1, 92, 20, 3500),
-            "Firestorm/Icestorm" => (2.0, 88, 15, 3200),
-            // ARM server
-            "Neoverse" => (1.6, 65, 250, 3400),
-            _ => (1.0, 50, 65, 3000),
-        };
-
-        // Adjust for specific SKU
-        let tdp_adjusted = if upper.contains("XEON") || upper.contains("EPYC") {
-            tdp.max(200)
-        } else if upper.contains("LAPTOP") || upper.contains("U)") || upper.contains("P)") {
-            tdp.min(28)
-        } else if upper.contains("H)") || upper.contains("HX)") {
-            tdp.clamp(45, 55)
-        } else {
-            tdp
-        };
-
-        // MT scaling
-        let mt_efficiency = if cores <= 4 {
-            90
-        } else if cores <= 8 {
-            85
-        } else if cores <= 16 {
-            78
-        } else if cores <= 32 {
-            72
-        } else {
-            65
-        };
-
         // Target workloads
         let mut workloads = Vec::new();
-        if st_score >= 85 {
-            workloads.push("Gaming".into());
-            workloads.push("Desktop productivity".into());
-        }
         if cores >= 8 {
             workloads.push("Content creation".into());
             workloads.push("Compilation".into());
@@ -1089,11 +1045,11 @@ impl CpuMicroarchMonitor {
         }
 
         InferredPerformance {
-            single_thread_score: st_score,
-            mt_scaling_efficiency: mt_efficiency,
-            relative_ipc: base_ipc,
-            estimated_boost_mhz: boost,
-            estimated_tdp_watts: tdp_adjusted,
+            single_thread_score: None,
+            mt_scaling_efficiency: None,
+            relative_ipc: None,
+            estimated_boost_mhz: None,
+            estimated_tdp_watts: None,
             target_workloads: workloads,
             notes,
         }
@@ -1562,12 +1518,13 @@ impl Default for CpuMicroarchMonitor {
                     e_core_uarch: None,
                 },
                 extensions: Vec::new(),
+                // Zeros here used to mean "scored at zero", which is a result.
                 performance: InferredPerformance {
-                    single_thread_score: 0,
-                    mt_scaling_efficiency: 0,
-                    relative_ipc: 0.0,
-                    estimated_boost_mhz: 0,
-                    estimated_tdp_watts: 0,
+                    single_thread_score: None,
+                    mt_scaling_efficiency: None,
+                    relative_ipc: None,
+                    estimated_boost_mhz: None,
+                    estimated_tdp_watts: None,
                     target_workloads: Vec::new(),
                     notes: Vec::new(),
                 },
@@ -1982,9 +1939,43 @@ mod tests {
             e_core_uarch: None,
         };
         let perf = CpuMicroarchMonitor::infer_performance("AMD Ryzen 9 7950X", &uarch, 16);
-        assert!(perf.single_thread_score >= 85);
-        assert!(perf.relative_ipc >= 1.8);
-        assert!(perf.estimated_tdp_watts > 100);
+        assert_eq!(perf.single_thread_score, None);
+        assert_eq!(perf.mt_scaling_efficiency, None);
+        assert_eq!(perf.relative_ipc, None);
+        assert_eq!(perf.estimated_boost_mhz, None);
+        assert_eq!(perf.estimated_tdp_watts, None);
+        // Workload classification still follows from the core count.
+        assert!(perf
+            .target_workloads
+            .iter()
+            .any(|w| w == "Content creation"));
+    }
+
+    /// The figures used to be looked up from the microarchitecture name, so two
+    /// different parts of one generation got the same score, and a name the table
+    /// did not know got a default. Neither is a reading: every figure is `None`
+    /// whatever the name says, and the default report carries no zeros.
+    #[test]
+    fn performance_figures_are_never_inferred_from_the_name() {
+        let uarch = Microarchitecture {
+            name: Some("Skylake".into()),
+            codename: String::new(),
+            process_nm: None,
+            year: None,
+            vendor: CpuVendor::Intel,
+            arch: "x86_64".into(),
+            hybrid: None,
+            p_core_uarch: None,
+            e_core_uarch: None,
+        };
+        let perf = CpuMicroarchMonitor::infer_performance("Intel Xeon Gold 6148", &uarch, 0);
+        assert_eq!(perf.single_thread_score, None);
+        assert_eq!(perf.estimated_tdp_watts, None);
+
+        let fallback = CpuMicroarchMonitor::default();
+        let p = &fallback.report().performance;
+        assert_eq!(p.single_thread_score, None);
+        assert_eq!(p.estimated_boost_mhz, None);
     }
 
     #[test]

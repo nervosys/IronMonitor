@@ -18,11 +18,16 @@
 //! detector.record_cpu(98.0); // Spike!
 //!
 //! // Check for anomalies
-//! for anomaly in detector.detect() {
+//! let report = detector.detect();
+//! for anomaly in &report.anomalies {
 //!     println!("[{}] {}: {}", anomaly.severity, anomaly.metric, anomaly.message);
 //!     for rec in &anomaly.recommendations {
 //!         println!("  → {}", rec);
 //!     }
+//! }
+//! // Checks that could not run are not "no anomaly".
+//! for gap in &report.not_checked {
+//!     println!("{gap}");
 //! }
 //! # Ok(())
 //! # }
@@ -133,6 +138,106 @@ pub struct Recommendation {
     pub description: String,
     /// Expected impact
     pub impact: String,
+}
+
+/// Why a check did not run. A check that did not run says nothing about the
+/// system, so it must never be read as "no anomaly" or "healthy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckGap {
+    /// No sample has been recorded for the metric.
+    NoSamples,
+    /// Samples exist, but the rule needs `need` and only `have` were recorded.
+    InsufficientSamples { have: usize, need: usize },
+    /// The metric was not read in the latest cycle, so there is no current value
+    /// to test.
+    MetricUnavailable,
+}
+
+impl std::fmt::Display for CheckGap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSamples => write!(f, "no samples recorded"),
+            Self::InsufficientSamples { have, need } => {
+                write!(f, "{have} of the {need} samples needed recorded")
+            }
+            Self::MetricUnavailable => write!(f, "not read in the latest cycle"),
+        }
+    }
+}
+
+/// A check that could not run, and why. Shared with [`crate::predictive`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotChecked {
+    /// The check that did not run, such as "cpu thresholds".
+    pub check: String,
+    /// Why it did not run.
+    pub reason: CheckGap,
+}
+
+impl std::fmt::Display for NotChecked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} not checked: {}", self.check, self.reason)
+    }
+}
+
+/// What a report can say about the system as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Verdict {
+    /// At least one finding. This holds whatever else was not checked.
+    Findings,
+    /// Every check ran and none found anything.
+    Clear,
+    /// Nothing was found, but some checks did not run. This is not a clean result.
+    NotFullyChecked,
+}
+
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Findings => write!(f, "findings"),
+            Self::Clear => write!(f, "clear"),
+            Self::NotFullyChecked => write!(f, "not fully checked"),
+        }
+    }
+}
+
+/// The verdict for a report with these findings and gaps.
+pub(crate) fn verdict_for(has_findings: bool, not_checked: &[NotChecked]) -> Verdict {
+    if has_findings {
+        Verdict::Findings
+    } else if not_checked.is_empty() {
+        Verdict::Clear
+    } else {
+        Verdict::NotFullyChecked
+    }
+}
+
+/// The gap for a rule that needs `need` samples, or `None` when it has them.
+pub(crate) fn sample_gap(have: usize, need: usize) -> Option<CheckGap> {
+    if have >= need {
+        None
+    } else if have == 0 {
+        Some(CheckGap::NoSamples)
+    } else {
+        Some(CheckGap::InsufficientSamples { have, need })
+    }
+}
+
+/// Result of one [`AnomalyDetector::detect`] call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnomalyReport {
+    /// Anomalies found this cycle.
+    pub anomalies: Vec<Anomaly>,
+    /// Checks that could not run this cycle, with the reason for each.
+    pub not_checked: Vec<NotChecked>,
+}
+
+impl AnomalyReport {
+    /// What this report says overall. An empty `anomalies` list is not a verdict
+    /// of health on its own: it is only that, if `not_checked` is empty too.
+    pub fn verdict(&self) -> Verdict {
+        verdict_for(!self.anomalies.is_empty(), &self.not_checked)
+    }
 }
 
 /// Sliding window for metric time series
@@ -314,8 +419,57 @@ impl AnomalyDetector {
         self.network_tx_window.push(bytes_per_sec);
     }
 
-    /// Detect anomalies across all recorded metrics
-    pub fn detect(&mut self) -> Vec<Anomaly> {
+    /// Detect anomalies across all recorded metrics.
+    ///
+    /// The report also lists every check that could not run on the samples held,
+    /// so an empty `anomalies` list is never mistaken for "healthy". See
+    /// [`AnomalyReport::verdict`].
+    pub fn detect(&mut self) -> AnomalyReport {
+        let not_checked = self.check_gaps();
+        let anomalies = self.find_anomalies();
+        AnomalyReport {
+            anomalies,
+            not_checked,
+        }
+    }
+
+    /// Checks that cannot run on the samples held now. The conditions mirror the
+    /// ones `find_anomalies` tests before it evaluates a rule.
+    fn check_gaps(&self) -> Vec<NotChecked> {
+        let need = self.config.min_samples;
+        // Unread is not the same as never recorded: the GPU latest is `None` in
+        // both cases, and only the window tells them apart.
+        let gpu_temp_gap = match self.gpu_temp_latest {
+            Some(_) => None,
+            None if self.gpu_temp_window.len() == 0 => Some(CheckGap::NoSamples),
+            None => Some(CheckGap::MetricUnavailable),
+        };
+        let mut gaps = Vec::new();
+        let mut note = |check: &str, reason: Option<CheckGap>| {
+            if let Some(reason) = reason {
+                gaps.push(NotChecked {
+                    check: check.to_string(),
+                    reason,
+                });
+            }
+        };
+        note("cpu thresholds", sample_gap(self.cpu_window.len(), 1));
+        note(
+            "cpu spike and trend",
+            sample_gap(self.cpu_window.len(), need),
+        );
+        note("memory thresholds", sample_gap(self.memory_window.len(), 1));
+        note("gpu temperature thresholds", gpu_temp_gap);
+        note("disk usage", sample_gap(self.disk_usage_window.len(), 1));
+        note(
+            "network receive spike",
+            sample_gap(self.network_rx_window.len(), need),
+        );
+        gaps
+    }
+
+    /// Run every rule over the current samples and return the anomalies found.
+    fn find_anomalies(&mut self) -> Vec<Anomaly> {
         let mut anomalies = Vec::new();
         let now = self.start_time.elapsed().as_secs_f64();
 
@@ -671,7 +825,7 @@ mod tests {
             detector.record_cpu(50.0);
         }
         detector.record_cpu(97.0);
-        let anomalies = detector.detect();
+        let anomalies = detector.detect().anomalies;
         assert!(!anomalies.is_empty(), "Should detect critical CPU");
         assert_eq!(anomalies[0].severity, AnomalySeverity::Critical);
     }
@@ -683,9 +837,9 @@ mod tests {
             detector.record_cpu(30.0);
             detector.record_memory(40.0);
         }
-        let anomalies = detector.detect();
+        let report = detector.detect();
         assert!(
-            anomalies.is_empty(),
+            report.anomalies.is_empty(),
             "Should not detect anomalies for normal values"
         );
     }
@@ -773,5 +927,84 @@ mod tests {
         let summary = detector.summary();
         assert_eq!(summary.samples_collected, 1);
         assert_eq!(summary.memory_mean, Some(60.0));
+    }
+
+    /// An empty detector ran no checks, so its empty list is "not checked", not
+    /// "clear".
+    #[test]
+    fn an_empty_detector_reports_its_checks_as_not_run() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        let report = detector.detect();
+        assert!(report.anomalies.is_empty());
+        assert_ne!(report.verdict(), Verdict::Clear);
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "cpu thresholds".into(),
+            reason: CheckGap::NoSamples,
+        }));
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "gpu temperature thresholds".into(),
+            reason: CheckGap::NoSamples,
+        }));
+    }
+
+    /// Five samples satisfy the thresholds but not the statistical rules, which
+    /// must be reported as not run rather than as passed.
+    #[test]
+    fn too_few_samples_leave_the_statistical_rules_not_run() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        for _ in 0..5 {
+            detector.record_cpu(30.0);
+        }
+        let report = detector.detect();
+        assert_eq!(report.verdict(), Verdict::NotFullyChecked);
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "cpu spike and trend".into(),
+            reason: CheckGap::InsufficientSamples { have: 5, need: 10 },
+        }));
+        assert!(!report
+            .not_checked
+            .iter()
+            .any(|c| c.check == "cpu thresholds"));
+    }
+
+    /// Every rule ran on enough samples and none fired: that is a clear verdict.
+    #[test]
+    fn a_fully_checked_quiet_system_is_clear() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        for _ in 0..15 {
+            detector.record_cpu(30.0);
+            detector.record_memory(40.0);
+            detector.record_gpu_temp(Some(55.0));
+            detector.record_disk_usage(50.0);
+            detector.record_network_rx(1000.0);
+        }
+        let report = detector.detect();
+        assert!(report.not_checked.is_empty(), "{:?}", report.not_checked);
+        assert!(report.anomalies.is_empty());
+        assert_eq!(report.verdict(), Verdict::Clear);
+    }
+
+    /// A finding stands even when other checks did not run.
+    #[test]
+    fn findings_stand_even_when_other_checks_did_not_run() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        detector.record_cpu(97.0);
+        let report = detector.detect();
+        assert_eq!(report.verdict(), Verdict::Findings);
+        assert!(!report.not_checked.is_empty());
+    }
+
+    /// A GPU sensor that was read once and not in the latest cycle is an
+    /// unavailable metric, not a quiet one.
+    #[test]
+    fn an_unread_gpu_temperature_is_reported_unavailable() {
+        let mut detector = AnomalyDetector::new(AnomalyConfig::default());
+        detector.record_gpu_temp(Some(60.0));
+        detector.record_gpu_temp(None);
+        let report = detector.detect();
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "gpu temperature thresholds".into(),
+            reason: CheckGap::MetricUnavailable,
+        }));
     }
 }

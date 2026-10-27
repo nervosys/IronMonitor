@@ -19,14 +19,20 @@
 //! engine.record_fan_rpm(0, 1200.0);
 //!
 //! // Get predictions
-//! for alert in engine.predict() {
+//! let report = engine.predict();
+//! for alert in &report.alerts {
 //!     println!("[{}] {}: {}", alert.urgency, alert.component, alert.message);
 //!     if let Some(eta) = alert.eta_samples {
 //!         println!("  Estimated samples until issue: {:.0}", eta);
 //!     }
 //! }
+//! // Checks that could not run are not "no alerts".
+//! for gap in &report.not_checked {
+//!     println!("{gap}");
+//! }
 //! ```
 
+use crate::anomaly::{sample_gap, verdict_for, CheckGap, NotChecked, Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -158,6 +164,23 @@ impl std::fmt::Display for IssueType {
             Self::PowerDegradation => write!(f, "Power Degradation"),
             Self::CapacitorAging => write!(f, "Capacitor Aging"),
         }
+    }
+}
+
+/// Result of one [`MaintenanceEngine::predict`] call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionReport {
+    /// Maintenance alerts raised, most urgent first.
+    pub alerts: Vec<MaintenanceAlert>,
+    /// Checks that could not run on the data held, with the reason for each.
+    pub not_checked: Vec<NotChecked>,
+}
+
+impl PredictionReport {
+    /// What this report says overall. An empty `alerts` list is not a verdict of
+    /// health on its own; see [`crate::anomaly::AnomalyReport::verdict`].
+    pub fn verdict(&self) -> Verdict {
+        verdict_for(!self.alerts.is_empty(), &self.not_checked)
     }
 }
 
@@ -335,8 +358,12 @@ impl MaintenanceEngine {
         self.memory_errors.push(errors);
     }
 
-    /// Run prediction analysis and return alerts
-    pub fn predict(&self) -> Vec<MaintenanceAlert> {
+    /// Run prediction analysis.
+    ///
+    /// The report also lists every check that could not run on the data held, so
+    /// an empty `alerts` list is never mistaken for "healthy".
+    pub fn predict(&self) -> PredictionReport {
+        let not_checked = self.check_gaps();
         let mut alerts = Vec::new();
 
         self.predict_gpu_thermal(&mut alerts);
@@ -346,7 +373,46 @@ impl MaintenanceEngine {
         self.predict_memory_failure(&mut alerts);
 
         alerts.sort_by_key(|p| std::cmp::Reverse(p.urgency));
-        alerts
+        PredictionReport {
+            alerts,
+            not_checked,
+        }
+    }
+
+    /// Checks that cannot run on the data held now, using the same minimum the
+    /// `predict_*` rules apply before they evaluate a series.
+    fn check_gaps(&self) -> Vec<NotChecked> {
+        let need = self.config.min_data_points;
+        let mut gaps = Vec::new();
+        for (family, series) in [
+            ("GPU temperature", &self.gpu_temps),
+            ("GPU clock", &self.gpu_clocks),
+            ("Disk SMART health", &self.disk_health),
+            ("Fan RPM", &self.fan_rpms),
+        ] {
+            if series.is_empty() {
+                gaps.push(NotChecked {
+                    check: family.to_string(),
+                    reason: CheckGap::NoSamples,
+                });
+            }
+            for (&idx, ts) in series {
+                if let Some(reason) = sample_gap(ts.len(), need) {
+                    gaps.push(NotChecked {
+                        check: format!("{family} {idx}"),
+                        reason,
+                    });
+                }
+            }
+        }
+        if let Some(reason) = sample_gap(self.memory_errors.len(), need) {
+            gaps.push(NotChecked {
+                check: "memory errors".to_string(),
+                reason,
+            });
+        }
+        gaps.sort_by(|a, b| a.check.cmp(&b.check));
+        gaps
     }
 
     fn predict_gpu_thermal(&self, alerts: &mut Vec<MaintenanceAlert>) {
@@ -573,7 +639,8 @@ impl MaintenanceEngine {
 
     /// Get a summary of maintenance status
     pub fn summary(&self) -> MaintenanceSummary {
-        let alerts = self.predict();
+        let report = self.predict();
+        let alerts = &report.alerts;
         MaintenanceSummary {
             total_alerts: alerts.len(),
             critical: alerts
@@ -594,6 +661,7 @@ impl MaintenanceEngine {
                 + self.disk_health.values().map(|t| t.len()).sum::<usize>()
                 + self.fan_rpms.values().map(|t| t.len()).sum::<usize>()
                 + self.memory_errors.len(),
+            checks_not_run: report.not_checked.len(),
         }
     }
 }
@@ -615,6 +683,9 @@ pub struct MaintenanceSummary {
     pub components_monitored: usize,
     /// Total data points collected
     pub data_points: usize,
+    /// Checks that could not run on the data held. `total_alerts` of zero is only
+    /// a clean result when this is zero too.
+    pub checks_not_run: usize,
 }
 
 #[cfg(test)]
@@ -666,7 +737,7 @@ mod tests {
         for i in 0..20 {
             engine.record_gpu_temp(0, 60.0 + i as f64 * 1.5);
         }
-        let alerts = engine.predict();
+        let alerts = engine.predict().alerts;
         assert!(!alerts.is_empty(), "Should predict thermal issue");
         assert_eq!(alerts[0].issue_type, IssueType::ThermalDegradation);
     }
@@ -677,7 +748,7 @@ mod tests {
         for i in 0..15 {
             engine.record_disk_health(0, 90.0 - i as f64 * 2.0);
         }
-        let alerts = engine.predict();
+        let alerts = engine.predict().alerts;
         assert!(
             alerts
                 .iter()
@@ -692,7 +763,7 @@ mod tests {
         for i in 0..20 {
             engine.record_fan_rpm(0, 1800.0 - i as f64 * 60.0);
         }
-        let alerts = engine.predict();
+        let alerts = engine.predict().alerts;
         assert!(
             alerts.iter().any(|a| a.issue_type == IssueType::FanFailure),
             "Should predict fan failure"
@@ -707,7 +778,7 @@ mod tests {
             engine.record_disk_health(0, 98.0);
             engine.record_fan_rpm(0, 1800.0);
         }
-        let alerts = engine.predict();
+        let alerts = engine.predict().alerts;
         assert!(alerts.is_empty(), "Stable system should produce no alerts");
     }
 
@@ -720,5 +791,54 @@ mod tests {
         let summary = engine.summary();
         assert!(summary.components_monitored > 0);
         assert!(summary.data_points > 0);
+    }
+
+    /// An engine with no data ran no checks, so its empty list is not "healthy".
+    #[test]
+    fn an_empty_engine_reports_its_checks_as_not_run() {
+        let engine = MaintenanceEngine::new(PredictionConfig::default());
+        let report = engine.predict();
+        assert!(report.alerts.is_empty());
+        assert_eq!(report.verdict(), Verdict::NotFullyChecked);
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "GPU temperature".into(),
+            reason: CheckGap::NoSamples,
+        }));
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "memory errors".into(),
+            reason: CheckGap::NoSamples,
+        }));
+        assert_eq!(engine.summary().checks_not_run, report.not_checked.len());
+    }
+
+    /// Five points are below the minimum, so the trend rule did not run on them.
+    #[test]
+    fn too_few_points_are_reported_as_insufficient() {
+        let mut engine = MaintenanceEngine::new(PredictionConfig::default());
+        for _ in 0..5 {
+            engine.record_gpu_temp(0, 65.0);
+        }
+        let report = engine.predict();
+        assert!(report.not_checked.contains(&NotChecked {
+            check: "GPU temperature 0".into(),
+            reason: CheckGap::InsufficientSamples { have: 5, need: 10 },
+        }));
+    }
+
+    /// Every family was evaluated on enough data and nothing is failing: clear.
+    #[test]
+    fn a_stable_fully_checked_system_is_clear() {
+        let mut engine = MaintenanceEngine::new(PredictionConfig::default());
+        for _ in 0..20 {
+            engine.record_gpu_temp(0, 65.0);
+            engine.record_gpu_clock(0, 1800.0);
+            engine.record_disk_health(0, 98.0);
+            engine.record_fan_rpm(0, 1800.0);
+            engine.record_memory_errors(0.0);
+        }
+        let report = engine.predict();
+        assert!(report.not_checked.is_empty(), "{:?}", report.not_checked);
+        assert!(report.alerts.is_empty());
+        assert_eq!(report.verdict(), Verdict::Clear);
     }
 }
