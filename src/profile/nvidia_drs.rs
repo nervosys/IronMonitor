@@ -18,7 +18,7 @@
 //! profile entries on this machine — the headline NVPI use-case — without
 //! the unsafe FFI surface.
 
-use super::{ProfileGroup, Setting, SettingValue, Subsystem};
+use super::{ProfileGroup, ScanOutcome, Setting, SettingValue, Subsystem};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -40,7 +40,7 @@ const MIN_STRING_LEN: usize = 4;
 /// (~50 ms on a 2.5 MB DB).
 pub fn drs_exe_set() -> Option<std::collections::BTreeSet<String>> {
     let mut set = std::collections::BTreeSet::new();
-    let dir = drs_dir()?;
+    let dir = drs_dir().ok().flatten()?;
     let entries = std::fs::read_dir(&dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -63,15 +63,26 @@ pub fn drs_exe_set() -> Option<std::collections::BTreeSet<String>> {
 }
 
 /// Scan all `nvdrsdb*.bin` files in `%PROGRAMDATA%\NVIDIA Corporation\Drs\`
-/// and return one [`ProfileGroup`] per file.
-pub fn scan_drs_groups() -> Vec<ProfileGroup> {
-    let mut groups = Vec::new();
-    let Some(dir) = drs_dir() else { return groups };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return groups;
+/// and return one [`ProfileGroup`] per file that was read.
+///
+/// A missing DRS directory is no NVIDIA driver database, so it is `Ok` with no
+/// groups. `Err` when the location is unknown or the directory cannot be
+/// listed. A database file that cannot be read is named in `unread`.
+pub fn scan_drs_groups() -> Result<ScanOutcome, String> {
+    let mut out = ScanOutcome::default();
+    let Some(dir) = drs_dir()? else {
+        return Ok(out);
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                out.unread.push(format!("{}: {e}", dir.display()));
+                continue;
+            }
+        };
         let Some(stem) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -79,26 +90,32 @@ pub fn scan_drs_groups() -> Vec<ProfileGroup> {
         {
             continue;
         }
-        if let Some(group) = scan_file(&path) {
-            groups.push(group);
+        match scan_file(&path) {
+            Ok(group) => out.groups.push(group),
+            Err(reason) => out.unread.push(reason),
         }
     }
-    groups
+    Ok(out)
 }
 
-fn drs_dir() -> Option<PathBuf> {
-    let pd = std::env::var_os("PROGRAMDATA")?;
+/// The DRS database directory. `Ok(None)` when it does not exist, which is what
+/// a machine without the NVIDIA driver looks like. `Err` when `PROGRAMDATA` is
+/// unset, so the location itself is unknown.
+fn drs_dir() -> Result<Option<PathBuf>, String> {
+    let pd = std::env::var_os("PROGRAMDATA")
+        .ok_or("PROGRAMDATA is not set, so the DRS directory cannot be located")?;
     let dir = PathBuf::from(pd).join("NVIDIA Corporation").join("Drs");
-    if dir.is_dir() {
-        Some(dir)
-    } else {
-        None
-    }
+    Ok(dir.is_dir().then_some(dir))
 }
 
-fn scan_file(path: &Path) -> Option<ProfileGroup> {
-    let bytes = std::fs::read(path).ok()?;
-    let strings = extract_utf16_strings(&bytes);
+fn scan_file(path: &Path) -> Result<ProfileGroup, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file_group(&bytes, path))
+}
+
+/// Shape the group for one DRS database from its bytes.
+fn file_group(bytes: &[u8], path: &Path) -> ProfileGroup {
+    let strings = extract_utf16_strings(bytes);
 
     // Collect unique app executable references. NVIDIA stores these
     // case-folded; preserve original form for display but dedupe case-insensitively.
@@ -182,14 +199,14 @@ fn scan_file(path: &Path) -> Option<ProfileGroup> {
         V-Sync, etc.) require NVAPI's NvAPI_DRS_* functions to decode \
         precisely and are not exposed here.",
     );
-    if path.metadata().ok().map(|m| m.len()).unwrap_or(0) > 100 * 1024 {
+    if bytes.len() > 100 * 1024 {
         group.note(
             "If this list looks incomplete, the NVIDIA driver may be writing \
             updates to nvdrsdb1.bin instead of nvdrsdb0.bin (or vice versa) — \
             both are scanned automatically.",
         );
     }
-    Some(group)
+    group
 }
 
 fn looks_like_profile_name(s: &str) -> bool {
@@ -253,6 +270,35 @@ mod tests {
         assert!(!looks_like_profile_name("game.exe"));
         assert!(!looks_like_profile_name("C:\\foo"));
         assert!(!looks_like_profile_name("abc"));
+    }
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.bytes().flat_map(|b| [b, 0]).collect()
+    }
+
+    #[test]
+    fn a_db_counts_each_executable_name_once_regardless_of_case() {
+        let mut bytes = utf16le("game.exe");
+        bytes.extend([0xFF, 0xFF]);
+        bytes.extend(utf16le("Game.EXE"));
+        let g = file_group(&bytes, Path::new(r"C:\x\nvdrsdb0.bin"));
+        let count = g
+            .settings
+            .iter()
+            .find(|s| s.id == "app_profile_count")
+            .expect("count row");
+        assert_eq!(count.value, SettingValue::Uint(1));
+    }
+
+    #[test]
+    fn a_db_with_no_executables_reports_zero_not_a_failure() {
+        let g = file_group(&[0u8; 64], Path::new(r"C:\x\nvdrsdb1.bin"));
+        let count = g
+            .settings
+            .iter()
+            .find(|s| s.id == "app_profile_count")
+            .expect("count row");
+        assert_eq!(count.value, SettingValue::Uint(0));
     }
 
     #[test]

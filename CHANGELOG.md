@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gpu.backend.<vendor>.<unreadable>` row with its reason, alongside
   `gpu.<unreadable>`, instead of the failing vendors appearing only in that
   row's prose.
+- The EDID, SPD/XMP and NVIDIA DRS profile scanners report a failed read
+  (registry, sysfs, I2C or the DRS directory) as an unread item, not as "no
+  monitors", "no DIMM profiles" or "no profiles". A provider whose read failed
+  entirely reports it as an error. One that read something else keeps those
+  groups and adds a `<scanner> not read: <reason>` note.
 - A GPU backend that fails to read its adapters is published as
   `gpu.backend.<vendor>.<unreadable>` with its reason, and `gpu.<none>` is no
   longer claimed while a backend has failed. The TUI shows an unread GPU or disk

@@ -35,15 +35,17 @@ impl ProfileProvider for MemoryProfileProvider {
     }
 
     fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
-        let mut groups = super::spd_xmp::scan_xmp_groups();
+        let (mut groups, spd_unread) = super::split_scan(super::spd_xmp::scan_xmp_groups());
         let monitor = match crate::memory_topology::MemoryTopologyMonitor::new() {
             Ok(m) => m,
             Err(e) => {
-                // Nothing was read: fail the provider. Where the XMP scan did
-                // find something, keep it and show the missing topology as a
-                // note, not as a machine with no DIMMs.
+                // Nothing was read: fail the provider and name every reason.
+                // Where the SPD scan did find something, keep it and show the
+                // missing topology as a note, not as a machine with no DIMMs.
                 if groups.is_empty() {
-                    return Err(format!("DIMM topology unreadable: {e}"));
+                    let mut reasons = spd_unread;
+                    reasons.push(format!("DIMM topology unreadable: {e}"));
+                    return Err(reasons.join("; "));
                 }
                 let mut g = ProfileGroup::new(
                     Subsystem::Memory,
@@ -53,6 +55,11 @@ impl ProfileProvider for MemoryProfileProvider {
                 );
                 g.note(format!("not read: {e}"));
                 groups.push(g);
+                groups.extend(super::not_read_groups(
+                    Subsystem::Memory,
+                    "SPD/XMP",
+                    &spd_unread,
+                ));
                 return Ok(groups);
             }
         };
@@ -211,6 +218,11 @@ impl ProfileProvider for MemoryProfileProvider {
             );
             groups.push(g);
         }
+        groups.extend(super::not_read_groups(
+            Subsystem::Memory,
+            "SPD/XMP",
+            &spd_unread,
+        ));
         Ok(groups)
     }
 }

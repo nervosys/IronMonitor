@@ -120,12 +120,25 @@ impl ProfileProvider for GpuProfileProvider {
             Err(reason) => failures.push(reason),
         }
 
+        // A DRS scan failure is kept apart from the vendor failures so it can be
+        // named as the DRS read that failed.
         #[cfg(windows)]
-        groups.extend(super::nvidia_drs::scan_drs_groups());
+        let drs_unread: Vec<String> = {
+            let (drs_groups, unread) = super::split_scan(super::nvidia_drs::scan_drs_groups());
+            groups.extend(drs_groups);
+            unread
+        };
+        #[cfg(not(windows))]
+        let drs_unread: Vec<String> = Vec::new();
 
         // Nothing was read. This used to return a "(no GPU driver readable)"
         // placeholder group, which looked like a successful read of zero GPUs.
         if groups.is_empty() {
+            failures.extend(
+                drs_unread
+                    .iter()
+                    .map(|r| format!("NVIDIA DRS not read: {r}")),
+            );
             if failures.is_empty() {
                 failures.push(
                     "No supported GPU driver surfaces were readable on this platform. \
@@ -136,6 +149,18 @@ impl ProfileProvider for GpuProfileProvider {
             }
             return Err(failures.join("; "));
         }
+        // Some GPUs were read. A source that failed is shown as a note rather
+        // than dropped, so a missing vendor is not mistaken for no such GPU.
+        groups.extend(super::not_read_groups(
+            Subsystem::Gpu,
+            "GPU driver",
+            &failures,
+        ));
+        groups.extend(super::not_read_groups(
+            Subsystem::Gpu,
+            "NVIDIA DRS",
+            &drs_unread,
+        ));
         Ok(groups)
     }
 }

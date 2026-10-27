@@ -13,72 +13,144 @@
 //! - Windows: SetupDi / `MonitorManufacturer`/`EDID` registry value under
 //!   `HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\*\*\Device Parameters\EDID`.
 
-use super::{ProfileGroup, Setting, SettingRisk, SettingValue, Subsystem};
+use super::{ProfileGroup, ScanOutcome, Setting, SettingRisk, SettingValue, Subsystem};
 
 const EDID_MAGIC: [u8; 8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
 
 /// Scan platform-specific sources and return one [`ProfileGroup`] per EDID
 /// block found.
-pub fn scan_edid_groups() -> Vec<ProfileGroup> {
-    let mut groups = Vec::new();
-
+///
+/// `Err` when the display source itself could not be opened, so nothing was
+/// read. A monitor whose block could not be read is named in `unread`. A
+/// connector or instance that stores no EDID is simply absent.
+pub fn scan_edid_groups() -> Result<ScanOutcome, String> {
     #[cfg(target_os = "linux")]
-    linux_scan(&mut groups);
-
+    {
+        let mut out = ScanOutcome::default();
+        linux_scan(&mut out)?;
+        Ok(out)
+    }
     #[cfg(windows)]
-    windows_scan(&mut groups);
-
-    groups
-}
-
-#[cfg(target_os = "linux")]
-fn linux_scan(groups: &mut Vec<ProfileGroup>) {
-    use std::fs;
-    let Ok(rd) = fs::read_dir("/sys/class/drm") else {
-        return;
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        let edid = path.join("edid");
-        if !edid.exists() {
-            continue;
-        }
-        let Ok(bytes) = fs::read(&edid) else { continue };
-        if let Some(group) = decode_block(
-            &bytes,
-            edid.display().to_string(),
-            entry.file_name().to_string_lossy().to_string(),
-        ) {
-            groups.push(group);
-        }
+    {
+        let mut out = ScanOutcome::default();
+        windows_scan(&mut out)?;
+        Ok(out)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        Err("EDID is not read on this platform".into())
     }
 }
 
+/// Decide what one raw EDID blob means. An empty blob is a connector that
+/// stores no EDID (typically one with nothing attached), so `Ok(None)`. Bytes
+/// that are present but are not an EDID block are `Err`, not a missing monitor.
+#[cfg_attr(not(any(target_os = "linux", windows, test)), allow(dead_code))]
+fn classify_block(
+    bytes: &[u8],
+    source: &str,
+    locator: &str,
+) -> Result<Option<ProfileGroup>, String> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    decode_block(bytes, source.to_string(), locator.to_string())
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "{} bytes are not an EDID block (bad header, or shorter than 128 bytes)",
+                bytes.len()
+            )
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_scan(out: &mut ScanOutcome) -> Result<(), String> {
+    use std::fs;
+    let drm = "/sys/class/drm";
+    let rd = fs::read_dir(drm).map_err(|e| format!("cannot list {drm}: {e}"))?;
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                out.unread.push(format!("{drm}: {e}"));
+                continue;
+            }
+        };
+        let edid = entry.path().join("edid");
+        // A connector without an edid file has no block to read.
+        if !edid.exists() {
+            continue;
+        }
+        let locator = entry.file_name().to_string_lossy().to_string();
+        let source = edid.display().to_string();
+        match fs::read(&edid) {
+            Ok(bytes) => match classify_block(&bytes, &source, &locator) {
+                Ok(Some(group)) => out.groups.push(group),
+                Ok(None) => {}
+                Err(reason) => out.unread.push(format!("{source}: {reason}")),
+            },
+            Err(e) => out.unread.push(format!("{source}: {e}")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
-fn windows_scan(groups: &mut Vec<ProfileGroup>) {
+fn windows_scan(out: &mut ScanOutcome) -> Result<(), String> {
+    use std::io::ErrorKind;
     use winreg::enums::*;
     use winreg::RegKey;
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let Ok(display) = hklm.open_subkey(r"SYSTEM\CurrentControlSet\Enum\DISPLAY") else {
-        return;
-    };
+    let display = hklm
+        .open_subkey(r"SYSTEM\CurrentControlSet\Enum\DISPLAY")
+        .map_err(|e| format!(r"cannot open HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY: {e}"))?;
     let live = live_monitor_keys();
-    for mfg in display.enum_keys().flatten() {
-        let Ok(mfg_key) = display.open_subkey(&mfg) else {
-            continue;
-        };
-        for inst in mfg_key.enum_keys().flatten() {
-            let Ok(dev) = mfg_key.open_subkey(format!("{}\\Device Parameters", inst)) else {
+    for mfg in display.enum_keys() {
+        let mfg = match mfg {
+            Ok(mfg) => mfg,
+            Err(e) => {
+                out.unread.push(format!(r"Enum\DISPLAY: {e}"));
                 continue;
+            }
+        };
+        let mfg_key = match display.open_subkey(&mfg) {
+            Ok(key) => key,
+            Err(e) => {
+                out.unread.push(format!(r"Enum\DISPLAY\{mfg}: {e}"));
+                continue;
+            }
+        };
+        for inst in mfg_key.enum_keys() {
+            let inst = match inst {
+                Ok(inst) => inst,
+                Err(e) => {
+                    out.unread.push(format!(r"Enum\DISPLAY\{mfg}: {e}"));
+                    continue;
+                }
             };
-            let edid: Result<Vec<u8>, _> = dev.get_raw_value("EDID").map(|v| v.bytes);
-            if let Ok(bytes) = edid {
-                let label = format!("{}/{}", mfg, inst);
-                if let Some(mut group) = decode_block(
-                    &bytes,
-                    format!(r"HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\{}", label),
-                    label.clone(),
-                ) {
+            let label = format!("{}/{}", mfg, inst);
+            let dev = match mfg_key.open_subkey(format!("{}\\Device Parameters", inst)) {
+                Ok(dev) => dev,
+                // No Device Parameters key: this instance stores no EDID.
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => {
+                    out.unread
+                        .push(format!(r"Enum\DISPLAY\{label}\Device Parameters: {e}"));
+                    continue;
+                }
+            };
+            let bytes = match dev.get_raw_value("EDID") {
+                Ok(value) => value.bytes,
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => {
+                    out.unread.push(format!(r"Enum\DISPLAY\{label}\EDID: {e}"));
+                    continue;
+                }
+            };
+            let source = format!(r"HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\{}", label);
+            match classify_block(&bytes, &source, &label) {
+                Ok(Some(mut group)) => {
                     // Enum\DISPLAY keeps every monitor ever attached. Only the
                     // live list says which are attached now.
                     match &live {
@@ -90,11 +162,14 @@ fn windows_scan(groups: &mut Vec<ProfileGroup>) {
                             "The live display list could not be read, so whether this monitor is attached now is unknown.",
                         ),
                     }
-                    groups.push(group);
+                    out.groups.push(group);
                 }
+                Ok(None) => {}
+                Err(reason) => out.unread.push(format!("{source}: {reason}")),
             }
         }
     }
+    Ok(())
 }
 
 /// The `MFG/INSTANCE` key of a monitor interface path, in the form used under
@@ -624,6 +699,35 @@ mod tests {
             enum_display_key(path).as_deref(),
             Some("GSM5B09/5&2A4B8B5&0&UID12345")
         );
+    }
+
+    #[test]
+    fn an_empty_blob_is_no_monitor_not_a_failed_read() {
+        // A connector with nothing attached stores an empty EDID.
+        assert!(classify_block(&[], "src", "card0-HDMI-A-1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_edid_block_are_unread() {
+        let err = classify_block(&[0u8; 128], "src", "card0-DP-1").unwrap_err();
+        assert!(
+            err.contains("128 bytes are not an EDID block"),
+            "got {err:?}"
+        );
+        let short = classify_block(&[0x00, 0xFF, 0xFF], "src", "card0-DP-2").unwrap_err();
+        assert!(short.contains("3 bytes"), "got {short:?}");
+    }
+
+    #[test]
+    fn a_valid_block_classifies_to_its_group() {
+        let b = synth_edid("DELL U2723QE", 3840, 2160, 533_250);
+        let g = classify_block(&b, "src", "card0-DP-1")
+            .unwrap()
+            .expect("a monitor group");
+        assert!(g.device.contains("card0-DP-1"));
+        assert!(g.device.contains("DELL U2723QE"));
     }
 
     #[test]

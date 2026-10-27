@@ -24,7 +24,7 @@
 //! Writing to SPD is BIOS territory; this module is read-only.
 
 #[allow(unused_imports)]
-use super::{ProfileGroup, Setting, SettingRisk, SettingValue, Subsystem};
+use super::{ProfileGroup, ScanOutcome, Setting, SettingRisk, SettingValue, Subsystem};
 
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,23 +34,37 @@ enum DramType {
     Other(u8),
 }
 
+/// Scan every I2C device with an `eeprom` file and decode the DIMM SPD blobs.
+///
+/// `Err` when the I2C device list cannot be read. An `eeprom` that exists but
+/// cannot be read is named in `unread`. A blob that is not a DDR4 or DDR5 SPD
+/// image is another device, not a DIMM, so it is skipped.
 #[cfg(target_os = "linux")]
-pub fn scan_xmp_groups() -> Vec<ProfileGroup> {
+pub fn scan_xmp_groups() -> Result<ScanOutcome, String> {
     use std::fs;
     let base = std::path::Path::new("/sys/bus/i2c/devices");
-    let Ok(rd) = fs::read_dir(base) else {
-        return Vec::new();
-    };
-    let mut groups = Vec::new();
-    for entry in rd.flatten() {
-        let path = entry.path();
-        let eeprom = path.join("eeprom");
+    let rd = fs::read_dir(base).map_err(|e| format!("cannot list {}: {e}", base.display()))?;
+    let mut out = ScanOutcome::default();
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                out.unread.push(format!("{}: {e}", base.display()));
+                continue;
+            }
+        };
+        let eeprom = entry.path().join("eeprom");
         if !eeprom.exists() {
             continue;
         }
-        let Ok(bytes) = fs::read(&eeprom) else {
-            continue;
+        let bytes = match fs::read(&eeprom) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                out.unread.push(format!("{}: {e}", eeprom.display()));
+                continue;
+            }
         };
+        // Shorter than the XMP magic at 384, so it cannot be a DDR4/DDR5 SPD image.
         if bytes.len() < 384 {
             continue;
         }
@@ -59,15 +73,18 @@ pub fn scan_xmp_groups() -> Vec<ProfileGroup> {
             &eeprom.display().to_string(),
             entry.file_name().to_string_lossy().to_string(),
         ) {
-            groups.push(g);
+            out.groups.push(g);
         }
     }
-    groups
+    Ok(out)
 }
 
+/// SPD is read over SMBus, and only the Linux `eeprom` path is implemented.
+/// Reporting that as `Err` keeps it from looking like a machine with no DIMM
+/// profiles.
 #[cfg(not(target_os = "linux"))]
-pub fn scan_xmp_groups() -> Vec<ProfileGroup> {
-    Vec::new()
+pub fn scan_xmp_groups() -> Result<ScanOutcome, String> {
+    Err("SPD is read only on Linux, so XMP/EXPO profiles were not read".into())
 }
 
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]

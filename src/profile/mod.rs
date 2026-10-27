@@ -304,6 +304,44 @@ impl ProfileGroup {
     }
 }
 
+/// What one platform scanner read.
+///
+/// `groups` are the items it read. `unread` names each item it found but could
+/// not read, with the reason, so a failed read is not mistaken for an absent
+/// item. A scanner returns `Err` only when it could not read anything at all.
+#[derive(Debug, Default)]
+pub struct ScanOutcome {
+    pub groups: Vec<ProfileGroup>,
+    pub unread: Vec<String>,
+}
+
+/// Split a scanner result into the groups it read and the reasons it could not
+/// read. A whole-scan `Err` becomes a single unread reason.
+pub(crate) fn split_scan(scan: Result<ScanOutcome, String>) -> (Vec<ProfileGroup>, Vec<String>) {
+    match scan {
+        Ok(outcome) => (outcome.groups, outcome.unread),
+        Err(reason) => (Vec::new(), vec![reason]),
+    }
+}
+
+/// The note group that reports a scanner's unread items, one note per reason
+/// as `<scanner> not read: <reason>`. Empty when nothing was unread, so a
+/// successful scan adds no row.
+pub(crate) fn not_read_groups(
+    subsystem: Subsystem,
+    scanner: &str,
+    reasons: &[String],
+) -> Vec<ProfileGroup> {
+    if reasons.is_empty() {
+        return Vec::new();
+    }
+    let mut group = ProfileGroup::new(subsystem, format!("{scanner} (not read)"), scanner, scanner);
+    for reason in reasons {
+        group.note(format!("{scanner} not read: {reason}"));
+    }
+    vec![group]
+}
+
 /// Trait implemented by each subsystem provider.
 pub trait ProfileProvider: Send {
     fn subsystem(&self) -> Subsystem;
@@ -557,5 +595,43 @@ mod tests {
             "no display stack"
         );
         assert_eq!(inspector.snapshot(Subsystem::Gpu).map(|v| v.len()), Ok(0));
+    }
+
+    #[test]
+    fn a_read_scan_with_nothing_unread_adds_no_row() {
+        let outcome = ScanOutcome::default();
+        let (groups, unread) = split_scan(Ok(outcome));
+        assert!(groups.is_empty());
+        assert!(unread.is_empty());
+        assert!(not_read_groups(Subsystem::Display, "EDID", &unread).is_empty());
+    }
+
+    #[test]
+    fn a_failed_scan_is_one_unread_reason_not_zero_groups() {
+        let (groups, unread) = split_scan(Err("cannot list /sys/class/drm".to_string()));
+        assert!(groups.is_empty());
+        assert_eq!(unread, vec!["cannot list /sys/class/drm".to_string()]);
+        let rows = not_read_groups(Subsystem::Display, "EDID", &unread);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].notes,
+            vec!["EDID not read: cannot list /sys/class/drm"]
+        );
+    }
+
+    #[test]
+    fn partial_scan_keeps_its_groups_and_names_each_unread_item() {
+        let mut found = ProfileGroup::new(Subsystem::Memory, "DIMM A0", "x", "x");
+        found.push(Setting::info("ecc", "ECC", SettingValue::Bool(true)));
+        let outcome = ScanOutcome {
+            groups: vec![found],
+            unread: vec!["a/eeprom: permission denied".into(), "b/eeprom: EIO".into()],
+        };
+        let (groups, unread) = split_scan(Ok(outcome));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(unread.len(), 2);
+        let rows = not_read_groups(Subsystem::Memory, "SPD/XMP", &unread);
+        assert_eq!(rows[0].notes.len(), 2);
+        assert_eq!(rows[0].notes[1], "SPD/XMP not read: b/eeprom: EIO");
     }
 }
