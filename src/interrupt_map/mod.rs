@@ -85,7 +85,8 @@ pub struct InterruptInfo {
 pub struct InterruptAnalysis {
     /// Total interrupts serviced since boot, summed over every CPU: a cumulative
     /// count, not a rate. It used to be documented as interrupts per second.
-    pub total_interrupts: u64,
+    /// `None` when no interrupt line was read; it used to be `0` then.
+    pub total_interrupts: Option<u64>,
     /// Per-CPU interrupt totals.
     pub per_cpu_totals: Vec<u64>,
     /// CPU with the highest interrupt count, or `None` when no interrupts were
@@ -94,10 +95,13 @@ pub struct InterruptAnalysis {
     /// CPU with the lowest non-zero interrupt count, or `None` when no CPU
     /// has a count. It used to be `0` then.
     pub quietest_cpu: Option<u32>,
-    /// Imbalance ratio (max/min).
-    pub imbalance_ratio: f64,
-    /// Whether there's a significant imbalance (ratio > 3.0).
-    pub significant_imbalance: bool,
+    /// Imbalance ratio (max/min), or `None` when no CPU has a count. It used to
+    /// be `max / 1`, which is `0.0` with no counts: a perfectly balanced machine,
+    /// computed from nothing.
+    pub imbalance_ratio: Option<f64>,
+    /// Whether there's a significant imbalance (ratio > 3.0), or `None` when
+    /// there is no ratio. It used to be `false` then.
+    pub significant_imbalance: Option<bool>,
     /// Top interrupt sources by count.
     pub top_sources: Vec<(String, u64)>,
     /// Recommendations.
@@ -198,15 +202,12 @@ impl InterruptMapMonitor {
             .min_by_key(|(_, &v)| v)
             .map(|(i, _)| i as u32);
 
-        let max_count = per_cpu_totals.iter().copied().max().unwrap_or(0);
-        let min_count = per_cpu_totals
-            .iter()
-            .copied()
-            .filter(|&v| v > 0)
-            .min()
-            .unwrap_or(1)
-            .max(1);
-        let imbalance = max_count as f64 / min_count as f64;
+        let max_count = per_cpu_totals.iter().copied().max();
+        let min_count = per_cpu_totals.iter().copied().filter(|&v| v > 0).min();
+        let imbalance = match (max_count, min_count) {
+            (Some(max), Some(min)) => Some(max as f64 / min as f64),
+            _ => None,
+        };
 
         // Top sources
         let mut sources: Vec<(String, u64)> = interrupts
@@ -225,27 +226,28 @@ impl InterruptMapMonitor {
         sources.truncate(10);
 
         let mut recommendations = Vec::new();
-        if imbalance > 5.0 {
+        let ratio = imbalance.unwrap_or(0.0);
+        if ratio > 5.0 {
             if let (Some(busiest), Some(quietest)) = (max_cpu, min_cpu) {
                 recommendations.push(format!(
                     "Severe interrupt imbalance: CPU {} handles {:.1}x more than CPU {}",
-                    busiest, imbalance, quietest
+                    busiest, ratio, quietest
                 ));
             }
             recommendations
                 .push("Consider using irqbalance or setting IRQ affinity manually".into());
-        } else if imbalance > 3.0 {
+        } else if ratio > 3.0 {
             recommendations
                 .push("Moderate interrupt imbalance detected; consider enabling irqbalance".into());
         }
 
         InterruptAnalysis {
-            total_interrupts: total,
+            total_interrupts: (!interrupts.is_empty()).then_some(total),
             per_cpu_totals,
             busiest_cpu: max_cpu,
             quietest_cpu: min_cpu,
             imbalance_ratio: imbalance,
-            significant_imbalance: imbalance > 3.0,
+            significant_imbalance: imbalance.map(|r| r > 3.0),
             top_sources: sources,
             recommendations,
         }
@@ -440,8 +442,8 @@ mod tests {
             affinity_balanced: Some(true),
         }];
         let analysis = InterruptMapMonitor::analyze(&interrupts, 4);
-        assert!(!analysis.significant_imbalance);
-        assert!((analysis.imbalance_ratio - 1.0).abs() < 0.01);
+        assert_eq!(analysis.significant_imbalance, Some(false));
+        assert!((analysis.imbalance_ratio.unwrap() - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -457,8 +459,8 @@ mod tests {
             affinity_balanced: Some(false),
         }];
         let analysis = InterruptMapMonitor::analyze(&interrupts, 4);
-        assert!(analysis.significant_imbalance);
-        assert!(analysis.imbalance_ratio > 3.0);
+        assert_eq!(analysis.significant_imbalance, Some(true));
+        assert!(analysis.imbalance_ratio.unwrap() > 3.0);
         assert!(!analysis.recommendations.is_empty());
     }
 
