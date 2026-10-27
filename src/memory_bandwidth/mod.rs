@@ -133,13 +133,17 @@ pub struct BandwidthEstimate {
     pub channels: ChannelConfig,
     /// Theoretical peak bandwidth (GB/s), or `None` without a speed to compute it from.
     pub peak_bandwidth_gbs: Option<f64>,
-    /// Estimated achievable bandwidth (GB/s) — typically 70-85% of peak, or `None` without a speed to compute it from.
+    /// Estimated achievable bandwidth (GB/s). Always `None`: it used to be the
+    /// peak times a fixed per-generation efficiency factor, which is not a
+    /// reading of this machine.
     pub achievable_bandwidth_gbs: Option<f64>,
-    /// Estimated read bandwidth (GB/s), or `None` without a speed to compute it from.
+    /// Estimated read bandwidth (GB/s). Always `None`: it was derived from the
+    /// achievable figure, which is withheld (see `achievable_bandwidth_gbs`).
     pub estimated_read_gbs: Option<f64>,
-    /// Estimated write bandwidth (GB/s), or `None` without a speed to compute it from.
+    /// Estimated write bandwidth (GB/s). Always `None`, for the same reason.
     pub estimated_write_gbs: Option<f64>,
-    /// STREAM Triad estimate (GB/s), or `None` without a speed to compute it from.
+    /// STREAM Triad estimate (GB/s). Always `None`: it used to be the peak
+    /// times a fixed ratio, and no benchmark was run to produce it.
     pub stream_triad_estimate_gbs: Option<f64>,
 }
 
@@ -218,44 +222,43 @@ impl MemoryBandwidthMonitor {
         &self.analysis.estimate
     }
 
-    fn analyze() -> Result<BandwidthAnalysis, IronError> {
-        let (generation, speed_mts, channels) = Self::detect_memory_config()?;
-
-        // Every figure below is computed from the speed and the active channel
-        // count. Without either there is nothing to compute from, and a typical
-        // speed or a guessed channel count would make each of them an estimate
-        // of a different machine.
+    /// The estimate built from what was read. Only the peak is computed. The
+    /// achievable, read/write and STREAM Triad figures used to be the peak
+    /// multiplied by a per-generation efficiency factor (DDR5 0.82, DDR4 0.78,
+    /// HBM3 0.92, 0.75 otherwise), a read ratio of 0.65 and a Triad ratio of 0.72.
+    /// None of those constants is read from this machine or published as a
+    /// specification, so each was a rule of thumb presented as a figure for this
+    /// hardware. They are withheld; the ontology publishes them as unavailable
+    /// with that reason.
+    fn bandwidth_estimate(
+        generation: MemoryGeneration,
+        speed_mts: Option<u32>,
+        channels: ChannelConfig,
+    ) -> BandwidthEstimate {
+        // The peak needs the speed and the active channel count. Without either
+        // there is nothing to compute from, and a typical speed or a guessed
+        // channel count would make it an estimate of a different machine.
         let peak = match (speed_mts, channels.active_channels) {
             (Some(speed), Some(active)) => Self::compute_peak_bandwidth(speed, active, &generation),
             _ => None,
         };
 
-        // Achievable is typically 70-85% of peak depending on technology
-        let efficiency = match generation {
-            MemoryGeneration::DDR5 => 0.82,
-            MemoryGeneration::DDR4 => 0.78,
-            MemoryGeneration::DDR3 => 0.72,
-            MemoryGeneration::LPDDR5 | MemoryGeneration::LPDDR5X => 0.80,
-            MemoryGeneration::LPDDR4 | MemoryGeneration::LPDDR4X => 0.75,
-            MemoryGeneration::HBM2 | MemoryGeneration::HBM2E => 0.90,
-            MemoryGeneration::HBM3 | MemoryGeneration::HBM3E => 0.92,
-            _ => 0.75,
-        };
-
-        let achievable = peak.map(|p| p * efficiency);
-        let read_ratio = 0.65; // Typical workloads are ~65% reads
-        let stream_triad_ratio = 0.72; // STREAM Triad typically achieves ~72% of peak
-
-        let estimate = BandwidthEstimate {
+        BandwidthEstimate {
             generation,
             speed_mts,
             channels,
             peak_bandwidth_gbs: peak,
-            achievable_bandwidth_gbs: achievable,
-            estimated_read_gbs: achievable.map(|a| a * read_ratio),
-            estimated_write_gbs: achievable.map(|a| a * (1.0 - read_ratio)),
-            stream_triad_estimate_gbs: peak.map(|p| p * stream_triad_ratio),
-        };
+            achievable_bandwidth_gbs: None,
+            estimated_read_gbs: None,
+            estimated_write_gbs: None,
+            stream_triad_estimate_gbs: None,
+        }
+    }
+
+    fn analyze() -> Result<BandwidthAnalysis, IronError> {
+        let (generation, speed_mts, channels) = Self::detect_memory_config()?;
+
+        let estimate = Self::bandwidth_estimate(generation, speed_mts, channels);
 
         // Try live measurement
         let measurement = Self::try_measure(&estimate);
@@ -280,10 +283,9 @@ impl MemoryBandwidthMonitor {
         // achievable bandwidth. A per-core figure from a typical speed would
         // put a bottleneck recommendation in front of someone on the strength
         // of a lookup table.
-        let bw_per_core = std::thread::available_parallelism()
-            .ok()
-            .zip(achievable)
-            .map(|(n, a)| a / n.get() as f64);
+        // Achievable bandwidth is withheld above, so there is no numerator and
+        // the per-core figure is absent on every platform.
+        let bw_per_core: Option<f64> = None;
         let score = bw_per_core.map(|b| (b * 10.0).min(100.0) as u32);
 
         // < 3 GB/s per core is concerning
@@ -711,6 +713,33 @@ mod tests {
         // DDR5-5600 dual channel: 5600 × 8 × 2 / 1000 = 89.6 GB/s
         let bw = MemoryBandwidthMonitor::compute_peak_bandwidth(5600, 2, &MemoryGeneration::DDR5);
         assert!(bw.is_some_and(|bw| (bw - 89.6).abs() < 0.1));
+    }
+
+    #[test]
+    fn only_the_peak_is_computed_and_the_rest_is_withheld() {
+        let est = MemoryBandwidthMonitor::bandwidth_estimate(
+            MemoryGeneration::DDR5,
+            Some(5600),
+            MemoryBandwidthMonitor::channel_config(Some(2)),
+        );
+        assert!(est
+            .peak_bandwidth_gbs
+            .is_some_and(|p| (p - 89.6).abs() < 0.1));
+        assert_eq!(est.achievable_bandwidth_gbs, None);
+        assert_eq!(est.estimated_read_gbs, None);
+        assert_eq!(est.estimated_write_gbs, None);
+        assert_eq!(est.stream_triad_estimate_gbs, None);
+    }
+
+    #[test]
+    fn no_speed_means_no_peak_and_no_derived_figures() {
+        let est = MemoryBandwidthMonitor::bandwidth_estimate(
+            MemoryGeneration::DDR5,
+            None,
+            MemoryBandwidthMonitor::channel_config(Some(2)),
+        );
+        assert_eq!(est.peak_bandwidth_gbs, None);
+        assert_eq!(est.achievable_bandwidth_gbs, None);
     }
 
     #[test]

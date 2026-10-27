@@ -254,9 +254,12 @@ impl PcieDevice {
         Some(self.current_link_speed.per_lane_gbps()? * f64::from(self.current_link_width?))
     }
 
-    /// Bandwidth in GB/s the device is capable of. See [`Self::max_bandwidth_gbps`].
+    /// Bandwidth in GB/s the device is capable of, or `None` when its maximum
+    /// link speed or width was not read. It used to fall back to the current
+    /// speed, which is the link's state and not its capability, so a downgraded
+    /// link reported its own speed as its maximum.
     pub fn capable_bandwidth_gbps(&self) -> Option<f64> {
-        let speed = self.max_link_speed.unwrap_or(self.current_link_speed);
+        let speed = self.max_link_speed?;
         Some(speed.per_lane_gbps()? * f64::from(self.max_link_width?))
     }
 
@@ -729,5 +732,30 @@ mod tests {
         assert_eq!(summary.downgraded_devices, 0);
         assert_eq!(summary.total_bandwidth_gbps, None);
         assert_eq!(summary.max_generation, None);
+    }
+
+    #[test]
+    fn an_unread_maximum_speed_is_not_replaced_by_the_current_speed() {
+        let dev = PcieDevice {
+            bdf: "0000:03:00.0".into(),
+            vendor_id: Some(0x10DE),
+            device_id: Some(0x2684),
+            device_class: Some(PcieDeviceClass::VgaCompatible),
+            name: "Downgraded-looking GPU".into(),
+            vendor_name: "NVIDIA".into(),
+            numa_node: Some(0),
+            iommu_group: None,
+            current_link_speed: PcieLinkSpeed::Gen3,
+            max_link_speed: None,
+            current_link_width: Some(16),
+            max_link_width: Some(16),
+            driver: None,
+            subsystem: None,
+            power_state: None,
+        };
+        // The current link is known; the capability is not. Gen3 x16 is the
+        // link's state, not what the device can do.
+        assert!(dev.max_bandwidth_gbps().is_some());
+        assert_eq!(dev.capable_bandwidth_gbps(), None);
     }
 }

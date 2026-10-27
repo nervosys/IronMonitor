@@ -88,10 +88,12 @@ pub struct InterruptAnalysis {
     pub total_interrupts: u64,
     /// Per-CPU interrupt totals.
     pub per_cpu_totals: Vec<u64>,
-    /// CPU with the highest interrupt count.
-    pub busiest_cpu: u32,
-    /// CPU with the lowest interrupt count.
-    pub quietest_cpu: u32,
+    /// CPU with the highest interrupt count, or `None` when no interrupts were
+    /// counted. It used to be `0` then, which named CPU 0 as busiest.
+    pub busiest_cpu: Option<u32>,
+    /// CPU with the lowest non-zero interrupt count, or `None` when no CPU
+    /// has a count. It used to be `0` then.
+    pub quietest_cpu: Option<u32>,
     /// Imbalance ratio (max/min).
     pub imbalance_ratio: f64,
     /// Whether there's a significant imbalance (ratio > 3.0).
@@ -178,19 +180,23 @@ impl InterruptMapMonitor {
         }
 
         let total: u64 = per_cpu_totals.iter().sum();
-        let max_cpu = per_cpu_totals
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, &v)| v)
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
+        // With no counts at all there is no busiest CPU; `max_by_key` would
+        // otherwise name the last CPU of an all-zero table.
+        let max_cpu = (total > 0)
+            .then(|| {
+                per_cpu_totals
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, &v)| v)
+                    .map(|(i, _)| i as u32)
+            })
+            .flatten();
         let min_cpu = per_cpu_totals
             .iter()
             .enumerate()
             .filter(|(_, &v)| v > 0)
             .min_by_key(|(_, &v)| v)
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
+            .map(|(i, _)| i as u32);
 
         let max_count = per_cpu_totals.iter().copied().max().unwrap_or(0);
         let min_count = per_cpu_totals
@@ -220,10 +226,12 @@ impl InterruptMapMonitor {
 
         let mut recommendations = Vec::new();
         if imbalance > 5.0 {
-            recommendations.push(format!(
-                "Severe interrupt imbalance: CPU {} handles {:.1}x more than CPU {}",
-                max_cpu, imbalance, min_cpu
-            ));
+            if let (Some(busiest), Some(quietest)) = (max_cpu, min_cpu) {
+                recommendations.push(format!(
+                    "Severe interrupt imbalance: CPU {} handles {:.1}x more than CPU {}",
+                    busiest, imbalance, quietest
+                ));
+            }
             recommendations
                 .push("Consider using irqbalance or setting IRQ affinity manually".into());
         } else if imbalance > 3.0 {
@@ -262,11 +270,12 @@ impl InterruptMapMonitor {
 
             let irq = parts[0].trim_end_matches(':').to_string();
 
-            // Parse per-CPU counts
-            let per_cpu_counts: Vec<u64> = parts[1..=(cpu_count as usize)]
-                .iter()
-                .map(|s| s.parse::<u64>().unwrap_or(0))
-                .collect();
+            // A row with a count that is not a number cannot be attributed to
+            // CPUs. It is left out whole rather than counted as zero per CPU.
+            let Some(per_cpu_counts) = parse_per_cpu_counts(&parts[1..=(cpu_count as usize)])
+            else {
+                continue;
+            };
 
             let total: u64 = per_cpu_counts.iter().sum();
 
@@ -400,6 +409,13 @@ fn affinity_balance(affinity: Option<&[u32]>, cpu_count: u32) -> Option<bool> {
     affinity.map(|cpus| cpus.len() > 1 && cpus.len() as u32 >= cpu_count / 2)
 }
 
+/// Per-CPU counts from one `/proc/interrupts` row. `None` when any field is not
+/// a count.
+#[cfg(any(target_os = "linux", test))]
+fn parse_per_cpu_counts(fields: &[&str]) -> Option<Vec<u64>> {
+    fields.iter().map(|s| s.parse::<u64>().ok()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +505,45 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("PCI-MSI"));
         let _: InterruptInfo = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn a_count_that_is_not_a_number_drops_the_row_instead_of_counting_zero() {
+        assert_eq!(
+            parse_per_cpu_counts(&["12", "7", "0"]),
+            Some(vec![12, 7, 0])
+        );
+        assert_eq!(parse_per_cpu_counts(&["12", "ERR", "0"]), None);
+    }
+
+    fn irq_with_counts(counts: Vec<u64>) -> InterruptInfo {
+        InterruptInfo {
+            irq: "9".into(),
+            interrupt_type: InterruptType::LegacyPin,
+            total_count: counts.iter().sum(),
+            per_cpu_counts: counts,
+            chip: "IO-APIC".into(),
+            description: "acpi".into(),
+            affinity_cpus: None,
+            affinity_balanced: None,
+        }
+    }
+
+    #[test]
+    fn no_counted_interrupts_means_no_busiest_or_quietest_cpu() {
+        let analysis = InterruptMapMonitor::analyze(&[irq_with_counts(vec![0, 0, 0, 0])], 4);
+        assert_eq!(analysis.busiest_cpu, None);
+        assert_eq!(analysis.quietest_cpu, None);
+        let none = InterruptMapMonitor::analyze(&[], 4);
+        assert_eq!(none.busiest_cpu, None);
+        assert_eq!(none.quietest_cpu, None);
+    }
+
+    #[test]
+    fn busiest_and_quietest_are_named_from_the_counts() {
+        let analysis = InterruptMapMonitor::analyze(&[irq_with_counts(vec![5, 900, 0, 40])], 4);
+        assert_eq!(analysis.busiest_cpu, Some(1));
+        // CPU 2 has no count, so it is not the quietest; CPU 0 is.
+        assert_eq!(analysis.quietest_cpu, Some(0));
     }
 }

@@ -934,9 +934,22 @@ pub fn get_peripherals() -> Result<PeripheralsInfo, Error> {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     let name = parts[1].trim().to_string();
+                    // The card's PCM entries say which directions it carries. With
+                    // none readable the direction is unknown; it used to be a
+                    // constant `Output` for every card.
+                    let pcm_names: Vec<String> = line
+                        .split_whitespace()
+                        .next()
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .and_then(|card| fs::read_dir(format!("/proc/asound/card{card}")).ok())
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect();
                     info.audio_devices.push(AudioDeviceInfo {
                         name,
-                        device_type: AudioDeviceType::Output,
+                        device_type: alsa_card_type(pcm_names.iter().map(String::as_str)),
                         // The struct has `manufacturer`, not `driver`. ALSA is the
                         // subsystem this was read through, not who made the device,
                         // so claiming it as the manufacturer would be wrong.
@@ -1020,9 +1033,57 @@ pub fn get_peripherals() -> Result<PeripheralsInfo, Error> {
     Ok(info)
 }
 
+/// Direction an ALSA card carries, from the `pcmNp` and `pcmNc` entries under its
+/// `/proc/asound/cardN` directory. `None` when it has neither. This mirrors
+/// `audio::alsa_pcm_directions`, which is private to that module.
+fn alsa_card_type<'a>(entries: impl IntoIterator<Item = &'a str>) -> Option<AudioDeviceType> {
+    let mut playback = false;
+    let mut capture = false;
+    for entry in entries {
+        let Some(rest) = entry.strip_prefix("pcm") else {
+            continue;
+        };
+        let Some(direction) = rest.chars().last() else {
+            continue;
+        };
+        let digits = &rest[..rest.len() - direction.len_utf8()];
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        match direction {
+            'p' => playback = true,
+            'c' => capture = true,
+            _ => {}
+        }
+    }
+    match (playback, capture) {
+        (true, true) => Some(AudioDeviceType::OutputInput),
+        (true, false) => Some(AudioDeviceType::Output),
+        (false, true) => Some(AudioDeviceType::Input),
+        (false, false) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_is_its_directions_from_any_pcm_number() {
+        assert_eq!(
+            alsa_card_type(["pcm0p", "pcm3p", "pcm0c"]),
+            Some(AudioDeviceType::OutputInput)
+        );
+        // An HDMI card whose playback lives on device 7, not 0.
+        assert_eq!(alsa_card_type(["pcm7p"]), Some(AudioDeviceType::Output));
+        assert_eq!(alsa_card_type(["pcm0c"]), Some(AudioDeviceType::Input));
+    }
+
+    #[test]
+    fn a_card_with_no_pcm_entries_has_no_direction() {
+        assert_eq!(alsa_card_type(std::iter::empty()), None);
+        assert_eq!(alsa_card_type(["id", "pcmp", "pcmx"]), None);
+    }
 
     #[test]
     fn ata_port_comes_from_the_disks_own_sysfs_path() {

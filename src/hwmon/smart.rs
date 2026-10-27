@@ -415,6 +415,20 @@ fn get_drive_model(drive_path: &str) -> Option<String> {
     }
 }
 
+/// Label for a drive's temperature sensor.
+///
+/// The model is the label when it was read. When it was not, the label says so
+/// and names the block device, which identifies the drive without claiming to
+/// be its model. The block device name used to stand in for the model
+/// unannounced, so it read like a model string.
+#[cfg(any(target_os = "linux", test))]
+fn storage_sensor_label(model: Option<&str>, device_node: &str) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => model.to_string(),
+        None => format!("{device_node} (model not read)"),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn read_linux_storage_temps() -> Vec<HwSensor> {
     use std::fs;
@@ -479,12 +493,11 @@ fn read_linux_storage_temps() -> Vec<HwSensor> {
                     if let Some(hwmon_path) = first_hwmon {
                         if let Ok(temp_str) = fs::read_to_string(hwmon_path.join("temp1_input")) {
                             if let Ok(temp_mc) = temp_str.trim().parse::<i32>() {
-                                let model = fs::read_to_string(entry.path().join("device/model"))
-                                    .map(|s| s.trim().to_string())
-                                    .unwrap_or(name.clone());
+                                let model =
+                                    fs::read_to_string(entry.path().join("device/model")).ok();
 
                                 sensors.push(HwSensor {
-                                    name: model,
+                                    name: storage_sensor_label(model.as_deref(), &name),
                                     value: temp_mc as f32 / 1000.0,
                                     min: None,
                                     max: None,
@@ -500,4 +513,33 @@ fn read_linux_storage_temps() -> Vec<HwSensor> {
     }
 
     sensors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::storage_sensor_label;
+
+    #[test]
+    fn a_read_model_is_the_label() {
+        assert_eq!(
+            storage_sensor_label(Some("Samsung SSD 990 PRO 2TB\n"), "nvme0n1"),
+            "Samsung SSD 990 PRO 2TB"
+        );
+    }
+
+    #[test]
+    fn an_unread_model_is_announced_not_replaced_by_the_device_node() {
+        assert_eq!(
+            storage_sensor_label(None, "nvme0n1"),
+            "nvme0n1 (model not read)"
+        );
+    }
+
+    #[test]
+    fn a_blank_model_counts_as_unread() {
+        assert_eq!(
+            storage_sensor_label(Some("  \n"), "sda"),
+            "sda (model not read)"
+        );
+    }
 }

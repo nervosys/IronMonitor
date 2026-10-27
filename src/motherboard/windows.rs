@@ -1477,7 +1477,9 @@ fn get_audio_devices(wmi_conn: &WMIConnection) -> Vec<AudioDeviceInfo> {
             let name = device.name.unwrap_or_else(|| "Audio Device".to_string());
 
             // Determine device type from name
-            let device_type = detect_audio_device_type(&name);
+            // Still a name-based guess (see `detect_audio_device_type`), kept as it
+            // was: the Windows audio direction is not read in this change.
+            let device_type = Some(detect_audio_device_type(&name));
 
             devices.push(AudioDeviceInfo {
                 name,

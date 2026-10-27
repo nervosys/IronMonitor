@@ -309,7 +309,10 @@ impl std::fmt::Display for DisplayOutputType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDeviceInfo {
     pub name: String,
-    pub device_type: AudioDeviceType,
+    /// Direction the platform reported, or `None` when no channel or PCM
+    /// direction was read. It used to be a constant `Output` on Linux and an
+    /// `Unknown` default on macOS.
+    pub device_type: Option<AudioDeviceType>,
     pub manufacturer: Option<String>,
     pub status: Option<String>,
     pub is_default: bool,

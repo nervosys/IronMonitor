@@ -4189,26 +4189,36 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
         Some(Unit::Count),
     ));
 
-    // Peak, achievable and triad are all built on the active channel count.
-    // Without it they would be the speed times a guessed number of channels.
-    let (Some(peak), Some(achievable), Some(triad)) = (
-        est.peak_bandwidth_gbs,
-        est.achievable_bandwidth_gbs,
-        est.stream_triad_estimate_gbs,
-    ) else {
+    // Achievable and STREAM Triad used to be the peak times a fixed factor. No
+    // factor is read from this machine or published as a specification, and no
+    // benchmark is run, so neither is published as a value, whether or not the
+    // peak could be computed.
+    const NO_EFFICIENCY: &str = concat!(
+        "no efficiency figure is read from this machine and no benchmark is run; ",
+        "the achievable and STREAM Triad figures used to be the peak times a fixed ",
+        "per-generation factor, which is a rule of thumb rather than a measurement"
+    );
+
+    // The peak is built on the active channel count. Without it the peak would
+    // be the speed times a guessed number of channels.
+    let Some(peak) = est.peak_bandwidth_gbs else {
         const NO_CHANNELS: &str = concat!(
             "the active channel count was not read from DIMM locators, so every ",
             "bandwidth figure derived from it would be a guess at the channel count"
         );
-        for id in [
+        out.push(Reading::unavailable(
             "memory.bandwidth.peak",
+            Some(Unit::BytesPerSecond),
+            NO_CHANNELS,
+        ));
+        for id in [
             "memory.bandwidth.achievable",
             "memory.bandwidth.stream_triad",
         ] {
             out.push(Reading::unavailable(
                 id,
                 Some(Unit::BytesPerSecond),
-                NO_CHANNELS,
+                NO_EFFICIENCY,
             ));
         }
         return;
@@ -4224,16 +4234,17 @@ fn resolve_memory_bandwidth(out: &mut Vec<Reading>) {
         serde_json::json!(peak * GB),
         Some(Unit::BytesPerSecond),
     ));
-    out.push(Reading::derived(
+
+    for id in [
         "memory.bandwidth.achievable",
-        serde_json::json!(achievable * GB),
-        Some(Unit::BytesPerSecond),
-    ));
-    out.push(Reading::derived(
         "memory.bandwidth.stream_triad",
-        serde_json::json!(triad * GB),
-        Some(Unit::BytesPerSecond),
-    ));
+    ] {
+        out.push(Reading::unavailable(
+            id,
+            Some(Unit::BytesPerSecond),
+            NO_EFFICIENCY,
+        ));
+    }
 }
 
 /// `push_opt` for firmware-declared values: same absence handling, but the

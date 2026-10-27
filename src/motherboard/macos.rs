@@ -748,11 +748,36 @@ fn get_display_outputs() -> Vec<DisplayOutputInfo> {
     outputs
 }
 
+/// The direction a `system_profiler` channel line states, or `None` for any
+/// other line.
+fn channel_direction(line: &str) -> Option<AudioDeviceType> {
+    if line.starts_with("Output Channels:") || line.starts_with("Output:") {
+        Some(AudioDeviceType::Output)
+    } else if line.starts_with("Input Channels:") || line.starts_with("Input:") {
+        Some(AudioDeviceType::Input)
+    } else {
+        None
+    }
+}
+
+/// Combine a direction already seen for a device with another channel line's.
+/// A device with both input and output channels is `OutputInput`.
+fn merge_direction(current: Option<AudioDeviceType>, added: AudioDeviceType) -> AudioDeviceType {
+    match current {
+        None => added,
+        Some(AudioDeviceType::OutputInput) => AudioDeviceType::OutputInput,
+        Some(seen) if seen == added => seen,
+        Some(_) => AudioDeviceType::OutputInput,
+    }
+}
+
 fn get_audio_devices() -> Vec<AudioDeviceInfo> {
     let mut devices = Vec::new();
     if let Some(text) = run_cmd("system_profiler", &["SPAudioDataType"]) {
         let mut current_name = String::new();
-        let mut device_type = AudioDeviceType::Unknown;
+        // `None` until a channel line establishes a direction. It used to start
+        // as `Unknown`, which is a classification the platform never made.
+        let mut device_type: Option<AudioDeviceType> = None;
         let mut manufacturer = None;
         let mut is_default = false;
 
@@ -767,22 +792,12 @@ fn get_audio_devices() -> Vec<AudioDeviceInfo> {
                         status: Some("Active".to_string()),
                         is_default,
                     });
-                    device_type = AudioDeviceType::Unknown;
+                    device_type = None;
                     is_default = false;
                 }
                 current_name = trimmed.trim_end_matches(':').to_string();
-            } else if trimmed.starts_with("Output Channels:") || trimmed.starts_with("Output:") {
-                device_type = if device_type == AudioDeviceType::Input {
-                    AudioDeviceType::OutputInput
-                } else {
-                    AudioDeviceType::Output
-                };
-            } else if trimmed.starts_with("Input Channels:") || trimmed.starts_with("Input:") {
-                device_type = if device_type == AudioDeviceType::Output {
-                    AudioDeviceType::OutputInput
-                } else {
-                    AudioDeviceType::Input
-                };
+            } else if let Some(direction) = channel_direction(trimmed) {
+                device_type = Some(merge_direction(device_type, direction));
             } else if trimmed.starts_with("Manufacturer:") {
                 manufacturer = trimmed.split(':').nth(1).map(|s| s.trim().to_string());
             } else if trimmed.starts_with("Default Output Device:") && trimmed.contains("Yes") {
@@ -1052,5 +1067,37 @@ mod tests {
             Some("bridge0".to_string())
         );
         assert_eq!(parse_hardware_port_device(out, "Ethernet"), None);
+    }
+
+    #[test]
+    fn channel_lines_establish_the_audio_direction() {
+        assert_eq!(
+            channel_direction("Output Channels: 2"),
+            Some(AudioDeviceType::Output)
+        );
+        assert_eq!(
+            channel_direction("Input Channels: 1"),
+            Some(AudioDeviceType::Input)
+        );
+        assert_eq!(channel_direction("Manufacturer: Apple Inc."), None);
+        assert_eq!(channel_direction("Default Output Device: Yes"), None);
+    }
+
+    #[test]
+    fn a_device_with_both_channel_kinds_is_duplex_and_one_kind_is_not() {
+        let output = merge_direction(None, AudioDeviceType::Output);
+        assert_eq!(output, AudioDeviceType::Output);
+        assert_eq!(
+            merge_direction(Some(output), AudioDeviceType::Input),
+            AudioDeviceType::OutputInput
+        );
+        assert_eq!(
+            merge_direction(None, AudioDeviceType::Input),
+            AudioDeviceType::Input
+        );
+        assert_eq!(
+            merge_direction(Some(AudioDeviceType::Input), AudioDeviceType::Input),
+            AudioDeviceType::Input
+        );
     }
 }

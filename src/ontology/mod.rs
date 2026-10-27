@@ -2799,10 +2799,11 @@ impl Ontology {
         // Every figure here except the configuration itself is `Derived`, and
         // that matters more than usual: nothing in this cluster was measured.
         // The peak is arithmetic over the channel count and the transfer rate,
-        // and the achievable and STREAM figures are that peak scaled by a
-        // constant. An agent choosing a batch size from these should know it is
-        // reading a calculation and not a benchmark - which is what the
-        // provenance field is for.
+        // The achievable and STREAM figures used to be that peak scaled by a
+        // constant and are now always unavailable, since those constants are not
+        // facts about this machine. An agent choosing a batch size from the peak
+        // should know it is reading a calculation and not a benchmark - which is
+        // what the provenance field is for.
         add(Entity::new(
             "memory.bandwidth.<none>",
             D::Memory,
@@ -2884,9 +2885,10 @@ impl Ontology {
             Some(U::BytesPerSecond),
             P::Derived,
             true,
-            "Peak scaled by a fixed efficiency factor. A rule of thumb rendered as \
-             a number; it carries no information the peak and the factor do not \
-             already contain. Nullable with peak, and for the same reason -- the efficiency factor also falls back to a default when the generation is unknown.",
+            "Achievable bandwidth. Always unavailable: no efficiency figure is read \
+             from this machine, and the peak scaled by a fixed per-generation factor \
+             was a rule of thumb rendered as a number. Nullable, and the reason is \
+             published with it.",
         )
         .derived(&[
             "memory.bandwidth.generation",
@@ -2900,10 +2902,10 @@ impl Ontology {
             Some(U::BytesPerSecond),
             P::Derived,
             true,
-            "What the STREAM Triad benchmark would be expected to report. Named \
-             after the benchmark but not produced by running it - ironmon runs no \
-             benchmarks, and a consumer comparing this against a real STREAM \
-             result is comparing an estimate to a measurement. Nullable with peak and achievable, which it is scaled from.",
+            "STREAM Triad bandwidth. Always unavailable: ironmon runs no benchmarks, \
+             and the figure used to be the peak times a fixed ratio, so a consumer \
+             comparing it against a real STREAM result would be comparing an \
+             estimate to a measurement. Nullable, and the reason is published with it.",
         )
         .derived(&[
             "memory.bandwidth.generation",

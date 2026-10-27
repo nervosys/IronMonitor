@@ -100,18 +100,22 @@ pub enum RngSource {
 /// TPM cryptographic capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TpmCrypto {
-    /// TPM version.
-    pub version: String,
-    /// Supported algorithms.
-    pub algorithms: Vec<String>,
-    /// Has RSA support.
-    pub rsa: bool,
-    /// Has ECC support.
-    pub ecc: bool,
-    /// Has AES support.
-    pub aes: bool,
-    /// Has SHA-256 support.
-    pub sha256: bool,
+    /// TPM version from `tpm_version_major` (and `tpm_version_minor` when that
+    /// is present), or `None` when sysfs did not give a major version.
+    pub version: Option<String>,
+    /// Supported algorithms. Always `None`: sysfs does not list them, and the
+    /// list used to be a fixed set (RSA-2048, ECC-P256, AES-128, SHA-256) that
+    /// was never read from the chip.
+    pub algorithms: Option<Vec<String>>,
+    /// RSA support. Always `None`: not exposed by sysfs. It used to be `true`
+    /// for any TPM.
+    pub rsa: Option<bool>,
+    /// ECC support. Always `None`, for the same reason as `rsa`.
+    pub ecc: Option<bool>,
+    /// AES support. Always `None`, for the same reason as `rsa`.
+    pub aes: Option<bool>,
+    /// SHA-256 support. Always `None`, for the same reason as `rsa`.
+    pub sha256: Option<bool>,
 }
 
 /// Crypto acceleration summary.
@@ -409,30 +413,22 @@ impl CryptoAccelMonitor {
         {
             let tpm_path = std::path::Path::new("/sys/class/tpm/tpm0");
             if tpm_path.exists() {
-                let version = std::fs::read_to_string(tpm_path.join("tpm_version_major"))
-                    .ok()
-                    .map(|v| {
-                        let major = v.trim().to_string();
-                        let minor = std::fs::read_to_string(tpm_path.join("tpm_version_minor"))
-                            .ok()
-                            .map(|m| m.trim().to_string())
-                            .unwrap_or_else(|| "0".into());
-                        format!("{}.{}", major, minor)
-                    })
-                    .unwrap_or_else(|| "2.0".into());
+                let read = |file: &str| std::fs::read_to_string(tpm_path.join(file)).ok();
+                let version = tpm_version_from_sysfs(
+                    read("tpm_version_major").as_deref(),
+                    read("tpm_version_minor").as_deref(),
+                );
 
+                // The algorithm flags are not exposed by sysfs. They used to be
+                // hard-coded true for every TPM, which named algorithms the chip
+                // was never asked about.
                 return Some(TpmCrypto {
                     version,
-                    algorithms: vec![
-                        "RSA-2048".into(),
-                        "ECC-P256".into(),
-                        "AES-128".into(),
-                        "SHA-256".into(),
-                    ],
-                    rsa: true,
-                    ecc: true,
-                    aes: true,
-                    sha256: true,
+                    algorithms: None,
+                    rsa: None,
+                    ecc: None,
+                    aes: None,
+                    sha256: None,
                 });
             }
         }
@@ -685,9 +681,43 @@ impl Default for CryptoAccelMonitor {
     }
 }
 
+/// TPM version from the sysfs major and minor numbers. The minor is appended
+/// only when it was read. Without a major number there is no version: the
+/// `"2.0"` default used to stand in for it.
+#[cfg(any(target_os = "linux", test))]
+fn tpm_version_from_sysfs(major: Option<&str>, minor: Option<&str>) -> Option<String> {
+    let major = major.map(str::trim).filter(|m| !m.is_empty())?;
+    Some(match minor.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(minor) => format!("{major}.{minor}"),
+        None => major.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tpm_version_uses_major_and_minor_when_both_are_read() {
+        assert_eq!(
+            tpm_version_from_sysfs(Some("2\n"), Some("0\n")).as_deref(),
+            Some("2.0")
+        );
+    }
+
+    #[test]
+    fn tpm_version_without_a_minor_is_the_major_alone() {
+        assert_eq!(
+            tpm_version_from_sysfs(Some("2\n"), None).as_deref(),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn tpm_version_without_a_major_is_unknown_not_two_point_zero() {
+        assert_eq!(tpm_version_from_sysfs(None, Some("0\n")), None);
+        assert_eq!(tpm_version_from_sysfs(Some("  \n"), None), None);
+    }
 
     #[test]
     fn test_feature_detection_aes() {

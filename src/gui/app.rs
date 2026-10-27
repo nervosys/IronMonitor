@@ -6837,21 +6837,25 @@ impl IronMonitorApp {
 
                             for device in &peripherals.audio_devices {
                                 let type_color = match device.device_type {
-                                    motherboard::AudioDeviceType::Output => {
+                                    Some(motherboard::AudioDeviceType::Output) => {
                                         theme::color(&palette_ctx, CyberColors::NEON_GREEN)
                                     }
-                                    motherboard::AudioDeviceType::Input => {
+                                    Some(motherboard::AudioDeviceType::Input) => {
                                         theme::color(&palette_ctx, CyberColors::NEON_BLUE)
                                     }
-                                    motherboard::AudioDeviceType::OutputInput => {
+                                    Some(motherboard::AudioDeviceType::OutputInput) => {
                                         theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
                                     }
-                                    motherboard::AudioDeviceType::Unknown => {
+                                    Some(motherboard::AudioDeviceType::Unknown) | None => {
                                         theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
                                     }
                                 };
+                                // `None` is a direction the platform did not establish.
+                                let type_label = device
+                                    .device_type
+                                    .map_or_else(|| "unknown".to_string(), |t| t.to_string());
                                 ui.label(
-                                    RichText::new(format!("{}", device.device_type))
+                                    RichText::new(type_label)
                                         .color(theme::color(&palette_ctx, type_color)),
                                 );
                                 ui.label(
