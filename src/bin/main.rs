@@ -1186,7 +1186,12 @@ fn handle_cli_command(
                             None => "state not read".to_string(),
                         };
                         let name = device.name.as_deref().unwrap_or("name not read");
-                        println!("  {} ({:?}) - {}", name, device.device_type, state);
+                        // `None` is a direction the platform did not establish, shown as unknown.
+                        let direction = match device.device_type {
+                            Some(t) => format!("{t:?}"),
+                            None => "unknown".to_string(),
+                        };
+                        println!("  {} ({}) - {}", name, direction, state);
                     }
                 }
                 Ok(())

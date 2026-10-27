@@ -32,10 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for device in devices {
         let direction = match device.device_type {
-            ironmonitor::audio::AudioDeviceType::Output => "Output",
-            ironmonitor::audio::AudioDeviceType::Input => "Input",
-            ironmonitor::audio::AudioDeviceType::Duplex => "Duplex",
-            ironmonitor::audio::AudioDeviceType::Unknown => "Unknown",
+            Some(ironmonitor::audio::AudioDeviceType::Output) => "Output",
+            Some(ironmonitor::audio::AudioDeviceType::Input) => "Input",
+            Some(ironmonitor::audio::AudioDeviceType::Duplex) => "Duplex",
+            Some(ironmonitor::audio::AudioDeviceType::Unknown) => "Unknown",
+            None => "not established",
         };
         let default = match device.is_default {
             Some(true) => " (Default)",

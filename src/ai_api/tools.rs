@@ -2577,11 +2577,11 @@ impl AiDataApi {
             .unwrap_or("all");
         let monitor = AudioMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
         let devices: Vec<_> = monitor.devices().iter()
-            .filter(|d| device_type == "all" || matches!((&d.device_type, device_type), (AudioDeviceType::Output, "output") | (AudioDeviceType::Input, "input") | (AudioDeviceType::Duplex, "output") | (AudioDeviceType::Duplex, "input")))
+            .filter(|d| device_type == "all" || matches!((d.device_type, device_type), (Some(AudioDeviceType::Output), "output") | (Some(AudioDeviceType::Input), "input") | (Some(AudioDeviceType::Duplex), "output") | (Some(AudioDeviceType::Duplex), "input")))
             // `state` is `Option` and was formatted with `{:?}` directly, so an
             // unread state reached agents as the text "None" and a read one as
             // "Some(Active)". Both are null now when not read.
-            .map(|d| json!({"id": d.id, "name": d.name, "name_unavailable_reason": d.name.is_none().then_some("the endpoint name was not read"), "type": (d.device_type != AudioDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": d.state.map(|s| format!("{s:?}")), "state_unavailable_reason": d.state.is_none().then_some("the endpoint state was not read"), "type_unavailable_reason": (d.device_type == AudioDeviceType::Unknown).then_some("the device type was not classified"), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
+            .map(|d| json!({"id": d.id, "name": d.name, "name_unavailable_reason": d.name.is_none().then_some("the endpoint name was not read"), "type": d.device_type.map(|t| format!("{t:?}")), "state": d.state.map(|s| format!("{s:?}")), "state_unavailable_reason": d.state.is_none().then_some("the endpoint state was not read"), "type_unavailable_reason": d.device_type.is_none().then_some("the device type was not established by the platform"), "is_default": d.is_default, "volume": d.volume, "muted": d.muted}))
             .collect();
         Ok(json!(devices))
     }

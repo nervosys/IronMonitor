@@ -3271,10 +3271,15 @@ fn resolve_audio(out: &mut Vec<Reading>) {
             Some(Unit::Text),
             "the platform gave this endpoint no name",
         );
-        push_id(
+        // Absent when the platform did not establish the direction, which is not
+        // the same as an endpoint that plays. Publishing `Output` for every device
+        // the platform did not classify was a guess.
+        push_opt(
             out,
             format!("{base}.direction"),
-            &format!("{:?}", d.device_type),
+            d.device_type.map(|t| serde_json::json!(format!("{t:?}"))),
+            Some(Unit::Identifier),
+            "the platform did not establish whether this endpoint plays, captures or both",
         );
         push_opt(
             out,
@@ -3354,10 +3359,12 @@ fn resolve_cameras(out: &mut Vec<Reading>) {
             Some(Unit::Text),
             "the platform gave this camera no name",
         );
-        push_id(
+        push_opt(
             out,
             format!("{base}.connection"),
-            &format!("{:?}", c.connection),
+            c.connection.map(|k| serde_json::json!(format!("{k:?}"))),
+            Some(Unit::Identifier),
+            "the platform did not establish how this camera is attached: macOS does not name the bus for a built-in camera, and Windows and Linux matched no known bus",
         );
         push_id(out, format!("{base}.driver"), &c.driver);
         // Zero pixels is not a frame size, so it is reported absent -- but the

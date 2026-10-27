@@ -1333,11 +1333,14 @@ impl Ontology {
             K::Identity,
             Some(U::Identifier),
             P::Measured,
-            false,
+            // Nullable: an endpoint whose platform data names no direction has
+            // none published, rather than a guessed one.
+            true,
             "Whether this endpoint plays, captures, or does both. The only \
              classification the platform provides - there is no separate \
              headset-or-speaker field, and declaring one would put a question \
-             in the schema that no reader can answer.",
+             in the schema that no reader can answer. Null where the platform \
+             did not establish it.",
         ));
         add(Entity::new(
             "board.audio.{n}.state",
@@ -1412,8 +1415,9 @@ impl Ontology {
             K::Identity,
             Some(U::Identifier),
             P::Measured,
-            false,
-            "How the camera is attached - USB, MIPI CSI, integrated, network.",
+            // Nullable: a camera whose bus was not named is unknown, not integrated.
+            true,
+            "How the camera is attached - USB, MIPI CSI, integrated, network. Null where the platform did not establish it.",
         ));
         add(Entity::new(
             "board.camera.{n}.driver",

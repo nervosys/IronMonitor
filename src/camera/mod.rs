@@ -69,8 +69,13 @@ pub struct CameraInfo {
     /// Device name, `None` where the platform did not give one. The device is
     /// still reported, so a nameless camera is not folded into "no cameras".
     pub name: Option<String>,
-    /// Connection type
-    pub connection: CameraConnection,
+    /// Connection type, `None` where the platform did not say.
+    ///
+    /// The macOS reader used to write `Internal` on every camera whose model
+    /// string did not name USB or virtual. A built-in camera and a phone used
+    /// as a webcam (Continuity Camera) look the same in the output this reader
+    /// has, so that was a guess, and it is `None` now.
+    pub connection: Option<CameraConnection>,
     /// Device path (/dev/video0, device instance, etc.)
     pub device_path: String,
     /// Driver in use
@@ -95,7 +100,15 @@ pub struct CameraInfo {
     pub formats: Option<Vec<String>>,
     /// Device capabilities
     pub capabilities: Vec<CameraCapability>,
-    /// Whether the camera is currently in use / streaming
+    /// Whether the camera is an infrared sensor, `None` where that was not
+    /// established.
+    ///
+    /// Only the Linux reader sets it, from the device's own V4L2 format list: a
+    /// device offering only luminance formats (`GREY`, `Y8`, `Y16`) and no
+    /// colour format is `Some(true)`. The reader used to match the device name
+    /// for "IR " or "infrared", which is a guess about a label, so a camera
+    /// called anything else was never flagged. Windows and macOS do not set it.
+    pub infrared: Option<bool>,
     /// Whether the camera is streaming right now.
     ///
     /// `None` where that could not be established, which is most of the time
@@ -163,6 +176,36 @@ fn fourcc_to_string(code: u32) -> String {
     String::from_utf8_lossy(&code.to_le_bytes())
         .trim_end()
         .to_string()
+}
+
+/// Pixel formats that carry one luminance channel and no colour.
+#[cfg(any(target_os = "linux", test))]
+const LUMINANCE_FORMATS: &[&str] = &["GREY", "Y8", "Y8I", "Y10", "Y12", "Y16"];
+
+/// Depth formats. A depth sensor is neither an infrared camera nor a colour one.
+#[cfg(any(target_os = "linux", test))]
+const DEPTH_FORMATS: &[&str] = &["Z16", "INZI"];
+
+/// Whether a device is an infrared sensor, from the pixel formats it offers.
+///
+/// `Some(true)` when every format is luminance-only: a sensor with no colour
+/// output is what an IR camera is. `Some(false)` when the device offers any
+/// colour format. `None` otherwise, including a depth-only device and a device
+/// whose formats were not read, because neither says whether it is infrared.
+#[cfg(any(target_os = "linux", test))]
+fn infrared_from_formats(formats: Option<&[String]>) -> Option<bool> {
+    let formats = formats.filter(|f| !f.is_empty())?;
+    let is = |list: &[&str], f: &String| list.contains(&f.as_str());
+    if formats
+        .iter()
+        .any(|f| !is(LUMINANCE_FORMATS, f) && !is(DEPTH_FORMATS, f))
+    {
+        Some(false)
+    } else if formats.iter().all(|f| is(LUMINANCE_FORMATS, f)) {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// Monitor for camera and webcam devices
@@ -250,17 +293,19 @@ impl CameraMonitor {
 
             // Infer connection type from device path
             let dev_path_str = base.to_string_lossy().to_string();
+            // `None` when no bus in the sysfs path matches. The old fallback was
+            // `Unknown`, which is a value the ontology published as a measurement.
             let connection = if dev_path_str.contains("usb") {
-                CameraConnection::USB
+                Some(CameraConnection::USB)
             } else if dev_path_str.contains("platform") || dev_path_str.contains("csi") {
-                CameraConnection::CSI
+                Some(CameraConnection::CSI)
             } else if name.to_lowercase().contains("virtual") || name.to_lowercase().contains("obs")
             {
-                CameraConnection::Virtual
+                Some(CameraConnection::Virtual)
             } else if dev_path_str.contains("pci") {
-                CameraConnection::Internal
+                Some(CameraConnection::Internal)
             } else {
-                CameraConnection::Unknown
+                None
             };
 
             let mut capabilities = vec![CameraCapability::VideoCapture];
@@ -278,7 +323,8 @@ impl CameraMonitor {
                     capabilities.push(CameraCapability::DepthSensing);
                 }
             }
-            if name.to_lowercase().contains("ir ") || name.to_lowercase().contains("infrared") {
+            let infrared = infrared_from_formats(formats.as_deref());
+            if infrared == Some(true) {
                 capabilities.push(CameraCapability::Infrared);
             }
 
@@ -297,6 +343,7 @@ impl CameraMonitor {
                 max_height: 0,
                 formats,
                 capabilities,
+                infrared,
                 is_active: Self::is_device_busy(&format!("/dev/{}", dev_name)),
                 index,
             });
@@ -495,16 +542,16 @@ impl CameraMonitor {
             let device_id = item["DeviceID"].as_str().unwrap_or("").to_string();
             let lower = device_id.to_lowercase();
             let connection = if lower.contains("usb") {
-                CameraConnection::USB
+                Some(CameraConnection::USB)
             } else if lower.contains("pci") {
-                CameraConnection::Internal
+                Some(CameraConnection::Internal)
             } else if name_lower.contains("virtual") || name_lower.contains("obs") {
-                CameraConnection::Virtual
+                Some(CameraConnection::Virtual)
             } else {
                 // Not established from the device ID. The old fallback called every
                 // other camera Internal, including ones on buses this reader does not
-                // recognise.
-                CameraConnection::Unknown
+                // recognise, and then `Unknown`, which is a value rather than an absence.
+                None
             };
 
             self.cameras.push(CameraInfo {
@@ -522,6 +569,8 @@ impl CameraMonitor {
                 // queried here, and an empty list would claim the camera has none.
                 formats: None,
                 capabilities: vec![CameraCapability::VideoCapture],
+                // Not read on Windows: the PnP record does not say whether a sensor is infrared.
+                infrared: None,
                 // See `camera_in_use_windows`: the negative is attributable
                 // to every camera, the positive is not attributable to any.
                 is_active: in_use,
@@ -595,13 +644,16 @@ fn parse_macos_cameras(text: &str) -> Vec<CameraInfo> {
         .filter(|b| !b.name.is_empty())
         .enumerate()
         .map(|(i, b)| {
+            // The bus is named only where the model string names it. A built-in
+            // camera is not named as one, so it gets no connection rather than
+            // `Internal`: the output does not separate it from other cameras.
             let model = b.model_id.to_lowercase();
             let connection = if model.contains("usb") {
-                CameraConnection::USB
+                Some(CameraConnection::USB)
             } else if model.contains("virtual") {
-                CameraConnection::Virtual
+                Some(CameraConnection::Virtual)
             } else {
-                CameraConnection::Internal
+                None
             };
             CameraInfo {
                 name: Some(b.name),
@@ -613,6 +665,7 @@ fn parse_macos_cameras(text: &str) -> Vec<CameraInfo> {
                 max_height: 0,
                 formats: None,
                 capabilities: vec![CameraCapability::VideoCapture],
+                infrared: None,
                 is_active: None,
                 index: i as u32,
             }
@@ -676,7 +729,7 @@ mod tests {
     fn test_camera_info_resolution() {
         let cam = CameraInfo {
             name: Some("Test".into()),
-            connection: CameraConnection::USB,
+            connection: Some(CameraConnection::USB),
             device_path: String::new(),
             driver: String::new(),
             vendor: None,
@@ -684,6 +737,7 @@ mod tests {
             max_height: 1080,
             formats: None,
             capabilities: Vec::new(),
+            infrared: None,
             is_active: Some(false),
             index: 0,
         };
@@ -695,7 +749,7 @@ mod tests {
     fn test_camera_serialization() {
         let cam = CameraInfo {
             name: Some("Test Camera".into()),
-            connection: CameraConnection::Internal,
+            connection: Some(CameraConnection::Internal),
             device_path: "/dev/video0".into(),
             driver: "uvcvideo".into(),
             vendor: Some("Logitech".into()),
@@ -703,6 +757,7 @@ mod tests {
             max_height: 1080,
             formats: Some(vec!["YUYV".into(), "MJPG".into()]),
             capabilities: vec![CameraCapability::VideoCapture],
+            infrared: Some(false),
             is_active: Some(false),
             index: 0,
         };
@@ -755,13 +810,15 @@ mod tests {
 
         assert_eq!(cams[0].name.as_deref(), Some("FaceTime HD Camera"));
         assert_eq!(cams[0].index, 0);
-        assert_eq!(cams[0].connection, CameraConnection::Internal);
+        // Nothing in the output names a bus for the built-in camera, so it is not
+        // called Internal.
+        assert_eq!(cams[0].connection, None);
         assert_eq!(cams[0].device_path, "3F2A0000000000000000000000000001");
 
         // The last device gets the same connection rule as the rest.
         assert_eq!(cams[1].name.as_deref(), Some("Logi C920 HD Pro Webcam"));
         assert_eq!(cams[1].index, 1);
-        assert_eq!(cams[1].connection, CameraConnection::USB);
+        assert_eq!(cams[1].connection, Some(CameraConnection::USB));
         assert_eq!(cams[1].device_path, "0x14100000046d08e5");
     }
 
@@ -778,7 +835,47 @@ mod tests {
         for cam in parse_macos_cameras(MACOS_CAMERAS) {
             assert_eq!(cam.capabilities, vec![CameraCapability::VideoCapture]);
             assert_eq!(cam.is_active, None);
+            assert_eq!(cam.infrared, None);
         }
+    }
+
+    fn formats(list: &[&str]) -> Vec<String> {
+        list.iter().map(|f| f.to_string()).collect()
+    }
+
+    /// A colour webcam offers YUYV and MJPG; it is not infrared.
+    #[test]
+    fn test_infrared_colour_formats_mean_not_infrared() {
+        let f = formats(&["YUYV", "MJPG"]);
+        assert_eq!(infrared_from_formats(Some(&f)), Some(false));
+        let mixed = formats(&["GREY", "YUYV"]);
+        assert_eq!(infrared_from_formats(Some(&mixed)), Some(false));
+    }
+
+    /// An IR sensor offers only luminance formats, whatever its name says.
+    #[test]
+    fn test_infrared_luminance_only_formats_mean_infrared() {
+        let grey = formats(&["GREY"]);
+        assert_eq!(infrared_from_formats(Some(&grey)), Some(true));
+        let y8_y16 = formats(&["Y8", "Y16"]);
+        assert_eq!(infrared_from_formats(Some(&y8_y16)), Some(true));
+    }
+
+    /// A depth sensor offers Z16 and no colour. It is not called infrared, and
+    /// nothing here establishes that it is not.
+    #[test]
+    fn test_infrared_depth_only_is_unknown() {
+        let depth = formats(&["Z16"]);
+        assert_eq!(infrared_from_formats(Some(&depth)), None);
+        let depth_and_grey = formats(&["Z16", "GREY"]);
+        assert_eq!(infrared_from_formats(Some(&depth_and_grey)), None);
+    }
+
+    /// No list read, or an empty one, establishes nothing.
+    #[test]
+    fn test_infrared_without_a_format_list_is_unknown() {
+        assert_eq!(infrared_from_formats(None), None);
+        assert_eq!(infrared_from_formats(Some(&[])), None);
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //! - macOS: `system_profiler SPAudioDataType`
 //!
 //! Note that `system_profiler` reports which device is *default* for playback and
-//! capture, not what each device is capable of, so macOS device types are inferred
-//! rather than read directly.
+//! capture, not what each device is capable of. The macOS direction is read from
+//! the per-device channel counts instead, and is `None` where they are absent.
 
 use crate::error::IronError;
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,8 @@ pub enum AudioDeviceType {
     Output,
     Input,
     Duplex,
-    /// The platform reported neither playback nor capture for this device. This
-    /// used to be classed as `Output`, which the card list does not say.
+    /// Retained for compatibility. No reader produces it: an endpoint whose
+    /// direction was not established is `device_type: None`, not a class of its own.
     Unknown,
 }
 
@@ -37,7 +37,13 @@ pub struct AudioDevice {
     pub id: String,
     /// Endpoint name as the platform presents it, `None` where it was not read.
     pub name: Option<String>,
-    pub device_type: AudioDeviceType,
+    /// Whether the endpoint plays, captures, or both. `None` where the platform
+    /// did not establish it.
+    ///
+    /// The macOS reader used to write `Output` for every endpoint that was not
+    /// the default input, and the note on that path said capability was
+    /// "inferred". It now reads the channel counts `system_profiler` reports.
+    pub device_type: Option<AudioDeviceType>,
     /// Endpoint state, where the platform reports one.
     ///
     /// `None` where it was not established, which was not previously
@@ -485,11 +491,11 @@ impl AudioMonitor {
             self.devices.push(AudioDevice {
                 id: format!("audio{idx}"),
                 name,
-                device_type: if endpoint.is_output {
+                device_type: Some(if endpoint.is_output {
                     AudioDeviceType::Output
                 } else {
                     AudioDeviceType::Input
-                },
+                }),
                 state: endpoint.state,
                 // From the audio service. This was "whichever row came first",
                 // which on this machine named an audio *controller* as the
@@ -612,11 +618,13 @@ impl AudioMonitor {
                         let (has_playback, has_capture) =
                             alsa_pcm_directions(pcm_names.iter().map(String::as_str));
 
+                        // A card with neither playback nor capture PCMs has no direction
+                        // to report, so it is `None` rather than a class of its own.
                         let device_type = match (has_playback, has_capture) {
-                            (true, true) => AudioDeviceType::Duplex,
-                            (true, false) => AudioDeviceType::Output,
-                            (false, true) => AudioDeviceType::Input,
-                            (false, false) => AudioDeviceType::Unknown,
+                            (true, true) => Some(AudioDeviceType::Duplex),
+                            (true, false) => Some(AudioDeviceType::Output),
+                            (false, true) => Some(AudioDeviceType::Input),
+                            (false, false) => None,
                         };
 
                         self.devices.push(AudioDevice {
@@ -688,23 +696,10 @@ impl AudioMonitor {
                                 .and_then(|v| v.as_str())
                                 == Some("spaudio_yes");
 
-                            // These keys mark which device is *default* for each
-                            // direction, not what a device supports, so capability is
-                            // inferred.
-                            //
-                            // The previous expression was `(has_output || true, ...)`,
-                            // whose first element is unconditionally true — so
-                            // `has_output` was dead and no device was ever classified
-                            // as Input, including the default microphone.
-                            let device_type = if has_input && has_output {
-                                AudioDeviceType::Duplex
-                            } else if has_input {
-                                AudioDeviceType::Input
-                            } else {
-                                // Capability is unknown; output is the right default
-                                // for the overwhelming majority of audio devices.
-                                AudioDeviceType::Output
-                            };
+                            // The `coreaudio_default_*` keys above say which device is
+                            // default, not what it supports, so they do not give the
+                            // direction. The channel counts do; see `macos_device_type`.
+                            let device_type = macos_device_type(device);
 
                             self.devices.push(AudioDevice {
                                 id: format!("audio{}", idx),
@@ -728,6 +723,31 @@ impl AudioMonitor {
         // No fallback device, and no invented 100% volume with it. See the
         // Windows path above.
         Ok(())
+    }
+}
+
+/// The direction of one `system_profiler SPAudioDataType` device.
+///
+/// `coreaudio_device_input` and `coreaudio_device_output` carry the channel
+/// count of each direction the device has streams in, and are absent for a
+/// direction it lacks. `None` when neither is reported, which the reader used to
+/// turn into `Output` for every device.
+#[cfg(any(target_os = "macos", test))]
+fn macos_device_type(device: &serde_json::Value) -> Option<AudioDeviceType> {
+    let has_channels = |key: &str| {
+        device
+            .get(key)
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .is_some_and(|n| n > 0)
+    };
+    match (
+        has_channels("coreaudio_device_input"),
+        has_channels("coreaudio_device_output"),
+    ) {
+        (true, true) => Some(AudioDeviceType::Duplex),
+        (true, false) => Some(AudioDeviceType::Input),
+        (false, true) => Some(AudioDeviceType::Output),
+        (false, false) => None,
     }
 }
 
@@ -938,6 +958,45 @@ mod tests {
         assert_eq!(default_sink_alsa_card("Server Version: 15\n", sinks), None);
     }
 
+    /// Shaped like the `SPAudioDataType` entries of `system_profiler -json`: the
+    /// speakers have output streams only, the microphone input only, and the
+    /// default flags do not decide the direction.
+    #[test]
+    fn the_macos_direction_comes_from_the_stream_counts_not_the_defaults() {
+        let speakers: serde_json::Value = serde_json::from_str(
+            r#"{"_name": "MacBook Pro Speakers", "coreaudio_device_output": 2, "coreaudio_default_audio_output_device": "spaudio_yes"}"#,
+        )
+        .unwrap();
+        assert_eq!(macos_device_type(&speakers), Some(AudioDeviceType::Output));
+
+        let microphone: serde_json::Value = serde_json::from_str(
+            r#"{"_name": "MacBook Pro Microphone", "coreaudio_device_input": 1}"#,
+        )
+        .unwrap();
+        assert_eq!(macos_device_type(&microphone), Some(AudioDeviceType::Input));
+
+        let interface: serde_json::Value = serde_json::from_str(
+            r#"{"_name": "USB Interface", "coreaudio_device_input": "2", "coreaudio_device_output": 2}"#,
+        )
+        .unwrap();
+        assert_eq!(macos_device_type(&interface), Some(AudioDeviceType::Duplex));
+    }
+
+    /// A device whose output names no stream count is not called an output, and
+    /// a zero count is not a direction.
+    #[test]
+    fn a_macos_device_with_no_stream_counts_has_no_direction() {
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{"_name": "Mystery Device"}"#).unwrap();
+        assert_eq!(macos_device_type(&bare), None);
+
+        let zero: serde_json::Value = serde_json::from_str(
+            r#"{"_name": "Silent", "coreaudio_device_input": 0, "coreaudio_device_output": 0}"#,
+        )
+        .unwrap();
+        assert_eq!(macos_device_type(&zero), None);
+    }
+
     /// An NVIDIA HDMI card has playback PCMs only on device numbers other than 0,
     /// and the reader used to report it as having no playback at all.
     #[test]
@@ -1013,7 +1072,7 @@ mod tests {
         let device = AudioDevice {
             id: "test".to_string(),
             name: Some("Test Device".to_string()),
-            device_type: AudioDeviceType::Output,
+            device_type: Some(AudioDeviceType::Output),
             state: Some(AudioState::Active),
             is_default: Some(true),
             is_output: true,
