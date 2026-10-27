@@ -54,6 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A GPU backend that fails to read its adapters is published as
+  `gpu.backend.<vendor>.<unreadable>` with its reason, and `gpu.<none>` is no
+  longer claimed while a backend has failed. The TUI shows an unread GPU or disk
+  name as "unknown" rather than a blank.
+- Profile providers report a failed read as an error rather than an empty group
+  list; `ProfileSnapshot.errors` is now populated, and `profile list`, the TUI,
+  the GUI and the AI tool show "not read: <reason>" instead of "0 groups". The GUI
+  audit panel shows why the apply audit log could not be read.
+- Tuning no longer picks a numeric choice by substring, so a wanted "1" does not
+  select "10"; exact label or value matches are preferred.
+- Anomaly detection and predictive maintenance report which checks could not run
+  and why, so "nothing checked" is no longer indistinguishable from "healthy".
+- `cpu_microarch` no longer publishes single-thread score, scaling, IPC, boost
+  clock or TDP estimates from a name-keyed table; those fields are `None`.
 - Disk readers no longer report values they did not read: an ATA drive's failure
   prediction is `None` when the driver's reply was too short to carry it (it was
   read as "passed"), a Windows filesystem with no reported type is empty instead of
