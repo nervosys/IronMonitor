@@ -668,15 +668,6 @@ impl DiskDevice for WindowsDisk {
 
     fn filesystem_info(&self) -> Result<Vec<FilesystemInfo>, Error> {
         use serde::Deserialize;
-        use windows::core::PCWSTR;
-        use windows::Win32::Storage::FileSystem::{
-            GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
-        };
-
-        // Drive type constants
-        const DRIVE_FIXED: u32 = 3;
-        const DRIVE_REMOVABLE: u32 = 2;
-
         #[derive(Deserialize, Debug)]
         #[serde(rename_all = "PascalCase")]
         #[allow(dead_code)]
@@ -744,7 +735,11 @@ impl DiskDevice for WindowsDisk {
             for partition in &partitions {
                 // Find mapping for this partition
                 for mapping in &mappings {
-                    if mapping.antecedent.contains(&partition.device_i_d) {
+                    // Matched with its closing quote. A bare `contains` let
+                    // "Disk #0, Partition #1" match "Disk #0, Partition #10", so
+                    // a disk with ten or more partitions listed volumes twice.
+                    let quoted = format!("DeviceID=\"{}\"", partition.device_i_d);
+                    if mapping.antecedent.contains(&quoted) {
                         // Extract drive letter from dependent (e.g., "Win32_LogicalDisk.DeviceID=\"C:\"")
                         if let Some(start) = mapping.dependent.find("DeviceID=\"") {
                             let start = start + 10;
@@ -789,74 +784,15 @@ impl DiskDevice for WindowsDisk {
             }
         }
 
-        // Fallback: if WMI didn't work, try Windows API directly for all drives
-        // (this won't correctly map to physical disks but at least shows something)
-        if filesystems.is_empty() {
-            unsafe {
-                let drives = GetLogicalDrives();
-                for i in 0..26u32 {
-                    if drives & (1 << i) != 0 {
-                        let drive_letter = (b'A' + i as u8) as char;
-                        let root_path: Vec<u16> = format!("{}:\\", drive_letter)
-                            .encode_utf16()
-                            .chain(std::iter::once(0))
-                            .collect();
+        // There used to be a fallback here that, when no partition of this disk
+        // mapped to a volume, listed every fixed and removable drive letter on the
+        // machine as this disk's filesystems ("won't correctly map to physical
+        // disks but at least shows something"). A disk with no lettered volume, such
+        // as one holding only Linux partitions, was reported as mounted at C:. A
+        // drive letter that cannot be tied to this disk is not one of its
+        // filesystems, so the fallback is gone.
 
-                        let drive_type = GetDriveTypeW(PCWSTR(root_path.as_ptr()));
-
-                        // Only include fixed and removable drives
-                        if drive_type == DRIVE_FIXED || drive_type == DRIVE_REMOVABLE {
-                            let mut free_bytes_available: u64 = 0;
-                            let mut total_bytes: u64 = 0;
-                            let mut total_free_bytes: u64 = 0;
-
-                            if GetDiskFreeSpaceExW(
-                                PCWSTR(root_path.as_ptr()),
-                                Some(&mut free_bytes_available),
-                                Some(&mut total_bytes),
-                                Some(&mut total_free_bytes),
-                            )
-                            .is_ok()
-                            {
-                                // Get filesystem type
-                                let mut fs_name: [u16; 256] = [0; 256];
-                                let mut volume_name: [u16; 256] = [0; 256];
-
-                                let _ = GetVolumeInformationW(
-                                    PCWSTR(root_path.as_ptr()),
-                                    Some(&mut volume_name),
-                                    None,
-                                    None,
-                                    None,
-                                    Some(&mut fs_name),
-                                );
-
-                                let fs_type = String::from_utf16_lossy(&fs_name)
-                                    .trim_end_matches('\0')
-                                    .to_string();
-
-                                if !fs_type.is_empty() {
-                                    filesystems.push(FilesystemInfo {
-                                        mount_point: PathBuf::from(format!("{}:\\", drive_letter)),
-                                        fs_type,
-                                        total_size: Some(total_bytes),
-                                        used_size: Some(
-                                            total_bytes.saturating_sub(total_free_bytes),
-                                        ),
-                                        available_size: Some(free_bytes_available),
-                                        total_inodes: None,
-                                        used_inodes: None,
-                                        read_only: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Neither route found a filesystem and a WMI query failed: that is an error,
+        // No filesystem was found and a WMI query failed: that is an error,
         // not a machine with none.
         if filesystems.is_empty() {
             if let Some(reason) = wmi_failure {

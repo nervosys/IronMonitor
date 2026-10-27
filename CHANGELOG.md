@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Windows disk with no lettered volume was given every drive letter on the
+  machine as its filesystems by a fallback that said it "won't correctly map to
+  physical disks"; a 970 EVO holding only Linux partitions was reported mounted
+  at C:. The fallback is gone, so such a disk reports no mounted filesystem, and
+  a partition is matched to its volume by its full quoted id, so "Partition #1"
+  no longer also matches "Partition #10".
 - The NVIDIA and Windows GPU readers no longer report values they did not read. A GPU process whose owner could not be looked up has an empty user rather than the literal `<unknown>`. A Windows adapter's overall utilization is its graphics engine or nothing; it used to be the mean of the compute, copy and video engines when graphics did not answer. A Windows memory counter that was absent in a later row no longer erases the reading an earlier row gave.
 - The AMD and Intel GPU readers no longer report values they did not read. The AMD and Intel Linux readers no longer publish a slowdown threshold computed as 85% of critical, the Intel reader no longer publishes the frequency-ratio "utilization" (it is `None`), and the Intel reader no longer treats the maximum operating temperature as the shutdown threshold. A default power limit is no longer the cap in force, the AMD and Intel UUIDs and driver versions are no longer synthesized or filled with a driver name or the literal "i915"/"amdgpu", and the Intel name no longer reads "Intel i915 GPU". Windows Intel adapters store the PCI address rather than the PnP instance path or "unknown", and Windows AMD and Intel adapters no longer take a total from WMI's 32-bit AdapterRAM when DXGI does not match.
 - Disk NVMe data-unit counts from the fallback readers were 1000 times too large, because bytes were divided by 512 rather than by NVMe's 1000 x 512-byte data unit. A macOS disk reported its interface as the string "Unknown" when its type was unknown, and reported "no mounted filesystem" for every disk because the filesystem reader was never implemented; both now report the value as unavailable.
