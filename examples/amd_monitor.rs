@@ -7,7 +7,7 @@ use ironmonitor::gpu::amd_rocm;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("IronMonitor - AMD GPU Monitoring\n");
 
-    let devices = match amd_rocm::enumerate() {
+    let devices = match amd_rocm::enumerate(&mut Vec::new()) {
         Ok(devs) => devs,
         Err(e) => {
             eprintln!("Failed to enumerate AMD GPUs: {:?}", e);

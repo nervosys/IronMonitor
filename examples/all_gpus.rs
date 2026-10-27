@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "amd")]
     {
         print!("[SCAN] Scanning for AMD GPUs... ");
-        match ironmonitor::gpu::amd_rocm::enumerate() {
+        match ironmonitor::gpu::amd_rocm::enumerate(&mut Vec::new()) {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "intel")]
     {
         print!("[SCAN] Scanning for Intel GPUs... ");
-        match ironmonitor::gpu::intel_levelzero::enumerate() {
+        match ironmonitor::gpu::intel_levelzero::enumerate(&mut Vec::new()) {
             Ok(mut devices) => {
                 let count = devices.len();
                 println!("[OK] Found {}", count);

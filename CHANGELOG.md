@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespace size, and the ATA power-on-hours and LBA-byte fields are documented as
   raw counts. `ironmon profile audit --json` keeps unparsable lines as
   `"unparsed"` entries instead of dropping them.
+- GPU readers no longer report values they did not read: the xe graphics clock
+  is read in MHz rather than divided as Hz (it read ~0), GPU process lists
+  return "not read" rather than an empty list on paths with no reader, AMD
+  `power.current` is `power1_input` (no longer the average), the Windows AMD
+  filter matches the PCI vendor rather than the substring "ati", Windows Intel
+  discrete is read from the PCI bus rather than the product name, unreadable
+  sysfs cards are recorded as detection failures, and fan percent has no value
+  when the PWM maximum is zero.
 - A Windows disk with no lettered volume was given every drive letter on the
   machine as its filesystems by a fallback that said it "won't correctly map to
   physical disks"; a 970 EVO holding only Linux partitions was reported mounted

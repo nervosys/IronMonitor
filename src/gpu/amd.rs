@@ -364,8 +364,13 @@ impl Gpu for AmdGpu {
         {
             parse_fdinfo_processes(&self.card_path)
         }
+        // The fdinfo reader is Linux-only. Elsewhere no list was read, which is
+        // not the same as an empty one. This used to return `Ok(vec![])`.
         #[cfg(not(target_os = "linux"))]
-        Ok(vec![])
+        Err(Error::NotSupported(
+            "GPU process lists are read from /proc/*/fdinfo, which exists only on Linux"
+                .to_string(),
+        ))
     }
 
     fn kill_process(&self, pid: u32) -> Result<(), Error> {
@@ -426,80 +431,82 @@ fn parse_fdinfo_processes(card_path: &str) -> Result<Vec<GpuProcess>, Error> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    if let Ok(proc_entries) = fs::read_dir(proc_dir) {
-        for proc_entry in proc_entries.flatten() {
-            let pid_str = proc_entry.file_name();
-            let pid_str = pid_str.to_string_lossy();
+    // An unlistable /proc is a failed read, not a machine with no GPU clients.
+    // This used to return an empty list.
+    let proc_entries = fs::read_dir(proc_dir)
+        .map_err(|e| Error::Other(format!("cannot list /proc for DRM clients: {e}")))?;
+    for proc_entry in proc_entries.flatten() {
+        let pid_str = proc_entry.file_name();
+        let pid_str = pid_str.to_string_lossy();
 
-            // Skip non-numeric entries
-            let pid: u32 = match pid_str.parse() {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+        // Skip non-numeric entries
+        let pid: u32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
-            // Check fdinfo for this process
-            let fdinfo_dir = proc_entry.path().join("fdinfo");
-            if !fdinfo_dir.exists() {
-                continue;
-            }
+        // Check fdinfo for this process
+        let fdinfo_dir = proc_entry.path().join("fdinfo");
+        if !fdinfo_dir.exists() {
+            continue;
+        }
 
-            if let Ok(fdinfo_entries) = fs::read_dir(&fdinfo_dir) {
-                for fdinfo_entry in fdinfo_entries.flatten() {
-                    if let Ok(content) = fs::read_to_string(fdinfo_entry.path()) {
-                        // Look for drm-client-id and drm-driver: amdgpu
-                        if content.contains("drm-driver:\tamdgpu") {
-                            // `Option`, not `0`: a client whose
-                            // `drm-memory-vram:` line is absent or
-                            // unparseable is not a client using no VRAM,
-                            // and the two were indistinguishable here.
-                            let mut vram_mem = None;
-                            let mut gtt_mem = None;
+        if let Ok(fdinfo_entries) = fs::read_dir(&fdinfo_dir) {
+            for fdinfo_entry in fdinfo_entries.flatten() {
+                if let Ok(content) = fs::read_to_string(fdinfo_entry.path()) {
+                    // Look for drm-client-id and drm-driver: amdgpu
+                    if content.contains("drm-driver:\tamdgpu") {
+                        // `Option`, not `0`: a client whose
+                        // `drm-memory-vram:` line is absent or
+                        // unparseable is not a client using no VRAM,
+                        // and the two were indistinguishable here.
+                        let mut vram_mem = None;
+                        let mut gtt_mem = None;
 
-                            for line in content.lines() {
-                                if line.starts_with("drm-memory-vram:") {
-                                    // Parse "drm-memory-vram:\t1234 KiB"
-                                    if let Some(val) = parse_fdinfo_memory(line) {
-                                        vram_mem = Some(val);
-                                    }
-                                } else if line.starts_with("drm-memory-gtt:") {
-                                    if let Some(val) = parse_fdinfo_memory(line) {
-                                        gtt_mem = Some(val);
-                                    }
+                        for line in content.lines() {
+                            if line.starts_with("drm-memory-vram:") {
+                                // Parse "drm-memory-vram:\t1234 KiB"
+                                if let Some(val) = parse_fdinfo_memory(line) {
+                                    vram_mem = Some(val);
+                                }
+                            } else if line.starts_with("drm-memory-gtt:") {
+                                if let Some(val) = parse_fdinfo_memory(line) {
+                                    gtt_mem = Some(val);
                                 }
                             }
-
-                            // Reported if either figure was read at all. The
-                            // test was `vram_mem > 0 || gtt_mem > 0`, which
-                            // also dropped every client that genuinely holds
-                            // no VRAM -- a compute job between allocations.
-                            if vram_mem.is_some() || gtt_mem.is_some() {
-                                // Get process name
-                                let name = fs::read_to_string(proc_entry.path().join("comm"))
-                                    .map(|s| s.trim().to_string())
-                                    .unwrap_or_else(|_| format!("Process {}", pid));
-
-                                processes.push(GpuProcess {
-                                    pid,
-                                    name,
-                                    // fdinfo names the process's own VRAM use but
-                                    // not who owns it or what class of work it is.
-                                    user: String::new(),
-                                    process_type: GpuProcessType::Unknown,
-                                    gpu_usage: None,
-                                    // Carried through rather than wrapped:
-                                    // with a readable gtt line and an
-                                    // unreadable vram one, `Some(vram_mem)`
-                                    // published a measured 0 B.
-                                    memory_usage: vram_mem,
-                                    memory_usage_percent: None,
-                                    encoder_usage: None,
-                                    decoder_usage: None,
-                                    cpu_usage: None,
-                                    cpu_memory: None,
-                                });
-                            }
-                            break; // Found amdgpu for this process
                         }
+
+                        // Reported if either figure was read at all. The
+                        // test was `vram_mem > 0 || gtt_mem > 0`, which
+                        // also dropped every client that genuinely holds
+                        // no VRAM -- a compute job between allocations.
+                        if vram_mem.is_some() || gtt_mem.is_some() {
+                            // Get process name
+                            let name = fs::read_to_string(proc_entry.path().join("comm"))
+                                .map(|s| s.trim().to_string())
+                                .unwrap_or_else(|_| format!("Process {}", pid));
+
+                            processes.push(GpuProcess {
+                                pid,
+                                name,
+                                // fdinfo names the process's own VRAM use but
+                                // not who owns it or what class of work it is.
+                                user: String::new(),
+                                process_type: GpuProcessType::Unknown,
+                                gpu_usage: None,
+                                // Carried through rather than wrapped:
+                                // with a readable gtt line and an
+                                // unreadable vram one, `Some(vram_mem)`
+                                // published a measured 0 B.
+                                memory_usage: vram_mem,
+                                memory_usage_percent: None,
+                                encoder_usage: None,
+                                decoder_usage: None,
+                                cpu_usage: None,
+                                cpu_memory: None,
+                            });
+                        }
+                        break; // Found amdgpu for this process
                     }
                 }
             }
@@ -650,20 +657,24 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
         let name = ctrl.name.as_deref().unwrap_or("");
         let name_lower = name.to_lowercase();
 
-        // Filter for AMD GPUs
-        if !name_lower.contains("amd")
-            && !name_lower.contains("radeon")
-            && !name_lower.contains("ati")
-        {
-            continue;
-        }
-
         // WMI's PNPDeviceID is a PnP instance path (`PCI\VEN_1002&DEV_...\...`),
         // which is not an address. This used to be stored as the bus id, so the
         // ontology could never join the adapter to `pci.*`. The address is the
         // one the PCI enumerator reads from the same device's registry
         // `LocationInformation`; `None` when Windows records no PCI location.
         let pnp_id = ctrl.pnp_device_i_d.as_deref().unwrap_or("");
+
+        // Filter for AMD GPUs by the PCI vendor in the PnP id. The name is
+        // consulted only when WMI gave no PnP id. This used to match the
+        // substring "ati" in the name, which matches unrelated names.
+        let is_amd = match pnp_vendor_id(pnp_id) {
+            Some(vendor) => vendor == 0x1002,
+            None => name_lower.contains("amd") || name_lower.contains("radeon"),
+        };
+        if !is_amd {
+            continue;
+        }
+
         let pci_bus_id = crate::pci_devices::pci_address_of(pnp_id);
         let label = pci_bus_id.clone().unwrap_or_else(|| pnp_id.to_string());
 
@@ -710,6 +721,15 @@ fn detect_amd_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// The PCI vendor id in a PnP instance path such as `PCI\VEN_1002&DEV_73DF\...`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pnp_vendor_id(pnp_id: &str) -> Option<u16> {
+    let upper = pnp_id.to_ascii_uppercase();
+    let start = upper.find("VEN_")? + 4;
+    let hex = upper.get(start..start + 4)?;
+    u16::from_str_radix(hex, 16).ok()
 }
 
 /// AMD GPU with WMI-sourced data on Windows
@@ -876,7 +896,11 @@ impl Gpu for WmiAmdGpu {
     }
 
     fn processes(&self) -> Result<Vec<GpuProcess>, Error> {
-        Ok(vec![])
+        // No process reader exists on this path. This used to return an empty
+        // list, which users read as "no GPU processes".
+        Err(Error::NotSupported(
+            "GPU process lists are not read on Windows for AMD GPUs".to_string(),
+        ))
     }
 
     fn kill_process(&self, _pid: u32) -> Result<(), Error> {
@@ -890,6 +914,22 @@ impl Gpu for WmiAmdGpu {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn amd_is_identified_by_the_pci_vendor_in_the_pnp_id() {
+        // A realistic Win32_VideoController PNPDeviceID for a Radeon card.
+        assert_eq!(
+            pnp_vendor_id(r"PCI\VEN_1002&DEV_73DF&SUBSYS_E3361002&REV_C1\4&2A1B3C4D&0&0008"),
+            Some(0x1002)
+        );
+        assert_eq!(
+            pnp_vendor_id(r"PCI\VEN_8086&DEV_46A6&SUBSYS_00000000&REV_0C\3&11583659&0&10"),
+            Some(0x8086)
+        );
+        // No PnP id, or one with no vendor field, yields no vendor id.
+        assert_eq!(pnp_vendor_id(""), None);
+        assert_eq!(pnp_vendor_id(r"PCI\VEN_10"), None);
+    }
 
     #[test]
     fn test_amd_gpu_creation() {

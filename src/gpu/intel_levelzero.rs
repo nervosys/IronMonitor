@@ -98,6 +98,30 @@ impl IntelGpu {
         self.read_gt_string(attr)?.parse::<u64>().ok()
     }
 
+    /// Read an xe frequency attribute (`act_freq`, `cur_freq`, `max_freq`) from
+    /// the first tile GT that has it, at `device/tile*/gt*/freq0/<attr>`.
+    fn read_xe_freq_mhz(&self, attr: &str) -> Option<u32> {
+        let tiles = fs::read_dir(&self.device_path).ok()?;
+        for tile in tiles.filter_map(|e| e.ok()) {
+            if !tile.file_name().to_string_lossy().starts_with("tile") {
+                continue;
+            }
+            let Ok(gts) = fs::read_dir(tile.path()) else {
+                continue;
+            };
+            for gt in gts.filter_map(|e| e.ok()) {
+                if !gt.file_name().to_string_lossy().starts_with("gt") {
+                    continue;
+                }
+                let content = fs::read_to_string(gt.path().join("freq0").join(attr));
+                if let Some(freq) = content.ok().and_then(|s| parse_freq_mhz(&s)) {
+                    return Some(freq);
+                }
+            }
+        }
+        None
+    }
+
     /// Read hwmon temperature sensor
     fn read_hwmon_temp(&self, hwmon_path: &std::path::Path, sensor: &str) -> Option<f32> {
         fs::read_to_string(hwmon_path.join(sensor))
@@ -337,10 +361,12 @@ impl Device for IntelGpu {
     }
 
     fn clocks(&self) -> Result<Clocks, Error> {
-        // Try xe driver interface first
-        if let Some(freq) = self.read_gt_u64("freq0/act_freq") {
+        // Try xe driver interface first. The xe driver writes freq files in MHz
+        // (as i915's gt_*_freq_mhz do), so the value needs no conversion. This
+        // used to divide by 1,000,000 as if it were Hz, which read ~0 MHz.
+        if let Some(freq) = self.read_xe_freq_mhz("act_freq") {
             return Ok(Clocks {
-                graphics: Some((freq / 1_000_000) as u32), // Convert Hz to MHz
+                graphics: Some(freq),
                 // Not exposed by the xe driver. `0` said "this card's memory is
                 // clocked at zero", which no running card is.
                 memory: None,
@@ -446,8 +472,10 @@ impl Device for IntelGpu {
                     .and_then(|s| s.trim().parse::<u32>().ok())
                     .unwrap_or(255); // Default to 255 if pwm1_max not available
 
-                let percentage = (pwm * 100) / pwm_max;
-                return Ok(Some(FanSpeed::Percent(percentage)));
+                // A zero maximum has no percentage. This used to divide by it.
+                if let Some(percentage) = pwm_percent(pwm, pwm_max) {
+                    return Ok(Some(FanSpeed::Percent(percentage)));
+                }
             }
 
             // Fallback: Read fan speed in RPM
@@ -472,14 +500,33 @@ impl Device for IntelGpu {
     }
 
     fn processes(&self) -> Result<Vec<Box<dyn GpuProcess>>, Error> {
-        // Would need to parse /proc/*/fdinfo for DRM clients
-        // This is complex and requires matching file descriptors
-        Ok(Vec::new())
+        // No reader runs here. DRM client usage would come from /proc/*/fdinfo,
+        // which this path does not parse. This used to return an empty list, which
+        // users read as "no GPU processes".
+        Err(Error::NotSupportedBecause(
+            concat!(
+                "GPU process lists are not read on the xe/i915 sysfs path; ",
+                "DRM clients are in /proc/*/fdinfo, which this reader does not parse"
+            )
+            .to_string(),
+        ))
     }
 }
 
-/// Enumerate all Intel GPUs in the system
-pub fn enumerate() -> Result<Vec<Box<dyn Device>>, Error> {
+/// Parse an xe or i915 frequency file. Both write whole megahertz.
+fn parse_freq_mhz(content: &str) -> Option<u32> {
+    content.trim().parse::<u32>().ok()
+}
+
+/// Fan percentage from a PWM duty value. `None` when the maximum is zero,
+/// which has no percentage.
+fn pwm_percent(pwm: u32, pwm_max: u32) -> Option<u32> {
+    (pwm_max > 0).then(|| pwm.saturating_mul(100) / pwm_max)
+}
+
+/// Enumerate all Intel GPUs in the system. A card that is found but whose
+/// reader cannot be built is described in `failures`, not dropped.
+pub fn enumerate(failures: &mut Vec<String>) -> Result<Vec<Box<dyn Device>>, Error> {
     let mut devices: Vec<Box<dyn Device>> = Vec::new();
 
     // Scan /sys/class/drm for Intel GPU devices
@@ -519,7 +566,7 @@ pub fn enumerate() -> Result<Vec<Box<dyn Device>>, Error> {
                     if class.trim().starts_with("0x03") {
                         match IntelGpu::new(index, card_path) {
                             Ok(gpu) => devices.push(Box::new(gpu)),
-                            Err(_) => continue,
+                            Err(e) => failures.push(format!("card{index}: {e}")),
                         }
                     }
                 }
@@ -543,5 +590,21 @@ mod tests {
         // Verify Intel vendor is properly set
         let vendor = Vendor::Intel;
         assert_eq!(format!("{}", vendor), "Intel");
+    }
+
+    #[test]
+    fn xe_freq_file_is_mhz_and_is_not_converted() {
+        // A running xe GT as its freq0/act_freq file reads it (newline included).
+        assert_eq!(parse_freq_mhz("1950\n"), Some(1950));
+        assert_eq!(parse_freq_mhz("300"), Some(300));
+        assert_eq!(parse_freq_mhz(""), None);
+        assert_eq!(parse_freq_mhz("n/a"), None);
+    }
+
+    #[test]
+    fn fan_percent_has_no_value_for_a_zero_maximum() {
+        assert_eq!(pwm_percent(128, 255), Some(50));
+        assert_eq!(pwm_percent(255, 255), Some(100));
+        assert_eq!(pwm_percent(10, 0), None);
     }
 }

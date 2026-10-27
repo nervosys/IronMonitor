@@ -202,8 +202,15 @@ impl Gpu for AppleGpu {
     }
 
     fn processes(&self) -> Result<Vec<GpuProcess>, crate::Error> {
-        // Process tracking not available via powermetrics
-        Ok(Vec::new())
+        // Process tracking is not available via powermetrics, so no list was
+        // read. This used to return an empty list, which reads as "none".
+        Err(crate::Error::NotSupported(
+            concat!(
+                "GPU process lists are not read on macOS; ",
+                "powermetrics reports no per-process GPU use"
+            )
+            .to_string(),
+        ))
     }
 
     fn kill_process(&self, _pid: u32) -> Result<(), crate::Error> {

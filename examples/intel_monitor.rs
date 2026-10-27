@@ -22,7 +22,7 @@ use ironmonitor::gpu::intel_levelzero;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("IronMonitor - Intel GPU Monitoring\n");
 
-    let devices = match intel_levelzero::enumerate() {
+    let devices = match intel_levelzero::enumerate(&mut Vec::new()) {
         Ok(devs) => devs,
         Err(e) => {
             eprintln!("Failed to enumerate Intel GPUs: {:?}", e);

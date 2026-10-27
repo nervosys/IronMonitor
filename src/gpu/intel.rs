@@ -367,8 +367,13 @@ impl Gpu for IntelGpu {
         {
             parse_intel_fdinfo_processes(&self.card_path, &self.driver)
         }
+        // The fdinfo reader is Linux-only. Elsewhere no list was read, which is
+        // not the same as an empty one. This used to return `Ok(vec![])`.
         #[cfg(not(target_os = "linux"))]
-        Ok(vec![])
+        Err(Error::NotSupported(
+            "GPU process lists are read from /proc/*/fdinfo, which exists only on Linux"
+                .to_string(),
+        ))
     }
 
     fn kill_process(&self, pid: u32) -> Result<(), Error> {
@@ -402,64 +407,66 @@ fn parse_intel_fdinfo_processes(
 
     let driver_name = driver.name();
 
-    if let Ok(proc_entries) = fs::read_dir(proc_dir) {
-        for proc_entry in proc_entries.flatten() {
-            let pid_str = proc_entry.file_name();
-            let pid_str = pid_str.to_string_lossy();
+    // An unlistable /proc is a failed read, not a machine with no GPU clients.
+    // This used to return an empty list.
+    let proc_entries = fs::read_dir(proc_dir)
+        .map_err(|e| Error::Other(format!("cannot list /proc for DRM clients: {e}")))?;
+    for proc_entry in proc_entries.flatten() {
+        let pid_str = proc_entry.file_name();
+        let pid_str = pid_str.to_string_lossy();
 
-            let pid: u32 = match pid_str.parse() {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+        let pid: u32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
-            let fdinfo_dir = proc_entry.path().join("fdinfo");
-            if !fdinfo_dir.exists() {
-                continue;
-            }
+        let fdinfo_dir = proc_entry.path().join("fdinfo");
+        if !fdinfo_dir.exists() {
+            continue;
+        }
 
-            if let Ok(fdinfo_entries) = fs::read_dir(&fdinfo_dir) {
-                for fdinfo_entry in fdinfo_entries.flatten() {
-                    if let Ok(content) = fs::read_to_string(fdinfo_entry.path()) {
-                        // Check for i915 or xe driver
-                        let driver_match = format!("drm-driver:\t{}", driver_name);
-                        if content.contains(&driver_match) {
-                            // Parse engine usage
-                            let mut total_time = 0u64;
+        if let Ok(fdinfo_entries) = fs::read_dir(&fdinfo_dir) {
+            for fdinfo_entry in fdinfo_entries.flatten() {
+                if let Ok(content) = fs::read_to_string(fdinfo_entry.path()) {
+                    // Check for i915 or xe driver
+                    let driver_match = format!("drm-driver:\t{}", driver_name);
+                    if content.contains(&driver_match) {
+                        // Parse engine usage
+                        let mut total_time = 0u64;
 
-                            for line in content.lines() {
-                                // Parse drm-engine-render, drm-engine-video, etc.
-                                if line.starts_with("drm-engine-") {
-                                    if let Some(time) = parse_engine_time(line) {
-                                        total_time += time;
-                                    }
+                        for line in content.lines() {
+                            // Parse drm-engine-render, drm-engine-video, etc.
+                            if line.starts_with("drm-engine-") {
+                                if let Some(time) = parse_engine_time(line) {
+                                    total_time += time;
                                 }
                             }
-
-                            if total_time > 0 {
-                                let name = fs::read_to_string(proc_entry.path().join("comm"))
-                                    .map(|s| s.trim().to_string())
-                                    .unwrap_or_else(|_| format!("Process {}", pid));
-
-                                processes.push(GpuProcess {
-                                    pid,
-                                    name,
-                                    user: String::new(),
-                                    process_type: GpuProcessType::Unknown,
-                                    gpu_usage: None,
-                                    // An Intel iGPU shares system memory, so there
-                                    // is no separate figure to report — `None` says
-                                    // that, where the previous `0` claimed the
-                                    // process used no memory at all.
-                                    memory_usage: None,
-                                    memory_usage_percent: None,
-                                    encoder_usage: None,
-                                    decoder_usage: None,
-                                    cpu_usage: None,
-                                    cpu_memory: None,
-                                });
-                            }
-                            break;
                         }
+
+                        if total_time > 0 {
+                            let name = fs::read_to_string(proc_entry.path().join("comm"))
+                                .map(|s| s.trim().to_string())
+                                .unwrap_or_else(|_| format!("Process {}", pid));
+
+                            processes.push(GpuProcess {
+                                pid,
+                                name,
+                                user: String::new(),
+                                process_type: GpuProcessType::Unknown,
+                                gpu_usage: None,
+                                // An Intel iGPU shares system memory, so there
+                                // is no separate figure to report — `None` says
+                                // that, where the previous `0` claimed the
+                                // process used no memory at all.
+                                memory_usage: None,
+                                memory_usage_percent: None,
+                                encoder_usage: None,
+                                decoder_usage: None,
+                                cpu_usage: None,
+                                cpu_memory: None,
+                            });
+                        }
+                        break;
                     }
                 }
             }
@@ -624,6 +631,12 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
         let pci_bus_id = crate::pci_devices::pci_address_of(pnp_id);
         let label = pci_bus_id.clone().unwrap_or_else(|| pnp_id.to_string());
 
+        // A discrete Intel GPU sits behind a PCI bridge, so its bus is nonzero.
+        // An integrated GPU is on the root complex at bus 0. `None` when Windows
+        // records no PCI location. This used to be a name test ("arc",
+        // "data center"), which guessed where the product name gave no answer.
+        let is_discrete = is_discrete_from_pci_address(pci_bus_id.as_deref());
+
         // Determine driver type from name
         let driver = if name_lower.contains("arc") {
             IntelDriver::Xe
@@ -644,8 +657,6 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
             }
         };
         gpu.name = name.to_string();
-
-        let is_discrete = name_lower.contains("arc") || name_lower.contains("data center");
 
         // Use DXGI for accurate VRAM and LUID (fixes 4GB WMI cap)
         let dxgi_adapters = super::windows_helpers::enumerate_dxgi_adapters();
@@ -684,6 +695,17 @@ fn detect_intel_gpus_wmi(collection: &mut GpuCollection) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether an adapter is discrete, from its PCI address (`dddd:bb:dd.f`). A
+/// discrete Intel GPU sits behind a PCI bridge, so its bus is nonzero; an
+/// integrated one is on the root complex at bus 0. `None` when no address was
+/// read.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_discrete_from_pci_address(address: Option<&str>) -> Option<bool> {
+    address
+        .and_then(super::traits::PciInfo::parse_address)
+        .map(|(_, bus, _, _)| bus != 0)
+}
+
 /// Intel GPU with WMI-sourced data on Windows
 #[cfg(windows)]
 struct WmiIntelGpu {
@@ -693,7 +715,9 @@ struct WmiIntelGpu {
     /// Shared system memory from DXGI
     shared_system_memory: u64,
     driver_version: Option<String>,
-    is_discrete: bool,
+    /// From the PCI bus of the adapter. `None` when no PCI location was read,
+    /// and the memory figures that depend on it are then not reported.
+    is_discrete: Option<bool>,
     /// LUID hex string for matching with GPU performance counters
     luid_filter: Option<String>,
     /// GPU name used as hint for OHM/LHM temperature lookup
@@ -757,8 +781,8 @@ impl Gpu for WmiIntelGpu {
             shader_cores: None,
             l2_cache: None,
             num_engines: None,
-            // Not read. This used to be `!is_discrete`, a guess from the name.
-            integrated: None,
+            // From the PCI bus, not the name. `None` when no location was read.
+            integrated: self.is_discrete.map(|discrete| !discrete),
         })
     }
 
@@ -770,27 +794,33 @@ impl Gpu for WmiIntelGpu {
         // For Arc discrete GPUs, we have dedicated VRAM
         // An iGPU's usage is shared plus dedicated, and a sum needs both: if
         // either counter did not answer, the total in use is not known.
-        let mem_used = if self.is_discrete {
-            perf.dedicated_used
-        } else {
-            match (perf.shared_used, perf.dedicated_used) {
+        // Without a PCI location there is no way to tell the two kinds apart,
+        // so no memory figure is reported rather than one picked by a guess.
+        let mem_used = match self.is_discrete {
+            Some(true) => perf.dedicated_used,
+            Some(false) => match (perf.shared_used, perf.dedicated_used) {
                 (Some(shared), Some(dedicated)) => Some(shared + dedicated),
                 _ => None,
-            }
+            },
+            None => None,
         };
         // The final `else` fell back to *the used figure itself* as the
         // total, so an adapter whose capacity WMI did not report came out at
         // exactly 100% memory utilisation, permanently, on every scrape. The
         // used bytes are a real reading and are kept; the capacity is not
         // invented from them.
-        let mem_total = if self.is_discrete && self.dedicated_video_memory > 0 {
-            Some(self.dedicated_video_memory)
-        } else if !self.is_discrete && self.shared_system_memory > 0 {
-            Some(self.shared_system_memory)
-        } else if self.dedicated_video_memory > 0 {
-            Some(self.dedicated_video_memory)
-        } else {
-            None
+        let mem_total = match self.is_discrete {
+            Some(true) => (self.dedicated_video_memory > 0).then_some(self.dedicated_video_memory),
+            Some(false) => {
+                if self.shared_system_memory > 0 {
+                    Some(self.shared_system_memory)
+                } else if self.dedicated_video_memory > 0 {
+                    Some(self.dedicated_video_memory)
+                } else {
+                    None
+                }
+            }
+            None => None,
         };
         let memory = match (mem_total, mem_used) {
             (Some(total), Some(used)) => GpuMemory::from_total_used(total, used),
@@ -863,7 +893,11 @@ impl Gpu for WmiIntelGpu {
     }
 
     fn processes(&self) -> Result<Vec<GpuProcess>, Error> {
-        Ok(vec![])
+        // No process reader exists on this path. This used to return an empty
+        // list, which users read as "no GPU processes".
+        Err(Error::NotSupported(
+            "GPU process lists are not read on Windows for Intel GPUs".to_string(),
+        ))
     }
 
     fn kill_process(&self, _pid: u32) -> Result<(), Error> {
@@ -876,6 +910,22 @@ impl Gpu for WmiIntelGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discrete_is_read_from_the_pci_bus_not_the_name() {
+        // Arc behind a root port sits on a nonzero bus; the iGPU is at 00:02.0.
+        assert_eq!(
+            is_discrete_from_pci_address(Some("0000:03:00.0")),
+            Some(true)
+        );
+        assert_eq!(
+            is_discrete_from_pci_address(Some("0000:00:02.0")),
+            Some(false)
+        );
+        // No PCI location was read: no answer, not a guess.
+        assert_eq!(is_discrete_from_pci_address(None), None);
+        assert_eq!(is_discrete_from_pci_address(Some("PCI\\VEN_8086")), None);
+    }
 
     #[test]
     fn test_intel_gpu_creation() {

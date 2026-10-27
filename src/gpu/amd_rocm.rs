@@ -230,7 +230,11 @@ impl Device for AmdGpu {
                 .map(|microwatts| microwatts as f32 / 1_000_000.0)
         };
 
-        let current = read_power("power1_average");
+        // `current` is the instantaneous draw. It used to be `power1_average`,
+        // so the two fields carried one reading. Where the driver has no
+        // `power1_input`, current is absent rather than the average.
+        let current = read_power("power1_input");
+        let average = read_power("power1_average");
         let limit = read_power("power1_cap");
         let max_limit = read_power("power1_cap_max");
         let min_limit = read_power("power1_cap_min");
@@ -242,10 +246,10 @@ impl Device for AmdGpu {
         // `average` used to be `if current > 0.0 { Some(current) } else
         // { None }`, which is the inverse mistake to the one above: a card
         // genuinely drawing zero watts was reported as having no average. It is
-        // simply the same reading, and absent exactly when that is.
+        // read from `power1_average` and absent exactly when that is.
         Ok(Power {
             current,
-            average: current,
+            average,
             limit,
             default_limit,
             min_limit,
@@ -325,8 +329,10 @@ impl Device for AmdGpu {
                 .and_then(|s| s.trim().parse::<u32>().ok())
                 .unwrap_or(255); // Default to 255 if pwm1_max not available
 
-            let percentage = (pwm * 100) / pwm_max;
-            return Ok(Some(FanSpeed::Percent(percentage)));
+            // A zero maximum has no percentage. This used to divide by it.
+            if let Some(percentage) = pwm_percent(pwm, pwm_max) {
+                return Ok(Some(FanSpeed::Percent(percentage)));
+            }
         }
 
         // Fallback: Read fan speed in RPM
@@ -344,7 +350,16 @@ impl Device for AmdGpu {
         Ok(self.read_sysfs_string("power_dpm_force_performance_level"))
     }
     fn processes(&self) -> Result<Vec<Box<dyn GpuProcess>>, Error> {
-        Ok(Vec::new())
+        // No reader runs here. Per-process GPU use would come from
+        // /proc/*/fdinfo, which this path does not parse. This used to return an
+        // empty list, which users read as "no GPU processes".
+        Err(Error::NotSupportedBecause(
+            concat!(
+                "GPU process lists are not read on the amdgpu sysfs path; ",
+                "DRM clients are in /proc/*/fdinfo, which this reader does not parse"
+            )
+            .to_string(),
+        ))
     }
 
     // === Control Functions (require root/admin) ===
@@ -436,7 +451,15 @@ impl Device for AmdGpu {
     }
 }
 
-pub fn enumerate() -> Result<Vec<Box<dyn Device>>, Error> {
+/// Fan percentage from a PWM duty value. `None` when the maximum is zero,
+/// which has no percentage.
+fn pwm_percent(pwm: u32, pwm_max: u32) -> Option<u32> {
+    (pwm_max > 0).then(|| pwm.saturating_mul(100) / pwm_max)
+}
+
+/// Enumerate AMD GPUs through sysfs. A card that is found but whose reader
+/// cannot be built is described in `failures`, not dropped.
+pub fn enumerate(failures: &mut Vec<String>) -> Result<Vec<Box<dyn Device>>, Error> {
     let mut devices: Vec<Box<dyn Device>> = Vec::new();
 
     // Scan /sys/class/drm for AMD GPU devices
@@ -474,7 +497,7 @@ pub fn enumerate() -> Result<Vec<Box<dyn Device>>, Error> {
                 // This is an AMD GPU
                 match AmdGpu::new(index, card_path) {
                     Ok(gpu) => devices.push(Box::new(gpu)),
-                    Err(_) => continue,
+                    Err(e) => failures.push(format!("card{index}: {e}")),
                 }
             }
         }
@@ -485,4 +508,16 @@ pub fn enumerate() -> Result<Vec<Box<dyn Device>>, Error> {
     }
 
     Ok(devices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fan_percent_has_no_value_for_a_zero_maximum() {
+        assert_eq!(pwm_percent(128, 255), Some(50));
+        assert_eq!(pwm_percent(255, 255), Some(100));
+        assert_eq!(pwm_percent(10, 0), None);
+    }
 }

@@ -567,6 +567,11 @@ pub enum Error {
     #[error("Operation not supported on this device")]
     NotSupported,
 
+    /// The operation is not supported here, and the reason is kept for the
+    /// caller. Used where a reader could not obtain the data at all.
+    #[error("Operation not supported on this device: {0}")]
+    NotSupportedBecause(String),
+
     /// No GPU devices were detected on the system.
     #[error("No GPU devices found")]
     NoDevicesFound,

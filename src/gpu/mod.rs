@@ -882,15 +882,22 @@ impl GpuCollection {
         // present; any other error is kept and reported if the legacy reader also
         // finds nothing, so a failed read is never reported as absence.
         #[cfg(target_os = "linux")]
-        let sysfs_error = match amd_rocm::enumerate() {
-            Ok(gpus) => {
-                for gpu in gpus {
-                    self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
+        let sysfs_error = {
+            // A card whose reader could not be built is recorded, not dropped.
+            let mut failures = Vec::new();
+            let result = amd_rocm::enumerate(&mut failures);
+            self.detection_failures
+                .extend(failures.into_iter().map(|f| ("amd", f)));
+            match result {
+                Ok(gpus) => {
+                    for gpu in gpus {
+                        self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                Err(GpuError::NoDevicesFound) => None,
+                Err(e) => Some(e),
             }
-            Err(GpuError::NoDevicesFound) => None,
-            Err(e) => Some(e),
         };
         #[cfg(not(target_os = "linux"))]
         let sysfs_error: Option<GpuError> = None;
@@ -915,15 +922,22 @@ impl GpuCollection {
         // present; any other error is kept and reported if the legacy reader also
         // finds nothing, so a failed read is never reported as absence.
         #[cfg(target_os = "linux")]
-        let sysfs_error = match intel_levelzero::enumerate() {
-            Ok(gpus) => {
-                for gpu in gpus {
-                    self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
+        let sysfs_error = {
+            // A card whose reader could not be built is recorded, not dropped.
+            let mut failures = Vec::new();
+            let result = intel_levelzero::enumerate(&mut failures);
+            self.detection_failures
+                .extend(failures.into_iter().map(|f| ("intel", f)));
+            match result {
+                Ok(gpus) => {
+                    for gpu in gpus {
+                        self.add_gpu(Box::new(TraitGpuAdapter::new(gpu)));
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                Err(GpuError::NoDevicesFound) => None,
+                Err(e) => Some(e),
             }
-            Err(GpuError::NoDevicesFound) => None,
-            Err(e) => Some(e),
         };
         #[cfg(not(target_os = "linux"))]
         let sysfs_error: Option<GpuError> = None;
