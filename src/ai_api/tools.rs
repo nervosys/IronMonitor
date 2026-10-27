@@ -2633,7 +2633,7 @@ impl AiDataApi {
             .unwrap_or(false);
         let monitor =
             BluetoothMonitor::new().map_err(|e| IronError::HardwareError(e.to_string()))?;
-        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": (d.device_type != BluetoothDeviceType::Unknown).then(|| format!("{:?}", d.device_type)), "state": (d.state != BluetoothState::Unknown).then(|| format!("{:?}", d.state)), "state_unavailable_reason": (d.state == BluetoothState::Unknown).then_some("the connection state was not read"), "type_unavailable_reason": (d.device_type == BluetoothDeviceType::Unknown).then_some("the device type was not classified"), "battery_percent": d.battery_percent})).collect();
+        let devices: Vec<_> = monitor.devices().iter().filter(|d| !connected_only || d.state == BluetoothState::Connected).map(|d| json!({"address": d.address, "name": d.name, "type": d.device_type.filter(|t| *t != BluetoothDeviceType::Unknown).map(|t| format!("{t:?}")), "state": (d.state != BluetoothState::Unknown).then(|| format!("{:?}", d.state)), "state_unavailable_reason": (d.state == BluetoothState::Unknown).then_some("the connection state was not read"), "type_unavailable_reason": d.device_type.filter(|t| *t != BluetoothDeviceType::Unknown).is_none().then_some("the device type was not read, or its class of device names no known kind"), "battery_percent": d.battery_percent})).collect();
         Ok(json!(devices))
     }
     // ============== Display Tools ==============

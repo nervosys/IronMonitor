@@ -3232,7 +3232,15 @@ fn resolve_input(out: &mut Vec<Reading>) {
     for (i, d) in devices.iter().enumerate() {
         let base = format!("board.input.{i}");
         push_text(out, format!("{base}.name"), &d.name);
-        push_id(out, format!("{base}.type"), &format!("{:?}", d.device_type));
+        // Absent where the platform did not report a type. It used to be the
+        // name-derived class, with Mouse for any name the match missed.
+        push_opt(
+            out,
+            format!("{base}.type"),
+            d.device_type.map(|t| serde_json::json!(format!("{t:?}"))),
+            Some(Unit::Identifier),
+            "the platform did not report what kind of device this is",
+        );
         push_id(
             out,
             format!("{base}.interface"),

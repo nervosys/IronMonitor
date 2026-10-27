@@ -56,13 +56,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for device in devices {
         let type_emoji = match device.device_type {
-            BluetoothDeviceType::Phone => "📱",
-            BluetoothDeviceType::Computer => "💻",
-            BluetoothDeviceType::Headset | BluetoothDeviceType::Speaker => "🎧",
-            BluetoothDeviceType::Keyboard => "⌨️",
-            BluetoothDeviceType::Mouse => "🖱️",
-            BluetoothDeviceType::GameController => "🎮",
-            BluetoothDeviceType::Unknown => "❓",
+            Some(BluetoothDeviceType::Phone) => "📱",
+            Some(BluetoothDeviceType::Computer) => "💻",
+            Some(BluetoothDeviceType::Headset | BluetoothDeviceType::Speaker) => "🎧",
+            Some(BluetoothDeviceType::Keyboard) => "⌨️",
+            Some(BluetoothDeviceType::Mouse) => "🖱️",
+            Some(BluetoothDeviceType::GameController) => "🎮",
+            Some(BluetoothDeviceType::Unknown) => "❓",
+            None => "❔",
         };
 
         let state_str = match device.state {
@@ -79,7 +80,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "    Address: {}",
             device.address.as_deref().unwrap_or("not read")
         );
-        println!("    Type: {:?}", device.device_type);
+        println!(
+            "    Type: {}",
+            device
+                .device_type
+                .map_or("not read".to_string(), |t| format!("{t:?}"))
+        );
         println!("    State: {}", state_str);
         if let Some(battery) = device.battery_percent {
             println!("    Battery: {}%", battery);

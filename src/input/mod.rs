@@ -70,8 +70,10 @@ pub enum InputInterface {
 pub struct InputDevice {
     /// Device name
     pub name: String,
-    /// Device type (keyboard, mouse, etc.)
-    pub device_type: InputDeviceType,
+    /// Device type (keyboard, mouse, etc.), or `None` where the platform did not
+    /// report one. macOS and the Bluetooth branch used to pick it from the
+    /// product name, with a Mouse fallback for every name the match missed.
+    pub device_type: Option<InputDeviceType>,
     /// Connection interface
     pub interface: InputInterface,
     /// Vendor name or ID
@@ -290,7 +292,7 @@ impl InputMonitor {
     pub fn devices_by_type(&self, device_type: InputDeviceType) -> Vec<&InputDevice> {
         self.devices
             .iter()
-            .filter(|d| d.device_type == device_type)
+            .filter(|d| d.device_type == Some(device_type))
             .collect()
     }
 
@@ -306,10 +308,12 @@ impl InputMonitor {
             .filter(|d| {
                 matches!(
                     d.device_type,
-                    InputDeviceType::Mouse
-                        | InputDeviceType::Touchpad
-                        | InputDeviceType::Trackball
-                        | InputDeviceType::Trackpoint
+                    Some(
+                        InputDeviceType::Mouse
+                            | InputDeviceType::Touchpad
+                            | InputDeviceType::Trackball
+                            | InputDeviceType::Trackpoint
+                    )
                 )
             })
             .collect()
@@ -359,8 +363,9 @@ impl InputMonitor {
             if name.is_empty() {
                 return;
             }
-            let device_type =
-                classify_linux(handlers, bitmap_ev, bitmap_key, bitmap_rel, bitmap_abs);
+            let device_type = Some(classify_linux(
+                handlers, bitmap_ev, bitmap_key, bitmap_rel, bitmap_abs,
+            ));
             let interface = Self::infer_interface_linux(phys, sysfs);
             let mut caps = Vec::new();
             if !bitmap_key.is_empty() && bitmap_key != "0" {
@@ -517,7 +522,7 @@ impl InputMonitor {
                 let iface = interface_from_device_tree(&device_id);
                 self.devices.push(InputDevice {
                     name,
-                    device_type: InputDeviceType::Keyboard,
+                    device_type: Some(InputDeviceType::Keyboard),
                     interface: iface,
                     // Both queries now select `Manufacturer`, which they did
                     // not before -- the field was hardcoded empty and the
@@ -555,17 +560,17 @@ impl InputMonitor {
                 // so a product name containing "touchpad" decided the class, and
                 // every name the match missed became a Mouse. A type the platform
                 // does not name is `Other`, not a guess.
-                let device_type = pointing_device_type(&item["PointingType"]);
+                let device_type = Some(pointing_device_type(&item["PointingType"]));
                 let device_id = item["DeviceID"].as_str().unwrap_or("").to_string();
                 // See the keyboard branch above.
                 let iface = interface_from_device_tree(&device_id);
-                let buttons = item["NumberOfButtons"].as_u64().unwrap_or(0);
+                // The capability is emitted only when the count was read. A missing
+                // `NumberOfButtons` used to be `0`, which is a count of no buttons,
+                // and a device the platform did not count was published as having
+                // none.
                 // "relative-axes" used to be a literal on every pointing device.
                 // Only the button count is read.
-                let mut caps = Vec::new();
-                if buttons > 0 {
-                    caps.push(format!("buttons:{}", buttons));
-                }
+                let caps = button_capabilities(&item["NumberOfButtons"]);
                 self.devices.push(InputDevice {
                     name,
                     device_type,
@@ -625,28 +630,33 @@ impl InputMonitor {
 
     #[cfg(target_os = "macos")]
     fn maybe_add_macos_device(&mut self, name: &str, vendor: &str, product: &str) {
+        // Whether this USB device is an input device at all is still decided by
+        // its name, as it always was. Its type is not: system_profiler's mini
+        // detail carries no HID usage, so the type is not read. It used to be
+        // chosen by the same name match, which put every unmatched input device
+        // in the Mouse class.
         let lower = name.to_lowercase();
-        let device_type = if lower.contains("keyboard") {
-            InputDeviceType::Keyboard
-        } else if lower.contains("mouse") {
-            InputDeviceType::Mouse
-        } else if lower.contains("trackpad") || lower.contains("touchpad") {
-            InputDeviceType::Touchpad
-        } else if lower.contains("gamepad")
-            || lower.contains("controller")
-            || lower.contains("joystick")
-        {
-            InputDeviceType::GameController
-        } else if lower.contains("tablet") || lower.contains("wacom") || lower.contains("intuos") {
-            InputDeviceType::Tablet
-        } else if lower.contains("touchscreen") {
-            InputDeviceType::Touchscreen
-        } else {
+        let is_input = [
+            "keyboard",
+            "mouse",
+            "trackpad",
+            "touchpad",
+            "gamepad",
+            "controller",
+            "joystick",
+            "tablet",
+            "wacom",
+            "intuos",
+            "touchscreen",
+        ]
+        .iter()
+        .any(|k| lower.contains(k));
+        if !is_input {
             return; // Skip non-input USB devices
-        };
+        }
         self.devices.push(InputDevice {
             name: name.to_string(),
-            device_type,
+            device_type: None,
             interface: InputInterface::USB,
             vendor: vendor.to_string(),
             product: product.to_string(),
@@ -698,6 +708,36 @@ impl std::fmt::Display for InputInterface {
             Self::Virtual => write!(f, "Virtual"),
             Self::Unknown => write!(f, "Unknown"),
         }
+    }
+}
+
+/// The `buttons:N` capability from a `Win32_PointingDevice.NumberOfButtons`
+/// value. Nothing is emitted unless the count was read and is positive. A
+/// missing value used to be read as zero, which is a count the platform never
+/// gave.
+#[cfg(any(target_os = "windows", test))]
+fn button_capabilities(value: &serde_json::Value) -> Vec<String> {
+    match value.as_u64() {
+        Some(buttons) if buttons > 0 => vec![format!("buttons:{buttons}")],
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod button_tests {
+    use super::button_capabilities;
+
+    #[test]
+    fn a_button_count_is_emitted_only_when_read() {
+        assert_eq!(
+            button_capabilities(&serde_json::json!(5)),
+            vec!["buttons:5".to_string()]
+        );
+        // A count of zero is a reading too, but it names no button capability.
+        assert!(button_capabilities(&serde_json::json!(0)).is_empty());
+        // Absent, null and non-numeric values were not read.
+        assert!(button_capabilities(&serde_json::Value::Null).is_empty());
+        assert!(button_capabilities(&serde_json::json!("3")).is_empty());
     }
 }
 
@@ -1020,16 +1060,11 @@ fn parse_macos_bluetooth_inputs(text: &str) -> Vec<InputDevice> {
             && trimmed.ends_with(':')
         {
             let name = trimmed.trim_end_matches(':').to_string();
-            let device_type = if lower.contains("keyboard") {
-                InputDeviceType::Keyboard
-            } else if lower.contains("trackpad") {
-                InputDeviceType::Touchpad
-            } else {
-                InputDeviceType::Mouse
-            };
+            // The type is not read from system_profiler's entry. It used to be
+            // chosen from the name, with Mouse for everything the match missed.
             found.push(InputDevice {
                 name,
-                device_type,
+                device_type: None,
                 interface: InputInterface::Bluetooth,
                 vendor: String::new(),
                 product: String::new(),
@@ -1177,13 +1212,17 @@ mod tests {
         // belong to it: it stays empty, not "Apple".
         assert_eq!(devices[1].name, "Magic Trackpad");
         assert_eq!(devices[1].vendor, "");
+        // Neither is a type the platform reported, so neither is claimed: the
+        // name is not evidence of a kind.
+        assert_eq!(devices[0].device_type, None);
+        assert_eq!(devices[1].device_type, None);
     }
 
     #[test]
     fn test_input_device_serialization() {
         let device = InputDevice {
             name: "Test Keyboard".into(),
-            device_type: InputDeviceType::Keyboard,
+            device_type: Some(InputDeviceType::Keyboard),
             interface: InputInterface::USB,
             vendor: "TestVendor".into(),
             product: "TestProduct".into(),

@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bluetooth and input device types are no longer guessed from product names.
+  `network.bluetooth.device.{n}.device_type` now comes from the device's class
+  of device (Linux `bluetoothctl info`, falling back to BlueZ's icon) and is
+  unavailable on Windows and macOS, where it is not read. `board.input.{n}.type`
+  is unavailable on macOS and for Bluetooth input devices instead of defaulting
+  to Mouse. A Windows pointing device's missing `NumberOfButtons` is no longer
+  read as a count of zero.
 - Hardware readers no longer report constants or another field's value as readings: achievable and STREAM Triad bandwidth (`memory.bandwidth.achievable`, `memory.bandwidth.stream_triad`) are unavailable rather than the peak times fixed factors, storage temperature sensors name the device "(model not read)" rather than the device node in place of an unread model, TPM version and algorithm flags are absent rather than defaulted, busiest and quietest interrupt CPUs are absent without counts and malformed `/proc/interrupts` rows are dropped, PCIe capable bandwidth no longer falls back to the current link speed, and Linux and macOS audio direction is read from the PCM or channel data rather than defaulted.
 - Camera and audio readers no longer publish guesses as readings: the macOS camera connection is unknown rather than `Internal`, the macOS audio direction comes from the reported channel counts rather than a default of `Output`, and the Linux infrared flag comes from the camera's luminance-only pixel formats rather than its name. `board.camera.{n}.connection` and `board.audio.{n}.direction` are now nullable.
 - Virtualization, LSM mode and CPU identity no longer report unread values as

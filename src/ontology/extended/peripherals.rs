@@ -559,8 +559,10 @@ fn resolve_bluetooth_detail(out: &mut Vec<Reading>) {
         enum_reading(
             out,
             format!("{base}.device_type"),
-            Some(format!("{:?}", d.device_type)),
-            "the device's class of device did not identify its type",
+            // `None` where the class of device was not read (Windows, macOS);
+            // `Unknown` where it was read and names no kind this enum has.
+            d.device_type.map(|t| format!("{t:?}")),
+            "the device's class of device was not read, or did not identify its type",
         );
         // `Unknown` is published as unavailable with its reason, not as the
         // identifier "unknown", which reads as a measured state.

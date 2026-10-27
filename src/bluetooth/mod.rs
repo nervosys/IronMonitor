@@ -33,7 +33,11 @@ pub struct BluetoothDevice {
     /// which is a real (if reserved) address and not a missing one.
     pub address: Option<String>,
     pub name: Option<String>,
-    pub device_type: BluetoothDeviceType,
+    /// The device's kind, from its class of device where the platform reports
+    /// one, or `None` where it was not read. The advertised name used to decide
+    /// this, so a headset called "Bose QC35" was `Unknown` and anything with
+    /// "buds" in its name was a headset whatever it was.
+    pub device_type: Option<BluetoothDeviceType>,
     pub state: BluetoothState,
     pub battery_percent: Option<u8>,
 }
@@ -208,36 +212,6 @@ fn address_from_pnp_id(pnp_id: &str) -> Option<String> {
     )
 }
 
-/// A best guess at what a peripheral is, from its advertised name.
-///
-/// This is a guess and is labelled one: an unrecognised name resolves
-/// `Unknown` rather than to a plausible default.
-#[cfg(target_os = "windows")]
-fn device_type_from_name(name: &str) -> BluetoothDeviceType {
-    let n = name.to_ascii_lowercase();
-    if n.contains("keyboard") {
-        BluetoothDeviceType::Keyboard
-    } else if n.contains("mouse") || n.contains("pointing") {
-        BluetoothDeviceType::Mouse
-    } else if ["headset", "headphone", "earphone", "buds", "airpods"]
-        .iter()
-        .any(|k| n.contains(k))
-    {
-        BluetoothDeviceType::Headset
-    } else if n.contains("speaker") || n.contains("audio") {
-        BluetoothDeviceType::Speaker
-    } else if n.contains("phone") {
-        BluetoothDeviceType::Phone
-    } else if ["controller", "gamepad", "joystick"]
-        .iter()
-        .any(|k| n.contains(k))
-    {
-        BluetoothDeviceType::GameController
-    } else {
-        BluetoothDeviceType::Unknown
-    }
-}
-
 #[derive(Default)]
 pub struct BluetoothMonitor {
     adapters: Vec<BluetoothAdapter>,
@@ -357,7 +331,10 @@ impl BluetoothMonitor {
                     self.devices.push(BluetoothDevice {
                         address: address_from_pnp_id(id),
                         name: (!name.is_empty()).then(|| name.to_string()),
-                        device_type: device_type_from_name(name),
+                        // The PnP node carries no class of device, so the type is
+                        // not read on Windows. It used to be guessed from the
+                        // advertised name, which is not the device's class.
+                        device_type: None,
                         // The PnP node carries no connection or pairing state: its
                         // `Status` is node health, and it reads "OK" whether the
                         // peripheral is connected or not. This used to report every
@@ -477,12 +454,19 @@ impl BluetoothMonitor {
                         let state =
                             connection_state_from_info(info.as_ref().ok().map(String::as_str));
 
-                        let dtype = classify_bt_device(&name);
+                        // The type comes from the same `info` block: its class
+                        // of device, or BlueZ's icon derived from it. Without
+                        // that block there is nothing to read.
+                        let device_type = info
+                            .as_ref()
+                            .ok()
+                            .map(String::as_str)
+                            .and_then(device_type_from_info);
 
                         self.devices.push(BluetoothDevice {
                             address: Some(address),
                             name: Some(name),
-                            device_type: dtype,
+                            device_type,
                             state,
                             battery_percent: None,
                         });
@@ -552,12 +536,13 @@ impl BluetoothMonitor {
                                         .get("device_address")
                                         .and_then(|v| v.as_str())
                                         .and_then(normalise_bd_address);
-                                    let dtype = classify_bt_device(dev_name);
-
                                     self.devices.push(BluetoothDevice {
                                         address,
                                         name: Some(dev_name.clone()),
-                                        device_type: dtype,
+                                        // system_profiler's entry is not parsed for
+                                        // its device class here, so the type is not
+                                        // read. It used to be guessed from the name.
+                                        device_type: None,
                                         state: BluetoothState::Connected,
                                         battery_percent: dev_info
                                             .get("device_batteryPercent")
@@ -697,33 +682,92 @@ fn connection_state_from_info(info: Option<&str>) -> BluetoothState {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn classify_bt_device(name: &str) -> BluetoothDeviceType {
-    let lower = name.to_lowercase();
-    if lower.contains("keyboard") {
-        BluetoothDeviceType::Keyboard
-    } else if lower.contains("mouse") || lower.contains("trackpad") {
-        BluetoothDeviceType::Mouse
-    } else if lower.contains("headset")
-        || lower.contains("headphone")
-        || lower.contains("earphone")
-        || lower.contains("buds")
-        || lower.contains("airpods")
-    {
-        BluetoothDeviceType::Headset
-    } else if lower.contains("speaker") {
-        BluetoothDeviceType::Speaker
-    } else if lower.contains("phone") || lower.contains("iphone") || lower.contains("android") {
-        BluetoothDeviceType::Phone
-    } else if lower.contains("controller")
-        || lower.contains("gamepad")
-        || lower.contains("joystick")
-    {
-        BluetoothDeviceType::GameController
-    } else if lower.contains("computer") || lower.contains("laptop") || lower.contains("macbook") {
-        BluetoothDeviceType::Computer
-    } else {
-        BluetoothDeviceType::Unknown
+/// The device type from a `bluetoothctl info` block, or `None` when the block
+/// names neither a class of device nor an icon.
+///
+/// The class of device (`Class: 0x...`) is the device's own declaration and is
+/// preferred. BlueZ's `Icon:` is derived from the same class, or from the BLE
+/// appearance for devices that have no class, so it is used where the class
+/// does not decide the answer. A device whose class is read but is not one of
+/// this enum's kinds is `Unknown`, not `None`: the class was read.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn device_type_from_info(info: &str) -> Option<BluetoothDeviceType> {
+    let field = |key: &str| {
+        info.lines()
+            .find_map(|line| line.trim().strip_prefix(key).map(str::trim))
+    };
+    let from_class = field("Class:")
+        .and_then(parse_class_of_device)
+        .map(device_type_from_class);
+    let from_icon = field("Icon:").map(device_type_from_icon);
+    // A known answer from either field wins over `Unknown` from the other.
+    match (from_class, from_icon) {
+        (Some(BluetoothDeviceType::Unknown) | None, Some(icon))
+            if icon != BluetoothDeviceType::Unknown =>
+        {
+            Some(icon)
+        }
+        (class, _) => class.or(from_icon),
+    }
+}
+
+/// Parse a `Class:` value such as `0x00240404` into the 24-bit class of device.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_class_of_device(text: &str) -> Option<u32> {
+    let hex = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))?;
+    u32::from_str_radix(hex, 16)
+        .ok()
+        .filter(|class| *class <= 0xFF_FFFF)
+}
+
+/// Decode the major and minor device class bits of a class of device, as the
+/// Bluetooth Assigned Numbers lay them out: minor bits 2-7, major bits 8-12.
+///
+/// The major classes the enum has a kind for are computer (1), phone (2),
+/// audio/video (4) and peripheral (5). A peripheral's minor class carries
+/// "keyboard" in bit 6 and "pointing device" in bit 7; with neither set its low
+/// four bits name a joystick (1) or gamepad (2). Any other class decodes to
+/// `Unknown`.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn device_type_from_class(class: u32) -> BluetoothDeviceType {
+    let major = (class >> 8) & 0x1F;
+    let minor = (class >> 2) & 0x3F;
+    match major {
+        1 => BluetoothDeviceType::Computer,
+        2 => BluetoothDeviceType::Phone,
+        // Wearable headset device and headphones.
+        4 if minor == 0x01 || minor == 0x06 => BluetoothDeviceType::Headset,
+        // Loudspeaker, portable audio, car audio and HiFi audio device.
+        4 if matches!(minor, 0x05 | 0x07 | 0x08 | 0x0A) => BluetoothDeviceType::Speaker,
+        5 => match ((class >> 6) & 0x3, minor & 0x0F) {
+            (0b01, _) => BluetoothDeviceType::Keyboard,
+            (0b10, _) => BluetoothDeviceType::Mouse,
+            (0b00, 0x01 | 0x02) => BluetoothDeviceType::GameController,
+            _ => BluetoothDeviceType::Unknown,
+        },
+        _ => BluetoothDeviceType::Unknown,
+    }
+}
+
+/// Map a BlueZ icon name to a device type. An icon BlueZ names that this enum
+/// has no kind for is `Unknown`.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn device_type_from_icon(icon: &str) -> BluetoothDeviceType {
+    match icon {
+        "computer" => BluetoothDeviceType::Computer,
+        "phone" => BluetoothDeviceType::Phone,
+        "audio-headset" | "audio-headphones" => BluetoothDeviceType::Headset,
+        "audio-speakers" => BluetoothDeviceType::Speaker,
+        "input-keyboard" => BluetoothDeviceType::Keyboard,
+        "input-mouse" => BluetoothDeviceType::Mouse,
+        "input-gaming" => BluetoothDeviceType::GameController,
+        _ => BluetoothDeviceType::Unknown,
     }
 }
 
@@ -860,7 +904,7 @@ mod tests {
         let device = BluetoothDevice {
             address: Some("AA:BB:CC:DD:EE:FF".to_string()),
             name: Some("Test Device".to_string()),
-            device_type: BluetoothDeviceType::Headset,
+            device_type: Some(BluetoothDeviceType::Headset),
             state: BluetoothState::Connected,
             battery_percent: Some(75),
         };
@@ -1061,16 +1105,134 @@ mod pnp_classification_tests {
         assert_eq!(radio_address_from_value(Some(&too_wide)), None);
     }
 
-    /// A name nothing recognises is Unknown, not a plausible default.
+    /// Class-of-device values as `bluetoothctl info` prints them. Each is the
+    /// 24-bit value a device advertises for its own kind.
     #[test]
-    fn an_unrecognised_peripheral_is_not_given_a_category() {
+    fn the_class_of_device_decides_the_kind() {
+        // Headset: major audio/video (4), minor wearable headset (1).
         assert_eq!(
-            device_type_from_name("Bose QC35"),
-            BluetoothDeviceType::Unknown
+            device_type_from_class(0x0024_0404),
+            BluetoothDeviceType::Headset
         );
+        // Loudspeaker: major audio/video, minor loudspeaker (5).
         assert_eq!(
-            device_type_from_name("Xbox Wireless Controller"),
+            device_type_from_class(0x0024_0414),
+            BluetoothDeviceType::Speaker
+        );
+        // Keyboard: major peripheral (5), keyboard bit (bit 6) set.
+        assert_eq!(
+            device_type_from_class(0x0000_2540),
+            BluetoothDeviceType::Keyboard
+        );
+        // Mouse: major peripheral, pointing-device bit (bit 7) set.
+        assert_eq!(
+            device_type_from_class(0x0000_2580),
+            BluetoothDeviceType::Mouse
+        );
+        // Gamepad: major peripheral, no indicator bit, minor gamepad (2).
+        assert_eq!(
+            device_type_from_class(0x0000_2508),
             BluetoothDeviceType::GameController
         );
+        // Phone (major 2) and laptop (major 1).
+        assert_eq!(
+            device_type_from_class(0x0000_020C),
+            BluetoothDeviceType::Phone
+        );
+        assert_eq!(
+            device_type_from_class(0x0000_0104),
+            BluetoothDeviceType::Computer
+        );
+        // Networking (major 3) is a real class this enum has no kind for.
+        assert_eq!(
+            device_type_from_class(0x0000_0300),
+            BluetoothDeviceType::Unknown
+        );
+    }
+
+    #[test]
+    fn a_class_of_device_is_parsed_from_bluetoothctl_hex() {
+        assert_eq!(parse_class_of_device("0x00240404"), Some(0x0024_0404));
+        assert_eq!(parse_class_of_device("0X000104"), Some(0x0000_0104));
+        assert_eq!(parse_class_of_device("240404"), None);
+        assert_eq!(parse_class_of_device("0x01000000"), None);
+        assert_eq!(parse_class_of_device("0xzz"), None);
+    }
+
+    #[test]
+    fn bluez_icons_map_to_kinds_and_unnamed_icons_to_unknown() {
+        assert_eq!(
+            device_type_from_icon("audio-headset"),
+            BluetoothDeviceType::Headset
+        );
+        assert_eq!(
+            device_type_from_icon("input-keyboard"),
+            BluetoothDeviceType::Keyboard
+        );
+        assert_eq!(
+            device_type_from_icon("input-mouse"),
+            BluetoothDeviceType::Mouse
+        );
+        assert_eq!(
+            device_type_from_icon("input-gaming"),
+            BluetoothDeviceType::GameController
+        );
+        assert_eq!(device_type_from_icon("phone"), BluetoothDeviceType::Phone);
+        assert_eq!(
+            device_type_from_icon("video-display"),
+            BluetoothDeviceType::Unknown
+        );
+    }
+
+    /// Realistic `bluetoothctl info` blocks. The name is never consulted: a
+    /// headset whose name says nothing about audio is still a headset.
+    #[test]
+    fn the_type_comes_from_the_info_block_not_the_name() {
+        let headset = "Device 00:1B:66:AA:BB:CC Bose QC35\n\
+            \tName: Bose QC35\n\
+            \tAlias: Bose QC35\n\
+            \tClass: 0x00240404\n\
+            \tIcon: audio-headset\n\
+            \tPaired: yes\n\
+            \tConnected: yes\n";
+        assert_eq!(
+            device_type_from_info(headset),
+            Some(BluetoothDeviceType::Headset)
+        );
+
+        // A keyboard whose advertised name carries no hint.
+        let keyboard = "Device 11:22:33:44:55:66 K380\n\
+            \tName: K380\n\
+            \tClass: 0x00002540\n\
+            \tIcon: input-keyboard\n\
+            \tConnected: no\n";
+        assert_eq!(
+            device_type_from_info(keyboard),
+            Some(BluetoothDeviceType::Keyboard)
+        );
+
+        // No class line: the icon decides.
+        let icon_only = "Device 22:33:44:55:66:77 Unnamed\n\
+            \tIcon: input-gaming\n\
+            \tConnected: no\n";
+        assert_eq!(
+            device_type_from_info(icon_only),
+            Some(BluetoothDeviceType::GameController)
+        );
+
+        // A class that decodes to a kind this enum lacks, and an icon that
+        // names the kind: the icon's answer is the known one.
+        let disagreeing = "Device 33:44:55:66:77:88 Thing\n\
+            \tClass: 0x00000300\n\
+            \tIcon: phone\n";
+        assert_eq!(
+            device_type_from_info(disagreeing),
+            Some(BluetoothDeviceType::Phone)
+        );
+
+        // Neither field: nothing was read, so nothing is claimed. A name that
+        // says "headset" does not change that.
+        let bare = "Device 44:55:66:77:88:99 Headset Pro\n\tConnected: no\n";
+        assert_eq!(device_type_from_info(bare), None);
     }
 }

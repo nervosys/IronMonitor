@@ -1258,9 +1258,10 @@ impl Ontology {
             K::Identity,
             Some(U::Identifier),
             P::Measured,
-            false,
+            true,
             "What kind of device this is - keyboard, mouse, touchpad, game \
-             controller, tablet.",
+             controller, tablet. Null where the platform did not report a type, \
+             which macOS and Bluetooth input devices do not.",
         ));
         add(Entity::new(
             "board.input.{n}.interface",
