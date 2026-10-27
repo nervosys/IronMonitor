@@ -783,7 +783,13 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(format!(
                     " │ {} │ {}{}",
-                    disk.filesystem, disk.mount_point, io_str
+                    if disk.filesystem.is_empty() {
+                        "unknown"
+                    } else {
+                        disk.filesystem.as_str()
+                    },
+                    disk.mount_point,
+                    io_str
                 )),
             ]))
         })
