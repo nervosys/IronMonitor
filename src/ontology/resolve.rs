@@ -1545,6 +1545,34 @@ fn resolve_cpu_cache(out: &mut Vec<Reading>) {
     }
 }
 
+/// One `gpu.backend.<vendor>.<unreadable>` row per backend that failed to build or
+/// enumerate, carrying every error that backend reported. These are the backends
+/// `GpuCollection::auto_detect` records and keeps going past, so the GPUs they
+/// would have found are missing from the list rather than reported as absent.
+fn push_backend_failures(out: &mut Vec<Reading>, failures: &[(&'static str, String)]) {
+    let mut vendors: Vec<&'static str> = Vec::new();
+    for (vendor, _) in failures {
+        if !vendors.contains(vendor) {
+            vendors.push(vendor);
+        }
+    }
+    for vendor in vendors {
+        let reasons: Vec<&str> = failures
+            .iter()
+            .filter(|(v, _)| *v == vendor)
+            .map(|(_, e)| e.as_str())
+            .collect();
+        out.push(Reading::unavailable(
+            format!("gpu.backend.{vendor}.<unreadable>"),
+            None,
+            format!(
+                "the {vendor} GPU backend could not read its adapters, so any {vendor} GPU is not counted: {}",
+                reasons.join("; ")
+            ),
+        ));
+    }
+}
+
 fn resolve_gpu(out: &mut Vec<Reading>) {
     // A failed enumeration reports against `gpu.<unreadable>`, not `gpu.<none>`.
     // `gpu.<none>` means the GPU domain enumerated nothing, which is a claim
@@ -1578,14 +1606,23 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
     // A machine with two GPUs and one flaky driver was reported as having no
     // GPU, and the adapter that read fine was dropped with it. The partial
     // snapshot is index-aligned, so a failure keeps its adapter's number.
+    // A backend whose detection failed is reported by name, whether or not another
+    // backend found GPUs. Before this, its cards were simply absent from the list,
+    // and a machine with one failed backend read the same as one with no GPU there.
+    let failures = monitor.gpus().detection_failures();
+    push_backend_failures(out, failures);
     let gpus = monitor.gpus().snapshot_all_partial();
     if gpus.is_empty() {
-        // Absent hardware is a fact, not a failure — and not a zero-valued GPU.
-        out.push(Reading::unavailable(
-            "gpu.<none>",
-            None,
-            "no GPU detected on this machine",
-        ));
+        // Absent hardware is a fact, not a failure, and not a zero-valued GPU. But
+        // with a backend that failed, the empty list says nothing about this
+        // machine: `gpu.<none>` is only true when every backend reported.
+        if failures.is_empty() {
+            out.push(Reading::unavailable(
+                "gpu.<none>",
+                None,
+                "no GPU detected on this machine",
+            ));
+        }
         return;
     }
 
@@ -4299,6 +4336,39 @@ fn resolve_power(out: &mut Vec<Reading>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A backend that failed is a row of its own, with every reason it gave, and
+    /// no value. Two failures from one backend share a row rather than colliding.
+    #[test]
+    fn a_failed_gpu_backend_is_an_unavailable_row_with_its_reasons() {
+        let failures = vec![
+            ("amd", "0000:03:00.0: ROCm: no HIP runtime".to_string()),
+            ("nvidia", "NVML: driver not loaded".to_string()),
+            ("amd", "0000:04:00.0: sysfs: permission denied".to_string()),
+        ];
+        let mut out = Vec::new();
+        push_backend_failures(&mut out, &failures);
+
+        assert_eq!(out.len(), 2, "one row per failing backend: {out:?}");
+        let amd = out
+            .iter()
+            .find(|r| r.id == "gpu.backend.amd.<unreadable>")
+            .expect("amd row");
+        assert_eq!(amd.provenance, Provenance::Unavailable);
+        assert!(amd.value.is_none());
+        let note = amd.note.as_deref().expect("a reason");
+        assert!(note.contains("no HIP runtime"), "{note}");
+        assert!(note.contains("permission denied"), "{note}");
+        let nvidia = out
+            .iter()
+            .find(|r| r.id == "gpu.backend.nvidia.<unreadable>")
+            .expect("nvidia row");
+        assert!(nvidia
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("driver not loaded"));
+    }
 
     /// The invariant the whole module exists for: a missing value is never a zero,
     /// and never silent about why.

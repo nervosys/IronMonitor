@@ -3190,6 +3190,25 @@ impl Ontology {
              enumerated but its query failed. Carries the error. The other \
              adapters are reported as usual, and the index stays the adapter's own.",
         ));
+        // One row per backend whose detection failed, declared per vendor the way
+        // `board.fan.<unreadable>` is declared per domain. These are not templates:
+        // the resolver emits each by its literal id, and a backend that found GPUs
+        // still gets its row, so its missing cards are not read as absent.
+        for vendor in ["nvidia", "amd", "intel", "apple"] {
+            add(Entity::new(
+                &format!("gpu.backend.{vendor}.<unreadable>"),
+                D::Gpu,
+                K::Diagnostic,
+                None,
+                P::Unavailable,
+                true,
+                &format!(
+                    "Present when the {vendor} GPU backend failed to build or enumerate its \
+                     adapters. Carries every error it reported. Its GPUs are not in the \
+                     list, and their absence is not a fact about the machine."
+                ),
+            ));
+        }
         add(Entity::new(
             "process.<truncated>",
             D::Process,

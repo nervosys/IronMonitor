@@ -835,6 +835,16 @@ pub struct GpuInfo {
     pub decoder_last_active: Option<Instant>,
 }
 
+/// A name the reader did not obtain arrives as an empty string. The panels print
+/// it, so an empty one showed as a blank title; it is shown as unknown instead.
+fn name_or_unknown(name: &str) -> String {
+    if name.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 impl From<&GpuInfo> for AcceleratorInfo {
     fn from(gpu: &GpuInfo) -> Self {
         AcceleratorInfo {
@@ -1585,7 +1595,7 @@ impl App {
                 // forward drew a stale utilization as if it were live. The "last
                 // active" times are kept, since they record an earlier observation.
                 self.gpu_info.push(GpuInfo {
-                    name: static_info.name.clone(),
+                    name: name_or_unknown(&static_info.name),
                     vendor: format!("{}", static_info.vendor),
                     encoder_last_active: prev.and_then(|p| p.encoder_last_active),
                     decoder_last_active: prev.and_then(|p| p.decoder_last_active),
@@ -1607,7 +1617,7 @@ impl App {
             };
 
             self.gpu_info.push(GpuInfo {
-                name: static_info.name.clone(),
+                name: name_or_unknown(&static_info.name),
                 vendor: format!("{}", static_info.vendor),
                 utilization: dynamic.utilization.map(f32::from),
                 temperature: dynamic.thermal.temperature.map(|t| t as f32),
@@ -1776,7 +1786,7 @@ impl App {
         self.disk_info.clear();
         self.disk_info
             .extend(self.snapshot.disks.iter().map(|d| DiskInfo {
-                name: d.name.clone(),
+                name: name_or_unknown(&d.name),
                 mount_point: d.mount_point.clone(),
                 total: d.total,
                 used: d.used,

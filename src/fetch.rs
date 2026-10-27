@@ -361,7 +361,13 @@ pub fn summary(readings: &[Reading]) -> Vec<Line> {
     }
 
     if adapters.is_empty() {
+        // A failed backend's `gpu.backend.<vendor>.<unreadable>` row is not an
+        // adapter, so it is not counted above; it still explains an empty list.
+        let backend_failure = readings
+            .iter()
+            .find(|r| r.id.starts_with("gpu.backend.") && r.id.ends_with(".<unreadable>"));
         let reason = find(readings, "gpu.<unreadable>")
+            .or(backend_failure)
             .or_else(|| find(readings, "gpu.<none>"))
             .and_then(|r| r.note.clone())
             .unwrap_or_else(|| "no gpu readings in this snapshot".to_string());
@@ -561,6 +567,32 @@ mod tests {
         assert_eq!(gpu[1].label, "GPU 1");
         assert_eq!(gpu[1].value, None);
         assert!(gpu[1].render().contains("NVML: driver not loaded"));
+    }
+
+    /// A failed backend is not an adapter: it must not add a GPU line of its own,
+    /// and when no adapter is readable its reason is what the GPU line shows.
+    #[test]
+    fn a_failed_backend_is_not_counted_as_a_gpu() {
+        let beside = [
+            measured("gpu.0.name", serde_json::json!("A")),
+            unavailable("gpu.backend.amd.<unreadable>", "ROCm: no HIP runtime"),
+        ];
+        let gpu: Vec<Line> = summary(&beside)
+            .into_iter()
+            .filter(|l| l.label.starts_with("GPU"))
+            .collect();
+        assert_eq!(gpu.len(), 1, "the backend row must not become a GPU line");
+
+        let alone = [unavailable(
+            "gpu.backend.amd.<unreadable>",
+            "ROCm: no HIP runtime",
+        )];
+        let gpu: Vec<Line> = summary(&alone)
+            .into_iter()
+            .filter(|l| l.label.starts_with("GPU"))
+            .collect();
+        assert_eq!(gpu.len(), 1);
+        assert!(gpu[0].render().contains("ROCm: no HIP runtime"));
     }
 
     #[test]
