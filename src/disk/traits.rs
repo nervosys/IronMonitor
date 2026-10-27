@@ -334,7 +334,8 @@ pub struct NvmePowerState {
 pub struct FilesystemInfo {
     /// Mount point
     pub mount_point: PathBuf,
-    /// Filesystem type (ext4, ntfs, apfs, etc.)
+    /// Filesystem type (ext4, ntfs, apfs, etc.), or empty where the platform did
+    /// not report one. The ontology publishes an empty value as unavailable.
     pub fs_type: String,
     /// Total size in bytes, or `None` where the platform did not report it.
     ///

@@ -5338,9 +5338,13 @@ impl IronMonitorApp {
                             // Filesystem type (fixed width 60px)
                             ui.allocate_ui(egui::vec2(60.0, 22.0), |ui| {
                                 ui.label(
-                                    RichText::new(&fs.fs_type)
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                        .size(13.0),
+                                    RichText::new(if fs.fs_type.is_empty() {
+                                        "unknown"
+                                    } else {
+                                        fs.fs_type.as_str()
+                                    })
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .size(13.0),
                                 );
                             });
 

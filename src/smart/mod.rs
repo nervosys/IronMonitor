@@ -162,9 +162,12 @@ pub struct SmartDiskInfo {
     pub uncorrectable_errors: Option<u64>,
     /// SSD wear leveling percentage used (0-100, None for HDD)
     pub wear_leveling_percent: Option<f32>,
-    /// Total bytes written (lifetime)
+    /// Total bytes written (lifetime). From ATA Total_LBAs_Written, which assumes
+    /// 512-byte LBAs: the logical sector size is not read on the ATA path, so a
+    /// 4Kn drive's value is an undercount by eight.
     pub total_bytes_written: Option<u64>,
-    /// Total bytes read (lifetime)
+    /// Total bytes read (lifetime). From ATA Total_LBAs_Read, under the same
+    /// 512-byte LBA assumption as `total_bytes_written`.
     pub total_bytes_read: Option<u64>,
     /// NVMe percentage used (0-100, None for SATA)
     pub nvme_percentage_used: Option<u8>,
@@ -905,7 +908,7 @@ Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
         // The drive predicting its own failure outranks whatever HealthStatus
         // Windows reported; the reverse is not true, because a drive that does not
         // predict failure may still be one Windows has flagged.
-        if ata.predict_failure {
+        if ata.predict_failure == Some(true) {
             disk.health = DiskHealth::Failed;
         }
 

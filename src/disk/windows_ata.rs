@@ -52,12 +52,15 @@ use windows::Win32::System::IO::DeviceIoControl;
 
 /// What the drive answered.
 pub(crate) struct AtaHealth {
-    /// The drive's own SMART verdict: true when it predicts its own failure.
+    /// The drive's own SMART verdict: `Some(true)` when it predicts its own failure,
+    /// `Some(false)` when it does not, and `None` when the driver's reply was too
+    /// short to contain the `PredictFailure` field at all.
     ///
     /// This is the `PredictFailure` field, which the storage stack fills in for
     /// devices that have no parsable attribute structure as well, so it is
-    /// meaningful even when `smart` is `None`.
-    pub predict_failure: bool,
+    /// meaningful even when `smart` is `None`. It used to be a plain `bool` read
+    /// from a default-zeroed struct, so a short reply reported "passed".
+    pub predict_failure: Option<bool>,
     /// The parsed attribute structure, when the vendor-specific bytes held one.
     ///
     /// `None` for a device whose driver reports a prediction but returns nothing
@@ -104,20 +107,73 @@ pub(crate) fn query(index: u32) -> Result<AtaHealth, Error> {
         }
     })?;
 
-    // A short reply means the driver wrote the prediction but not the structure.
-    // Parsing what it did not write would read whatever `default()` left there,
-    // which the checksum would usually catch — but only usually, and this is
-    // cheaper than relying on that.
-    let smart = if returned as usize >= std::mem::size_of::<STORAGE_PREDICT_FAILURE>() {
-        AtaSmartData::parse(&out.VendorSpecific[..STRUCTURE_LEN])
+    let (predict_failure, smart) = decode_reply(returned, out.PredictFailure, &out.VendorSpecific);
+    Ok(AtaHealth {
+        predict_failure,
+        smart,
+    })
+}
+
+/// Read the verdict and the attribute structure out of a reply of `returned` bytes.
+///
+/// Pure, so the short-reply cases can be tested. The driver writes `PredictFailure`
+/// first, so a reply of at least four bytes carries a verdict even when it is too
+/// short for the 512 vendor-specific bytes. Anything shorter than the whole struct
+/// gets no attribute parse: those bytes were never written, and parsing whatever
+/// `default()` left there is not a reading.
+fn decode_reply(
+    returned: u32,
+    predict_failure: u32,
+    vendor_specific: &[u8],
+) -> (Option<bool>, Option<AtaSmartData>) {
+    let returned = returned as usize;
+    // Non-zero means the drive predicts failure. The field is a DWORD rather than
+    // a boolean because the ATA status byte it derives from is one.
+    let verdict = (returned >= std::mem::size_of::<u32>()).then_some(predict_failure != 0);
+    let smart = if returned >= std::mem::size_of::<STORAGE_PREDICT_FAILURE>() {
+        vendor_specific
+            .get(..STRUCTURE_LEN)
+            .and_then(AtaSmartData::parse)
     } else {
         None
     };
+    (verdict, smart)
+}
 
-    Ok(AtaHealth {
-        // Non-zero means the drive predicts failure. The field is a DWORD rather
-        // than a boolean because the ATA status byte it derives from is one.
-        predict_failure: out.PredictFailure != 0,
-        smart,
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_reply_gives_no_verdict() {
+        // Before the fix, `default()` zeros turned this into "passed".
+        let (verdict, smart) = decode_reply(0, 0, &[0u8; 512]);
+        assert_eq!(verdict, None);
+        assert!(smart.is_none());
+    }
+
+    #[test]
+    fn a_reply_too_short_for_the_verdict_gives_none() {
+        let (verdict, _) = decode_reply(3, 1, &[0u8; 512]);
+        assert_eq!(verdict, None);
+    }
+
+    #[test]
+    fn a_prediction_without_the_structure_is_still_a_reading() {
+        let (verdict, smart) = decode_reply(4, 0, &[0u8; 512]);
+        assert_eq!(verdict, Some(false));
+        assert!(smart.is_none(), "the 512 bytes were not written");
+        let (verdict, _) = decode_reply(4, 1, &[0u8; 512]);
+        assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn a_full_reply_with_a_failure_prediction_is_read() {
+        let (verdict, _) = decode_reply(
+            std::mem::size_of::<STORAGE_PREDICT_FAILURE>() as u32,
+            0x40,
+            &[0u8; 512],
+        );
+        assert_eq!(verdict, Some(true));
+    }
 }

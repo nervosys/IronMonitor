@@ -504,7 +504,7 @@ impl DiskDevice for WindowsDisk {
         // `smart::tests::a_drive_with_no_readable_counters_is_not_graded_healthy`
         // guards against: here the drive was asked and said no.
         if let Ok(ata) = crate::disk::windows_ata::query(self.disk_index) {
-            if ata.predict_failure {
+            if ata.predict_failure == Some(true) {
                 return Ok(DiskHealth::Failed);
             }
             // Sectors the drive could not read and has not yet remapped are data at
@@ -575,7 +575,7 @@ impl DiskDevice for WindowsDisk {
                     // The drive's own prediction, not a verdict computed from the
                     // attributes below.
                     // The ATA failure prediction is the drive grading itself.
-                    passed: Some(!ata.predict_failure),
+                    passed: ata.predict_failure.map(|failing| !failing),
                     attributes: smart
                         .attributes
                         .iter()
@@ -765,10 +765,11 @@ impl DiskDevice for WindowsDisk {
 
                                     filesystems.push(FilesystemInfo {
                                         mount_point: PathBuf::from(format!("{}\\", drive_letter)),
-                                        fs_type: ld
-                                            .file_system
-                                            .clone()
-                                            .unwrap_or_else(|| "Unknown".to_string()),
+                                        // Empty when WMI did not report the file system. This used
+                                        // to be the string "Unknown", a value the reader had not
+                                        // read presented as a file system name. The ontology and
+                                        // the observability API both treat "" as absent.
+                                        fs_type: ld.file_system.clone().unwrap_or_default(),
                                         total_size,
                                         used_size,
                                         available_size: free_space,

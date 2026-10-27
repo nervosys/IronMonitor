@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Disk readers no longer report values they did not read: an ATA drive's failure
+  prediction is `None` when the driver's reply was too short to carry it (it was
+  read as "passed"), a Windows filesystem with no reported type is empty instead of
+  "Unknown", the NVMe `total_capacity` on Linux is unavailable instead of the
+  namespace size, and the ATA power-on-hours and LBA-byte fields are documented as
+  raw counts. `ironmon profile audit --json` keeps unparsable lines as
+  `"unparsed"` entries instead of dropping them.
 - A Windows disk with no lettered volume was given every drive letter on the
   machine as its filesystems by a fallback that said it "won't correctly map to
   physical disks"; a 970 EVO holding only Linux partitions was reported mounted

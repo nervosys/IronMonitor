@@ -188,9 +188,11 @@ impl AtaSmartData {
 
     /// Power-on hours.
     ///
-    /// Reported in hours by the great majority of drives, but the unit is
-    /// vendor-specific and a few report minutes or half-minutes. There is nothing
-    /// in the structure that says which, so this returns the raw count as hours.
+    /// The raw count of attribute 9 (Power_On_Hours), returned unconverted.
+    ///
+    /// Most drives count hours, but the unit is vendor-specific and a few count
+    /// minutes or half-minutes. The structure does not say which, so no conversion
+    /// is applied: this is the raw attribute-9 count, not a verified hour figure.
     pub fn power_on_hours(&self) -> Option<u64> {
         self.raw(9)
     }

@@ -5363,9 +5363,15 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 &all[..]
             };
             if *json {
+                // A line that does not parse is kept as an entry marked "unparsed" with
+                // its raw text. This used to be dropped by `filter_map(.. .ok())`, which
+                // made a corrupt or truncated audit record vanish from the history.
                 let parsed: Vec<serde_json::Value> = tail
                     .iter()
-                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .map(|l| {
+                        serde_json::from_str(l)
+                            .unwrap_or_else(|_| serde_json::json!({ "unparsed": true, "line": l }))
+                    })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&parsed)?);
             } else {

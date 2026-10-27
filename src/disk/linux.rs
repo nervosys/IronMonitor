@@ -344,7 +344,11 @@ impl DiskDevice for LinuxDisk {
             serial: attr("serial").unwrap_or_default(),
             firmware: attr("firmware_rev").unwrap_or_default(),
             nvme_version: attr("nvme_version"),
-            total_capacity: self.read_sysfs_u64("size").ok().map(|s| s * 512),
+            // Not read here. The sysfs `size` on this device is the namespace size, not
+            // the controller's total NVM capacity (Identify Controller TNVMCAP), which
+            // sysfs does not expose and this path has no admin command to fetch. This
+            // used to report the namespace size, multiplied by 512, as total capacity.
+            total_capacity: None,
             unallocated_capacity: None,
             controller_id: attr("cntlid").and_then(|v| v.parse().ok()),
             num_namespaces: namespaces,

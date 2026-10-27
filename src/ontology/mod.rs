@@ -2383,8 +2383,10 @@ impl Ontology {
             Some(U::Hours),
             P::Measured,
             true,
-            "Lifetime powered-on hours. A minority of ATA drives report this \
-             attribute in minutes and nothing in the structure distinguishes them.",
+            "Lifetime powered-on hours. On NVMe, from the health log page. On ATA, the \
+             raw count of SMART attribute 9 (Power_On_Hours), unconverted: most drives \
+             count hours, but a minority count minutes or half-minutes and nothing in \
+             the structure distinguishes them.",
         ));
         add(Entity::new(
             "disk.{n}.smart.power_cycles",
