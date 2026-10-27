@@ -674,8 +674,12 @@ pub struct UnifiedMonitor {
 impl UnifiedMonitor {
     /// Create new silicon monitor with auto-detection of all subsystems.
     pub fn new() -> Result<Self> {
-        let gpus = GpuCollection::auto_detect()
-            .map_err(|e| IronError::InitializationError(e.to_string()))?;
+        // The per-backend failures travel as data, so the resolver can name each
+        // failing backend rather than parse them back out of the message.
+        let gpus = GpuCollection::auto_detect().map_err(|e| match e {
+            Error::GpuDetectionFailed(failures) => IronError::GpuDetectionFailed(failures),
+            other => IronError::InitializationError(other.to_string()),
+        })?;
 
         let process_monitor = ProcessMonitor::new().ok();
         let network_monitor = NetworkMonitor::new().ok();

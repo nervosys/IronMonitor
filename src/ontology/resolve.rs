@@ -1545,6 +1545,22 @@ fn resolve_cpu_cache(out: &mut Vec<Reading>) {
     }
 }
 
+/// Reports `UnifiedMonitor::new` failing. The `gpu.<unreadable>` row is always
+/// emitted. When every backend failed, `GpuCollection::auto_detect` hands back each
+/// backend's reasons as data, so each one also gets its own
+/// `gpu.backend.<vendor>.<unreadable>` row. Before, those rows only existed when
+/// enumeration succeeded overall, so the failing vendors were named only in prose.
+fn push_gpu_enumeration_failure(out: &mut Vec<Reading>, e: &crate::IronError) {
+    if let crate::IronError::GpuDetectionFailed(failures) = e {
+        push_backend_failures(out, failures);
+    }
+    out.push(Reading::unavailable(
+        "gpu.<unreadable>",
+        None,
+        format!("GPU enumeration failed: {e}"),
+    ));
+}
+
 /// One `gpu.backend.<vendor>.<unreadable>` row per backend that failed to build or
 /// enumerate, carrying every error that backend reported. These are the backends
 /// `GpuCollection::auto_detect` records and keeps going past, so the GPUs they
@@ -1592,11 +1608,7 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
     let monitor = match crate::UnifiedMonitor::new() {
         Ok(monitor) => monitor,
         Err(e) => {
-            out.push(Reading::unavailable(
-                "gpu.<unreadable>",
-                None,
-                format!("GPU enumeration failed: {e}"),
-            ));
+            push_gpu_enumeration_failure(out, &e);
             return;
         }
     };
@@ -4368,6 +4380,62 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("driver not loaded"));
+    }
+
+    /// When every backend failed, each one gets its own row with its reason, beside
+    /// the aggregate `gpu.<unreadable>` row. No GPU row is produced, and no value.
+    #[test]
+    fn an_all_failed_gpu_enumeration_reports_each_backend() {
+        let err = crate::IronError::GpuDetectionFailed(vec![
+            ("nvidia", "NVML: driver not loaded".to_string()),
+            ("amd", "0000:03:00.0: ROCm: no HIP runtime".to_string()),
+        ]);
+        let mut out = Vec::new();
+        push_gpu_enumeration_failure(&mut out, &err);
+
+        let ids: Vec<&str> = out.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in [
+            "gpu.<unreadable>",
+            "gpu.backend.nvidia.<unreadable>",
+            "gpu.backend.amd.<unreadable>",
+        ] {
+            assert!(ids.contains(&id), "missing {id}: {ids:?}");
+        }
+        for r in &out {
+            assert_eq!(r.provenance, Provenance::Unavailable, "{}", r.id);
+            assert!(r.value.is_none(), "{}", r.id);
+        }
+        let nvidia = out
+            .iter()
+            .find(|r| r.id == "gpu.backend.nvidia.<unreadable>")
+            .expect("nvidia row");
+        assert!(nvidia
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("driver not loaded"));
+        let aggregate = out
+            .iter()
+            .find(|r| r.id == "gpu.<unreadable>")
+            .expect("aggregate row");
+        assert!(aggregate
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("ROCm: no HIP runtime"));
+    }
+
+    /// An enumeration failure that carries no per-backend detail keeps the single
+    /// aggregate row and adds no backend rows.
+    #[test]
+    fn an_unstructured_gpu_enumeration_failure_has_no_backend_rows() {
+        let err = crate::IronError::Other("boom".to_string());
+        let mut out = Vec::new();
+        push_gpu_enumeration_failure(&mut out, &err);
+
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].id, "gpu.<unreadable>");
     }
 
     /// The invariant the whole module exists for: a missing value is never a zero,

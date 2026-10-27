@@ -54,6 +54,11 @@ pub enum IronError {
     #[error("Initialization error: {0}")]
     InitializationError(String),
 
+    /// Every GPU backend failed and none found a GPU. Each failing backend is kept
+    /// as a (vendor, reason) pair, so a caller can report it without parsing text.
+    #[error("GPU error: GPU detection failed and no GPU was found ({})", .0.iter().map(|(vendor, reason)| format!("{vendor}: {reason}")).collect::<Vec<_>>().join("; "))]
+    GpuDetectionFailed(Vec<(&'static str, String)>),
+
     /// Network error (for remote backends)
     #[error("Network error: {0}")]
     Network(String),
@@ -131,6 +136,11 @@ pub enum Error {
     #[error("GPU error: {0}")]
     GpuError(String),
 
+    /// Every GPU backend failed and none found a GPU. Each failing backend is kept
+    /// as a (vendor, reason) pair, so a caller can report it without parsing text.
+    #[error("GPU error: GPU detection failed and no GPU was found ({})", .0.iter().map(|(vendor, reason)| format!("{vendor}: {reason}")).collect::<Vec<_>>().join("; "))]
+    GpuDetectionFailed(Vec<(&'static str, String)>),
+
     /// Process-related error
     #[error("Process error: {0}")]
     ProcessError(String),
@@ -187,6 +197,7 @@ impl From<Error> for IronError {
             Error::Io(e) => IronError::Io(e),
             #[cfg(feature = "nvidia")]
             Error::Nvml(e) => IronError::Nvml(e),
+            Error::GpuDetectionFailed(failures) => IronError::GpuDetectionFailed(failures),
             Error::GpuError(s)
             | Error::ProcessError(s)
             | Error::SystemError(s)

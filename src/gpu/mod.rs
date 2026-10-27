@@ -853,16 +853,12 @@ impl GpuCollection {
         // An empty collection with failures would read as "this machine has no
         // GPUs", so that case is an error. With any GPU found, the failures stay on
         // the collection for callers to report.
+        // The failures go out as data, not folded into the message, so a caller
+        // can report each backend on its own.
         if collection.is_empty() && !collection.detection_failures.is_empty() {
-            let reasons: Vec<String> = collection
-                .detection_failures
-                .iter()
-                .map(|(vendor, e)| format!("{vendor}: {e}"))
-                .collect();
-            return Err(crate::Error::GpuError(format!(
-                "GPU detection failed and no GPU was found ({})",
-                reasons.join("; ")
-            )));
+            return Err(crate::Error::GpuDetectionFailed(
+                collection.detection_failures,
+            ));
         }
 
         Ok(collection)

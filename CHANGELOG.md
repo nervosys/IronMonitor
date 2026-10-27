@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- When every GPU backend fails, each one is now published as its own
+  `gpu.backend.<vendor>.<unreadable>` row with its reason, alongside
+  `gpu.<unreadable>`, instead of the failing vendors appearing only in that
+  row's prose.
 - A GPU backend that fails to read its adapters is published as
   `gpu.backend.<vendor>.<unreadable>` with its reason, and `gpu.<none>` is no
   longer claimed while a backend has failed. The TUI shows an unread GPU or disk
