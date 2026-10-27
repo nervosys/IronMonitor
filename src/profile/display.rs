@@ -27,11 +27,27 @@ impl ProfileProvider for DisplayProfileProvider {
         Subsystem::Display
     }
 
-    fn snapshot(&mut self) -> Vec<ProfileGroup> {
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
         let mut groups = super::edid::scan_edid_groups();
         let monitor = match crate::display::DisplayMonitor::new() {
             Ok(m) => m,
-            Err(_) => return groups,
+            Err(e) => {
+                // The EDID scan found nothing and the display stack failed: no
+                // read happened at all. Otherwise keep the EDID groups and say
+                // which part is missing. This used to return them with no note.
+                if groups.is_empty() {
+                    return Err(format!("display enumeration failed: {e}"));
+                }
+                let mut g = ProfileGroup::new(
+                    Subsystem::Display,
+                    "Display stack",
+                    "DisplayMonitor",
+                    "DisplayMonitor",
+                );
+                g.note(format!("not read: display enumeration failed: {e}"));
+                groups.push(g);
+                return Ok(groups);
+            }
         };
         for d in monitor.displays() {
             let label = d.name.clone().unwrap_or_else(|| d.id.clone());
@@ -169,7 +185,7 @@ impl ProfileProvider for DisplayProfileProvider {
             }
             groups.push(g);
         }
-        groups
+        Ok(groups)
     }
 }
 

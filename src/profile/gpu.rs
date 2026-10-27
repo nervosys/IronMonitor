@@ -90,36 +90,53 @@ impl ProfileProvider for GpuProfileProvider {
         Subsystem::Gpu
     }
 
-    fn snapshot(&mut self) -> Vec<ProfileGroup> {
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
+        // `mut` is only needed when a vendor feature or platform source is compiled in.
+        #[allow(unused_mut)]
         let mut groups = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
 
         #[cfg(feature = "nvidia")]
-        groups.extend(nvidia_groups());
+        match nvidia_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
         #[cfg(all(target_os = "linux", feature = "amd"))]
-        groups.extend(amd_linux_groups());
+        match amd_linux_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
         #[cfg(all(target_os = "linux", feature = "intel"))]
-        groups.extend(intel_linux_groups());
+        match intel_linux_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
         #[cfg(windows)]
-        groups.extend(windows_display_class_groups());
+        match windows_display_class_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
         #[cfg(windows)]
         groups.extend(super::nvidia_drs::scan_drs_groups());
 
+        // Nothing was read. This used to return a "(no GPU driver readable)"
+        // placeholder group, which looked like a successful read of zero GPUs.
         if groups.is_empty() {
-            let mut g = ProfileGroup::new(
-                Subsystem::Gpu,
-                "(no GPU driver readable)",
-                "Default",
-                "auto-detect",
-            );
-            g.note("No supported GPU driver surfaces were readable on this platform.");
-            g.note("Compile with --features nvidia,amd,intel and run with adequate permissions for full data.");
-            groups.push(g);
+            if failures.is_empty() {
+                failures.push(
+                    "No supported GPU driver surfaces were readable on this platform. \
+                    Compile with --features nvidia,amd,intel and run with adequate \
+                    permissions for full data."
+                        .to_string(),
+                );
+            }
+            return Err(failures.join("; "));
         }
-        groups
+        Ok(groups)
     }
 }
 
@@ -134,12 +151,13 @@ fn nvml_text(v: &std::result::Result<String, String>) -> SettingValue {
 }
 
 #[cfg(feature = "nvidia")]
-fn nvidia_groups() -> Vec<ProfileGroup> {
+fn nvidia_groups() -> Result<Vec<ProfileGroup>, String> {
     use nvml_wrapper::enum_wrappers::device::{Clock, ClockId};
     use nvml_wrapper::Nvml;
 
-    let Ok(nvml) = Nvml::init() else {
-        return Vec::new();
+    let nvml = match Nvml::init() {
+        Ok(n) => n,
+        Err(e) => return Err(format!("NVML init failed: {e}")),
     };
     // This used to be `unwrap_or(0)`, which reported "no NVIDIA devices" when
     // the count itself could not be read.
@@ -156,7 +174,7 @@ fn nvidia_groups() -> Vec<ProfileGroup> {
                 "NVML device_count failed: {}. No NVIDIA devices were enumerated; this is not a count of zero.",
                 e
             ));
-            return vec![g];
+            return Ok(vec![g]);
         }
     };
     let mut groups = Vec::new();
@@ -329,7 +347,7 @@ fn nvidia_groups() -> Vec<ProfileGroup> {
     if let Some(extra) = nvidia_kmod_params_group() {
         groups.push(extra);
     }
-    groups
+    Ok(groups)
 }
 
 #[cfg(all(feature = "nvidia", target_os = "linux"))]
@@ -365,12 +383,13 @@ fn nvidia_kmod_params_group() -> Option<ProfileGroup> {
 }
 
 #[cfg(all(target_os = "linux", feature = "amd"))]
-fn amd_linux_groups() -> Vec<ProfileGroup> {
+fn amd_linux_groups() -> Result<Vec<ProfileGroup>, String> {
     use std::fs;
     let mut groups = Vec::new();
     let drm = match fs::read_dir("/sys/class/drm") {
         Ok(rd) => rd,
-        Err(_) => return groups,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(groups),
+        Err(e) => return Err(format!("/sys/class/drm: {e}")),
     };
     for entry in drm.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -472,16 +491,17 @@ fn amd_linux_groups() -> Vec<ProfileGroup> {
         }
         groups.push(g);
     }
-    groups
+    Ok(groups)
 }
 
 #[cfg(all(target_os = "linux", feature = "intel"))]
-fn intel_linux_groups() -> Vec<ProfileGroup> {
+fn intel_linux_groups() -> Result<Vec<ProfileGroup>, String> {
     use std::fs;
     let mut groups = Vec::new();
     let drm = match fs::read_dir("/sys/class/drm") {
         Ok(rd) => rd,
-        Err(_) => return groups,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(groups),
+        Err(e) => return Err(format!("/sys/class/drm: {e}")),
     };
     for entry in drm.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -534,7 +554,7 @@ fn intel_linux_groups() -> Vec<ProfileGroup> {
         }
         groups.push(g);
     }
-    groups
+    Ok(groups)
 }
 
 /// A driver-class registry string. A missing or empty value is `Unreadable`.
@@ -550,7 +570,7 @@ fn registry_text(key: &winreg::RegKey, name: &str) -> SettingValue {
 }
 
 #[cfg(windows)]
-fn windows_display_class_groups() -> Vec<ProfileGroup> {
+fn windows_display_class_groups() -> Result<Vec<ProfileGroup>, String> {
     use winreg::enums::*;
     use winreg::RegKey;
 
@@ -558,7 +578,7 @@ fn windows_display_class_groups() -> Vec<ProfileGroup> {
     let class_path =
         r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
     let Ok(class_key) = hklm.open_subkey(class_path) else {
-        return Vec::new();
+        return Err("Windows display class registry key unreadable".to_string());
     };
 
     let mut groups = Vec::new();
@@ -639,7 +659,7 @@ fn windows_display_class_groups() -> Vec<ProfileGroup> {
         );
         groups.push(g);
     }
-    groups
+    Ok(groups)
 }
 
 #[cfg(test)]

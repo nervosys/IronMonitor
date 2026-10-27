@@ -3428,16 +3428,25 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
         .get(app.profile_subsystem_idx)
         .copied()
         .unwrap_or(Subsystem::Gpu);
+    // A failed read is shown as such, not as "0 group(s)".
+    let read_error = snapshot.errors.get(&sub);
     let groups = snapshot.providers.get(&sub).cloned().unwrap_or_default();
 
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(
+    let header = match read_error {
+        Some(reason) => format!(
+            "not read: {} · captured @ ts={}",
+            reason, snapshot.timestamp
+        ),
+        None => format!(
             "{} group(s) · {} setting(s) · captured @ ts={}",
             groups.len(),
             groups.iter().map(|g| g.settings.len()).sum::<usize>(),
             snapshot.timestamp
         ),
+    };
+    lines.push(Line::from(Span::styled(
+        header,
         Style::default().fg(glances_colors::CAREFUL),
     )));
     lines.push(Line::from(""));

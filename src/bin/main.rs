@@ -5016,14 +5016,24 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
         ProfileSubcommand::List { json } => {
             let snapshot = inspector.snapshot_all();
             if *json {
+                // A failed read has `null` counts and an `error` reason, not zeros.
                 let summary: Vec<_> = Subsystem::ALL
                     .iter()
                     .map(|s| {
+                        if let Some(reason) = snapshot.errors.get(s) {
+                            return serde_json::json!({
+                                "subsystem": s.as_str(),
+                                "group_count": serde_json::Value::Null,
+                                "setting_count": serde_json::Value::Null,
+                                "error": reason,
+                            });
+                        }
                         let groups = snapshot.providers.get(s).cloned().unwrap_or_default();
                         serde_json::json!({
                             "subsystem": s.as_str(),
                             "group_count": groups.len(),
                             "setting_count": groups.iter().map(|g| g.settings.len()).sum::<usize>(),
+                            "error": serde_json::Value::Null,
                         })
                     })
                     .collect();
@@ -5032,6 +5042,10 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 println!("{}", "Hardware Profile Inspector".bold().cyan());
                 println!("Subsystems with readable profile data:\n");
                 for sub in Subsystem::ALL {
+                    if let Some(reason) = snapshot.errors.get(sub) {
+                        println!("  {:<10} not read: {}", sub.as_str().bold(), reason);
+                        continue;
+                    }
                     let groups = snapshot.providers.get(sub);
                     let (group_count, setting_count) = match groups {
                         Some(g) => (g.len(), g.iter().map(|x| x.settings.len()).sum::<usize>()),
@@ -5058,7 +5072,9 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                     subsystem
                 )
             })?;
-            let groups = inspector.snapshot(sub);
+            let groups = inspector
+                .snapshot(sub)
+                .map_err(|reason| format!("{}: not read: {}", sub.as_str(), reason))?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&groups)?);
             } else {
@@ -5223,6 +5239,15 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 for p in providers {
+                    if let Some(reason) = &p.error {
+                        println!(
+                            "  {:<10} {:>8.2} ms not read: {}",
+                            p.subsystem.as_str(),
+                            p.elapsed_ms,
+                            reason
+                        );
+                        continue;
+                    }
                     println!(
                         "  {:<10} {:>8.2} ms {:>8} {:>10} {:>14.2}",
                         p.subsystem.as_str(),
@@ -5277,13 +5302,20 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                 |inspector: &mut ironmonitor::profile::ProfileInspector| -> ProfileSnapshot {
                     match filter_sub {
                         Some(sub) => {
-                            let groups = inspector.snapshot(sub);
                             let mut providers = std::collections::BTreeMap::new();
-                            providers.insert(sub, groups);
+                            let mut errors = std::collections::BTreeMap::new();
+                            match inspector.snapshot(sub) {
+                                Ok(groups) => {
+                                    providers.insert(sub, groups);
+                                }
+                                Err(reason) => {
+                                    errors.insert(sub, reason);
+                                }
+                            }
                             ProfileSnapshot {
                                 timestamp: 0,
                                 providers,
-                                errors: Default::default(),
+                                errors,
                             }
                         }
                         None => inspector.snapshot_all(),
@@ -5710,6 +5742,10 @@ fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std:
                     snapshot.total_groups(),
                     snapshot.total_settings()
                 )?;
+                for (sub, reason) in &snapshot.errors {
+                    writeln!(sink, "=== {} ===", sub.as_str().to_uppercase())?;
+                    writeln!(sink, "  not read: {}\n", reason)?;
+                }
                 for (sub, groups) in &snapshot.providers {
                     writeln!(sink, "=== {} ===", sub.as_str().to_uppercase())?;
                     for group in groups {

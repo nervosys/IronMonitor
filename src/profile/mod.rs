@@ -307,10 +307,14 @@ impl ProfileGroup {
 /// Trait implemented by each subsystem provider.
 pub trait ProfileProvider: Send {
     fn subsystem(&self) -> Subsystem;
-    /// Snapshot all profile groups exposed by this provider. Must not panic;
-    /// platform/permission failures should be returned as empty results or
-    /// surfaced via `ProfileGroup::notes`.
-    fn snapshot(&mut self) -> Vec<ProfileGroup>;
+    /// Snapshot all profile groups exposed by this provider. Must not panic.
+    ///
+    /// `Ok` with no groups means the provider looked and legitimately found
+    /// nothing. `Err(reason)` means the underlying read failed, so no groups
+    /// were obtained. Partial failures stay `Ok` and are shown as a group whose
+    /// note says what could not be read. Callers must not treat `Err` as zero
+    /// groups.
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String>;
 }
 
 /// Aggregate snapshot of all subsystems.
@@ -387,9 +391,12 @@ impl ProfileInspector {
     }
 
     /// Take a snapshot of all configured providers.
+    ///
+    /// A provider whose read failed is recorded in `errors` and has no entry
+    /// in `providers`, so it cannot be mistaken for one that found no groups.
     pub fn snapshot_all(&mut self) -> ProfileSnapshot {
         let mut providers = BTreeMap::new();
-        let errors = BTreeMap::new();
+        let mut errors = BTreeMap::new();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -397,8 +404,12 @@ impl ProfileInspector {
 
         for p in self.providers.iter_mut() {
             let sub = p.subsystem();
-            let groups = p.snapshot();
-            providers.entry(sub).or_insert_with(Vec::new).extend(groups);
+            match p.snapshot() {
+                Ok(groups) => providers.entry(sub).or_insert_with(Vec::new).extend(groups),
+                Err(reason) => {
+                    errors.entry(sub).or_insert(reason);
+                }
+            }
         }
 
         ProfileSnapshot {
@@ -408,15 +419,16 @@ impl ProfileInspector {
         }
     }
 
-    /// Snapshot a single subsystem.
-    pub fn snapshot(&mut self, subsystem: Subsystem) -> Vec<ProfileGroup> {
+    /// Snapshot a single subsystem. Returns `Err` with the first provider
+    /// failure for that subsystem.
+    pub fn snapshot(&mut self, subsystem: Subsystem) -> Result<Vec<ProfileGroup>, String> {
         let mut out = Vec::new();
         for p in self.providers.iter_mut() {
             if p.subsystem() == subsystem {
-                out.extend(p.snapshot());
+                out.extend(p.snapshot()?);
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -473,5 +485,77 @@ mod tests {
         // with zero hardware support. Result may legitimately be empty.
         let mut inspector = ProfileInspector::new();
         let _snap = inspector.snapshot_all();
+    }
+
+    /// A provider with a canned result, for exercising `snapshot_all`.
+    struct FakeProvider {
+        sub: Subsystem,
+        result: Result<Vec<ProfileGroup>, String>,
+    }
+
+    impl ProfileProvider for FakeProvider {
+        fn subsystem(&self) -> Subsystem {
+            self.sub
+        }
+        fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn snapshot_all_records_failing_provider_in_errors() {
+        let ok_group = ProfileGroup::new(Subsystem::Cpu, "cpu0", "Default", "fake");
+        let mut inspector = ProfileInspector::with_providers(vec![
+            Box::new(FakeProvider {
+                sub: Subsystem::Cpu,
+                result: Ok(vec![ok_group]),
+            }),
+            Box::new(FakeProvider {
+                sub: Subsystem::Gpu,
+                result: Err("NVML init failed".to_string()),
+            }),
+        ]);
+        let snap = inspector.snapshot_all();
+        assert_eq!(
+            snap.errors.get(&Subsystem::Gpu).map(String::as_str),
+            Some("NVML init failed")
+        );
+        assert!(!snap.providers.contains_key(&Subsystem::Gpu));
+        assert_eq!(snap.providers.get(&Subsystem::Cpu).map(Vec::len), Some(1));
+        assert!(!snap.errors.contains_key(&Subsystem::Cpu));
+    }
+
+    #[test]
+    fn failing_provider_is_not_the_same_as_empty_provider() {
+        let mut inspector = ProfileInspector::with_providers(vec![
+            Box::new(FakeProvider {
+                sub: Subsystem::Nvme,
+                result: Ok(Vec::new()),
+            }),
+            Box::new(FakeProvider {
+                sub: Subsystem::Memory,
+                result: Err("SMBIOS unreadable".to_string()),
+            }),
+        ]);
+        let snap = inspector.snapshot_all();
+        // Empty but read: present with zero groups, no error.
+        assert_eq!(snap.providers.get(&Subsystem::Nvme).map(Vec::len), Some(0));
+        assert!(!snap.errors.contains_key(&Subsystem::Nvme));
+        // Failed: absent from providers, reason in errors.
+        assert!(!snap.providers.contains_key(&Subsystem::Memory));
+        assert!(snap.errors.contains_key(&Subsystem::Memory));
+    }
+
+    #[test]
+    fn single_subsystem_snapshot_surfaces_failure() {
+        let mut inspector = ProfileInspector::with_providers(vec![Box::new(FakeProvider {
+            sub: Subsystem::Display,
+            result: Err("no display stack".to_string()),
+        })]);
+        assert_eq!(
+            inspector.snapshot(Subsystem::Display).unwrap_err(),
+            "no display stack"
+        );
+        assert_eq!(inspector.snapshot(Subsystem::Gpu).map(|v| v.len()), Ok(0));
     }
 }

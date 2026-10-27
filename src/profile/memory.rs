@@ -34,21 +34,26 @@ impl ProfileProvider for MemoryProfileProvider {
         Subsystem::Memory
     }
 
-    fn snapshot(&mut self) -> Vec<ProfileGroup> {
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
         let mut groups = super::spd_xmp::scan_xmp_groups();
         let monitor = match crate::memory_topology::MemoryTopologyMonitor::new() {
             Ok(m) => m,
             Err(e) => {
-                // Shown as unavailable, not as a machine with no DIMMs.
+                // Nothing was read: fail the provider. Where the XMP scan did
+                // find something, keep it and show the missing topology as a
+                // note, not as a machine with no DIMMs.
+                if groups.is_empty() {
+                    return Err(format!("DIMM topology unreadable: {e}"));
+                }
                 let mut g = ProfileGroup::new(
                     Subsystem::Memory,
                     "DIMM topology",
                     "DIMM SPD / configured",
                     "SMBIOS Type 17",
                 );
-                g.note(format!("unavailable: {e}"));
+                g.note(format!("not read: {e}"));
                 groups.push(g);
-                return groups;
+                return Ok(groups);
             }
         };
         for dimm in monitor.populated_dimms() {
@@ -206,7 +211,7 @@ impl ProfileProvider for MemoryProfileProvider {
             );
             groups.push(g);
         }
-        groups
+        Ok(groups)
     }
 }
 

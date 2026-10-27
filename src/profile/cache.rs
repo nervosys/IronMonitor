@@ -90,16 +90,17 @@ impl CachedProfileInspector {
         *self.ttls.get(&sub).unwrap_or(&self.default_ttl)
     }
 
-    /// Snapshot one subsystem, using the cache when fresh.
-    pub fn snapshot(&mut self, sub: Subsystem) -> Vec<ProfileGroup> {
+    /// Snapshot one subsystem, using the cache when fresh. A failed read is
+    /// returned as `Err` and is not cached, so the next call tries again.
+    pub fn snapshot(&mut self, sub: Subsystem) -> Result<Vec<ProfileGroup>, String> {
         if let Some(entry) = self.entries.get(&sub) {
             if entry.taken_at.elapsed() < self.ttl_for(sub) {
                 CACHE_STATS.hits.fetch_add(1, Ordering::Relaxed);
-                return entry.groups.clone();
+                return Ok(entry.groups.clone());
             }
         }
         CACHE_STATS.misses.fetch_add(1, Ordering::Relaxed);
-        let groups = self.inner.snapshot(sub);
+        let groups = self.inner.snapshot(sub)?;
         self.entries.insert(
             sub,
             CacheEntry {
@@ -107,15 +108,23 @@ impl CachedProfileInspector {
                 groups: groups.clone(),
             },
         );
-        groups
+        Ok(groups)
     }
 
-    /// Snapshot every subsystem, using per-subsystem cache TTLs.
+    /// Snapshot every subsystem, using per-subsystem cache TTLs. Subsystems
+    /// whose read failed appear in `errors`, not in `providers`.
     pub fn snapshot_all(&mut self) -> ProfileSnapshot {
         let mut providers = BTreeMap::new();
+        let mut errors = BTreeMap::new();
         for sub in Subsystem::ALL {
-            let groups = self.snapshot(*sub);
-            providers.insert(*sub, groups);
+            match self.snapshot(*sub) {
+                Ok(groups) => {
+                    providers.insert(*sub, groups);
+                }
+                Err(reason) => {
+                    errors.insert(*sub, reason);
+                }
+            }
         }
         ProfileSnapshot {
             timestamp: std::time::SystemTime::now()
@@ -123,7 +132,7 @@ impl CachedProfileInspector {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             providers,
-            errors: BTreeMap::new(),
+            errors,
         }
     }
 }
@@ -186,7 +195,8 @@ mod tests {
         let mut c = CachedProfileInspector::new();
         let snap = c.snapshot_all();
         for sub in Subsystem::ALL {
-            assert!(snap.providers.contains_key(sub));
+            // Every subsystem is either read or reported as failed.
+            assert!(snap.providers.contains_key(sub) ^ snap.errors.contains_key(sub));
         }
     }
 }

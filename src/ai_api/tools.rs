@@ -2818,7 +2818,10 @@ impl AiDataApi {
         let sub = Subsystem::parse(name)
             .ok_or_else(|| IronError::InvalidArgument(format!("unknown subsystem: {}", name)))?;
         let mut inspector = ProfileInspector::new();
-        let groups = inspector.snapshot(sub);
+        // A failed read is an error to the caller, not an empty group list.
+        let groups = inspector
+            .snapshot(sub)
+            .map_err(|reason| IronError::CommandFailed(format!("{name}: not read: {reason}")))?;
         Ok(serde_json::to_value(groups)?)
     }
 

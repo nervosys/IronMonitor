@@ -9,11 +9,14 @@ use std::time::Instant;
 pub struct ProviderBench {
     pub subsystem: Subsystem,
     pub elapsed_ms: f64,
+    /// Counts are zero when `error` is set; they are not a reading.
     pub group_count: usize,
     pub setting_count: usize,
     /// Throughput: settings produced per millisecond of wall-clock time.
     /// Useful for comparing providers of different sizes.
     pub settings_per_ms: f64,
+    /// Why the provider's read failed, if it did.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +48,9 @@ pub fn run_bench() -> BenchReport {
     for p in providers.iter_mut() {
         let sub = p.subsystem();
         let start = Instant::now();
-        let groups = p.snapshot();
+        let result = p.snapshot();
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let groups = result.as_deref().unwrap_or_default();
         let setting_count: usize = groups.iter().map(|g| g.settings.len()).sum();
         let bench = ProviderBench {
             subsystem: sub,
@@ -58,6 +62,7 @@ pub fn run_bench() -> BenchReport {
             } else {
                 0.0
             },
+            error: result.as_ref().err().cloned(),
         };
         report.total_elapsed_ms += elapsed_ms;
         report.total_groups += groups.len();

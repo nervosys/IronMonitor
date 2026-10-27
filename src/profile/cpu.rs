@@ -39,7 +39,7 @@ impl ProfileProvider for CpuProfileProvider {
         Subsystem::Cpu
     }
 
-    fn snapshot(&mut self) -> Vec<ProfileGroup> {
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
         let mut groups = Vec::new();
 
         #[cfg(target_os = "linux")]
@@ -66,16 +66,17 @@ impl ProfileProvider for CpuProfileProvider {
             groups.push(g);
         }
 
+        // Nothing was read. This used to return a placeholder "(CPU)" group,
+        // which looked the same as a successful read of an empty subsystem.
         if groups.is_empty() {
-            let mut g = ProfileGroup::new(Subsystem::Cpu, "(CPU)", "Default", "auto-detect");
-            g.note(
+            return Err(
                 "No CPU tuning surfaces were readable. On Linux, run as root for \
                 MSR access; on Windows, signed-driver MSR access is required for \
-                XTU/Ryzen Master-equivalent data.",
+                XTU/Ryzen Master-equivalent data."
+                    .to_string(),
             );
-            groups.push(g);
         }
-        groups
+        Ok(groups)
     }
 }
 

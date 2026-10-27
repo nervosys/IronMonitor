@@ -35,18 +35,32 @@ impl ProfileProvider for NvmeProfileProvider {
         Subsystem::Nvme
     }
 
-    fn snapshot(&mut self) -> Vec<ProfileGroup> {
+    fn snapshot(&mut self) -> Result<Vec<ProfileGroup>, String> {
         let mut groups = Vec::new();
+        // `mut` is only needed on platforms whose source pushes a failure.
+        #[allow(unused_mut)]
+        let mut failures: Vec<String> = Vec::new();
 
         #[cfg(target_os = "linux")]
-        groups.extend(linux_groups());
+        match linux_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
         #[cfg(target_os = "linux")]
         super::nvme_features::enrich_groups(&mut groups);
 
         #[cfg(windows)]
-        groups.extend(windows_groups());
+        match windows_groups() {
+            Ok(found) => groups.extend(found),
+            Err(reason) => failures.push(reason),
+        }
 
+        // Nothing was enumerated and a source failed: the read failed, so
+        // report it rather than a placeholder for "no devices".
+        if groups.is_empty() && !failures.is_empty() {
+            return Err(failures.join("; "));
+        }
         if groups.is_empty() {
             let mut g = ProfileGroup::new(
                 Subsystem::Nvme,
@@ -57,7 +71,7 @@ impl ProfileProvider for NvmeProfileProvider {
             g.note("No NVMe controllers were enumerable on this platform.");
             groups.push(g);
         }
-        groups
+        Ok(groups)
     }
 }
 
@@ -73,13 +87,16 @@ fn sysfs_value(path: &std::path::Path) -> SettingValue {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_groups() -> Vec<ProfileGroup> {
+fn linux_groups() -> Result<Vec<ProfileGroup>, String> {
     use std::fs;
     let base = std::path::Path::new("/sys/class/nvme");
     let mut groups = Vec::new();
     let rd = match fs::read_dir(base) {
         Ok(r) => r,
-        Err(_) => return groups,
+        // No nvme class directory means no controllers. Any other error means
+        // the directory exists but could not be read.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(groups),
+        Err(e) => return Err(format!("{}: {}", base.display(), e)),
     };
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -198,7 +215,7 @@ fn linux_groups() -> Vec<ProfileGroup> {
         }
         groups.push(g);
     }
-    groups
+    Ok(groups)
 }
 
 /// A controller string the driver did not report. This used to be an empty
@@ -213,11 +230,10 @@ fn text_or_unreadable(value: &str, what: &str) -> SettingValue {
 }
 
 #[cfg(windows)]
-fn windows_groups() -> Vec<ProfileGroup> {
+fn windows_groups() -> Result<Vec<ProfileGroup>, String> {
     use crate::storage_controller::StorageControllerMonitor;
-    let Ok(monitor) = StorageControllerMonitor::new() else {
-        return Vec::new();
-    };
+    let monitor = StorageControllerMonitor::new()
+        .map_err(|e| format!("storage controller enumeration failed: {e}"))?;
     let controllers = monitor.controllers();
     let mut groups = Vec::new();
     for c in controllers {
@@ -279,7 +295,7 @@ fn windows_groups() -> Vec<ProfileGroup> {
         );
         groups.push(g);
     }
-    groups
+    Ok(groups)
 }
 
 #[cfg(test)]

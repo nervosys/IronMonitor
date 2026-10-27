@@ -273,6 +273,10 @@ pub struct IronMonitorApp {
     pub(super) profile_deviations_cache: Option<Vec<crate::profile::deviation::Deviation>>,
     pub(super) profile_audit_tail_cache: Vec<String>,
     pub(super) profile_audit_last_read: Option<std::time::Instant>,
+    /// Why the last audit-log read failed (anything but "not found"). Set
+    /// alongside the tail cache so the panel can show the failure instead of
+    /// an empty log.
+    pub(super) profile_audit_read_error: Option<String>,
     /// True once any profile load (bg or sync) has been attempted. Stops
     /// per-frame respawn after a panicked bg thread; cleared by Refresh.
     pub(super) profile_load_attempted: bool,
@@ -1168,6 +1172,7 @@ impl IronMonitorApp {
             profile_deviations_cache: None,
             profile_audit_tail_cache: Vec::new(),
             profile_audit_last_read: None,
+            profile_audit_read_error: None,
             profile_load_attempted: false,
             profile_sync_attempted: false,
             applied_color_theme: None,

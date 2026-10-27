@@ -109,10 +109,27 @@ impl IronMonitorApp {
             .unwrap_or(true);
         if need_audit_refresh {
             let audit_path = crate::profile::apply::audit_log_path();
-            let audit_text = std::fs::read_to_string(&audit_path).unwrap_or_default();
-            let lines: Vec<&str> = audit_text.lines().collect();
-            let start = lines.len().saturating_sub(AUDIT_TAIL_LINES);
-            self.profile_audit_tail_cache = lines[start..].iter().map(|s| s.to_string()).collect();
+            // A missing log means no attempts yet. Any other read failure is
+            // kept as an error so the panel can say so; it used to be dropped
+            // by `unwrap_or_default()`, which looked like an empty log.
+            match std::fs::read_to_string(&audit_path) {
+                Ok(audit_text) => {
+                    let lines: Vec<&str> = audit_text.lines().collect();
+                    let start = lines.len().saturating_sub(AUDIT_TAIL_LINES);
+                    self.profile_audit_tail_cache =
+                        lines[start..].iter().map(|s| s.to_string()).collect();
+                    self.profile_audit_read_error = None;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.profile_audit_tail_cache.clear();
+                    self.profile_audit_read_error = None;
+                }
+                Err(e) => {
+                    self.profile_audit_tail_cache.clear();
+                    self.profile_audit_read_error =
+                        Some(format!("{}: {}", audit_path.display(), e));
+                }
+            }
             self.profile_audit_last_read = Some(std::time::Instant::now());
         }
 
@@ -127,6 +144,7 @@ impl IronMonitorApp {
         let deviations: &[crate::profile::deviation::Deviation] =
             self.profile_deviations_cache.as_deref().unwrap_or(&[]);
         let audit_tail: &[String] = self.profile_audit_tail_cache.as_slice();
+        let audit_error: Option<&str> = self.profile_audit_read_error.as_deref();
         let filter_lc = self.profile_filter.to_ascii_lowercase();
         let subsystem_filter = self.profile_subsystem_filter;
 
@@ -136,6 +154,7 @@ impl IronMonitorApp {
             snapshot,
             deviations,
             audit_tail,
+            audit_error,
             &filter_lc,
             subsystem_filter,
         );
@@ -157,6 +176,7 @@ fn draw_profile_contents(
     snapshot: &crate::profile::ProfileSnapshot,
     deviations: &[crate::profile::deviation::Deviation],
     audit_tail: &[String],
+    audit_error: Option<&str>,
     filter_lc: &str,
     subsystem_filter: Option<crate::profile::Subsystem>,
 ) {
@@ -248,15 +268,10 @@ fn draw_profile_contents(
 
             // ── Audit log tail panel ─────────────────────────────────────────
             let audit_path = crate::profile::apply::audit_log_path();
-            // An empty tail is "no entries" only if the log was read and was
-            // empty or absent. A read that failed for any other reason (for
-            // example permissions) was swallowed by `unwrap_or_default()` when
-            // the cache was filled, and the panel used to say no apply attempts
-            // had been made, which the log's contents never showed.
-            let audit_unreadable = audit_tail.is_empty()
-                && std::fs::read_to_string(&audit_path)
-                    .err()
-                    .is_some_and(|e| e.kind() != std::io::ErrorKind::NotFound);
+            // The read happened when the cache was filled; a failure is carried
+            // in `audit_error`. An empty tail with no error means the log was
+            // read and was empty or absent.
+            let audit_unreadable = audit_error.is_some();
             let audit_heading = RichText::new(if audit_unreadable {
                 "Apply audit log · not readable".to_string()
             } else {
@@ -278,15 +293,19 @@ fn draw_profile_contents(
                             .italics()
                             .small(),
                     );
-                    if audit_tail.is_empty() {
-                        let note = if audit_unreadable {
-                            "(the log exists but could not be read; whether attempts were made is unknown)"
-                        } else {
-                            "(no entries — no apply attempts have been made)"
-                        };
+                    if let Some(reason) = audit_error {
                         wrapped_label(
                             ui,
-                            RichText::new(note)
+                            RichText::new(format!(
+                                "not read: {} (whether apply attempts were made is unknown)",
+                                reason
+                            ))
+                            .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
+                        );
+                    } else if audit_tail.is_empty() {
+                        wrapped_label(
+                            ui,
+                            RichText::new("(no entries — no apply attempts have been made)")
                                 .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
                         );
                     } else {
@@ -354,6 +373,23 @@ fn draw_profile_contents(
                 });
 
             ui.separator();
+
+            // Subsystems whose read failed have no providers entry, so they
+            // would otherwise be missing rather than shown as failed.
+            for (sub, reason) in &snapshot.errors {
+                if subsystem_filter.is_some_and(|sel| sel != *sub) {
+                    continue;
+                }
+                wrapped_label(
+                    ui,
+                    RichText::new(format!(
+                        "{} — not read: {}",
+                        sub.as_str().to_uppercase(),
+                        reason
+                    ))
+                    .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
+                );
+            }
 
             let mut total_groups = 0usize;
             let mut total_settings = 0usize;
@@ -585,7 +621,7 @@ mod layout_tests {
         ctx.style_mut(|style| style.animation_time = 0.0);
         let size = egui::vec2(800.0, 600.0);
         let initial = painted_text_rects_sized(&ctx, size, |ui| {
-            draw_profile_contents(ui, &snapshot, &[], &[], "", None);
+            draw_profile_contents(ui, &snapshot, &[], &[], None, "", None);
         });
         let position = initial
             .iter()
@@ -610,13 +646,13 @@ mod layout_tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        draw_profile_contents(ui, &snapshot, &[], &[], "", None);
+                        draw_profile_contents(ui, &snapshot, &[], &[], None, "", None);
                     });
                 },
             );
         }
         let expanded = painted_text_rects_sized(&ctx, size, |ui| {
-            draw_profile_contents(ui, &snapshot, &[], &[], "", None);
+            draw_profile_contents(ui, &snapshot, &[], &[], None, "", None);
         });
         assert!(expanded.iter().any(|(text, _)| text == "first_setting"));
         assert!(!expanded.iter().any(|(text, _)| text == "second_setting"));
@@ -658,7 +694,7 @@ mod layout_tests {
             let ctx = themed_context();
             ctx.memory_mut(|memory| memory.set_everything_is_visible(true));
             let text = painted_text_rects_sized(&ctx, egui::vec2(width, 6000.0), |ui| {
-                draw_profile_contents(ui, &snapshot, &deviations, &[], "", None)
+                draw_profile_contents(ui, &snapshot, &deviations, &[], None, "", None)
             });
             assert!(text
                 .iter()

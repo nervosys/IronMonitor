@@ -730,9 +730,33 @@ fn pick_choice(setting: &Setting, wanted: &[&str]) -> Result<(SettingValue, Stri
         ));
     }
 
+    // Pass 1: exact (case-insensitive) match on the label or the bare value.
+    // "1" must find a choice named "1", never one named "10".
     for want in wanted {
+        let want_lc = want.trim().to_ascii_lowercase();
         for (label, value) in choices {
-            if label.to_ascii_lowercase().contains(want) {
+            if label.trim().eq_ignore_ascii_case(&want_lc) || bare_value_equals(value, &want_lc) {
+                return Ok((
+                    value.clone(),
+                    format!("the driver's own choice {label:?} for this setting"),
+                ));
+            }
+        }
+    }
+
+    // Pass 2: looser substring match on words only. A numeric token never
+    // matches by substring, and a numeric label is never picked this way.
+    // This used to match "1" inside "10" and "100".
+    for want in wanted {
+        if is_numeric_token(want) {
+            continue;
+        }
+        let want_lc = want.trim().to_ascii_lowercase();
+        for (label, value) in choices {
+            if is_numeric_token(label) {
+                continue;
+            }
+            if label.to_ascii_lowercase().contains(&want_lc) {
                 return Ok((
                     value.clone(),
                     format!("the driver's own choice {label:?} for this setting"),
@@ -750,6 +774,23 @@ fn pick_choice(setting: &Setting, wanted: &[&str]) -> Result<(SettingValue, Stri
             .collect::<Vec<_>>()
             .join(", ")
     ))
+}
+
+/// A wanted token that is all digits, such as "1" or "100".
+fn is_numeric_token(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Whether a choice's bare value (not its `Display` form, which appends hex to
+/// integers) equals the lowercased wanted token.
+fn bare_value_equals(value: &SettingValue, want_lc: &str) -> bool {
+    match value {
+        SettingValue::Text(s) => s.trim().eq_ignore_ascii_case(want_lc),
+        SettingValue::Uint(n) => want_lc.parse::<u64>().is_ok_and(|w| w == *n),
+        SettingValue::Int(i) => want_lc.parse::<i64>().is_ok_and(|w| w == *i),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -793,6 +834,56 @@ mod tests {
             method: Method::Signals,
             evidence: vec!["test".into()],
         }
+    }
+
+    fn uint_choices_setting(choices: &[(&str, u64)]) -> Setting {
+        let mut s = scheme_setting("", &[]);
+        s.choices = Some(
+            choices
+                .iter()
+                .map(|(l, v)| ((*l).to_string(), SettingValue::Uint(*v)))
+                .collect(),
+        );
+        s
+    }
+
+    #[test]
+    fn wanted_one_does_not_match_a_choice_named_ten_or_hundred() {
+        // Only "10" and "100" are offered: a wanted "1" must not substring-match.
+        let s = uint_choices_setting(&[("10", 10), ("100", 100)]);
+        assert!(pick_choice(&s, &["1"]).is_err());
+    }
+
+    #[test]
+    fn wanted_one_prefers_the_exact_choice_over_longer_numbers() {
+        // "10" comes first in the list, but the exact "1" must win.
+        let s = uint_choices_setting(&[("10", 10), ("100", 100), ("1", 1)]);
+        let (value, _) = pick_choice(&s, &["1"]).expect("exact match exists");
+        assert!(matches!(value, SettingValue::Uint(1)));
+    }
+
+    #[test]
+    fn exact_match_on_bare_value_counts_even_if_label_differs() {
+        let s = uint_choices_setting(&[("Level ten", 10), ("Level one", 1)]);
+        let (value, _) = pick_choice(&s, &["1"]).expect("value 1 is offered");
+        assert!(matches!(value, SettingValue::Uint(1)));
+    }
+
+    #[test]
+    fn exact_match_is_case_insensitive_and_beats_substring() {
+        // "high" appears as a substring of "Highest", but "High" exactly matches.
+        let s = scheme_setting("", &[("Highest", "guid-highest"), ("High", "guid-high")]);
+        let (value, _) = pick_choice(&s, &["HIGH"]).expect("exact match exists");
+        assert_eq!(value, SettingValue::Text("guid-high".into()));
+    }
+
+    #[test]
+    fn word_substring_still_matches_when_no_exact_choice_exists() {
+        let s = scheme_setting("", &windows_choices());
+        let (value, _) = pick_choice(&s, &["high performance"]).expect("exact label");
+        assert_eq!(value, SettingValue::Text(HIGH_PERF.into()));
+        let (value, _) = pick_choice(&s, &["perf"]).expect("substring of a word");
+        assert_eq!(value, SettingValue::Text(HIGH_PERF.into()));
     }
 
     /// The contract of the whole module: a proposed value is one the driver

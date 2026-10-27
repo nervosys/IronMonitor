@@ -62,6 +62,10 @@ fn print_summary(inspector: &mut ProfileInspector) {
         snap.total_settings()
     );
     for sub in Subsystem::ALL {
+        if let Some(reason) = snap.errors.get(sub) {
+            println!("  {:<10} not read: {}", sub.as_str(), reason);
+            continue;
+        }
         let groups = snap.providers.get(sub).cloned().unwrap_or_default();
         let settings: usize = groups.iter().map(|g| g.settings.len()).sum();
         println!(
@@ -74,7 +78,13 @@ fn print_summary(inspector: &mut ProfileInspector) {
 }
 
 fn print_subsystem(inspector: &mut ProfileInspector, sub: Subsystem) {
-    let groups = inspector.snapshot(sub);
+    let groups = match inspector.snapshot(sub) {
+        Ok(groups) => groups,
+        Err(reason) => {
+            println!("== {} ==\nnot read: {}", sub, reason);
+            return;
+        }
+    };
     println!("== {} ==", sub);
     for group in &groups {
         println!("\n▸ {} ({})", group.device, group.display_name);
