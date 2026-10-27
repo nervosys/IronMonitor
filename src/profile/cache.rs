@@ -168,8 +168,15 @@ mod tests {
         CACHE_STATS.reset();
         let mut c = CachedProfileInspector::new();
         c.set_ttl(Subsystem::Cpu, Duration::from_secs(60));
-        let _ = c.snapshot(Subsystem::Cpu);
+        let cold = c.snapshot(Subsystem::Cpu);
         let misses_after_cold = CACHE_STATS.misses();
+        // A failed read is deliberately not cached, so there is nothing for a
+        // warm call to hit where this machine's CPU provider cannot read (the
+        // macOS CI runner, for one).
+        if let Err(reason) = cold {
+            eprintln!("skipping: the CPU profile was not read: {reason}");
+            return;
+        }
         let _ = c.snapshot(Subsystem::Cpu);
         let hits_after_warm = CACHE_STATS.hits();
         assert!(misses_after_cold >= 1);
