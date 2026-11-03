@@ -1,0 +1,10 @@
+{"schema_version":1,"sampled_at_ns":12080551200,"uptime_ns":9044100000,
+ "engine":{"model":"glm-5.3-flash","arch":"glm5","backend":"cuda","gpu_device":1},
+ "tiers":{
+  "vram":{"configured":true,"policy":"clock","experts_resident":4986,"capacity_experts":4986,"bytes_resident":47237443128,"hit_total":40221,"miss_total":9145},
+  "ram":{"configured":true,"experts_resident":10200,"pinned_bytes":96635289600,"hit_total":8337,"miss_total":808},
+  "nvme":{"configured":true,"read_total":808,"bytes_streamed_total":7655018496,"queue_depth":1,"hit_total":808,"miss_total":0}},
+ "prefetch":{"configured":true,"inflight":1,"overlapped_layers_total":1922,"stall_total":11},
+ "decode":{"tok_s":{"value":9.1,"window_ms":1000}},
+ "memory":{"per_gpu":[{"device_index":1,"pci_bus_id":"00000000:03:00.0","uuid":"GPU-5c9e...","engine_vram_used_bytes":47237443128}],"host":{"engine_pinned_bytes":96635289600}},
+ "requests":{"total":40,"active":1,"recent_capacity":32,"recent":[]}}

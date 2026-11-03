@@ -1,0 +1,11 @@
+{"schema_version":1,"sampled_at_ns":55120339900,"uptime_ns":40228110000,
+ "engine":{"model":"qwen3.8-flash-next","arch":"qwen4","backend":"cuda","gpu_device":0},
+ "tiers":{
+  "vram":{"configured":true,"policy":"clock","experts_resident":6000,"capacity_experts":6000,"bytes_resident":8306688000,"hit_total":904233,"miss_total":12044,"eviction_total":6044},
+  "ram":{"configured":true,"experts_resident":24576,"pinned_bytes":34017312768,"hit_total":12044,"miss_total":0},
+  "nvme":{"configured":false,"reason":"model fits in RAM+VRAM; no NVMe tier"}},
+ "prefetch":{"configured":true,"inflight":0,"overlapped_layers_total":0,"stall_total":0},
+ "masked_miss":{"enabled":false,"masked_pick_total":0},
+ "decode":{"tok_s":{"value":44.1,"window_ms":1000},"prompt_tok_s":{"value":980.2,"window_ms":1000}},
+ "memory":{"per_gpu":[{"device_index":0,"pci_bus_id":"00000000:01:00.0","uuid":"GPU-a71b...","engine_vram_used_bytes":8306688000}],"host":{"engine_pinned_bytes":34017312768}},
+ "requests":{"total":88,"active":0,"recent_capacity":32,"recent":[]}}

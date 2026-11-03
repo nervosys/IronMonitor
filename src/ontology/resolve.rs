@@ -158,6 +158,9 @@ pub fn snapshot() -> Vec<Reading> {
     resolve_codecs(&mut out);
     resolve_settings(&mut out);
     super::extended::resolve(&mut out);
+    // After the GPU readers: an engine's GPUs are joined to `gpu.{n}` by reading
+    // those GPUs' PCI addresses and UUIDs, which exist only once they have run.
+    resolve_inference(&mut out);
 
     // Anything the ontology names but nothing above produced.
     //
@@ -2078,6 +2081,408 @@ pub fn validate(readings: &[Reading]) -> Vec<String> {
         }
     }
     problems
+}
+
+// ── Inference ────────────────────────────────────────────────────────────────
+
+/// Timeout for the snapshot's one request to an engine. A refused connection is
+/// immediate, so this only bounds a host that accepts the connection and goes quiet.
+const INFERENCE_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
+const COUNTER_ABSENT: &str = "the engine does not report this counter";
+const FIGURE_ABSENT: &str = "the engine does not report this figure";
+
+/// Inference engines. Only IronWorks is read so far; another provider adds its
+/// resolver beside this one and its ids beside `inference.ironworks.*`.
+fn resolve_inference(out: &mut Vec<Reading>) {
+    resolve_ironworks(out, &crate::inference::ironworks::endpoint_from_env());
+}
+
+/// One point-in-time read of an IronWorks engine. It is a single sample, so no
+/// rate is derived here: the counters are published, and rates need two samples.
+fn resolve_ironworks(out: &mut Vec<Reading>, base: &str) {
+    use crate::inference::ironworks::{
+        fetch, metrics_url, NvmeTier, PrefetchFeature, RamTier, VramTier,
+    };
+    use serde_json::json;
+
+    let url = metrics_url(base);
+    let sample = match fetch(base, INFERENCE_SNAPSHOT_TIMEOUT) {
+        Ok(metrics) => metrics.into_sample(),
+        Err(e) => {
+            out.push(Reading::unavailable(
+                "inference.ironworks.<none>",
+                None,
+                ironworks_absence(&url, &e),
+            ));
+            return;
+        }
+    };
+    let Some(section) = sample.ironworks.as_ref() else {
+        out.push(Reading::unavailable(
+            "inference.ironworks.<none>",
+            None,
+            "the metrics body carried no IronWorks section, so nothing from it is reported",
+        ));
+        return;
+    };
+
+    let id = &sample.identity;
+    push_opt(
+        out,
+        "inference.ironworks.engine.model",
+        id.model.clone().map(|v| json!(v)),
+        Some(Unit::Text),
+        "the engine does not report the model it is serving",
+    );
+    push_opt(
+        out,
+        "inference.ironworks.engine.arch",
+        id.arch.clone().map(|v| json!(v)),
+        Some(Unit::Text),
+        "the engine does not report its model architecture",
+    );
+    push_opt(
+        out,
+        "inference.ironworks.engine.backend",
+        id.backend.clone().map(|v| json!(v)),
+        Some(Unit::Text),
+        "the engine does not report its compute backend",
+    );
+
+    let count = |out: &mut Vec<Reading>, key: &str| {
+        push_opt(
+            out,
+            format!("inference.ironworks.{key}"),
+            sample.counters.get(key).map(|v| json!(v)),
+            Some(Unit::Count),
+            COUNTER_ABSENT,
+        )
+    };
+
+    match &section.vram {
+        None => out.push(Reading::unavailable(
+            "inference.ironworks.tier.vram.<none>",
+            None,
+            "the engine's metrics carry no VRAM tier object",
+        )),
+        Some(VramTier::NotConfigured { reason }) => out.push(Reading::unavailable(
+            "inference.ironworks.tier.vram.<none>",
+            None,
+            not_configured("the VRAM expert cache", reason),
+        )),
+        Some(VramTier::Configured {
+            policy,
+            experts_resident,
+            capacity_experts,
+            bytes_resident,
+            ..
+        }) => {
+            push_opt(
+                out,
+                "inference.ironworks.tier.vram.policy",
+                policy.clone().map(|v| json!(v)),
+                Some(Unit::Text),
+                "the engine does not report its VRAM eviction policy",
+            );
+            push_opt(
+                out,
+                "inference.ironworks.tier.vram.experts_resident",
+                experts_resident.map(|v| json!(v)),
+                Some(Unit::Count),
+                FIGURE_ABSENT,
+            );
+            push_opt(
+                out,
+                "inference.ironworks.tier.vram.capacity_experts",
+                capacity_experts.map(|v| json!(v)),
+                Some(Unit::Count),
+                FIGURE_ABSENT,
+            );
+            push_opt(
+                out,
+                "inference.ironworks.tier.vram.bytes_resident",
+                bytes_resident.map(|v| json!(v)),
+                Some(Unit::Bytes),
+                FIGURE_ABSENT,
+            );
+            for key in [
+                "tier.vram.hit_total",
+                "tier.vram.miss_total",
+                "tier.vram.eviction_total",
+            ] {
+                count(out, key);
+            }
+        }
+    }
+
+    match &section.ram {
+        None => out.push(Reading::unavailable(
+            "inference.ironworks.tier.ram.<none>",
+            None,
+            "the engine's metrics carry no host RAM tier object",
+        )),
+        Some(RamTier::NotConfigured { reason }) => out.push(Reading::unavailable(
+            "inference.ironworks.tier.ram.<none>",
+            None,
+            not_configured("the host RAM expert cache", reason),
+        )),
+        Some(RamTier::Configured {
+            experts_resident,
+            pinned_bytes,
+            ..
+        }) => {
+            push_opt(
+                out,
+                "inference.ironworks.tier.ram.experts_resident",
+                experts_resident.map(|v| json!(v)),
+                Some(Unit::Count),
+                FIGURE_ABSENT,
+            );
+            push_opt(
+                out,
+                "inference.ironworks.tier.ram.pinned_bytes",
+                pinned_bytes.map(|v| json!(v)),
+                Some(Unit::Bytes),
+                FIGURE_ABSENT,
+            );
+            for key in ["tier.ram.hit_total", "tier.ram.miss_total"] {
+                count(out, key);
+            }
+        }
+    }
+
+    match &section.nvme {
+        None => out.push(Reading::unavailable(
+            "inference.ironworks.tier.nvme.<none>",
+            None,
+            "the engine's metrics carry no NVMe tier object",
+        )),
+        Some(NvmeTier::NotConfigured { reason }) => out.push(Reading::unavailable(
+            "inference.ironworks.tier.nvme.<none>",
+            None,
+            not_configured("the NVMe expert store", reason),
+        )),
+        Some(NvmeTier::Configured { queue_depth, .. }) => {
+            push_opt(
+                out,
+                "inference.ironworks.tier.nvme.queue_depth",
+                queue_depth.map(|v| json!(v)),
+                Some(Unit::Count),
+                FIGURE_ABSENT,
+            );
+            for (key, unit) in [
+                ("tier.nvme.read_total", Unit::Count),
+                ("tier.nvme.bytes_streamed_total", Unit::Bytes),
+                ("tier.nvme.hit_total", Unit::Count),
+                ("tier.nvme.miss_total", Unit::Count),
+            ] {
+                push_opt(
+                    out,
+                    format!("inference.ironworks.{key}"),
+                    sample.counters.get(key).map(|v| json!(v)),
+                    Some(unit),
+                    COUNTER_ABSENT,
+                );
+            }
+        }
+    }
+
+    match &section.prefetch {
+        None => out.push(Reading::unavailable(
+            "inference.ironworks.prefetch.<none>",
+            None,
+            "the engine's metrics carry no prefetch object",
+        )),
+        Some(PrefetchFeature::NotConfigured { reason }) => out.push(Reading::unavailable(
+            "inference.ironworks.prefetch.<none>",
+            None,
+            not_configured("expert prefetch", reason),
+        )),
+        Some(PrefetchFeature::Configured { inflight, .. }) => {
+            push_opt(
+                out,
+                "inference.ironworks.prefetch.inflight",
+                inflight.map(|v| json!(v)),
+                Some(Unit::Count),
+                FIGURE_ABSENT,
+            );
+            for key in ["prefetch.overlapped_layers_total", "prefetch.stall_total"] {
+                count(out, key);
+            }
+        }
+    }
+
+    windowed_figure(
+        out,
+        "inference.ironworks.decode.tok_s",
+        sample.engine_reported.output_tok_s,
+    );
+    windowed_figure(
+        out,
+        "inference.ironworks.decode.prompt_tok_s",
+        sample.engine_reported.prompt_tok_s,
+    );
+
+    count(out, "decode.prompt_tokens_total");
+    count(out, "decode.completion_tokens_total");
+    count(out, "requests.total");
+    push_opt(
+        out,
+        "inference.ironworks.requests.active",
+        section.requests_active.map(|v| json!(v)),
+        Some(Unit::Count),
+        FIGURE_ABSENT,
+    );
+
+    match &section.per_gpu {
+        None => out.push(Reading::unavailable(
+            "inference.ironworks.gpu.<none>",
+            None,
+            "the engine's metrics carry no per-GPU memory section",
+        )),
+        Some(gpus) if gpus.is_empty() => out.push(Reading::unavailable(
+            "inference.ironworks.gpu.<none>",
+            None,
+            "the engine reports no GPU that it is running on",
+        )),
+        Some(gpus) => {
+            let monitors = monitor_gpus(out);
+            for gpu in gpus {
+                // The engine's device index is not used. Under CUDA_VISIBLE_DEVICES
+                // it can differ from the physical index, so the GPU is matched by
+                // PCI bus address (UUID as fallback) against IronMonitor's own
+                // `gpu.{n}` readings. A GPU that does not match is withheld, not
+                // attached to whichever `gpu.{n}` happens to share its number.
+                let index = match crate::inference::ironworks::match_gpu(gpu, &monitors) {
+                    Ok(n) => n,
+                    Err(why) => {
+                        out.push(Reading::unavailable(
+                            "inference.ironworks.gpu.<unmatched>",
+                            None,
+                            why,
+                        ));
+                        continue;
+                    }
+                };
+                let base = format!("inference.ironworks.gpu.{index}");
+                push_opt(
+                    out,
+                    format!("{base}.vram_used_bytes"),
+                    gpu.engine_vram_used_bytes.map(|v| json!(v)),
+                    Some(Unit::Bytes),
+                    FIGURE_ABSENT,
+                );
+                push_opt(
+                    out,
+                    format!("{base}.pci_bus_id"),
+                    gpu.pci_bus_id.clone().map(|v| json!(v)),
+                    Some(Unit::Identifier),
+                    "the engine does not report this GPU's PCI bus address",
+                );
+                push_opt(
+                    out,
+                    format!("{base}.uuid"),
+                    gpu.uuid.clone().map(|v| json!(v)),
+                    Some(Unit::Identifier),
+                    "the engine does not report this GPU's UUID",
+                );
+            }
+        }
+    }
+}
+
+/// Why no IronWorks metrics were read, naming the URL and what went wrong there.
+fn ironworks_absence(url: &str, e: &crate::inference::SourceError) -> String {
+    use crate::inference::SourceError;
+    match e {
+        SourceError::Unreachable(why) => format!("no IronWorks engine answered at {url}: {why}"),
+        SourceError::NotSupported(why) => {
+            format!("IronWorks metrics cannot be read in this build: {why}")
+        }
+        SourceError::Status(code) => {
+            format!("the endpoint at {url} answered HTTP {code}, not IronWorks metrics")
+        }
+        SourceError::NotJson(why) => format!("the endpoint at {url} did not return JSON: {why}"),
+        SourceError::Rejected(why) => format!(
+            "the endpoint at {url} did not return IronWorks metrics this build reads: {why}"
+        ),
+    }
+}
+
+/// A tier the engine has switched off. The engine's own reason is passed through.
+fn not_configured(what: &str, reason: &Option<String>) -> String {
+    match reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(why) => why.to_string(),
+        None => format!("{what} is not configured on this engine, and the engine gives no reason"),
+    }
+}
+
+/// IronMonitor's GPUs as the readings so far describe them, by their own `gpu.{n}`
+/// index, with the PCI address and UUID each one reported.
+///
+/// This is what an engine's GPU is joined against. The engine's own device index
+/// is not a key here: see `ironworks::match_gpu` for why.
+fn monitor_gpus(out: &[Reading]) -> Vec<crate::inference::ironworks::MonitorGpu> {
+    use crate::inference::ironworks::MonitorGpu;
+    let mut by_index: std::collections::BTreeMap<usize, MonitorGpu> =
+        std::collections::BTreeMap::new();
+    for reading in out {
+        let parts: Vec<&str> = reading.id.split('.').collect();
+        let ["gpu", n, field] = parts.as_slice() else {
+            continue;
+        };
+        let Ok(index) = n.parse::<usize>() else {
+            continue;
+        };
+        if !matches!(*field, "pci_bus_id" | "uuid") {
+            continue;
+        }
+        let Some(text) = reading
+            .value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let entry = by_index.entry(index).or_insert(MonitorGpu {
+            index,
+            pci_bus_id: None,
+            uuid: None,
+        });
+        if *field == "pci_bus_id" {
+            entry.pci_bus_id = Some(text);
+        } else {
+            entry.uuid = Some(text);
+        }
+    }
+    by_index.into_values().collect()
+}
+
+/// An engine's own tok/s figure. It is published as the engine computed it, with
+/// the window in the note, and never as a rate ironmon derived.
+fn windowed_figure(out: &mut Vec<Reading>, id: &str, figure: Option<crate::inference::Windowed>) {
+    let value = figure.and_then(|w| w.value.filter(|v| v.is_finite()).map(|v| (v, w.window_ms)));
+    match value {
+        Some((v, window)) => out.push(Reading {
+            id: id.to_string(),
+            value: Some(serde_json::json!(v)),
+            provenance: Provenance::Measured,
+            unit: Some(Unit::TokensPerSecond),
+            note: Some(match window {
+                Some(ms) => format!(
+                    "the engine's own figure, averaged over a {ms} ms window; ironmon does not derive it"
+                ),
+                None => "the engine's own figure; the engine did not report the window it averages over".to_string(),
+            }),
+        }),
+        None => out.push(Reading::unavailable(
+            id,
+            Some(Unit::TokensPerSecond),
+            "the engine reports no figure for this, so none is given",
+        )),
+    }
 }
 
 /// Find the entity for a concrete id, matching `gpu.0.name` against `gpu.{n}.name`.
@@ -4733,5 +5138,61 @@ mod tests {
         let c = coverage_of(&readings);
         assert_eq!(c.total, c.resolved + c.unavailable);
         assert_eq!(c.total, readings.len());
+    }
+}
+
+#[cfg(test)]
+mod inference_resolve_tests {
+    use super::*;
+
+    #[test]
+    fn unreachable_engine_is_a_named_absence_not_an_idle_engine() {
+        // Take a port, free it, and point the resolver at it: the connection is refused.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind")
+            .local_addr()
+            .expect("addr")
+            .port();
+        let mut out = Vec::new();
+        resolve_ironworks(&mut out, &format!("http://127.0.0.1:{port}"));
+        let none = out
+            .iter()
+            .find(|r| r.id == "inference.ironworks.<none>")
+            .expect("the absence row");
+        assert_eq!(none.provenance, Provenance::Unavailable);
+        assert!(none.value.is_none());
+        let note = none.note.as_deref().unwrap_or("");
+        assert!(
+            note.starts_with(&format!(
+                "no IronWorks engine answered at http://127.0.0.1:{port}/metrics:"
+            )),
+            "{note}"
+        );
+        assert_eq!(out.len(), 1, "only the absence row is emitted: {out:?}");
+    }
+
+    #[test]
+    fn monitor_gpus_collects_identifiers_by_index() {
+        let out = vec![
+            Reading::measured(
+                "gpu.0.pci_bus_id",
+                serde_json::json!("0000:01:00.0"),
+                Some(Unit::Identifier),
+            ),
+            Reading::unavailable("gpu.1.uuid", Some(Unit::Identifier), "no uuid"),
+            Reading::measured(
+                "gpu.1.uuid",
+                serde_json::json!("GPU-abc"),
+                Some(Unit::Identifier),
+            ),
+            Reading::unavailable("gpu.<none>", None, "none found here"),
+        ];
+        let gpus = monitor_gpus(&out);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].index, 0);
+        assert_eq!(gpus[0].pci_bus_id.as_deref(), Some("0000:01:00.0"));
+        assert_eq!(gpus[1].index, 1);
+        assert_eq!(gpus[1].uuid.as_deref(), Some("GPU-abc"));
+        assert_eq!(gpus[1].pci_bus_id, None);
     }
 }

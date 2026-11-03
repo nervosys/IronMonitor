@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     band, channel, security, signal, noise and link rates
     (`network.wifi.{n}.*`). Read by the new `net_context` module.
 - The GUI's Network tab and the TUI's System tab show gateways, DNS and Wi-Fi.
+- An `inference` domain reading IronWorks engine metrics (`/metrics`, schema
+  v1, endpoint `IRONMON_IRONWORKS_URL`, default `http://localhost:8080`):
+  `inference.ironworks.*` for the engine's identity, expert-cache tiers,
+  prefetch, request counters, per-GPU VRAM and the engine's own tok/s, with
+  `inference.ironworks.<none>` when no engine answers. The `inference` module
+  derives per-second rates and hit ratios from two samples, keeps bounded
+  history, and polls sources on background threads.
 
 ### Changed
 
