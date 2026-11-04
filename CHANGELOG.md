@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-11-04
+
 ### Added (HTTP surface)
 
 - `GET /api/v1/describe`, `GET /api/v1/snapshot[?domain=]`, `GET /api/v1/get/<id>` and
