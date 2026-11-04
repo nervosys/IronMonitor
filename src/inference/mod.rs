@@ -14,6 +14,7 @@
 pub mod http;
 pub mod ironworks;
 pub mod local;
+pub mod remote;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -40,6 +41,8 @@ pub enum ProviderKind {
     Vllm,
     LmStudio,
     MlxLm,
+    OpenAi,
+    Anthropic,
 }
 
 impl ProviderKind {
@@ -50,6 +53,8 @@ impl ProviderKind {
         ProviderKind::Vllm,
         ProviderKind::LmStudio,
         ProviderKind::MlxLm,
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
     ];
 
     /// The provider segment of its ontology ids, such as `inference.ironworks.*`.
@@ -61,6 +66,8 @@ impl ProviderKind {
             Self::Vllm => "vllm",
             Self::LmStudio => "lmstudio",
             Self::MlxLm => "mlx",
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -73,6 +80,8 @@ impl ProviderKind {
             Self::Vllm => "vLLM",
             Self::LmStudio => "LM Studio",
             Self::MlxLm => "MLX-LM",
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Anthropic",
         }
     }
 }
@@ -101,6 +110,9 @@ pub enum SourceError {
     NotJson(String),
     /// The body was JSON, but not one this adapter reads.
     Rejected(String),
+    /// The user has not configured this provider, so nothing was requested. The
+    /// text says what to set.
+    NotConfigured(String),
 }
 
 impl SourceError {
@@ -130,6 +142,7 @@ impl SourceError {
             Self::Rejected(why) => {
                 format!("{endpoint} did not return IronWorks metrics this build reads: {why}")
             }
+            Self::NotConfigured(hint) => format!("not configured: {hint}"),
         }
     }
 }
@@ -138,9 +151,10 @@ impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MetricsNotEnabled => f.write_str(METRICS_NOT_ENABLED),
-            Self::NotSupported(why) | Self::Unreachable(why) | Self::Rejected(why) => {
-                f.write_str(why)
-            }
+            Self::NotSupported(why)
+            | Self::Unreachable(why)
+            | Self::Rejected(why)
+            | Self::NotConfigured(why) => f.write_str(why),
             Self::Status(code) => write!(f, "HTTP {code}"),
             Self::NotJson(why) => write!(f, "the body is not JSON: {why}"),
         }
@@ -193,6 +207,8 @@ pub struct ProviderSample {
     /// figures, not cumulative, so they never produce a rate. A name missing here
     /// was not reported this poll, which is not zero.
     pub gauges: BTreeMap<String, f64>,
+    /// The cost a remote provider reports for the current month, or why it has none.
+    pub cost: Option<remote::CostReading>,
     /// The ratios this provider publishes, each with its named counters.
     pub ratio_defs: &'static [RatioDef],
     /// Provider-specific detail. Only the provider that owns it fills it in.
@@ -260,6 +276,7 @@ pub fn compact_row(state: &SourceState) -> CompactRow {
         Some(failure) => {
             let status = match &failure.error {
                 SourceError::Unreachable(_) => "not running",
+                SourceError::NotConfigured(_) => "not configured",
                 _ => "not answering",
             };
             CompactRow {
@@ -297,6 +314,22 @@ fn sample_detail(sample: &ProviderSample) -> String {
     }
     if let Some(p) = sample.gauges.get("kv_cache_usage_perc") {
         parts.push(format!("KV cache {:.0}%", p * 100.0));
+    }
+    if let Some(n) = sample.gauges.get("models_listed") {
+        parts.push(format!("{} models listed", *n as u64));
+    }
+    if let Some(cost) = &sample.cost {
+        parts.push(match cost {
+            remote::CostReading::Known {
+                amount,
+                currency,
+                scale,
+                ..
+            } => format!("month to date {amount} {currency} ({scale})"),
+            remote::CostReading::Unavailable { reason, .. } => {
+                format!("cost unavailable: {reason}")
+            }
+        });
     }
     if let Some(n) = sample.counters.get("prompt_tokens_total") {
         parts.push(format!("{n} prompt tokens"));

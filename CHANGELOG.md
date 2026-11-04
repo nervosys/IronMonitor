@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Inference providers beyond IronWorks, shown in Local and Remote groups on the
+  Inference tab in both the TUI and the GUI. Each is read from the endpoints its own
+  documentation names, and a provider that is not running or not configured shows
+  its reason on one line rather than an idle or zero value.
+  - Local, polled on the background poller with a one-second deadline and backoff
+    up to 10 s: Ollama (`GET /api/ps` and `/api/version`; loaded models, no
+    counters), llama.cpp (`GET /metrics`, which needs `--metrics`; token and decode
+    counters and current request gauges), vLLM (`GET /metrics`; generation and
+    prompt tokens, request, preemption and prefix-cache counters, running and waiting
+    requests, KV cache usage), LM Studio (`GET /api/v1/models`; models with a
+    non-empty `loaded_instances`), and MLX-LM (`GET /health`; reachability only, as
+    the server exposes no metrics). Endpoints default to loopback and can be set with
+    `IRONMON_OLLAMA_URL`, `IRONMON_LLAMACPP_URL` (default port 9931, per its README;
+    older builds used 8080), `IRONMON_VLLM_URL`, `IRONMON_LMSTUDIO_URL` and
+    `IRONMON_MLX_URL`.
+  - Remote, configured only by an API key or an explicit endpoint, and never read by
+    `snapshot`, `get` or `describe`:
+    - OpenAI: reachability from `GET /v1/models`, and the current UTC month's cost
+      from `GET /v1/organization/costs` with `IRONMON_OPENAI_ADMIN_KEY` (Bearer). The
+      cost keeps its currency and is refreshed at most every five minutes.
+    - Anthropic: reachability from `GET /v1/models`, and the month's cost from
+      `GET /v1/organizations/cost_report` with `IRONMON_ANTHROPIC_ADMIN_KEY`
+      (`x-api-key`). The amount is in cents as the report gives it. Priority Tier costs
+      are not included in that report. An individual account has no Admin API, so
+      its cost reads unavailable with the status.
+  - A cost is unavailable, never partial: a failed page, an unfinished pagination, or
+    rows in two currencies all leave the figure absent with the reason. Nothing is
+    estimated from token counts or a price table.
+  - Keys are held in a redacting wrapper, and no reason or error carries one. A
+    machine with no provider configured makes no remote request.
+  - Not included: token-usage APIs, GitHub Models (retired, per the existing backend
+    notes), Copilot premium-request usage (it needs a username and reports no
+    currency), and the other providers' usage endpoints.
+  - Verification: adapters and parsers are tested against loopback stubs and
+    hand-written fixtures from the cited docs. None of these providers was tested
+    against a live service in this change.
 - The TUI's Inference tab, first in the tab order and the one a session opens on. It
   polls inference engines once a second (IronWorks today) and shows each engine's
   reachability, model and backend, per-GPU engine VRAM, the VRAM, RAM and NVMe expert

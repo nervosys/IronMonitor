@@ -46,6 +46,7 @@ const SPARK_SERIES: &str = "rate:decode.completion_tokens_total";
 pub(super) fn spawn_poller() -> InferencePoller {
     let mut sources: Vec<Box<dyn InferenceSource>> = vec![Box::new(IronWorksSource::from_env())];
     sources.extend(crate::inference::local::all_from_env());
+    sources.extend(crate::inference::remote::all_from_env());
     InferencePoller::spawn(sources, POLL_INTERVAL)
 }
 
@@ -168,25 +169,20 @@ fn provider_name(kind: ProviderKind) -> &'static str {
     kind.display_name()
 }
 
-/// A provider the tab does not draw in full: its name, its state word, and its
-/// detail or reason on one line.
+/// A provider the tab does not draw in full: its name and state word, then its
+/// detail or reason. The detail is stacked below rather than set in a row, because
+/// a horizontal layout does not wrap and a reason can be longer than the window.
 fn draw_compact(ui: &mut egui::Ui, state: &SourceState) {
     let row = crate::inference::compact_row(state);
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("{:<12}", provider_name(state.kind)))
-                .strong()
-                .color(theme::color(ui.ctx(), CyberColors::CYAN)),
-        );
-        ui.label(
-            RichText::new(format!("{:<13}", row.status))
-                .color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
-        );
-        ui.label(
-            RichText::new(row.detail)
-                .color(theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
-        );
-    });
+    ui.label(
+        RichText::new(format!("{}  {}", provider_name(state.kind), row.status))
+            .strong()
+            .color(theme::color(ui.ctx(), CyberColors::CYAN)),
+    );
+    ui.label(
+        RichText::new(row.detail).color(theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+    );
+    ui.add_space(4.0);
 }
 
 /// Where the engine runs, where it is, and what it says it is running. Identity is

@@ -105,6 +105,9 @@ pub enum Unit {
     MegabitsPerSecond,
     /// Tokens per second, as an inference engine reports them.
     TokensPerSecond,
+    /// A money amount in the currency the provider names beside it, as the
+    /// provider reports it. The scale (currency units or cents) is in the id.
+    Amount,
 }
 
 impl Unit {
@@ -130,6 +133,7 @@ impl Unit {
             Self::Dbm => "dbm",
             Self::MegabitsPerSecond => "megabits_per_second",
             Self::TokensPerSecond => "tokens_per_second",
+            Self::Amount => "amount",
         }
     }
 
@@ -3450,6 +3454,122 @@ impl Ontology {
             true,
             "Prompt tokens per second over the window between two samples. Absent in a single-shot read.",
         ).derived(&["inference.vllm.prompt_tokens_total"]));
+
+        // ── Inference (remote providers) ─────────────────────────────────────
+        //
+        // OpenAI and Anthropic, read only by the background poller and only once
+        // the user has configured them (see inference/remote.rs). Snapshot and get
+        // never request them. Cost is the current UTC month to date, summed from the
+        // rows the provider's admin usage API reports; it is never estimated, and it
+        // keeps the provider's currency and scale.
+        add(Entity::new(
+            "inference.openai.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when OpenAI was not read, carrying the reason: not configured, nothing reachable, the key was rejected, or the endpoint answered with something unexpected.",
+        ));
+        add(Entity::new(
+            "inference.openai.models_listed",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many models the key can list, from GET /v1/models. A reachability fact: it shows the key works.",
+        ));
+        add(Entity::new(
+            "inference.openai.cost.month_to_date",
+            D::Inference,
+            K::Measurement,
+            Some(U::Amount),
+            P::Measured,
+            true,
+            "OpenAI organization cost since the start of the current UTC month, in currency units, summed over the rows GET /v1/organization/costs reports (admin key). The currency is inference.openai.cost.currency. Absent when the admin key is missing or refused, or the rows name more than one currency.",
+        ));
+        add(Entity::new(
+            "inference.openai.cost.currency",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The lowercase ISO-4217 currency the OpenAI cost rows name, such as usd.",
+        ));
+        add(Entity::new(
+            "inference.openai.cost.period_start",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "Start of the period the OpenAI cost covers, 00:00 UTC on the first day of the month, RFC 3339.",
+        ));
+        add(Entity::new(
+            "inference.openai.cost.period_end",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "When the OpenAI cost was read, RFC 3339. The cost is refreshed at most every five minutes.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when Anthropic was not read, carrying the reason: not configured, nothing reachable, the key was rejected, or the endpoint answered with something unexpected.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.models_listed",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many models the key can list, from GET /v1/models. A reachability fact: it shows the key works.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.cost.month_to_date_cents",
+            D::Inference,
+            K::Measurement,
+            Some(U::Amount),
+            P::Measured,
+            true,
+            "Anthropic cost since the start of the current UTC month, in cents (lowest currency units) as the cost report gives them, summed over its daily rows (admin key). Priority Tier costs are not included in this report. The currency is inference.anthropic.cost.currency. An individual account has no Admin API, so the figure is absent there.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.cost.currency",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The currency the Anthropic cost rows name, such as USD.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.cost.period_start",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "Start of the period the Anthropic cost covers, 00:00 UTC on the first day of the month, RFC 3339.",
+        ));
+        add(Entity::new(
+            "inference.anthropic.cost.period_end",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "When the Anthropic cost was read, RFC 3339. The cost is refreshed at most every five minutes.",
+        ));
 
         // ── Inference (IronWorks) ────────────────────────────────────────────
         //

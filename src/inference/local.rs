@@ -49,7 +49,7 @@ pub fn env_and_default(kind: ProviderKind) -> Option<(&'static str, &'static str
         ProviderKind::Vllm => Some((VLLM_ENV, VLLM_DEFAULT)),
         ProviderKind::LmStudio => Some((LMSTUDIO_ENV, LMSTUDIO_DEFAULT)),
         ProviderKind::MlxLm => Some((MLX_ENV, MLX_DEFAULT)),
-        ProviderKind::IronWorks => None,
+        ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => None,
     }
 }
 
@@ -170,9 +170,9 @@ impl InferenceSource for LocalSource {
             ),
             ProviderKind::LmStudio => poll_lmstudio(base, timeout),
             ProviderKind::MlxLm => poll_mlx(base, timeout),
-            ProviderKind::IronWorks => Err(SourceError::NotSupported(
-                "IronWorks is read by its own adapter, not this one".into(),
-            )),
+            ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => Err(
+                SourceError::NotSupported("this provider is read by its own adapter".into()),
+            ),
         }
     }
 }
@@ -200,6 +200,7 @@ pub fn reason(kind: ProviderKind, endpoint: &str, error: &SourceError) -> String
         SourceError::Rejected(why) => {
             format!("{endpoint} answered, but not as {name}: {why}")
         }
+        SourceError::NotConfigured(hint) => format!("{name} is not configured: {hint}"),
     }
 }
 

@@ -1128,6 +1128,7 @@ impl App {
         let mut sources: Vec<Box<dyn InferenceSource>> =
             vec![Box::new(IronWorksSource::from_env())];
         sources.extend(crate::inference::local::all_from_env());
+        sources.extend(crate::inference::remote::all_from_env());
         let inference = InferencePoller::spawn(sources, INFERENCE_POLL_INTERVAL);
 
         let mut app = Self {

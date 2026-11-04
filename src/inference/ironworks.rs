@@ -469,6 +469,7 @@ impl MetricsV1 {
             },
             counters,
             gauges: BTreeMap::new(),
+            cost: None,
             ratio_defs: RATIOS,
             ironworks: Some(Section {
                 vram: tiers.vram,

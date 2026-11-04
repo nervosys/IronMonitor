@@ -2100,6 +2100,54 @@ const RATIO_NEEDS_TWO: &str =
 fn resolve_inference(out: &mut Vec<Reading>) {
     resolve_ironworks(out, &crate::inference::ironworks::endpoint_from_env());
     resolve_local_inference(out);
+    resolve_remote_inference(out);
+}
+
+/// Remote providers are read only by the background poller of the TUI and GUI,
+/// never here: a snapshot or a get must not start a request to a hosted API, nor
+/// spend a usage quota. Each remote value is therefore reported unavailable, with
+/// the reason, so an agent knows where to look.
+fn resolve_remote_inference(out: &mut Vec<Reading>) {
+    use crate::inference::ProviderKind;
+    const WHERE: &str = "read only by the background poller of the TUI and GUI, once configured; snapshot and get do not request remote providers";
+    for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        let p = kind.as_str();
+        out.push(Reading::unavailable(
+            format!("inference.{p}.<none>"),
+            None,
+            WHERE,
+        ));
+        out.push(Reading::unavailable(
+            format!("inference.{p}.models_listed"),
+            Some(Unit::Count),
+            WHERE,
+        ));
+        out.push(Reading::unavailable(
+            format!("inference.{p}.cost.currency"),
+            Some(Unit::Text),
+            WHERE,
+        ));
+        out.push(Reading::unavailable(
+            format!("inference.{p}.cost.period_start"),
+            Some(Unit::Text),
+            WHERE,
+        ));
+        out.push(Reading::unavailable(
+            format!("inference.{p}.cost.period_end"),
+            Some(Unit::Text),
+            WHERE,
+        ));
+    }
+    out.push(Reading::unavailable(
+        "inference.openai.cost.month_to_date",
+        Some(Unit::Amount),
+        WHERE,
+    ));
+    out.push(Reading::unavailable(
+        "inference.anthropic.cost.month_to_date_cents",
+        Some(Unit::Amount),
+        WHERE,
+    ));
 }
 
 /// Each local provider is read once, on its own thread, under the IronWorks
@@ -2341,7 +2389,7 @@ fn push_local_sample(
                 RATE_NEEDS_TWO,
             ));
         }
-        K::IronWorks => {}
+        K::IronWorks | K::OpenAi | K::Anthropic => {}
     }
 }
 

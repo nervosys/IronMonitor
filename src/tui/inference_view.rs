@@ -107,7 +107,7 @@ fn compact_line(state: &SourceState) -> Line<'static> {
             format!("{:<12}", state.kind.display_name()),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{:<13}", row.status)),
+        Span::raw(format!("{:<16}", row.status)),
         Span::raw(row.detail),
     ])
 }
