@@ -21,8 +21,9 @@ use ratatui::{
     Frame,
 };
 
+use super::agents_view;
 use super::app::{
-    App, TAB_ACCELERATORS, TAB_AGENT, TAB_CPU, TAB_INFERENCE, TAB_MEMORY, TAB_OVERVIEW,
+    App, TAB_ACCELERATORS, TAB_AGENT, TAB_AGENTS, TAB_CPU, TAB_INFERENCE, TAB_MEMORY, TAB_OVERVIEW,
     TAB_PERIPHERALS, TAB_PROCESSES, TAB_PROFILES, TAB_SYSTEM,
 };
 use super::inference_view;
@@ -238,6 +239,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     match app.selected_tab {
         TAB_INFERENCE => draw_inference_tab(f, app, chunks[1]),
+        TAB_AGENTS => draw_agents_tab(f, app, chunks[1]),
         TAB_OVERVIEW => draw_overview_tab(f, app, chunks[1]),
         TAB_PROCESSES => draw_processes_tab(f, app, chunks[1]),
         TAB_CPU => draw_cpu_tab(f, app, chunks[1]),
@@ -2456,6 +2458,17 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" Page  "),
             ]);
         }
+        TAB_AGENTS => {
+            help_spans.extend([
+                Span::styled(
+                    "Up/Dn PgUp/Dn",
+                    Style::default()
+                        .fg(glances_colors::TITLE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Scroll  "),
+            ]);
+        }
         TAB_INFERENCE | TAB_AGENT => {
             // The chat box is on both tabs.
             help_spans.extend([
@@ -3116,6 +3129,26 @@ fn draw_inference_tab(f: &mut Frame, app: &App, area: Rect) {
     let gpus = app.inference_gpus();
     inference_view::draw(f, chunks[0], &states, &gpus);
     draw_agent_history(f, app, chunks[1]);
+}
+
+/// The Agents tab: the report built from the background poller's cached state. It
+/// reads nothing from disk on this path.
+fn draw_agents_tab(f: &mut Frame, app: &App, area: Rect) {
+    let report = match app.agents.as_ref() {
+        Some(poller) => {
+            let state = poller.state();
+            let engine = app
+                .inference
+                .as_ref()
+                .and_then(|p| crate::agents::engine_requests(&p.states()));
+            crate::agents::report::build(&state, engine, chrono::Utc::now())
+        }
+        None => crate::agents::report::Report {
+            summary: vec!["Agents: the recordings reader is not running".into()],
+            sections: Vec::new(),
+        },
+    };
+    agents_view::draw(f, area, &report, app.agents_scroll);
 }
 
 /// Build the cached `Vec<Line>` for the agent conversation history.

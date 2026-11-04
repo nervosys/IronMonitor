@@ -1,6 +1,7 @@
 //! Application state management
 
 use crate::agent::{Agent, AgentConfig, AgentResponse};
+use crate::agents::ironobs::AgentsPoller;
 use crate::inference::ironworks::{IronWorksSource, MonitorGpu};
 use crate::inference::{InferencePoller, InferenceSource};
 use crate::silicon::NpuInfo;
@@ -19,18 +20,21 @@ const MAX_AGENT_HISTORY: usize = 10;
 /// Positions in [`App::tabs`]. Keyed on these, never on bare numbers, so inserting
 /// a tab cannot silently point a binding or a draw arm at the wrong view.
 pub const TAB_INFERENCE: usize = 0;
-pub const TAB_OVERVIEW: usize = 1;
-pub const TAB_PROCESSES: usize = 2;
-pub const TAB_CPU: usize = 3;
-pub const TAB_ACCELERATORS: usize = 4;
-pub const TAB_MEMORY: usize = 5;
-pub const TAB_SYSTEM: usize = 6;
-pub const TAB_PERIPHERALS: usize = 7;
-pub const TAB_PROFILES: usize = 8;
-pub const TAB_AGENT: usize = 9;
+pub const TAB_AGENTS: usize = 1;
+pub const TAB_OVERVIEW: usize = 2;
+pub const TAB_PROCESSES: usize = 3;
+pub const TAB_CPU: usize = 4;
+pub const TAB_ACCELERATORS: usize = 5;
+pub const TAB_MEMORY: usize = 6;
+pub const TAB_SYSTEM: usize = 7;
+pub const TAB_PERIPHERALS: usize = 8;
+pub const TAB_PROFILES: usize = 9;
+pub const TAB_AGENT: usize = 10;
 
 /// How often each inference source is polled.
 const INFERENCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often an import may run. The poller rescans the recordings directory on its own tick.
+const AGENTS_IMPORT_INTERVAL: Duration = crate::agents::ironobs::MIN_INTERVAL;
 
 /// Build the agent the TUI should use.
 ///
@@ -667,6 +671,10 @@ pub struct App {
     /// Inference engines polled in the background for the Inference tab. Built
     /// once in `new_fast`; dropping the app stops its threads.
     pub inference: Option<InferencePoller>,
+    /// Agent recordings, read by a background thread for the Agents tab.
+    pub agents: Option<AgentsPoller>,
+    /// First line the Agents tab shows; moved by the arrow and page keys there.
+    pub agents_scroll: u16,
     /// Process display mode - which device's processes to show
     pub process_display_mode: ProcessDisplayMode,
     /// Process monitor for tracking system and GPU processes
@@ -1135,6 +1143,7 @@ impl App {
             selected_tab: TAB_INFERENCE,
             tabs: vec![
                 "Inference",
+                "Agents",
                 "Overview",
                 "Processes",
                 "CPU",
@@ -1172,6 +1181,8 @@ impl App {
             agent_history_version: 0,
             agent_loading: false,
             inference: Some(inference),
+            agents: Some(AgentsPoller::spawn(AGENTS_IMPORT_INTERVAL)),
+            agents_scroll: 0,
             process_display_mode: ProcessDisplayMode::default(),
             process_monitor: None, // Will be populated from background thread
             processes: Vec::new(),
@@ -1238,10 +1249,27 @@ impl App {
                 }
             }
             KeyCode::BackTab => self.previous_tab(),
+            // On the Agents tab the arrow and page keys scroll its list. They are
+            // handled before the tab-independent arms below, so they apply there only.
+            KeyCode::Up if self.selected_tab == TAB_AGENTS => {
+                self.agents_scroll = self.agents_scroll.saturating_sub(1);
+            }
+            KeyCode::Down if self.selected_tab == TAB_AGENTS => {
+                self.agents_scroll = self.agents_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp if self.selected_tab == TAB_AGENTS => {
+                self.agents_scroll = self.agents_scroll.saturating_sub(10);
+            }
+            KeyCode::PageDown if self.selected_tab == TAB_AGENTS => {
+                self.agents_scroll = self.agents_scroll.saturating_add(10);
+            }
             // On the Profiles tab, 1–5 selects a subsystem
             // instead of switching tabs (matches the on-screen
             // "[1-5] subsystem" hint). Everywhere else, the
             // number row switches tabs.
+            KeyCode::PageDown if self.selected_tab == TAB_AGENTS => {
+                self.agents_scroll = self.agents_scroll.saturating_add(10);
+            }
             KeyCode::Char(c @ '1'..='5') if self.selected_tab == TAB_PROFILES => {
                 let idx = (c as u8 - b'1') as usize;
                 if idx < crate::profile::Subsystem::ALL.len() {
@@ -3109,6 +3137,7 @@ mod ontology_vocabulary_tests {
         // Mirrors the `tabs` vec in `TuiApp::new`.
         let tabs = [
             "Inference",
+            "Agents",
             "Overview",
             "Processes",
             "CPU",

@@ -357,6 +357,38 @@ never call remote providers; they report those values as unavailable and say why
 UTC month to date, as the provider's own figures summed. If any page fails, the figure
 is unavailable rather than partial. Anthropic's figure excludes Priority Tier.
 
+## Agent activity
+
+The Agents tab reads recordings written by IronObserver (`ironobs`). IronMonitor does
+not link IronObserver and does not parse agent transcripts. The recording format it
+reads is `ironobserver.recording/1` and `/2`; a later major version is refused with a
+reason, and a recording that cannot be read is counted, not hidden.
+
+| Source | What is read | Default | Override |
+|---|---|---|---|
+| Recordings | `*.json` recording files, metadata only | `<cache>/ironmon/agents/recordings` | `IRONMON_RECORDINGS_DIR` |
+| Claude Code | `ironobs import claude-code` input | `~/.claude/projects` | `IRONMON_CLAUDE_CODE_DIR` |
+
+`<cache>` is `%LOCALAPPDATA%` on Windows and `~/.cache` elsewhere.
+
+The import runs only when `ironobs` is on PATH, in a background thread, at most every
+five minutes, below normal priority where that is cheap. A lock file in the recordings
+directory admits one import at a time across windows. The import writes a temporary
+file and renames it into place only when it holds recordings, so a failed run leaves
+the last good file. `--modified-since` is passed only when the installed binary's
+`import --help` names it.
+
+`snapshot` and `get` read the recordings directory within a bound and never start an
+import or call a remote host. `describe` touches nothing. A count with no recordings
+behind it is unavailable with the reason, not zero.
+
+What is not read: Gemini CLI (it stores no chats on disk), cloud and hosted agent
+sessions (no source on this machine), and anything `ironobs` does not import. Provider
+cost and usage are on the Inference tab, not the Agents tab.
+
+This has been exercised against synthetic recordings only. It has not been run against
+real session files or a live `ironobs` import.
+
 ## Driving ironmon directly
 
 The tool surface below is for handing ironmon's data to a model. If instead you are

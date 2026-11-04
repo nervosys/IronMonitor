@@ -110,6 +110,7 @@ pub struct IronMonitorApp {
     current_tab: Tab,
     /// Inference engines, polled in the background. Spawned once, in `with_context`.
     pub(super) inference: crate::inference::InferencePoller,
+    pub(super) agents: crate::agents::ironobs::AgentsPoller,
 
     // Hardware data
     cpu_stats: Option<CpuStats>,
@@ -439,6 +440,7 @@ enum ChatRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Agents,
     Inference,
     Overview,
     Cpu,
@@ -1025,6 +1027,7 @@ impl IronMonitorApp {
             agent_tools: super::agent_tools::AgentToolsPanel::default(),
             current_tab: Tab::Inference,
             inference: super::inference_tab::spawn_poller(),
+            agents: crate::agents::ironobs::AgentsPoller::spawn(super::agents_tab::IMPORT_INTERVAL),
             cpu_stats: initial_cpu_stats,
             memory_stats: initial_memory_stats,
             gpu_collection,
@@ -2310,6 +2313,12 @@ impl IronMonitorApp {
                         );
                         ui.selectable_value(
                             &mut self.current_tab,
+                            Tab::Agents,
+                            RichText::new("🧭 Agents")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Agents))),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_tab,
                             Tab::Overview,
                             RichText::new("📊 Overview")
                                 .color(theme::color(&palette_ctx, tab_color(Tab::Overview))),
@@ -2430,6 +2439,7 @@ impl IronMonitorApp {
     pub fn draw_current_tab(&mut self, ui: &mut egui::Ui) {
         match self.current_tab {
             Tab::Inference => self.draw_inference_tab(ui),
+            Tab::Agents => self.draw_agents_tab(ui),
             Tab::Overview => self.draw_overview(ui),
             Tab::Cpu => self.draw_cpu_tab(ui),
             Tab::Accelerators => self.draw_accelerators_tab(ui),
@@ -2453,6 +2463,7 @@ impl IronMonitorApp {
     pub fn select_tab_by_name(&mut self, name: &str) -> Result<(), Vec<&'static str>> {
         let all = [
             ("inference", Tab::Inference),
+            ("agents", Tab::Agents),
             ("overview", Tab::Overview),
             ("cpu", Tab::Cpu),
             ("accelerators", Tab::Accelerators),

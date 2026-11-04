@@ -198,6 +198,7 @@ pub enum Domain {
     Usb,
     Npu,
     Inference,
+    Agents,
 }
 
 impl Domain {
@@ -216,6 +217,7 @@ impl Domain {
         Domain::Usb,
         Domain::Npu,
         Domain::Inference,
+        Domain::Agents,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -234,6 +236,7 @@ impl Domain {
             Self::Usb => "usb",
             Self::Npu => "npu",
             Self::Inference => "inference",
+            Self::Agents => "agents",
         }
     }
 
@@ -3454,6 +3457,221 @@ impl Ontology {
             true,
             "Prompt tokens per second over the window between two samples. Absent in a single-shot read.",
         ).derived(&["inference.vllm.prompt_tokens_total"]));
+
+        // ── Agents (IronObserver recordings) ─────────────────────────────────
+        //
+        // Read from the recordings directory, which IronObserver's `ironobs` writes
+        // when IronMonitor runs it (see agents/mod.rs). Metadata only: no prompts,
+        // tool arguments or file contents, and no session or project identifiers.
+        // Counts are of recordings, not of work done. A recording's `in_progress`
+        // is what its producer said; "not evidenced" is kept apart from "closed".
+        add(Entity::new(
+            "agents.recordings.<none>",
+            D::Agents,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no recordings were read, carrying the reason: the directory does not exist, it holds no recording files, or none of its files could be used.",
+        ));
+        add(Entity::new(
+            "agents.recordings.dir",
+            D::Agents,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The directory recordings are read from. Set by IRONMON_RECORDINGS_DIR; by default it is under the user's cache directory.",
+        ));
+        add(Entity::new(
+            "agents.recordings.files",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many recording files (.json) a query read. Absent when the directory does not exist.",
+        ));
+        add(Entity::new(
+            "agents.recordings.rejected",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Recordings refused, plus files that are not recording JSON. A refused recording names a format this IronMonitor does not read, so it is counted rather than guessed at.",
+        ));
+        add(Entity::new(
+            "agents.recordings.<truncated>",
+            D::Agents,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when a snapshot read fewer recording files than the directory holds, carrying how many it did not read. The background reader reads them all.",
+        ));
+        add(Entity::new(
+            "agents.ironobs.<none>",
+            D::Agents,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when IronObserver's `ironobs` is not on PATH, with how to install it. Recordings already on disk are still read.",
+        ));
+        add(Entity::new(
+            "agents.ironobs.version",
+            D::Agents,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The version `ironobs --version` printed, when it is installed. The probe runs no import.",
+        ));
+        add(Entity::new(
+            "agents.import.state",
+            D::Agents,
+            K::Measurement,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "What the import is doing now: running since a time (and whether another IronMonitor window started it), idle with the last attempt, pending, not run because ironobs is missing, or not run because no Claude Code directory exists.",
+        ));
+        add(Entity::new(
+            "agents.import.last_written",
+            D::Agents,
+            K::Measurement,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "When the recordings file was last written by an import, RFC 3339. Absent when no import has written it.",
+        ));
+        add(Entity::new(
+            "agents.sessions.count",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Top-level agent sessions among the recordings read: recordings that are not a subagent of another. Absent, with the reason, when no recording was read. Session identifiers are not reported.",
+        ));
+        add(Entity::new(
+            "agents.sessions.active",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many recordings show in_progress true: their producer's source was still being written when it was read. This counts recordings that show that, not sessions known to be running.",
+        ));
+        add(Entity::new(
+            "agents.sessions.in_progress_unevidenced",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many recordings do not say whether they are still being written. They are neither counted as active nor as closed: the producer evidenced neither.",
+        ));
+        add(Entity::new(
+            "agents.sessions.subagents",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many recordings are subagent runs of another recording in the same read.",
+        ));
+        add(Entity::new(
+            "agents.workflows.count",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many top-level sessions delegated work to subagents: multi-agent runs whose structure the recordings carry.",
+        ));
+        add(Entity::new(
+            "agents.sessions.input_tokens",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Input tokens summed over recordings whose events report usage. Absent when no recording reports usage. What a provider charged is on the Inference tab, not here.",
+        ));
+        add(Entity::new(
+            "agents.sessions.output_tokens",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Output tokens summed over recordings whose events report usage. Absent when no recording reports usage.",
+        ));
+        add(Entity::new(
+            "agents.producer.claude_code.sessions",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Recordings read from Claude Code, imported by `ironobs import claude-code`. Absent, with the reason, when none were read.",
+        ));
+        add(Entity::new(
+            "agents.producer.codex.sessions",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Recordings read from the Codex CLI, once an installed ironobs has a Codex importer. Absent, with the reason, when none were read.",
+        ));
+        add(Entity::new(
+            "agents.producer.gemini_cli.sessions",
+            D::Agents,
+            K::Diagnostic,
+            Some(U::Count),
+            P::Unavailable,
+            true,
+            "Always absent. Gemini CLI stores no chats on disk, so there is nothing to read; this says so rather than reporting zero.",
+        ));
+        add(Entity::new(
+            "agents.producer.{name}.sessions",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Recordings read from any other producer that wrote a recording, named by its sanitised producer name. Expanded against a snapshot.",
+        ));
+        add(Entity::new(
+            "agents.remote.<none>",
+            D::Agents,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Always present. Cloud and hosted agent sessions have no source readable from this machine, so they are not counted on this tab. Provider cost and usage are on the Inference tab.",
+        ));
+        add(Entity::new(
+            "agents.engine.requests.active",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests the IronWorks engine reports in flight, read from the Inference tab's poller and not polled again here. Absent in a one-shot snapshot, which does not run that poller.",
+        ));
+        add(Entity::new(
+            "agents.engine.requests.recent",
+            D::Agents,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Entries in the IronWorks engine's recent-request buffer, read from the Inference tab's poller. Absent in a one-shot snapshot.",
+        ));
 
         // ── Inference (remote providers) ─────────────────────────────────────
         //

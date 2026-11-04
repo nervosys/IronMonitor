@@ -381,6 +381,7 @@ fn the_gui_renders_a_tab_headlessly() {
 fn every_gui_tab_paints_text() {
     for tab in [
         "inference",
+        "agents",
         "overview",
         "cpu",
         "accelerators",

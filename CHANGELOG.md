@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agents tab in the TUI and the GUI, placed after Inference, tracking local agent
+  sessions and multi-agent runs read from IronObserver's recordings. IronMonitor
+  does not parse agent transcripts: when the `ironobs` binary is on PATH it runs
+  `ironobs import claude-code` in the background, at most every five minutes, into
+  the recordings directory, under a single-instance lock. Without `ironobs` the tab
+  reports that and still reads recordings already on disk. Shows active and recent
+  sessions, subagent workflows, token totals, import status, the Inference engine's
+  request figures, and a Coverage section listing what is read and what is not
+  (Gemini CLI, which stores no chats on disk, and cloud agent sessions). Metadata
+  only: no prompts, tool arguments, file contents or project paths.
+  Environment: `IRONMON_RECORDINGS_DIR` and `IRONMON_CLAUDE_CODE_DIR`.
+  - Ontology: domain `agents`, with `agents.recordings.*`, `agents.ironobs.*`,
+    `agents.import.*`, `agents.sessions.*`, `agents.workflows.count`,
+    `agents.producer.<name>.sessions`, `agents.remote.<none>` and
+    `agents.engine.requests.*`. Ontology version unchanged.
+  - Not yet run against real recordings or a real `ironobs` import, and the
+    `--modified-since` delta is used only if an installed `ironobs` names that flag.
+  - Tab keys: Agents is reached with Tab, Shift+Tab, Left and Right, and `goto Agents`
+    in scripts. No digit was given to it, so the digit keys keep their meanings.
+
 - Inference providers beyond IronWorks, shown in Local and Remote groups on the
   Inference tab in both the TUI and the GUI. Each is read from the endpoints its own
   documentation names, and a provider that is not running or not configured shows

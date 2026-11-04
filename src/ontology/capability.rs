@@ -480,6 +480,30 @@ pub fn catalogue() -> Vec<Capability> {
                 ]),
                 implemented_everywhere,
             ),
+            D::Agents => (
+                "agent activity from IronObserver recordings: sessions, subagent workflows, token totals and import status",
+                per(&[
+                    (
+                        Platform::Linux,
+                        Support::Partial {
+                            missing: "covers only what an installed ironobs imports (Claude Code today); Gemini CLI and cloud agent sessions are not read".into(),
+                        },
+                    ),
+                    (
+                        Platform::Windows,
+                        Support::Partial {
+                            missing: "covers only what an installed ironobs imports (Claude Code today); Gemini CLI and cloud agent sessions are not read".into(),
+                        },
+                    ),
+                    (
+                        Platform::MacOS,
+                        Support::Partial {
+                            missing: "covers only what an installed ironobs imports (Claude Code today); Gemini CLI and cloud agent sessions are not read".into(),
+                        },
+                    ),
+                ]),
+                implemented_everywhere,
+            ),
         };
         out.push(cap(
             &format!("reading.{}", domain.as_str()),

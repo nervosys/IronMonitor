@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub mod app;
 // Renders frames into an in-memory buffer, so the TUI is inspectable without a
 // terminal — by tests, and by `ironmon tui --frame` for an agent that has no TTY.
+mod agents_view;
 pub mod headless;
 mod inference_view;
 mod ui;

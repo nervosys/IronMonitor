@@ -468,7 +468,11 @@ mod script_tests {
         let steps = parse_script("key 3").unwrap();
         let result = run_script(&mut app, &steps, 160, 30);
         assert!(result.failures.is_empty(), "{:?}", result.failures);
-        assert_eq!(app.selected_tab, 2, "key '3' should select tab index 2");
+        assert_eq!(
+            app.selected_tab,
+            crate::tui::app::TAB_PROCESSES,
+            "key '3' should select the Processes tab"
+        );
         assert_ne!(before, app.selected_tab);
     }
 
@@ -511,5 +515,80 @@ mod script_tests {
             "steps after a quit should not run: {:?}",
             result.failures
         );
+    }
+}
+
+#[cfg(test)]
+mod agents_tab_tests {
+    use super::super::app::{App, TAB_AGENTS, TAB_INFERENCE, TAB_OVERVIEW};
+    use super::render_frame;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn app() -> App {
+        App::new_fast().expect("the TUI app must be constructible headlessly")
+    }
+
+    /// Agents is the tab after Inference, and Tab reaches it. No digit is taken from
+    /// the existing tabs: the number row keeps its meaning.
+    #[test]
+    fn agents_follows_inference_and_is_reached_by_tab_cycling() {
+        let mut app = app();
+        assert_eq!(app.tabs[0], "Inference");
+        assert_eq!(app.tabs[TAB_AGENTS], "Agents");
+        assert_eq!(app.selected_tab, TAB_INFERENCE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_AGENTS);
+        app.handle_key(KeyCode::Tab, KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_OVERVIEW);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_AGENTS);
+    }
+
+    /// The digit row keeps its old meaning after the renumbering.
+    #[test]
+    fn digits_still_select_the_tabs_they_always_did() {
+        let mut app = app();
+        app.handle_key(KeyCode::Char('2'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_OVERVIEW);
+        app.handle_key(KeyCode::Char('0'), KeyModifiers::empty());
+        assert_eq!(app.tabs[app.selected_tab], "Agent");
+    }
+
+    /// The panel names its sections and says what it does not read, whether or not
+    /// any recording exists on this machine.
+    #[test]
+    fn the_agents_tab_renders_its_sections_and_coverage() {
+        let mut app = app();
+        app.selected_tab = TAB_AGENTS;
+        let frame = render_frame(&app);
+        for needle in [
+            "Agents",
+            "Sessions:",
+            "Active",
+            "Recent",
+            "Workflows",
+            "Engine requests",
+            "Coverage",
+            "Gemini CLI",
+        ] {
+            assert!(frame.contains(needle), "missing {needle:?} in:\n{frame}");
+        }
+        assert!(!frame.contains("Traceback"));
+    }
+
+    /// Scrolling keys act on the Agents list only.
+    #[test]
+    fn arrow_keys_scroll_the_agents_list_and_nothing_else() {
+        let mut app = app();
+        app.selected_tab = TAB_AGENTS;
+        app.handle_key(KeyCode::PageDown, KeyModifiers::empty());
+        assert_eq!(app.agents_scroll, 10);
+        app.handle_key(KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.agents_scroll, 9);
+        app.handle_key(KeyCode::PageUp, KeyModifiers::empty());
+        assert_eq!(app.agents_scroll, 0);
+        app.selected_tab = TAB_INFERENCE;
+        app.handle_key(KeyCode::PageDown, KeyModifiers::empty());
+        assert_eq!(app.agents_scroll, 0);
     }
 }

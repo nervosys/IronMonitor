@@ -158,6 +158,7 @@
 //! - `ai_api_demo.rs` - AI Data API demonstration with tool-based system access
 
 pub mod agent; // AI agent for system analysis and predictions
+pub mod agents; // Agent activity: IronObserver recordings, import status, coverage
 pub mod ai_api; // AI Data API for full system visibility with tool-based access
 pub mod ai_workload; // AI training and inference workload monitoring
 pub mod anomaly; // Anomaly detection and optimization recommendations
