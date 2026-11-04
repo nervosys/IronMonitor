@@ -1027,7 +1027,7 @@ impl IronMonitorApp {
             agent_tools: super::agent_tools::AgentToolsPanel::default(),
             current_tab: Tab::Inference,
             inference: super::inference_tab::spawn_poller(),
-            agents: crate::agents::ironobs::AgentsPoller::spawn(super::agents_tab::IMPORT_INTERVAL),
+            agents: crate::agents::ironobs::AgentsPoller::spawn(),
             cpu_stats: initial_cpu_stats,
             memory_stats: initial_memory_stats,
             gpu_collection,

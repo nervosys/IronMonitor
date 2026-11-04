@@ -49,11 +49,12 @@ pub struct Session {
     pub parent_missing: bool,
     /// Subagent runs whose parent is this run.
     pub child_count: usize,
-    /// The run's own identifier. Kept only to link children to parents while a
-    /// scan is assembled. It is never displayed or reported.
-    pub(crate) run: String,
-    /// The parent's identifier, for the same linking. Never displayed.
-    pub(crate) parent: Option<String>,
+    /// The run's identifier, reduced to a 64-bit key by [`super::key_of`]. Kept only
+    /// to link children to parents while a scan is assembled, and cached in that
+    /// form, so no run identifier is ever stored, displayed or reported.
+    pub(crate) run_id: u64,
+    /// The parent's key, for the same linking.
+    pub(crate) parent_key: Option<u64>,
 }
 
 /// Why a single recording was not read.
@@ -197,8 +198,11 @@ fn session_from(raw: RawRecording) -> Session {
         is_subagent: false,
         parent_missing: false,
         child_count: 0,
-        run: raw.run,
-        parent: raw.parent.filter(|p| !p.trim().is_empty()),
+        run_id: super::key_of(&raw.run),
+        parent_key: raw
+            .parent
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| super::key_of(&p)),
     }
 }
 
@@ -235,17 +239,24 @@ fn parse_time(text: Option<&str>) -> Option<DateTime<Utc>> {
 /// `parent_missing`: it is not promoted silently, and it is not hidden.
 pub fn link(sessions: &mut [Session]) {
     use std::collections::HashMap;
-    let index: HashMap<String, usize> = sessions
+    // Linking is recomputed from scratch, so a cached summary can be linked again
+    // in a different set of files without carrying an old link forward.
+    for s in sessions.iter_mut() {
+        s.is_subagent = false;
+        s.parent_missing = false;
+        s.child_count = 0;
+    }
+    let index: HashMap<u64, usize> = sessions
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.run.clone(), i))
+        .map(|(i, s)| (s.run_id, i))
         .collect();
     let mut child_counts: HashMap<usize, usize> = HashMap::new();
     for s in sessions.iter_mut() {
-        let Some(parent) = s.parent.clone() else {
+        let Some(parent) = s.parent_key else {
             continue;
         };
-        if parent == s.run {
+        if parent == s.run_id {
             continue;
         }
         match index.get(&parent) {

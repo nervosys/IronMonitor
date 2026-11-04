@@ -1,15 +1,18 @@
 //! Agent activity: what local coding agents, workflows and inference requests did.
 //!
 //! IronMonitor does not parse agent transcripts itself. The IronObserver tool
-//! (`ironobs`) reads each producer's own session files and writes recordings, and
-//! IronMonitor reads those recordings. Two steps stay separate:
+//! (`ironobs`) reads each producer's own session files and writes one recording
+//! file per run into a directory, and IronMonitor reads those recordings. Two steps
+//! stay separate:
 //!
-//! - **Reading** ([`scan_dir`], [`query`]). Recording files on disk are read here,
-//!   metadata only (see [`recording`]). Reads are bounded, and `snapshot` and `get`
-//!   may do them.
-//! - **Importing** (see [`ironobs`]). When `ironobs` is on PATH, a background
-//!   thread runs `ironobs import` at a long interval, writes the recordings
-//!   directory, and holds a single-instance lock. Nothing else starts an import.
+//! - **Reading** ([`scan_with`], [`cache`]). Recording files are read here, metadata
+//!   only (see [`recording`]). A scan keeps one summary per file, reused while the
+//!   file's size and modification time are unchanged, and the background poller
+//!   writes that summary to a cache file. A snapshot or `get` reads that cache and
+//!   parses only what it lacks, within [`QUERY_DEADLINE`].
+//! - **Importing** (see [`ironobs`]). When `ironobs` is on PATH, a background thread
+//!   runs `ironobs import ... --out` for each producer whose source folder exists,
+//!   under a hard deadline, and schedules the next cycle after the last one ended.
 //!
 //! Nothing in this module reads or writes an agent's own session folder beyond
 //! what `ironobs` does when it is asked to import it. Session text never reaches
@@ -21,24 +24,27 @@
 //!   on Windows and `~/.cache/ironmon` elsewhere.
 //! - `IRONMON_CLAUDE_CODE_DIR` overrides the Claude Code projects directory that is
 //!   imported. Default: `~/.claude/projects`.
+//! - `IRONMON_CODEX_DIR` overrides the Codex CLI sessions directory that is
+//!   imported. Default: `~/.codex/sessions`.
 
+pub mod cache;
 pub mod ironobs;
 pub mod recording;
 pub mod report;
 
 use chrono::{DateTime, Utc};
-use recording::{InProgress, Refusal, Session};
-use std::collections::BTreeMap;
+use recording::{InProgress, Session};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub const RECORDINGS_ENV: &str = "IRONMON_RECORDINGS_DIR";
 pub const CLAUDE_CODE_ENV: &str = "IRONMON_CLAUDE_CODE_DIR";
+pub const CODEX_ENV: &str = "IRONMON_CODEX_DIR";
 
-/// The most recording files one query will read. A snapshot must stay short, so
-/// files past this are counted and not read.
-pub const QUERY_MAX_FILES: usize = 64;
-/// The most bytes one query will read across all files.
-pub const QUERY_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// How long a snapshot or `get` may spend reading recordings. Files not read by
+/// then are counted, and the counts that depend on them are reported unavailable.
+pub const QUERY_DEADLINE: Duration = Duration::from_secs(2);
 
 /// The directory recordings are read from, and that `ironobs` writes into.
 pub fn recordings_dir() -> PathBuf {
@@ -53,6 +59,14 @@ pub fn claude_code_dir() -> PathBuf {
     match std::env::var_os(CLAUDE_CODE_ENV) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => home_dir().join(".claude").join("projects"),
+    }
+}
+
+/// The Codex CLI sessions directory `ironobs import codex` reads.
+pub fn codex_dir() -> PathBuf {
+    match std::env::var_os(CODEX_ENV) {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => home_dir().join(".codex").join("sessions"),
     }
 }
 
@@ -75,6 +89,17 @@ fn home_dir() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A stable 64-bit key for a name (FNV-1a). Run identifiers and file names are
+/// reduced to keys before they are stored, so the cache holds no raw identifier.
+pub fn key_of(name: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// A coverage row: a producer IronMonitor reads, or one it does not, and why.
@@ -124,17 +149,21 @@ pub struct Scan {
     pub dir: PathBuf,
     /// Whether the directory exists at all. A missing directory is not an empty one.
     pub dir_exists: bool,
-    /// Recording files read (or attempted) in this scan.
+    /// Recording files whose summaries are in this scan: read now, or reused from
+    /// the cache because they have not changed.
     pub files: usize,
     pub file_bytes: u64,
     /// Files that are not JSON of either recording shape. Each is skipped.
     pub corrupt_files: usize,
     /// Recordings refused, by reason, counted. Reasons are fixed strings.
     pub refused: BTreeMap<String, usize>,
-    /// Recording files past the scan bound, counted and not read.
+    /// Recording files the scan did not reach before its limit or deadline. Counts
+    /// that depend on them are not reported.
     pub files_truncated: usize,
     /// Every recording that was read, linked to its parents.
     pub sessions: Vec<Session>,
+    /// When the newest recording file was written, from its modification time.
+    pub newest_written: Option<DateTime<Utc>>,
     pub taken_at: DateTime<Utc>,
 }
 
@@ -150,8 +179,14 @@ impl Scan {
             refused: BTreeMap::new(),
             files_truncated: 0,
             sessions: Vec::new(),
+            newest_written: None,
             taken_at: Utc::now(),
         }
+    }
+
+    /// Whether every recording file in the directory is in this scan.
+    pub fn is_complete(&self) -> bool {
+        self.files_truncated == 0
     }
 
     /// Recordings read, in total.
@@ -233,86 +268,124 @@ fn sum_opt(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
         .fold(None, |acc, v| Some(acc.unwrap_or(0).saturating_add(v)))
 }
 
-/// Limits for one scan. The background poller reads everything. A query reads a
-/// bounded number of files, and says how many it did not read.
+/// Limits for one scan. The background poller reads everything. A query reads until
+/// its deadline, and says how many files it did not reach.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    /// Most files whose summaries this scan may include.
     pub max_files: usize,
+    /// Most bytes of recording files this scan may include.
     pub max_bytes: u64,
+    /// Past this instant, no further file is included.
+    pub deadline: Option<Instant>,
 }
 
 pub const UNBOUNDED: Limits = Limits {
     max_files: usize::MAX,
     max_bytes: u64::MAX,
+    deadline: None,
 };
 
-/// Read every `.json` recording file in `dir`, within `limits`.
-///
-/// A corrupt file is counted and skipped; the rest are read. Files are read in name
-/// order so the result is stable from one scan to the next.
+/// Limits for a snapshot or `get`: everything the cache holds, plus whatever more
+/// can be read within [`QUERY_DEADLINE`].
+pub fn query_limits() -> Limits {
+    Limits {
+        max_files: usize::MAX,
+        max_bytes: u64::MAX,
+        deadline: Some(Instant::now() + QUERY_DEADLINE),
+    }
+}
+
+/// Read every `.json` recording file in `dir`, within `limits`, without a cache.
 pub fn scan_dir(dir: &Path, limits: Limits) -> Scan {
+    scan_with(dir, limits, &mut cache::Cache::default())
+}
+
+/// Read every `.json` recording file in `dir`, within `limits`, reusing and
+/// updating the per-file summaries in `cache`.
+///
+/// A file whose size and modification time match its cached summary is not read
+/// again. A corrupt file is counted and skipped; the rest are read. Files are taken
+/// in name order so the result is stable from one scan to the next.
+pub fn scan_with(dir: &Path, limits: Limits, cache: &mut cache::Cache) -> Scan {
     let mut scan = Scan::empty(dir);
     let Ok(read) = std::fs::read_dir(dir) else {
         return scan;
     };
     scan.dir_exists = true;
-    let mut paths: Vec<PathBuf> = read
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("json"))
-                && p.is_file()
+    let mut files: Vec<(String, PathBuf)> = read
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let path = e.path();
+            let is_json = path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("json"));
+            (is_json && path.is_file())
+                .then(|| (e.file_name().to_string_lossy().into_owned(), path))
         })
+        .filter(|(name, _)| name != ironobs::LEGACY_OUTPUT)
         .collect();
-    paths.sort();
+    files.sort();
 
+    let mut live = HashSet::with_capacity(files.len());
     let mut sessions = Vec::new();
-    for path in paths {
-        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if scan.files >= limits.max_files || scan.file_bytes.saturating_add(len) > limits.max_bytes
-        {
+    for (name, path) in &files {
+        let key = key_of(name);
+        live.insert(key);
+        let past_deadline = limits.deadline.is_some_and(|d| Instant::now() >= d);
+        if past_deadline || scan.files >= limits.max_files {
             scan.files_truncated += 1;
             continue;
         }
-        scan.files += 1;
-        scan.file_bytes = scan.file_bytes.saturating_add(len);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => {
-                scan.corrupt_files += 1;
-                continue;
+        let Ok(meta) = std::fs::metadata(path) else {
+            scan.files += 1;
+            scan.corrupt_files += 1;
+            continue;
+        };
+        let len = meta.len();
+        if scan.file_bytes.saturating_add(len) > limits.max_bytes {
+            scan.files_truncated += 1;
+            continue;
+        }
+        let mtime = cache::mtime_ms(&meta);
+        let entry = match cache.entries.get(&key) {
+            Some(e) if e.len == len && e.mtime_ms == mtime => e.clone(),
+            _ => {
+                let parsed = cache::parse_file(path, key, len, mtime);
+                cache.entries.insert(key, parsed.clone());
+                parsed
             }
         };
-        match recording::read_file(&bytes) {
-            Ok(items) => {
-                for item in items {
-                    match item {
-                        Ok(s) => sessions.push(s),
-                        Err(refusal) => count_refusal(&mut scan.refused, &refusal),
-                    }
-                }
-            }
-            Err(_) => scan.corrupt_files += 1,
+        scan.files += 1;
+        scan.file_bytes = scan.file_bytes.saturating_add(len);
+        if let Some(t) = cache::datetime_of_ms(mtime) {
+            scan.newest_written = Some(scan.newest_written.map_or(t, |n| n.max(t)));
         }
+        if entry.corrupt {
+            scan.corrupt_files += 1;
+            continue;
+        }
+        for (reason, n) in &entry.refused {
+            *scan.refused.entry(reason.clone()).or_default() += n;
+        }
+        sessions.extend(
+            entry
+                .sessions
+                .into_iter()
+                .map(cache::StoredSession::into_session),
+        );
     }
     recording::link(&mut sessions);
+    cache.entries.retain(|k, _| live.contains(k));
     scan.sessions = sessions;
     scan
 }
 
-fn count_refusal(refused: &mut BTreeMap<String, usize>, refusal: &Refusal) {
-    *refused.entry(refusal.reason()).or_default() += 1;
-}
-
-/// Scan for a snapshot or a get: bounded, and never an import.
+/// Scan for a snapshot or a get: bounded by [`QUERY_DEADLINE`], and never an import.
+/// The cache is read but not written here; only the background poller writes it.
 pub fn query(dir: &Path) -> Scan {
-    scan_dir(
-        dir,
-        Limits {
-            max_files: QUERY_MAX_FILES,
-            max_bytes: QUERY_MAX_BYTES,
-        },
-    )
+    let mut cache = cache::load(dir);
+    scan_with(dir, query_limits(), &mut cache)
 }
 
 /// Turn a producer name into the form used in ids: `claude-code` becomes `claude_code`.
@@ -359,6 +432,8 @@ pub struct EngineRequests {
     pub recent: Option<usize>,
     /// Whether the IronWorks engine answered its last poll at all.
     pub reachable: bool,
+    /// Whether the engine has ever answered. When it has not, no figure is shown.
+    pub ever_answered: bool,
 }
 
 /// Pick the IronWorks engine's request figures out of the Inference poller's states.
@@ -372,6 +447,7 @@ pub fn engine_requests(states: &[crate::inference::SourceState]) -> Option<Engin
         active: section.and_then(|s| s.requests_active),
         recent: section.and_then(|s| s.recent.as_ref().map(|r| r.len())),
         reachable: st.reachable,
+        ever_answered: st.latest.is_some(),
     })
 }
 
@@ -461,7 +537,22 @@ mod tests {
     }
 
     #[test]
-    fn the_query_bound_counts_files_it_did_not_read() {
+    fn a_subagent_in_another_file_still_links_to_its_parent() {
+        let dir = tmp("cross-file");
+        write(&dir, "a.json", r#"{"run":"root","events":[]}"#);
+        write(
+            &dir,
+            "b.json",
+            r#"{"run":"child","parent":"root","events":[]}"#,
+        );
+        let scan = query(&dir);
+        assert_eq!(scan.sessions_count(), 1);
+        assert_eq!(scan.subagent_count(), 1);
+        assert_eq!(scan.workflow_count(), 1);
+    }
+
+    #[test]
+    fn the_bound_counts_files_it_did_not_read() {
         let dir = tmp("bounded");
         for i in 0..5 {
             write(&dir, &format!("{i}.json"), r#"{"run":"x","events":[]}"#);
@@ -471,10 +562,64 @@ mod tests {
             Limits {
                 max_files: 2,
                 max_bytes: u64::MAX,
+                deadline: None,
             },
         );
         assert_eq!(scan.files, 2);
         assert_eq!(scan.files_truncated, 3);
+        assert!(!scan.is_complete());
+    }
+
+    #[test]
+    fn a_passed_deadline_reads_nothing_and_says_so() {
+        let dir = tmp("deadline");
+        write(&dir, "a.json", r#"{"run":"x","events":[]}"#);
+        let scan = scan_dir(
+            &dir,
+            Limits {
+                max_files: usize::MAX,
+                max_bytes: u64::MAX,
+                deadline: Some(Instant::now()),
+            },
+        );
+        assert_eq!(scan.files, 0);
+        assert_eq!(scan.files_truncated, 1);
+    }
+
+    #[test]
+    fn the_cache_reuses_a_summary_while_the_file_is_unchanged() {
+        let dir = tmp("cache-reuse");
+        write(&dir, "a.json", r#"{"run":"x","events":[]}"#);
+        let mut cache = cache::Cache::default();
+        let first = scan_with(&dir, UNBOUNDED, &mut cache);
+        assert_eq!(first.recordings(), 1);
+        // Corrupt the file's bytes without changing its length or mtime: the cached
+        // summary is used, which proves the file was not read again.
+        let path = dir.join("a.json");
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut body = std::fs::read(&path).unwrap();
+        body[0] = b'!';
+        std::fs::write(&path, &body).unwrap();
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(mtime).unwrap();
+        drop(f);
+        let second = scan_with(&dir, UNBOUNDED, &mut cache);
+        assert_eq!(second.recordings(), 1, "the unchanged file was read again");
+        assert_eq!(second.corrupt_files, 0);
+    }
+
+    #[test]
+    fn a_changed_file_is_read_again() {
+        let dir = tmp("cache-changed");
+        write(&dir, "a.json", r#"{"run":"x","events":[]}"#);
+        let mut cache = cache::Cache::default();
+        assert_eq!(scan_with(&dir, UNBOUNDED, &mut cache).recordings(), 1);
+        write(
+            &dir,
+            "a.json",
+            r#"[{"run":"x","events":[]},{"run":"y","events":[]}]"#,
+        );
+        assert_eq!(scan_with(&dir, UNBOUNDED, &mut cache).recordings(), 2);
     }
 
     #[test]
@@ -500,5 +645,11 @@ mod tests {
     fn producer_keys_match_the_id_form() {
         assert_eq!(producer_key("claude-code"), "claude_code");
         assert_eq!(producer_key("Gemini CLI"), "gemini_cli");
+    }
+
+    #[test]
+    fn keys_are_stable_and_distinguish_names() {
+        assert_eq!(key_of("a.json"), key_of("a.json"));
+        assert_ne!(key_of("a.json"), key_of("b.json"));
     }
 }

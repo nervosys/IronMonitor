@@ -3490,7 +3490,7 @@ impl Ontology {
             Some(U::Count),
             P::Measured,
             true,
-            "How many recording files (.json) a query read. Absent when the directory does not exist.",
+            "How many recording files (.json) are in the read: those whose summaries are cached or were read within the query deadline. Absent when the directory does not exist.",
         ));
         add(Entity::new(
             "agents.recordings.rejected",
@@ -3508,7 +3508,7 @@ impl Ontology {
             None,
             P::Unavailable,
             true,
-            "Present when a snapshot read fewer recording files than the directory holds, carrying how many it did not read. The background reader reads them all.",
+            "Present when a snapshot read stopped at its deadline before every recording file was read, carrying how many were read of how many. Counts that depend on the unread files are reported unavailable. The background reader reads them all.",
         ));
         add(Entity::new(
             "agents.ironobs.<none>",
@@ -3526,7 +3526,7 @@ impl Ontology {
             Some(U::Text),
             P::Measured,
             true,
-            "The version `ironobs --version` printed, when it is installed. The probe runs no import.",
+            "The version `ironobs --version` printed, when the background reader probed the installed binary. A one-shot read does not run ironobs, so it reports this unavailable.",
         ));
         add(Entity::new(
             "agents.import.state",
@@ -3535,7 +3535,25 @@ impl Ontology {
             Some(U::Text),
             P::Measured,
             true,
-            "What the import is doing now: running since a time (and whether another IronMonitor window started it), idle with the last attempt, pending, not run because ironobs is missing, or not run because no Claude Code directory exists.",
+            "What the import cycle is doing now: running since a time (and whether another IronMonitor window started it), idle with when the last cycle ended and when the next is due, pending before the first import, or not run because ironobs is missing or too old for --out. Each producer is stopped at 30 minutes.",
+        ));
+        add(Entity::new(
+            "agents.import.claude_code.state",
+            D::Agents,
+            K::Measurement,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The Claude Code import: when its last run finished and what it reported, in counts, and which sessions the next run selects. Unavailable, with the reason, when no Claude Code projects folder exists.",
+        ));
+        add(Entity::new(
+            "agents.import.codex.state",
+            D::Agents,
+            K::Measurement,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The Codex CLI import: when its last run finished and what it reported, in counts, and which sessions the next run selects. Unavailable, with the reason, when no Codex sessions folder exists.",
         ));
         add(Entity::new(
             "agents.import.last_written",
@@ -3544,7 +3562,7 @@ impl Ontology {
             Some(U::Text),
             P::Measured,
             true,
-            "When the recordings file was last written by an import, RFC 3339. Absent when no import has written it.",
+            "When the newest recording file was written, RFC 3339. Absent when no recording file exists.",
         ));
         add(Entity::new(
             "agents.sessions.count",
@@ -3625,7 +3643,7 @@ impl Ontology {
             Some(U::Count),
             P::Measured,
             true,
-            "Recordings read from the Codex CLI, once an installed ironobs has a Codex importer. Absent, with the reason, when none were read.",
+            "Recordings read from the Codex CLI, imported by `ironobs import codex` from the Codex sessions folder (IRONMON_CODEX_DIR, by default under the home directory). Absent, with the reason, when none were read.",
         ));
         add(Entity::new(
             "agents.producer.gemini_cli.sessions",

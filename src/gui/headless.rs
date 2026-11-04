@@ -887,6 +887,8 @@ pub const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 /// sees the same thing either way. Before it existed, `--script` captured the
 /// first frame — which for four tabs was their "Loading …" placeholder, forever.
 pub fn settled_tab_text(app: &mut super::app::IronMonitorApp, ctx: &Context) -> String {
+    // Bounded: an Agents frame shows the recordings, not "the first scan has not finished".
+    app.agents.wait_for_scan(std::time::Duration::from_secs(5));
     painted_text_until(
         ctx,
         SETTLE_DEADLINE,

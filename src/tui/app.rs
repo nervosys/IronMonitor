@@ -33,8 +33,6 @@ pub const TAB_AGENT: usize = 10;
 
 /// How often each inference source is polled.
 const INFERENCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// How often an import may run. The poller rescans the recordings directory on its own tick.
-const AGENTS_IMPORT_INTERVAL: Duration = crate::agents::ironobs::MIN_INTERVAL;
 
 /// Build the agent the TUI should use.
 ///
@@ -1021,7 +1019,18 @@ impl App {
             app.check_background_init();
             std::thread::sleep(Duration::from_millis(10));
         }
+        // Bounded: a one-shot frame of the Agents tab shows the recordings, not
+        // "the first scan has not finished".
+        app.await_first_agents_scan(Duration::from_secs(5));
         Ok(app)
+    }
+
+    /// Wait, up to `timeout`, for the Agents tab's first scan to finish. Only the
+    /// one-shot headless paths call this.
+    pub fn await_first_agents_scan(&self, timeout: Duration) {
+        if let Some(poller) = &self.agents {
+            poller.wait_for_scan(timeout);
+        }
     }
 
     /// Wait, up to `timeout`, until every inference source has either produced a
@@ -1181,7 +1190,7 @@ impl App {
             agent_history_version: 0,
             agent_loading: false,
             inference: Some(inference),
-            agents: Some(AgentsPoller::spawn(AGENTS_IMPORT_INTERVAL)),
+            agents: Some(AgentsPoller::spawn()),
             agents_scroll: 0,
             process_display_mode: ProcessDisplayMode::default(),
             process_monitor: None, // Will be populated from background thread

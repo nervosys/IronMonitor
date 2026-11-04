@@ -11,21 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Agents tab in the TUI and the GUI, placed after Inference, tracking local agent
   sessions and multi-agent runs read from IronObserver's recordings. IronMonitor
-  does not parse agent transcripts: when the `ironobs` binary is on PATH it runs
-  `ironobs import claude-code` in the background, at most every five minutes, into
-  the recordings directory, under a single-instance lock. Without `ironobs` the tab
+  does not parse agent transcripts: when the `ironobs` binary is on PATH it imports
+  Claude Code and Codex CLI sessions in the background with
+  `ironobs import <producer> <folder> --out <recordings> --format json`. One cycle
+  runs at a time, under a single-instance lock. Each producer's import is stopped at
+  30 minutes; the next cycle starts 15 minutes after the last one ended. A producer's
+  `--modified-since` watermark moves when its own import exits 0, or exits 1 with a
+  summary; a kill, exit 2 or no summary leaves it. A first import with no watermark
+  covers the last seven days. A folder that
+  does not exist is reported as not run, not as a failure. A binary without
+  `import --out` is reported as too old and is not run. Without `ironobs` the tab
   reports that and still reads recordings already on disk. Shows active and recent
   sessions, subagent workflows, token totals, import status, the Inference engine's
   request figures, and a Coverage section listing what is read and what is not
   (Gemini CLI, which stores no chats on disk, and cloud agent sessions). Metadata
   only: no prompts, tool arguments, file contents or project paths.
-  Environment: `IRONMON_RECORDINGS_DIR` and `IRONMON_CLAUDE_CODE_DIR`.
+  Environment: `IRONMON_RECORDINGS_DIR`, `IRONMON_CLAUDE_CODE_DIR` and
+  `IRONMON_CODEX_DIR`.
+  - Reads are cached per file, in `.scan-cache` beside the recordings, written
+    atomically by the background thread. A snapshot or `get` reads within 2 seconds;
+    counts that depend on files it did not reach are reported unavailable.
   - Ontology: domain `agents`, with `agents.recordings.*`, `agents.ironobs.*`,
-    `agents.import.*`, `agents.sessions.*`, `agents.workflows.count`,
+    `agents.import.*` (including `agents.import.claude_code.state` and
+    `agents.import.codex.state`), `agents.sessions.*`, `agents.workflows.count`,
     `agents.producer.<name>.sessions`, `agents.remote.<none>` and
     `agents.engine.requests.*`. Ontology version unchanged.
-  - Not yet run against real recordings or a real `ironobs` import, and the
-    `--modified-since` delta is used only if an installed `ironobs` names that flag.
+  - The `--modified-since` watermark needs an `ironobs` that names that flag. Without
+    a watermark the first import covers the last seven days only, and the Coverage
+    section says so.
   - Tab keys: Agents is reached with Tab, Shift+Tab, Left and Right, and `goto Agents`
     in scripts. No digit was given to it, so the digit keys keep their meanings.
 

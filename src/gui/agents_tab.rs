@@ -20,11 +20,13 @@ use super::widgets::SectionHeader;
 /// themselves are rescanned by the poller at its own interval.
 pub(super) const REPAINT_EVERY: Duration = Duration::from_secs(10);
 
-/// How often the poller may run an import. It rescans the recordings directory more
-/// often than this, on its own tick.
-pub(super) const IMPORT_INTERVAL: Duration = crate::agents::ironobs::MIN_INTERVAL;
-
 impl IronMonitorApp {
+    /// Wait, up to `timeout`, for the Agents tab's first scan to finish. Only the
+    /// one-shot headless paths call this, so a frame shows the recordings.
+    pub fn await_first_agents_scan(&self, timeout: Duration) {
+        self.agents.wait_for_scan(timeout);
+    }
+
     /// Build the report from cached state. Cheap, and it never touches disk.
     pub(super) fn agents_report(&self) -> Report {
         let state = self.agents.state();

@@ -366,28 +366,57 @@ reason, and a recording that cannot be read is counted, not hidden.
 
 | Source | What is read | Default | Override |
 |---|---|---|---|
-| Recordings | `*.json` recording files, metadata only | `<cache>/ironmon/agents/recordings` | `IRONMON_RECORDINGS_DIR` |
+| Recordings | one `*.json` file per run, metadata only | `<cache>/ironmon/agents/recordings` | `IRONMON_RECORDINGS_DIR` |
 | Claude Code | `ironobs import claude-code` input | `~/.claude/projects` | `IRONMON_CLAUDE_CODE_DIR` |
+| Codex CLI | `ironobs import codex` input | `~/.codex/sessions` | `IRONMON_CODEX_DIR` |
 
 `<cache>` is `%LOCALAPPDATA%` on Windows and `~/.cache` elsewhere.
 
-The import runs only when `ironobs` is on PATH, in a background thread, at most every
-five minutes, below normal priority where that is cheap. A lock file in the recordings
-directory admits one import at a time across windows. The import writes a temporary
-file and renames it into place only when it holds recordings, so a failed run leaves
-the last good file. `--modified-since` is passed only when the installed binary's
-`import --help` names it.
+The import runs only when `ironobs` is on PATH, in a background thread. A cycle takes
+a lock file in the recordings directory, so one import runs at a time across windows,
+then for each producer whose folder exists runs
+`ironobs import <producer> <folder> --out <recordings> --format json`. ironobs writes
+one file per run into the recordings directory, replacing the file for the same run
+and nothing else.
 
-`snapshot` and `get` read the recordings directory within a bound and never start an
-import or call a remote host. `describe` touches nothing. A count with no recordings
-behind it is unavailable with the reason, not zero.
+- A producer's import is killed at 30 minutes and reported as stopped. Its standard
+  error is counted, never kept, and its summary goes to a temporary file, so a stalled
+  import cannot block the poller.
+- The next cycle starts 15 minutes after the previous one ended, so a slow import
+  never overlaps the next one.
+- A producer's watermark moves when its own import exits 0, or exits 1 with a summary
+  (some files could not be read, or nothing matched; a session that changes later is
+  selected again anyway). It becomes that run's start time less ten minutes, and the
+  next import passes it as `--modified-since`. A kill at the deadline, exit 2, any
+  other exit, or no parseable summary leaves it where it was. The state shows the
+  `recordings_failed` count when it is non-zero.
+- The first import, with no watermark, passes `--modified-since` seven days back rather
+  than reading all history. That start is kept with the watermark, so a killed first
+  import retries the same window. Sessions last written before it are not imported, and
+  the Coverage section says so.
+- A binary without `import --out` is reported as too old for IronMonitor and is not
+  run. A folder that does not exist is reported as not run, not as a failure.
+
+`snapshot` and `get` read the scan cache and the recordings directory within two
+seconds, and never start an import or call a remote host. `describe` touches nothing.
+The background thread keeps one summary per recording file, reused while the file's
+size and modification time are unchanged, and writes them to `.scan-cache` beside the
+recordings, atomically. The draw path never touches disk. A count that depends on a
+file the read did not reach is unavailable, not a partial sum, and a count with no
+recordings behind it is unavailable with the reason, not zero. A `claude-code.json`
+file left by an earlier IronMonitor is not read.
 
 What is not read: Gemini CLI (it stores no chats on disk), cloud and hosted agent
 sessions (no source on this machine), and anything `ironobs` does not import. Provider
 cost and usage are on the Inference tab, not the Agents tab.
 
-This has been exercised against synthetic recordings only. It has not been run against
-real session files or a live `ironobs` import.
+Run once against real session files, with a release `ironobs` under a 900-second
+timeout and a two-hour window (`--modified-since`) for both producers. Claude Code
+exited 0 in 254 seconds with 4,735 recordings written, none failed, and no lines
+unparseable. Codex exited 1 in under a second: the window selected none of its 804
+files, so nothing was written and the watermark moved. A scan of those recordings took
+about 0.85 seconds warm, against 29 seconds cold, with peak memory of 54 MB. The app's
+poller did not run these imports, because `ironobs` was not on PATH during that test.
 
 ## Driving ironmon directly
 

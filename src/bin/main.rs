@@ -4716,6 +4716,10 @@ fn handle_gui_frame_command(tab: &str) -> Result<(), Box<dyn std::error::Error>>
         std::process::exit(1);
     }
 
+    // Bounded: the Agents tab shows the recordings it has scanned, so a frame
+    // waits for its first scan rather than saying "not scanned yet".
+    app.await_first_agents_scan(std::time::Duration::from_secs(5));
+
     // Four tabs load their contents on a background thread. Without pumping the
     // loaders between frames they render their spinner forever — which is painted
     // text, so `every_gui_tab_paints_text` passed while an agent reading the disk

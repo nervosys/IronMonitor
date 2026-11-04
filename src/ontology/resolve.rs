@@ -2088,13 +2088,17 @@ pub fn validate(readings: &[Reading]) -> Vec<String> {
 
 /// Agent recordings: what IronObserver wrote, read from disk, metadata only.
 ///
-/// A one-shot read never runs an import and never calls a remote. It probes the
-/// `ironobs` binary once and reads the recordings directory within a bound. The
+/// A one-shot read never runs an import and never calls a remote. It reads the scan
+/// cache and the recordings directory within the query deadline, and checks whether
+/// `ironobs` is on PATH without running it. When the deadline stops the read short,
+/// every count that depends on the files not read is reported unavailable. The
 /// engine request figures come from the Inference poller, which a one-shot read does
 /// not run, so they are reported absent with that reason.
 fn resolve_agents(out: &mut Vec<Reading>) {
+    use crate::agents::ironobs::{self, Cycle};
+    use crate::agents::report::{cycle_text, none_reason};
     use crate::agents::KNOWN_PRODUCERS;
-    use crate::agents::{ironobs, REMOTE_COST_POINTER, REMOTE_NOT_READ};
+    use crate::agents::{REMOTE_COST_POINTER, REMOTE_NOT_READ};
     use serde_json::json;
 
     let st = ironobs::AgentsState::query();
@@ -2102,13 +2106,18 @@ fn resolve_agents(out: &mut Vec<Reading>) {
     let dir = st.recordings_dir.display().to_string();
     push_text(out, "agents.recordings.dir", &dir);
 
-    let none_reason = no_recordings_reason(&scan);
+    let reason = none_reason(&scan);
     let recordings = scan.recordings();
+    // Counts are reported only when every recording file was read. A partial sum
+    // would look like a reading, and is not one.
+    let whole = scan.is_complete() && recordings > 0;
+    let counted = |n: usize| whole.then(|| json!(n));
+
     if !scan.dir_exists || scan.files == 0 {
         out.push(Reading::unavailable(
             "agents.recordings.<none>",
             None,
-            none_reason.clone(),
+            reason.clone(),
         ));
     }
     push_opt(
@@ -2131,22 +2140,27 @@ fn resolve_agents(out: &mut Vec<Reading>) {
             "agents.recordings.<truncated>",
             None,
             format!(
-                "{} recording file(s) exist; this snapshot read the first {} and did not read {}",
-                scan.files + scan.files_truncated,
+                "read {} of {} recording file(s) within the read bound; {} were not read",
                 scan.files,
+                scan.files + scan.files_truncated,
                 scan.files_truncated
             ),
         ));
     }
 
     match &st.ironobs {
-        Some(bin) => push_opt(
+        Some(bin) if bin.probed => push_opt(
             out,
             "agents.ironobs.version",
             bin.version.clone().map(|v| json!(v)),
             Some(Unit::Text),
             "ironobs is installed but printed no usable version",
         ),
+        Some(_) => out.push(Reading::unavailable(
+            "agents.ironobs.version",
+            Some(Unit::Text),
+            "ironobs is installed; the background reader probes it, and a one-shot read does not",
+        )),
         None => {
             out.push(Reading::unavailable(
                 "agents.ironobs.<none>",
@@ -2161,105 +2175,113 @@ fn resolve_agents(out: &mut Vec<Reading>) {
         }
     }
 
-    let import_text = match &st.import {
-        ironobs::ImportState::NotInstalled => Err("not run: ironobs is not installed".to_string()),
-        ironobs::ImportState::NoSource => Err(format!(
-            "not run: no Claude Code projects directory at {}",
-            st.source_dir.display()
-        )),
-        ironobs::ImportState::Pending => {
-            Ok("pending: the first import has not started".to_string())
-        }
-        ironobs::ImportState::Idle { last: None } => Ok("idle".to_string()),
-        ironobs::ImportState::Idle {
-            last: Some((at, what)),
-        } => Ok(format!("idle; last attempt {}: {what}", at.to_rfc3339())),
-        ironobs::ImportState::Running {
-            since,
-            by_this_window,
-        } => Ok(format!(
-            "running since {}{}",
-            since.to_rfc3339(),
-            if *by_this_window {
-                ""
-            } else {
-                " (started by another IronMonitor window)"
-            }
-        )),
-    };
-    match import_text {
-        Ok(text) => push_text(out, "agents.import.state", &text),
-        Err(why) => out.push(Reading::unavailable(
+    match &st.cycle {
+        Cycle::Blocked(why) => out.push(Reading::unavailable(
             "agents.import.state",
             Some(Unit::Text),
-            why,
+            why.clone(),
         )),
+        _ => push_text(
+            out,
+            "agents.import.state",
+            &cycle_text(&st, chrono::Utc::now()),
+        ),
+    }
+    for imp in &st.imports {
+        let id = format!("agents.import.{}.state", imp.importer.key());
+        if !imp.source_exists {
+            out.push(Reading::unavailable(
+                id,
+                Some(Unit::Text),
+                format!(
+                    "not run: no `{}` folder to import",
+                    imp.importer.source_folder()
+                ),
+            ));
+            continue;
+        }
+        let last = match &imp.last {
+            Some(l) => format!("last import at {}: {}", l.at.to_rfc3339(), l.text),
+            None => "no import has finished".to_string(),
+        };
+        let selection = match (imp.watermark, imp.first_since) {
+            (Some(w), _) => format!(
+                "sessions modified since {} are selected; sessions not written in the 7 days before the first import are not imported",
+                w.to_rfc3339()
+            ),
+            (None, Some(t)) => format!(
+                "sessions not written in the 7 days before the first import (from {}) are not imported",
+                t.to_rfc3339()
+            ),
+            (None, None) => "the first import selects sessions written in the 7 days before it runs; older sessions are not imported".to_string(),
+        };
+        push_text(out, id, &format!("{last}; {selection}"));
     }
     push_opt(
         out,
         "agents.import.last_written",
-        st.last_written.map(|t| json!(t.to_rfc3339())),
+        scan.newest_written.map(|t| json!(t.to_rfc3339())),
         Some(Unit::Text),
-        "no import has written the recordings file",
+        "no recording file has been written yet",
     );
 
-    let counted = |n: usize| (recordings > 0).then(|| json!(n));
     push_opt(
         out,
         "agents.sessions.count",
         counted(scan.sessions_count()),
         Some(Unit::Count),
-        none_reason.as_str(),
+        reason.as_str(),
     );
     push_opt(
         out,
         "agents.sessions.active",
         counted(scan.active_count()),
         Some(Unit::Count),
-        none_reason.as_str(),
+        reason.as_str(),
     );
     push_opt(
         out,
         "agents.sessions.in_progress_unevidenced",
         counted(scan.unevidenced_count()),
         Some(Unit::Count),
-        none_reason.as_str(),
+        reason.as_str(),
     );
     push_opt(
         out,
         "agents.sessions.subagents",
         counted(scan.subagent_count()),
         Some(Unit::Count),
-        none_reason.as_str(),
+        reason.as_str(),
     );
     push_opt(
         out,
         "agents.workflows.count",
         counted(scan.workflow_count()),
         Some(Unit::Count),
-        none_reason.as_str(),
+        reason.as_str(),
     );
+    let tokens_why = if whole {
+        "no recording reports token usage"
+    } else {
+        reason.as_str()
+    };
     push_opt(
         out,
         "agents.sessions.input_tokens",
-        scan.input_tokens().map(|v| json!(v)),
+        whole
+            .then(|| scan.input_tokens().map(|v| json!(v)))
+            .flatten(),
         Some(Unit::Count),
-        if recordings > 0 {
-            "no recording reports token usage"
-        } else {
-            none_reason.as_str()
-        },
+        tokens_why,
     );
     push_opt(
         out,
         "agents.sessions.output_tokens",
-        scan.output_tokens().map(|v| json!(v)),
+        whole
+            .then(|| scan.output_tokens().map(|v| json!(v)))
+            .flatten(),
         Some(Unit::Count),
-        if recordings > 0 {
-            "no recording reports token usage"
-        } else {
-            none_reason.as_str()
-        },
+        tokens_why,
     );
 
     for p in KNOWN_PRODUCERS {
@@ -2269,23 +2291,31 @@ fn resolve_agents(out: &mut Vec<Reading>) {
             continue;
         }
         let n = scan.producer_count(p.key);
-        let why = if recordings == 0 {
-            none_reason.clone()
-        } else {
+        let why = if whole {
             format!("no {} recordings were read", p.label)
+        } else {
+            reason.clone()
         };
-        push_opt(out, id, (n > 0).then(|| json!(n)), Some(Unit::Count), &why);
-    }
-    for key in scan.producers() {
-        if KNOWN_PRODUCERS.iter().any(|p| p.key == key) {
-            continue;
-        }
-        let n = scan.producer_count(&key);
-        out.push(Reading::measured(
-            format!("agents.producer.{key}.sessions"),
-            json!(n),
+        push_opt(
+            out,
+            id,
+            counted(n).filter(|_| n > 0),
             Some(Unit::Count),
-        ));
+            &why,
+        );
+    }
+    if whole {
+        for key in scan.producers() {
+            if KNOWN_PRODUCERS.iter().any(|p| p.key == key) {
+                continue;
+            }
+            let n = scan.producer_count(&key);
+            out.push(Reading::measured(
+                format!("agents.producer.{key}.sessions"),
+                json!(n),
+                Some(Unit::Count),
+            ));
+        }
     }
 
     out.push(Reading::unavailable(
@@ -2305,25 +2335,6 @@ fn resolve_agents(out: &mut Vec<Reading>) {
         Some(Unit::Count),
         not_polled,
     ));
-}
-
-/// Why no recording was read, in words a reader can act on.
-fn no_recordings_reason(scan: &crate::agents::Scan) -> String {
-    if !scan.dir_exists {
-        return format!(
-            "no recordings directory at {}; ironobs writes it when it imports, or set IRONMON_RECORDINGS_DIR",
-            scan.dir.display()
-        );
-    }
-    if scan.files == 0 {
-        return "the recordings directory holds no recording files yet; ironobs import claude-code writes them".into();
-    }
-    format!(
-        "{} recording file(s) were read but none gave a usable recording ({} corrupt, {} refused)",
-        scan.files,
-        scan.corrupt_files,
-        scan.refused_count()
-    )
 }
 
 // ── Inference ────────────────────────────────────────────────────────────────

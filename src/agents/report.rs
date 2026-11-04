@@ -5,10 +5,10 @@
 //! already in memory: nothing here touches disk.
 //!
 //! Privacy: a row names a producer, a model, times, counts and token totals. It
-//! never names a session, a run, a prompt or a project path. The recordings
-//! directory is shown because it is where this machine keeps its own recordings.
+//! never names a session, a run, a prompt or a project path. A folder is named only
+//! by its final component, so no full path reaches a screen.
 
-use super::ironobs::{AgentsState, ImportState};
+use super::ironobs::{AgentsState, Cycle, ProducerImport};
 use super::recording::{InProgress, Session};
 use super::{
     relative, EngineRequests, Scan, KNOWN_PRODUCERS, REMOTE_COST_POINTER, REMOTE_NOT_READ,
@@ -51,11 +51,8 @@ pub struct Report {
 pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<Utc>) -> Report {
     let scan = state.scan_or_empty();
     let mut summary = Vec::new();
-    summary.push(sessions_line(&scan));
-    summary.push(format!(
-        "Import: {}",
-        import_line(&state.import, state, now)
-    ));
+    summary.push(sessions_line(state.scan.as_ref(), &scan));
+    summary.push(format!("Import: {}", cycle_text(state, now)));
     summary.push(format!(
         "Recordings: {} file(s), {} recording(s) read, {} file(s) unusable, {} recording(s) refused{}",
         scan.files,
@@ -77,7 +74,7 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
         .iter()
         .filter(|s| s.in_progress == InProgress::True)
         .collect();
-    if scan.recordings() == 0 {
+    if scan.recordings() == 0 || !scan.is_complete() {
         active.rows.push(format!("unknown: {}", none_reason(&scan)));
     } else if active_sessions.is_empty() {
         active.rows.push("no recording shows in progress".into());
@@ -90,7 +87,7 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     sections.push(active);
 
     let mut recent = Section::new("Recent");
-    if scan.recordings() == 0 {
+    if scan.recordings() == 0 || !scan.is_complete() {
         recent.rows.push(format!("unknown: {}", none_reason(&scan)));
     } else {
         let mut tops: Vec<&Session> = scan
@@ -107,7 +104,7 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     sections.push(recent);
 
     let mut workflows = Section::new("Workflows");
-    if scan.recordings() == 0 {
+    if scan.recordings() == 0 || !scan.is_complete() {
         workflows
             .rows
             .push(format!("unknown: {}", none_reason(&scan)));
@@ -141,6 +138,12 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
         None => engines
             .rows
             .push("unknown: the Inference tab's engine poller is not running".into()),
+        Some(e) if !e.ever_answered => {
+            // Nothing has ever come back, so there is no figure to be stale.
+            engines
+                .rows
+                .push("no engine answered; no figures are shown".into());
+        }
         Some(e) => {
             engines.rows.push(match e.active {
                 Some(n) => format!("{n} request(s) in flight, from IronWorks"),
@@ -165,13 +168,11 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     let mut coverage = Section::new("Coverage");
     for p in KNOWN_PRODUCERS {
         let n = scan.producer_count(p.key);
-        let row = match p.not_read {
-            Some(why) => format!("Not read: {} — {why}", p.label),
-            None if n > 0 => format!("Read: {} — {n} recording(s)", p.label),
-            None => format!(
-                "Read when ironobs imports it: {} — none in the recordings read",
-                p.label
-            ),
+        let import = state.imports.iter().find(|i| i.importer.key() == p.key);
+        let row = match (p.not_read, import) {
+            (Some(why), _) => format!("Not read: {} — {why}", p.label),
+            (None, Some(imp)) => producer_row(p.label, n, imp, state, now),
+            (None, None) => format!("Not read: {} — not imported by this IronMonitor", p.label),
         };
         coverage.rows.push(row);
     }
@@ -192,8 +193,71 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     Report { summary, sections }
 }
 
-fn sessions_line(scan: &Scan) -> String {
-    if scan.recordings() == 0 {
+/// One producer's coverage row: what was read, and the state of its import.
+fn producer_row(
+    label: &str,
+    n: usize,
+    imp: &ProducerImport,
+    state: &AgentsState,
+    now: DateTime<Utc>,
+) -> String {
+    let head = if !imp.source_exists && n == 0 {
+        format!(
+            "Not read: {label} — no `{}` folder to import",
+            imp.importer.source_folder()
+        )
+    } else if n > 0 {
+        format!("Read: {label} — {n} recording(s)")
+    } else {
+        format!("Read when ironobs imports it: {label} — none in the recordings read yet")
+    };
+    let mut notes = Vec::new();
+    if imp.running {
+        notes.push("importing now".to_string());
+    }
+    if let Cycle::Blocked(why) = &state.cycle {
+        notes.push(why.clone());
+    }
+    if let Some(last) = &imp.last {
+        notes.push(format!(
+            "last import {}: {}",
+            relative(last.at, now),
+            last.text
+        ));
+    }
+    if imp.source_exists {
+        notes.push(window_note(imp));
+    }
+    if notes.is_empty() {
+        head
+    } else {
+        format!("{head} · {}", notes.join(" · "))
+    }
+}
+
+/// The first import's selection, stated on every row that has a source folder: the window
+/// before the first import is the only history that is ever read.
+fn window_note(imp: &ProducerImport) -> String {
+    match (imp.watermark, imp.first_since) {
+        (Some(w), _) => format!(
+            "sessions modified since {} are selected; sessions not written in the 7 days before the first import are not imported",
+            relative(w, Utc::now())
+        ),
+        (None, Some(t)) => format!(
+            "sessions not written in the 7 days before the first import (from {}) are not imported",
+            t.to_rfc3339()
+        ),
+        (None, None) => {
+            "the first import selects sessions written in the 7 days before it runs; older sessions are not imported".into()
+        }
+    }
+}
+
+fn sessions_line(raw: Option<&Scan>, scan: &Scan) -> String {
+    if raw.is_none() {
+        return "Sessions: unknown — the first scan has not finished".into();
+    }
+    if scan.recordings() == 0 || !scan.is_complete() {
         return format!("Sessions: unknown — {}", none_reason(scan));
     }
     format!(
@@ -205,16 +269,30 @@ fn sessions_line(scan: &Scan) -> String {
     )
 }
 
+/// The final component of a folder, for display. A full path is never shown.
+pub fn folder_name(dir: &std::path::Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "(root)".to_string())
+}
+
 /// Why no recording is shown, in the same words the ontology uses.
 pub fn none_reason(scan: &Scan) -> String {
     if !scan.dir_exists {
         return format!(
-            "no recordings directory at {}; ironobs writes it when it imports",
-            scan.dir.display()
+            "the recordings folder '{}' does not exist yet; ironobs writes recordings when it imports",
+            folder_name(&scan.dir)
+        );
+    }
+    if !scan.is_complete() {
+        return format!(
+            "read {} of {} recording file(s) before the read bound; the rest are not counted",
+            scan.files,
+            scan.files + scan.files_truncated
         );
     }
     if scan.files == 0 {
-        return "no recording files yet; ironobs import claude-code writes them".into();
+        return "no recording files yet; ironobs writes them when it imports".into();
     }
     format!(
         "{} file(s) read, none usable ({} corrupt, {} refused)",
@@ -224,30 +302,16 @@ pub fn none_reason(scan: &Scan) -> String {
     )
 }
 
-fn import_line(import: &ImportState, state: &AgentsState, now: DateTime<Utc>) -> String {
-    match import {
-        ImportState::NotInstalled => {
-            "not run: ironobs is not on PATH. Install IronObserver to import agent sessions. \
-             Recordings already on disk are still read."
-                .into()
-        }
-        ImportState::NoSource => format!(
-            "not run: no Claude Code projects directory at {}",
-            state.source_dir.display()
-        ),
-        ImportState::Pending => "pending: the first import has not started".into(),
-        ImportState::Idle { last: None } => match state.last_written {
-            Some(t) => format!("idle; recordings written {}", relative(t, now)),
-            None => "idle; no import has written recordings yet".into(),
-        },
-        ImportState::Idle {
-            last: Some((at, what)),
-        } => format!("idle; last attempt {}: {what}", relative(*at, now)),
-        ImportState::Running {
+/// What the import cycle is doing, as one line. Shared by the tab and the resolver.
+pub fn cycle_text(state: &AgentsState, now: DateTime<Utc>) -> String {
+    match &state.cycle {
+        Cycle::Pending => "pending: the first import has not started".into(),
+        Cycle::Blocked(why) => format!("not run: {why}"),
+        Cycle::Running {
             since,
             by_this_window,
         } => format!(
-            "import running since {}{}",
+            "running since {}{}; each producer is stopped at 30 min",
             relative(*since, now),
             if *by_this_window {
                 ""
@@ -255,6 +319,23 @@ fn import_line(import: &ImportState, state: &AgentsState, now: DateTime<Utc>) ->
                 " (started by another IronMonitor window)"
             }
         ),
+        Cycle::Waiting { last_ended: None } => match state.next_at {
+            Some(t) => format!(
+                "pending: the first import has not finished; next cycle {}",
+                relative(t, now)
+            ),
+            None => "pending: the first import has not started".into(),
+        },
+        Cycle::Waiting {
+            last_ended: Some(t),
+        } => match state.next_at {
+            Some(next) => format!(
+                "idle; last cycle ended {}; next cycle {}",
+                relative(*t, now),
+                relative(next, now)
+            ),
+            None => format!("idle; last cycle ended {}", relative(*t, now)),
+        },
     }
 }
 
@@ -304,6 +385,7 @@ fn time_or_unknown(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::ironobs::{Importer, ProducerImport};
     use crate::agents::recording::read_file;
     use crate::agents::Scan;
     use std::path::PathBuf;
@@ -324,21 +406,41 @@ mod tests {
             refused: Default::default(),
             files_truncated: 0,
             sessions,
+            newest_written: None,
             taken_at: Utc::now(),
         };
         AgentsState {
             recordings_dir: PathBuf::from("/synthetic/recordings"),
-            source_dir: PathBuf::from("/synthetic/source"),
             ironobs: None,
-            import: ImportState::NotInstalled,
+            cycle: Cycle::Waiting { last_ended: None },
+            next_at: None,
+            imports: [Importer::ClaudeCode, Importer::Codex]
+                .into_iter()
+                .map(|importer| ProducerImport {
+                    importer,
+                    source: PathBuf::from("/synthetic/source"),
+                    source_exists: false,
+                    watermark: None,
+                    last: None,
+                    running: false,
+                    first_since: None,
+                })
+                .collect(),
             scan: Some(scan),
-            last_written: None,
-            interval: std::time::Duration::from_secs(300),
         }
     }
 
     fn section<'a>(r: &'a Report, title: &str) -> &'a Section {
         r.sections.iter().find(|s| s.title == title).unwrap()
+    }
+
+    fn engine(answered: bool, reachable: bool) -> EngineRequests {
+        EngineRequests {
+            active: None,
+            recent: None,
+            reachable,
+            ever_answered: answered,
+        }
     }
 
     #[test]
@@ -352,6 +454,30 @@ mod tests {
             r.summary
         );
         assert!(!r.summary[0].contains(": 0"));
+    }
+
+    #[test]
+    fn before_the_first_scan_the_tab_says_so_and_does_not_claim_a_missing_folder() {
+        let mut st = state_with("[]");
+        st.scan = None;
+        let r = build(&st, None, Utc::now());
+        assert_eq!(
+            r.summary[0],
+            "Sessions: unknown — the first scan has not finished"
+        );
+    }
+
+    #[test]
+    fn a_truncated_scan_reports_unknown_counts_not_partial_sums() {
+        let mut st = state_with(r#"[{"run":"a","in_progress":true,"events":[]}]"#);
+        st.scan.as_mut().unwrap().files_truncated = 4;
+        let r = build(&st, None, Utc::now());
+        assert!(
+            r.summary[0].starts_with("Sessions: unknown"),
+            "{:?}",
+            r.summary
+        );
+        assert!(r.summary[0].contains("read 1 of 5"), "{:?}", r.summary);
     }
 
     #[test]
@@ -417,6 +543,24 @@ mod tests {
     }
 
     #[test]
+    fn no_full_path_reaches_the_report() {
+        let st = state_with("[]");
+        let mut st = st;
+        st.scan.as_mut().unwrap().files = 0;
+        st.scan.as_mut().unwrap().dir_exists = false;
+        let r = build(&st, None, Utc::now());
+        let all = format!("{r:?}");
+        assert!(
+            !all.contains("/synthetic"),
+            "a full path reached the report: {all}"
+        );
+        assert!(
+            all.contains("'recordings'"),
+            "the final folder name is shown: {all}"
+        );
+    }
+
+    #[test]
     fn gemini_is_listed_as_not_read_with_the_reason() {
         let st = state_with("[]");
         let r = build(&st, None, Utc::now());
@@ -424,6 +568,14 @@ mod tests {
         assert!(cov.contains("Not read: Gemini CLI"), "{cov}");
         assert!(cov.contains("stores no chats on disk"), "{cov}");
         assert!(cov.contains("Not read: cloud"), "{cov}");
+    }
+
+    #[test]
+    fn a_missing_source_folder_is_a_reason_not_a_failure() {
+        let st = state_with("[]");
+        let r = build(&st, None, Utc::now());
+        let cov = section(&r, "Coverage").rows.join("\n");
+        assert!(cov.contains("no `sessions` folder to import"), "{cov}");
     }
 
     #[test]
@@ -438,10 +590,38 @@ mod tests {
                 active: None,
                 recent: Some(3),
                 reachable: true,
+                ever_answered: true,
             }),
             Utc::now(),
         );
         let eng2 = section(&r2, "Engine requests").rows.join("\n");
         assert!(eng2.contains("in flight: unknown"), "{eng2}");
+    }
+
+    #[test]
+    fn an_engine_that_never_answered_gets_one_line_and_no_figures() {
+        let st = state_with("[]");
+        let r = build(&st, Some(engine(false, false)), Utc::now());
+        let rows = &section(&r, "Engine requests").rows;
+        assert_eq!(rows[0], "no engine answered; no figures are shown");
+        assert!(
+            !rows.iter().any(|row| row.contains("stale")),
+            "stale wording with no sample: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("in flight")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn stale_wording_is_used_only_after_a_real_sample() {
+        let st = state_with("[]");
+        let r = build(&st, Some(engine(true, false)), Utc::now());
+        let rows = &section(&r, "Engine requests").rows;
+        assert!(
+            rows.iter().any(|row| row.contains("may be stale")),
+            "{rows:?}"
+        );
     }
 }
