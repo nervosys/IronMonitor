@@ -34,6 +34,14 @@ ironmon snapshot --validate         # read everything, range-checked
 `ironmon get` exits 1 for an unknown id and 2 for a known id with no value here, so a
 caller can tell "no such thing" from "nothing to report".
 
+`ironmon get` reads only what its id needs, not the whole machine: the domain the id
+belongs to, the domains of any inputs a derived value is computed from, and the GPU
+readers for an inference id (its engine's GPUs are matched to `gpu.{n}` by PCI address).
+An id the schema does not declare, or a template such as `gpu.{n}.name`, exits 1 before
+any hardware is read. The value, provenance, unit and note match what `ironmon snapshot`
+reports for that id. Volatile values such as utilisation and process figures are sampled
+per call and can differ between the two.
+
 The interactive surfaces render headlessly for callers with no terminal or display:
 
 ```bash

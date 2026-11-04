@@ -112,6 +112,92 @@ impl Reading {
     }
 }
 
+/// The id segments a pass runs readers for. `None` runs every reader, which is what
+/// [`snapshot`] does. A scope only decides which readers run; it never changes what a
+/// reader reports.
+#[derive(Debug, Clone)]
+pub(super) struct Scope {
+    segments: Option<std::collections::BTreeSet<String>>,
+}
+
+impl Scope {
+    fn all() -> Self {
+        Self { segments: None }
+    }
+
+    fn of(segments: std::collections::BTreeSet<String>) -> Self {
+        Self {
+            segments: Some(segments),
+        }
+    }
+
+    /// Whether rows of this id segment are wanted.
+    pub(super) fn contains(&self, segment: &str) -> bool {
+        match &self.segments {
+            None => true,
+            Some(segments) => segments.contains(segment),
+        }
+    }
+
+    /// Whether a reader that emits these segments has to run.
+    pub(super) fn wants(&self, emits: &[&str]) -> bool {
+        emits.iter().any(|segment| self.contains(segment))
+    }
+}
+
+/// Run every reader the scope wants, in the order a full snapshot has always used.
+///
+/// Each line names the segments its reader emits, taken from a Windows snapshot and the
+/// literals in the reader's source. The order is load-bearing: the GPU
+/// readers run before inference, which matches its engines' GPUs against `gpu.{n}`
+/// readings, and the extended areas run before both.
+fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
+    run(scope, &["cpu"], out, resolve_cpu);
+    run(scope, &["memory"], out, resolve_memory);
+    run(scope, &["system"], out, resolve_system);
+    run(scope, &["board"], out, resolve_board);
+    run(scope, &["gpu"], out, resolve_gpu);
+    run(scope, &["disk"], out, resolve_disk);
+    run(scope, &["network"], out, resolve_network);
+    run(scope, &["process"], out, resolve_process);
+    run(scope, &["thermal"], out, resolve_thermal);
+    run(scope, &["power"], out, resolve_power);
+    run(scope, &["power"], out, resolve_rapl);
+    run(scope, &["board"], out, resolve_sensors);
+    run(scope, &["board"], out, resolve_displays);
+    run(scope, &["system"], out, resolve_virtualization);
+    run(scope, &["memory"], out, resolve_numa);
+    run(scope, &["memory"], out, resolve_ecc);
+    run(scope, &["pci"], out, resolve_pci);
+    run(scope, &["usb"], out, resolve_usb);
+    run(scope, &["memory"], out, resolve_memory_bandwidth);
+    run(scope, &["cpu"], out, resolve_microarch);
+    run(scope, &["cpu"], out, resolve_crypto);
+    run(scope, &["board"], out, resolve_input);
+    run(scope, &["board"], out, resolve_audio);
+    run(scope, &["board"], out, resolve_cameras);
+    run(scope, &["system"], out, resolve_printers);
+    run(scope, &["system"], out, resolve_services);
+    run(scope, &["system"], out, resolve_kernel_params);
+    run(scope, &["system"], out, resolve_secure_boot);
+    run(scope, &["system"], out, resolve_boot_duration);
+    run(scope, &["network"], out, resolve_bluetooth);
+    run(scope, &["disk"], out, resolve_storage_controllers);
+    run(scope, &["power"], out, resolve_power_profiles);
+    run(scope, &["gpu"], out, resolve_codecs);
+    run(scope, &["cpu"], out, resolve_settings);
+    // Each area declares the segments it emits, and runs only if one is wanted.
+    super::extended::resolve(out, scope);
+    run(scope, &["inference"], out, resolve_inference);
+    run(scope, &["agents"], out, resolve_agents);
+}
+
+fn run(scope: &Scope, emits: &[&str], out: &mut Vec<Reading>, reader: fn(&mut Vec<Reading>)) {
+    if scope.wants(emits) {
+        reader(out);
+    }
+}
+
 /// Everything IronMonitor can currently resolve, in id order.
 ///
 /// Entities with no resolver bound are reported as [`Provenance::Unavailable`] with
@@ -120,126 +206,24 @@ impl Reading {
 /// from "IronMonitor cannot read this yet" — two very different facts that an omission
 /// would collapse into one.
 pub fn snapshot() -> Vec<Reading> {
-    let ontology = Ontology::build();
+    pipeline(&Ontology::build(), &Scope::all())
+}
+
+/// The whole snapshot pipeline, restricted to the readers `scope` needs.
+///
+/// Every row a scope produces is the row a full snapshot produces for the same id:
+/// the same readers run, in the same order, and the same post-processing applies.
+/// A scope only decides which readers are skipped, so no id gets a value from a
+/// different pass than the one a full snapshot would have made.
+fn pipeline(ontology: &Ontology, scope: &Scope) -> Vec<Reading> {
     let mut out = Vec::new();
+    run_readers(&mut out, scope);
 
-    resolve_cpu(&mut out);
-    resolve_memory(&mut out);
-    resolve_system(&mut out);
-    resolve_board(&mut out);
-    resolve_gpu(&mut out);
-    resolve_disk(&mut out);
-    resolve_network(&mut out);
-    resolve_process(&mut out);
-    resolve_thermal(&mut out);
-    resolve_power(&mut out);
-    resolve_rapl(&mut out);
-    resolve_sensors(&mut out);
-    resolve_displays(&mut out);
-    resolve_virtualization(&mut out);
-    resolve_numa(&mut out);
-    resolve_ecc(&mut out);
-    resolve_pci(&mut out);
-    resolve_usb(&mut out);
-    resolve_memory_bandwidth(&mut out);
-    resolve_microarch(&mut out);
-    resolve_crypto(&mut out);
-    resolve_input(&mut out);
-    resolve_audio(&mut out);
-    resolve_cameras(&mut out);
-    resolve_printers(&mut out);
-    resolve_services(&mut out);
-    resolve_kernel_params(&mut out);
-    resolve_secure_boot(&mut out);
-    resolve_boot_duration(&mut out);
-    resolve_bluetooth(&mut out);
-    resolve_storage_controllers(&mut out);
-    resolve_power_profiles(&mut out);
-    resolve_codecs(&mut out);
-    resolve_settings(&mut out);
-    super::extended::resolve(&mut out);
-    // After the GPU readers: an engine's GPUs are joined to `gpu.{n}` by reading
-    // those GPUs' PCI addresses and UUIDs, which exist only once they have run.
-    resolve_inference(&mut out);
-    resolve_agents(&mut out);
-
-    // Anything the ontology names but nothing above produced.
-    //
-    // Most of these have no resolver. Some do, and it returned early after a
-    // `<prefix>.<none>` diagnostic saying why -- the processor could not be
-    // identified, the service manager could not be reached. Those entities
-    // used to get the note below too, "no resolver bound", which is false for
-    // them: the resolver ran and gave its reason. They inherit the reason of
-    // the nearest enclosing diagnostic instead.
-    // A `<unreadable>` diagnostic is a declined resolver too: `gpu.<unreadable>`
-    // says the GPU enumeration failed, and the GPU entities beneath it inherit
-    // that error rather than "no resolver bound".
-    let declined: Vec<(String, String)> = out
-        .iter()
-        .filter_map(|r| {
-            let prefix =
-                r.id.strip_suffix(".<none>")
-                    .or_else(|| r.id.strip_suffix(".<unreadable>"))?;
-            Some((format!("{prefix}."), r.note.clone()?))
-        })
-        .collect();
-    let produced: std::collections::HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
-    let mut unbound: Vec<Reading> = ontology
-        .entities
-        .values()
-        .filter(|e| {
-            // Diagnostics are claims about the reading process, and a resolver emits
-            // one only when its condition actually holds. Sweeping them in here
-            // asserted the opposite of the truth: `network.<none>` appeared saying
-            // "no resolver bound" in a snapshot where the network resolver had just
-            // enumerated forty-five readings.
-            e.kind != super::EntityKind::Diagnostic
-                && !Ontology::is_template(&e.id)
-                && !produced.contains(e.id.as_str())
-        })
-        .map(|e| {
-            let inherited = declined
-                .iter()
-                .filter(|(prefix, _)| e.id.starts_with(prefix.as_str()))
-                .max_by_key(|(prefix, _)| prefix.len());
-            match inherited {
-                Some((_, why)) => Reading::unavailable(e.id.clone(), e.unit, why.clone()),
-                None => Reading::unavailable(
-                    e.id.clone(),
-                    e.unit,
-                    "no resolver bound on this build — the entity is defined but ironmon \
-                     does not yet read it here",
-                ),
-            }
-        })
-        .collect();
+    let mut unbound = unbound_rows(ontology, &out, scope);
     out.append(&mut unbound);
 
-    // Templated entities need the same treatment, and used to be skipped entirely on
-    // the grounds that an unexpanded `disk.{n}.model` is not a fact about a machine.
-    // That reasoning was wrong in a way this module exists to prevent: a domain whose
-    // entities are *all* templates simply vanished from the snapshot, so an agent
-    // could not tell "this machine has no disks" from "IronMonitor does not read disks".
-    // Silence is the one answer a resolver must never give. A domain that produced
-    // nothing gets one row saying so, keyed on the template so the id stays traceable
-    // back to the schema.
-    let mut missing_domains: Vec<Reading> = Vec::new();
-    for domain in super::Domain::ALL {
-        let prefix = format!("{}.", domain.as_str());
-        if out.iter().any(|r| r.id.starts_with(&prefix)) {
-            continue;
-        }
-        let declares_any = ontology.entities.values().any(|e| e.domain == *domain);
-        if declares_any {
-            missing_domains.push(Reading::unavailable(
-                format!("{}.<none>", domain.as_str()),
-                None,
-                "no instance of this domain was found and no resolver reported why; \
-                 the ontology declares entities here but nothing was enumerated",
-            ));
-        }
-    }
-    out.append(&mut missing_domains);
+    let mut missing = missing_domain_rows(ontology, &out, scope);
+    out.append(&mut missing);
 
     // Last gate: a resolver must not hand an agent a number its own schema calls
     // impossible. Anything outside the declared range becomes unavailable, with the
@@ -254,7 +238,7 @@ pub fn snapshot() -> Vec<Reading> {
         let Some(value) = reading.value.as_ref().and_then(|v| v.as_f64()) else {
             continue;
         };
-        let Some(entity) = lookup_template(&ontology, &reading.id) else {
+        let Some(entity) = lookup_template(ontology, &reading.id) else {
             continue;
         };
         if let Some(problem) = entity.validate_range(value) {
@@ -301,13 +285,156 @@ pub fn snapshot() -> Vec<Reading> {
     out
 }
 
+/// Rows for entities no reader in `scope` produced, each with the reason.
+fn unbound_rows(ontology: &Ontology, out: &[Reading], scope: &Scope) -> Vec<Reading> {
+    // Anything the ontology names but nothing above produced, within the scope.
+    //
+    // Most of these have no resolver. Some do, and it returned early after a
+    // `<prefix>.<none>` diagnostic saying why -- the processor could not be
+    // identified, the service manager could not be reached. Those entities
+    // used to get the note below too, "no resolver bound", which is false for
+    // them: the resolver ran and gave its reason. They inherit the reason of
+    // the nearest enclosing diagnostic instead.
+    // A `<unreadable>` diagnostic is a declined resolver too: `gpu.<unreadable>`
+    // says the GPU enumeration failed, and the GPU entities beneath it inherit
+    // that error rather than "no resolver bound".
+    let declined: Vec<(String, String)> = out
+        .iter()
+        .filter_map(|r| {
+            let prefix =
+                r.id.strip_suffix(".<none>")
+                    .or_else(|| r.id.strip_suffix(".<unreadable>"))?;
+            Some((format!("{prefix}."), r.note.clone()?))
+        })
+        .collect();
+    let produced: std::collections::HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
+    let unbound: Vec<Reading> = ontology
+        .entities
+        .values()
+        .filter(|e| {
+            // Diagnostics are claims about the reading process, and a resolver emits
+            // one only when its condition actually holds. Sweeping them in here
+            // asserted the opposite of the truth: `network.<none>` appeared saying
+            // "no resolver bound" in a snapshot where the network resolver had just
+            // enumerated forty-five readings.
+            scope.contains(first_segment(&e.id))
+                && e.kind != super::EntityKind::Diagnostic
+                && !Ontology::is_template(&e.id)
+                && !produced.contains(e.id.as_str())
+        })
+        .map(|e| {
+            let inherited = declined
+                .iter()
+                .filter(|(prefix, _)| e.id.starts_with(prefix.as_str()))
+                .max_by_key(|(prefix, _)| prefix.len());
+            match inherited {
+                Some((_, why)) => Reading::unavailable(e.id.clone(), e.unit, why.clone()),
+                None => Reading::unavailable(
+                    e.id.clone(),
+                    e.unit,
+                    "no resolver bound on this build — the entity is defined but ironmon \
+                     does not yet read it here",
+                ),
+            }
+        })
+        .collect();
+    unbound
+}
+
+/// `<domain>.<none>` rows for domains in `scope` that produced nothing at all.
+fn missing_domain_rows(ontology: &Ontology, out: &[Reading], scope: &Scope) -> Vec<Reading> {
+    // Templated entities need the same treatment, and used to be skipped entirely on
+    // the grounds that an unexpanded `disk.{n}.model` is not a fact about a machine.
+    // That reasoning was wrong in a way this module exists to prevent: a domain whose
+    // entities are *all* templates simply vanished from the snapshot, so an agent
+    // could not tell "this machine has no disks" from "IronMonitor does not read disks".
+    // Silence is the one answer a resolver must never give. A domain that produced
+    // nothing gets one row saying so, keyed on the template so the id stays traceable
+    // back to the schema.
+    let mut missing_domains: Vec<Reading> = Vec::new();
+    for domain in super::Domain::ALL {
+        if !scope.contains(domain.as_str()) {
+            continue;
+        }
+        let prefix = format!("{}.", domain.as_str());
+        if out.iter().any(|r| r.id.starts_with(&prefix)) {
+            continue;
+        }
+        let declares_any = ontology.entities.values().any(|e| e.domain == *domain);
+        if declares_any {
+            missing_domains.push(Reading::unavailable(
+                format!("{}.<none>", domain.as_str()),
+                None,
+                "no instance of this domain was found and no resolver reported why; \
+                 the ontology declares entities here but nothing was enumerated",
+            ));
+        }
+    }
+    missing_domains
+}
+
+/// Pairs of id segments where a reader for the first reads readings of the second
+/// from the output so far. `resolve_inference` matches each engine's GPU to a `gpu.{n}`
+/// by PCI address and UUID (see [`monitor_gpus`]), so an inference id needs the GPU
+/// readers as well as its own.
+const CONSUMES: &[(&str, &str)] = &[("inference", "gpu")];
+
+fn first_segment(id: &str) -> &str {
+    id.split('.').next().unwrap_or(id)
+}
+
+/// The id segments whose readers must run to answer `id`: its own segment, the
+/// segments of every entity it is derived from (transitively, since a derived input may
+/// be derived too), and whatever [`CONSUMES`] says a segment reads from elsewhere.
+fn needed_segments(
+    ontology: &Ontology,
+    id: &str,
+    entity: &Entity,
+) -> std::collections::BTreeSet<String> {
+    let mut segments = std::collections::BTreeSet::new();
+    segments.insert(first_segment(id).to_string());
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut pending = vec![entity];
+    while let Some(current) = pending.pop() {
+        if !seen.insert(current.id.as_str()) {
+            continue;
+        }
+        for input in &current.derived_from {
+            segments.insert(first_segment(input).to_string());
+            if let Some(next) = ontology.template_for(input) {
+                pending.push(next);
+            }
+        }
+    }
+
+    loop {
+        let before = segments.len();
+        for (reader, read) in CONSUMES {
+            if segments.contains(*reader) {
+                segments.insert(read.to_string());
+            }
+        }
+        if segments.len() == before {
+            break;
+        }
+    }
+    segments
+}
+
 /// Resolve one id. Templates are rejected: `gpu.{n}.name` is not a question that has
 /// an answer, `gpu.0.name` is.
+///
+/// Only the readers the id needs run (see [`needed_segments`]). An id the schema does not
+/// declare is refused before any reader runs, so a typo costs nothing.
 pub fn get(id: &str) -> Option<Reading> {
     if Ontology::is_template(id) {
         return None;
     }
-    snapshot().into_iter().find(|r| r.id == id)
+    let ontology = Ontology::build();
+    let entity = ontology.template_for(id)?;
+    let scope = Scope::of(needed_segments(&ontology, id, entity));
+    pipeline(&ontology, &scope).into_iter().find(|r| r.id == id)
 }
 
 /// Entities the ontology declares that this build can actually resolve.
@@ -5845,5 +5972,100 @@ mod inference_resolver_tests {
         assert_eq!(ratio.provenance, Provenance::Unavailable);
         assert!(reading(&out, "inference.ironworks.tier.prefetch.requested_total").is_some());
         assert!(reading(&out, "inference.ironworks.tier.nvme.latency_p50_ms").is_some());
+    }
+}
+
+#[cfg(test)]
+mod scoped_get_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn scope_of(segments: &[&str]) -> Scope {
+        Scope::of(
+            segments
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<BTreeSet<_>>(),
+        )
+    }
+
+    /// An empty scope runs no reader, so it produces no hardware row at all. This is
+    /// what keeps an unknown or mistyped id from touching hardware.
+    #[test]
+    fn an_empty_scope_runs_no_reader() {
+        let ontology = Ontology::build();
+        let rows = pipeline(&ontology, &scope_of(&[]));
+        assert!(rows.is_empty(), "an empty scope produced {rows:?}");
+    }
+
+    /// Unknown ids and templates are refused by the schema, before any pass starts.
+    #[test]
+    fn unknown_and_template_ids_resolve_to_nothing() {
+        assert!(get("definitely.not.an.entity").is_none());
+        assert!(get("gpu.{n}.name").is_none());
+    }
+
+    /// A derived entity needs every domain its declared inputs are in.
+    #[test]
+    fn derived_entities_need_the_segments_of_their_inputs() {
+        let ontology = Ontology::build();
+        let derived: Vec<&Entity> = ontology
+            .entities
+            .values()
+            .filter(|e| !e.derived_from.is_empty())
+            .collect();
+        assert!(!derived.is_empty(), "no derived entities to check");
+        for entity in derived {
+            let needed = needed_segments(&ontology, &entity.id, entity);
+            for input in &entity.derived_from {
+                assert!(
+                    needed.contains(first_segment(input)),
+                    "{} is derived from {input}, but a get would not run the {} readers",
+                    entity.id,
+                    first_segment(input)
+                );
+            }
+        }
+    }
+
+    /// An inference engine's GPUs are matched against the `gpu.{n}` readings, so an
+    /// inference id needs the GPU readers too.
+    #[test]
+    fn inference_ids_need_the_gpu_readers() {
+        let ontology = Ontology::build();
+        let entity = ontology
+            .entities
+            .values()
+            .find(|e| e.domain == super::super::Domain::Inference)
+            .expect("the ontology declares inference entities");
+        let needed = needed_segments(&ontology, &entity.id, entity);
+        assert!(needed.contains("inference"));
+        assert!(
+            needed.contains("gpu"),
+            "{} needs the gpu segment to match its engine's GPUs: {needed:?}",
+            entity.id
+        );
+    }
+
+    /// A domain that produced nothing gets its `<none>` row only when it is in scope.
+    #[test]
+    fn missing_domain_rows_follow_the_scope() {
+        let ontology = Ontology::build();
+        let rows = missing_domain_rows(&ontology, &[], &scope_of(&["disk"]));
+        assert!(
+            rows.iter().any(|r| r.id == "disk.<none>"),
+            "no disk.<none> row: {rows:?}"
+        );
+        assert!(rows.iter().all(|r| first_segment(&r.id) == "disk"));
+    }
+
+    /// Unbound rows are limited to the scope, and never claim a diagnostic.
+    #[test]
+    fn unbound_rows_are_limited_to_the_scope() {
+        let ontology = Ontology::build();
+        let rows = unbound_rows(&ontology, &[], &scope_of(&["memory"]));
+        assert!(rows.iter().any(|r| r.id == "memory.total"), "{rows:?}");
+        assert!(rows.iter().all(|r| first_segment(&r.id) == "memory"));
+        assert!(rows.iter().all(|r| !r.id.contains('<')));
     }
 }

@@ -139,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ironmon get <id>` runs only the readers its id needs instead of building a full
+  snapshot first. An id runs its own domain, the domains of the inputs a derived value
+  is computed from, and the GPU readers for inference ids, whose engines' GPUs are
+  matched to `gpu.{n}` by PCI address. An id the schema does not declare, and a
+  template such as `gpu.{n}.name`, exit 1 before any reader runs. The value,
+  provenance, unit, note and exit code are those a full snapshot gives for the same
+  id; `tests/get_matches_snapshot.rs` checks that against the built binary.
+  `snapshot` is unchanged.
 - Identifying values (serial numbers, UUIDs, MAC and IP addresses, SSIDs and
   BSSIDs) are published like any other. Until ontology 1.1, DIMM serials and
   paired Bluetooth devices were deliberately withheld.

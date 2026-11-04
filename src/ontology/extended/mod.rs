@@ -11,7 +11,7 @@
 //! BSSIDs -- are published like any other since ontology 1.1. Until then serials
 //! were deliberately left out; the inventory is meant to be complete.
 
-use super::resolve::Reading;
+use super::resolve::{Reading, Scope};
 use super::Entity;
 
 mod board;
@@ -34,27 +34,42 @@ pub(super) fn declare(add: &mut dyn FnMut(Entity)) {
     storage::declare(add);
 }
 
-pub(super) fn resolve(out: &mut Vec<Reading>) {
+/// An area's reader, with the id segments it emits.
+type Area = (&'static [&'static str], fn(&mut Vec<Reading>));
+
+/// Run the areas `scope` wants. Each area names the id segments it emits, so an
+/// area nothing in the scope reads from is not run at all.
+///
+/// The lists were taken from a Windows snapshot and from the `"<segment>."` literals in
+/// each area's source, which cover every platform. An area that emits a segment missing
+/// from its list would drop those rows from a scoped `get`; the full snapshot is
+/// unaffected.
+pub(super) fn resolve(out: &mut Vec<Reading>, scope: &Scope) {
     // The areas share nothing, and most of their time is spent waiting on
     // PowerShell, WMI or sysfs, so they run side by side: sequentially a
     // snapshot took most of a minute on Windows. Results are appended in a
     // fixed order, so the output does not depend on which thread finished
     // first.
-    let areas: [fn(&mut Vec<Reading>); 8] = [
-        board::resolve,
-        cpu::resolve,
-        gpu::resolve,
-        memory::resolve,
-        network::resolve,
-        npu::resolve,
-        peripherals::resolve,
-        storage::resolve,
+    let areas: [Area; 8] = [
+        (&["board", "power"], board::resolve),
+        (&["cpu", "system"], cpu::resolve),
+        (&["gpu", "pci", "system"], gpu::resolve),
+        (&["memory"], memory::resolve),
+        (&["network"], network::resolve),
+        (&["npu"], npu::resolve),
+        (&["board", "network", "usb"], peripherals::resolve),
+        (&["disk"], storage::resolve),
     ];
-    let results: Vec<Vec<Reading>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = areas
-            .iter()
+    let wanted: Vec<fn(&mut Vec<Reading>)> = areas
+        .iter()
+        .filter(|(emits, _)| scope.wants(emits))
+        .map(|(_, area)| *area)
+        .collect();
+    let results: Vec<Vec<Reading>> = std::thread::scope(|threads| {
+        let handles: Vec<_> = wanted
+            .into_iter()
             .map(|area| {
-                scope.spawn(move || {
+                threads.spawn(move || {
                     let mut rows = Vec::new();
                     area(&mut rows);
                     rows
