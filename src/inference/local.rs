@@ -184,6 +184,11 @@ pub fn reason(kind: ProviderKind, endpoint: &str, error: &SourceError) -> String
     let name = kind.display_name();
     match error {
         SourceError::Unreachable(why) => format!("no {name} answered at {endpoint}: {why}"),
+        SourceError::Status(code @ (401 | 403))
+            if matches!(kind, ProviderKind::OpenAi | ProviderKind::Anthropic) =>
+        {
+            format!("{name} rejected the configured key (HTTP {code})")
+        }
         SourceError::Status(code) => {
             let hint = if kind == ProviderKind::LlamaCpp {
                 "; llama-server serves /metrics only when started with --metrics"
@@ -508,6 +513,17 @@ fn poll_mlx(base: &str, timeout: Duration) -> Result<ProviderSample, SourceError
 
 #[cfg(test)]
 mod tests {
+    /// A refused key is a statement about the key, not about what answered.
+    #[test]
+    fn a_rejected_remote_key_is_named_as_such() {
+        let text = reason(
+            ProviderKind::Anthropic,
+            "https://api.anthropic.com",
+            &SourceError::Status(401),
+        );
+        assert_eq!(text, "Anthropic rejected the configured key (HTTP 401)");
+    }
+
     use super::*;
 
     #[test]

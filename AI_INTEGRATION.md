@@ -327,6 +327,36 @@ response = client.chat.completions.create(
 )
 ```
 
+## Inference providers
+
+The Inference tab in the TUI and GUI reads these providers. None of this has been
+exercised against a live engine or a live cost API yet, apart from a rejected-key
+reply from Anthropic: the parsers follow each provider's published documentation.
+
+| Provider | Reads | Default endpoint | Override |
+|---|---|---|---|
+| IronWorks | `/metrics` (needs `iwx serve --metrics`) | `http://127.0.0.1:8080` | `IRONMON_IRONWORKS_URL` |
+| Ollama | `/api/ps`, `/api/version` | `http://127.0.0.1:11434` | `IRONMON_OLLAMA_URL` |
+| llama.cpp | `/metrics` (needs `--metrics`) | `http://127.0.0.1:9931` | `IRONMON_LLAMACPP_URL` |
+| vLLM | `/metrics` | `http://127.0.0.1:8000` | `IRONMON_VLLM_URL` |
+| LM Studio | `/api/v1/models` | `http://127.0.0.1:1234` | `IRONMON_LMSTUDIO_URL` |
+| MLX-LM | `/health` | `http://127.0.0.1:8082` | `IRONMON_MLX_URL` |
+| OpenAI | `/v1/models`, `/v1/organization/costs` | `https://api.openai.com` | `IRONMON_OPENAI_URL` |
+| Anthropic | `/v1/models`, `/v1/organizations/cost_report` | `https://api.anthropic.com` | `IRONMON_ANTHROPIC_URL` |
+
+Older llama.cpp builds listen on 8080, which IronWorks also uses, so set
+`IRONMON_LLAMACPP_URL` for those.
+
+**A configured key is used.** With `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` set, an open
+TUI or GUI calls that provider's model list about once a minute to report whether it
+is reachable. With nothing configured it contacts no remote host. `snapshot` and `get`
+never call remote providers; they report those values as unavailable and say why.
+
+**Cost needs an admin key**, read only from `IRONMON_OPENAI_ADMIN_KEY` or
+`IRONMON_ANTHROPIC_ADMIN_KEY` and polled at most every five minutes. It is the current
+UTC month to date, as the provider's own figures summed. If any page fails, the figure
+is unavailable rather than partial. Anthropic's figure excludes Priority Tier.
+
 ## Driving ironmon directly
 
 The tool surface below is for handing ironmon's data to a model. If instead you are

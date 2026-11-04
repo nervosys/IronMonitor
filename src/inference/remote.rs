@@ -408,7 +408,15 @@ impl InferenceSource for RemoteSource {
     }
 }
 
+/// Unit tests get none: a developer's real key must not reach a real host because
+/// a test opened the Inference tab.
+#[cfg(test)]
+pub fn all_from_env() -> Vec<Box<dyn InferenceSource>> {
+    Vec::new()
+}
+
 /// Every remote provider as a source, each configured from its environment.
+#[cfg(not(test))]
 pub fn all_from_env() -> Vec<Box<dyn InferenceSource>> {
     [ProviderKind::OpenAi, ProviderKind::Anthropic]
         .into_iter()

@@ -24,7 +24,18 @@
 use std::process::Command;
 
 fn ironmon() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ironmon"))
+    // No provider key reaches the child: a test must not call a real host with a
+    // developer's credentials because it rendered the Inference tab.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ironmon"));
+    for key in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "IRONMON_OPENAI_ADMIN_KEY",
+        "IRONMON_ANTHROPIC_ADMIN_KEY",
+    ] {
+        command.env_remove(key);
+    }
+    command
 }
 
 /// Whether this platform has a memory reader. macOS's CPU and memory readers

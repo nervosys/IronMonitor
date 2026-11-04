@@ -102,8 +102,35 @@ mod tests {
     /// than drawing an empty or idle-looking page.
     #[test]
     fn the_inference_tab_reports_when_no_engine_answered() {
-        let app = app();
-        app.await_first_inference_poll(std::time::Duration::from_secs(3));
+        use crate::inference::{
+            InferencePoller, InferenceSource, Locality, ProviderKind, ProviderSample, SourceError,
+        };
+        use std::time::Duration;
+
+        // A stub, because whatever really listens on 8080 on this machine is not
+        // something this test can assume.
+        struct Refusing;
+        impl InferenceSource for Refusing {
+            fn kind(&self) -> ProviderKind {
+                ProviderKind::IronWorks
+            }
+            fn endpoint(&self) -> String {
+                "http://127.0.0.1:8080".to_string()
+            }
+            fn locality(&self) -> Locality {
+                Locality::Local
+            }
+            fn poll(&self, _: Duration) -> Result<ProviderSample, SourceError> {
+                Err(SourceError::Unreachable("connection refused".to_string()))
+            }
+        }
+
+        let mut app = app();
+        app.inference = Some(InferencePoller::spawn(
+            vec![Box::new(Refusing)],
+            Duration::from_secs(60),
+        ));
+        app.await_first_inference_poll(Duration::from_secs(5));
         let frame = render_frame(&app);
         assert!(
             frame.contains("no engine answered at http://127.0.0.1:8080"),
