@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `network.{iface}.link_speed` is declared and emitted in megabits per second
+  (`megabits_per_second`), not as a bare count. The id and value are unchanged.
+
 ### Added
 
 - Agents tab in the TUI and the GUI, placed after Inference, tracking local agent

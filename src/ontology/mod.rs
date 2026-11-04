@@ -2552,7 +2552,7 @@ impl Ontology {
             "network.{iface}.link_speed",
             D::Network,
             K::Limit,
-            Some(U::Count),
+            Some(U::MegabitsPerSecond),
             P::Measured,
             true,
             "Negotiated link rate in megabits per second, read from the driver. \

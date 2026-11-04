@@ -3635,7 +3635,7 @@ fn resolve_network(out: &mut Vec<Reading>) {
             out,
             format!("{base}.link_speed"),
             iface.speed_mbps.map(|s| serde_json::json!(s)),
-            Some(Unit::Count),
+            Some(Unit::MegabitsPerSecond),
             "driver reports no negotiated link rate for this interface",
         );
     }
