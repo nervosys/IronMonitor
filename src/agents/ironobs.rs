@@ -226,6 +226,7 @@ pub fn probe(path: &Path) -> Ironobs {
 }
 
 fn quiet(path: &Path) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(path);
     #[cfg(windows)]
     {
