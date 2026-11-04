@@ -3616,7 +3616,7 @@ impl Ontology {
             Some(U::Count),
             P::Measured,
             true,
-            "Input tokens summed over recordings whose events report usage. Absent when no recording reports usage. What a provider charged is on the Inference tab, not here.",
+            "Uncached input tokens summed over recordings whose events report usage. Cache reads and writes are not included, so this is usually far below what the models were sent. Absent when no recording reports usage. What a provider charged is on the Inference tab, not here.",
         ));
         add(Entity::new(
             "agents.sessions.output_tokens",
