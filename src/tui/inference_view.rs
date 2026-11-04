@@ -46,17 +46,70 @@ pub fn draw(f: &mut Frame, area: Rect, states: &[SourceState], gpus: &[GpuRef]) 
         f.render_widget(empty, area);
         return;
     }
+    // IronWorks has the full panel. Every other provider is a line in a Local or
+    // Remote group, so the tab stays readable with several providers running.
+    let ironworks: Vec<&SourceState> = states
+        .iter()
+        .filter(|s| s.kind == ProviderKind::IronWorks)
+        .collect();
+    let group = |locality: crate::inference::Locality| -> Vec<&SourceState> {
+        states
+            .iter()
+            .filter(|s| s.kind != ProviderKind::IronWorks && s.locality == locality)
+            .collect()
+    };
+    let local = group(crate::inference::Locality::Local);
+    let remote = group(crate::inference::Locality::Remote);
+
+    let mut constraints = Vec::new();
+    if !ironworks.is_empty() {
+        constraints.push(Constraint::Min(14));
+    }
+    if !local.is_empty() {
+        constraints.push(Constraint::Length(local.len() as u16 + 2));
+    }
+    if !remote.is_empty() {
+        constraints.push(Constraint::Length(remote.len() as u16 + 2));
+    }
     let bands = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            states
-                .iter()
-                .map(|_| Constraint::Ratio(1, states.len() as u32)),
-        )
+        .constraints(constraints)
         .split(area);
-    for (state, band) in states.iter().zip(bands.iter()) {
-        draw_provider(f, *band, state, gpus);
+    let mut band = bands.iter();
+    for state in &ironworks {
+        if let Some(area) = band.next() {
+            draw_provider(f, *area, state, gpus);
+        }
     }
+    if !local.is_empty() {
+        if let Some(area) = band.next() {
+            draw_group(f, *area, "Local providers", &local);
+        }
+    }
+    if !remote.is_empty() {
+        if let Some(area) = band.next() {
+            draw_group(f, *area, "Remote providers", &remote);
+        }
+    }
+}
+
+/// One group of compact provider lines under a bordered title.
+fn draw_group(f: &mut Frame, area: Rect, title: &str, states: &[&SourceState]) {
+    let lines: Vec<Line<'static>> = states.iter().map(|s| compact_line(s)).collect();
+    f.render_widget(Paragraph::new(lines).block(bordered(title)), area);
+}
+
+/// A provider's name, its state word and its detail on one line.
+fn compact_line(state: &SourceState) -> Line<'static> {
+    let row = crate::inference::compact_row(state);
+    Line::from(vec![
+        Span::styled(
+            format!("{:<12}", state.kind.display_name()),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!("{:<13}", row.status)),
+        Span::raw(row.detail),
+    ])
 }
 
 fn draw_provider(f: &mut Frame, area: Rect, state: &SourceState, gpus: &[GpuRef]) {
@@ -488,9 +541,7 @@ fn no_sample_reason(state: &SourceState) -> &'static str {
 }
 
 fn provider_name(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::IronWorks => "IronWorks",
-    }
+    kind.display_name()
 }
 
 fn title_style() -> Style {

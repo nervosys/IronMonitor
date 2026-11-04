@@ -2095,10 +2095,254 @@ const RATE_NEEDS_TWO: &str = "a rate needs two samples; this query took one";
 const RATIO_NEEDS_TWO: &str =
     "a hit ratio is taken over the window between two samples; this query took one";
 
-/// Inference engines. Only IronWorks is read so far; another provider adds its
-/// resolver beside this one and its ids beside `inference.ironworks.*`.
+/// Inference engines: IronWorks, and the local providers read once each.
+/// Remote providers are never read here; see `resolve_remote_inference`.
 fn resolve_inference(out: &mut Vec<Reading>) {
     resolve_ironworks(out, &crate::inference::ironworks::endpoint_from_env());
+    resolve_local_inference(out);
+}
+
+/// Each local provider is read once, on its own thread, under the IronWorks
+/// snapshot deadline, so one that drops its packets cannot hold up the others.
+/// A single sample gives no rate, so rates and ratios are reported unavailable.
+fn resolve_local_inference(out: &mut Vec<Reading>) {
+    use crate::inference::local::{all_from_env, reason};
+    use crate::inference::{ProviderKind, ProviderSample, SourceError};
+
+    let sources = all_from_env();
+    let results: Vec<(ProviderKind, String, Result<ProviderSample, SourceError>)> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = sources
+                .iter()
+                .map(|source| {
+                    scope.spawn(move || {
+                        let read = source.poll(INFERENCE_SNAPSHOT_TIMEOUT);
+                        (source.kind(), source.endpoint(), read)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .collect()
+        });
+    for (kind, endpoint, read) in results {
+        match read {
+            Ok(sample) => push_local_sample(out, kind, &sample),
+            Err(error) => out.push(Reading::unavailable(
+                format!("inference.{}.<none>", kind.as_str()),
+                None,
+                reason(kind, &endpoint, &error),
+            )),
+        }
+    }
+}
+
+/// The readings one local provider's sample supports. Only ids declared for that
+/// provider are emitted, and a value the server did not report is unavailable.
+fn push_local_sample(
+    out: &mut Vec<Reading>,
+    kind: crate::inference::ProviderKind,
+    sample: &crate::inference::ProviderSample,
+) {
+    use crate::inference::ProviderKind as K;
+    use serde_json::json;
+
+    let counter = |name: &str| sample.counters.get(name).map(|v| json!(v));
+    let gauge_count = |name: &str| sample.gauges.get(name).map(|v| json!(*v as u64));
+    let text = |v: &Option<String>| v.as_ref().map(|s| json!(s));
+    const NOT_REPORTED: &str = "the server does not report this value";
+    const NOTHING_LOADED: &str = "the server reports no model loaded";
+
+    match kind {
+        K::Ollama => {
+            push_opt(
+                out,
+                "inference.ollama.version",
+                text(&sample.identity.version),
+                Some(Unit::Text),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.ollama.model",
+                text(&sample.identity.model),
+                Some(Unit::Text),
+                NOTHING_LOADED,
+            );
+            push_opt(
+                out,
+                "inference.ollama.models_loaded",
+                gauge_count("models_loaded"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+        }
+        K::LmStudio => {
+            push_opt(
+                out,
+                "inference.lmstudio.model",
+                text(&sample.identity.model),
+                Some(Unit::Text),
+                NOTHING_LOADED,
+            );
+            push_opt(
+                out,
+                "inference.lmstudio.models_loaded",
+                gauge_count("models_loaded"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+        }
+        K::MlxLm => {
+            push_opt(
+                out,
+                "inference.mlx.health",
+                text(&sample.identity.status),
+                Some(Unit::Text),
+                NOT_REPORTED,
+            );
+        }
+        K::LlamaCpp => {
+            push_opt(
+                out,
+                "inference.llamacpp.prompt_tokens_total",
+                counter("prompt_tokens_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.llamacpp.predicted_tokens_total",
+                counter("tokens_predicted_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.llamacpp.decodes_total",
+                counter("n_decode_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.llamacpp.requests_processing",
+                gauge_count("requests_processing"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.llamacpp.requests_deferred",
+                gauge_count("requests_deferred"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            out.push(Reading::unavailable(
+                "inference.llamacpp.prompt_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+            out.push(Reading::unavailable(
+                "inference.llamacpp.predicted_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+        }
+        K::Vllm => {
+            push_opt(
+                out,
+                "inference.vllm.model",
+                text(&sample.identity.model),
+                Some(Unit::Text),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.generation_tokens_total",
+                counter("generation_tokens_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.prompt_tokens_total",
+                counter("prompt_tokens_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.request_success_total",
+                counter("request_success_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.num_preemptions_total",
+                counter("num_preemptions_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.prefix_cache_hits_total",
+                counter("prefix_cache_hits_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.prefix_cache_queries_total",
+                counter("prefix_cache_queries_total"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.requests_running",
+                gauge_count("num_requests_running"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            push_opt(
+                out,
+                "inference.vllm.requests_waiting",
+                gauge_count("num_requests_waiting"),
+                Some(Unit::Count),
+                NOT_REPORTED,
+            );
+            // vLLM reports a fraction; the id is a percentage.
+            push_opt(
+                out,
+                "inference.vllm.kv_cache_usage",
+                sample
+                    .gauges
+                    .get("kv_cache_usage_perc")
+                    .map(|f| json!(f * 100.0)),
+                Some(Unit::Percent),
+                NOT_REPORTED,
+            );
+            out.push(Reading::unavailable(
+                "inference.vllm.prefix_cache_hit_ratio",
+                Some(Unit::Percent),
+                RATIO_NEEDS_TWO,
+            ));
+            out.push(Reading::unavailable(
+                "inference.vllm.generation_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+            out.push(Reading::unavailable(
+                "inference.vllm.prompt_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+        }
+        K::IronWorks => {}
+    }
 }
 
 /// One point-in-time read of an IronWorks engine. It is a single sample, so no

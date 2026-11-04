@@ -1122,9 +1122,12 @@ impl App {
             }
         });
 
-        // One engine today. Each source gets its own polling thread, which stops when
-        // the app is dropped; this is the only place the poller is spawned.
-        let sources: Vec<Box<dyn InferenceSource>> = vec![Box::new(IronWorksSource::from_env())];
+        // IronWorks and the local providers. Each source gets its own polling thread,
+        // which stops when the app is dropped; this is the only place the TUI spawns
+        // the poller.
+        let mut sources: Vec<Box<dyn InferenceSource>> =
+            vec![Box::new(IronWorksSource::from_env())];
+        sources.extend(crate::inference::local::all_from_env());
         let inference = InferencePoller::spawn(sources, INFERENCE_POLL_INTERVAL);
 
         let mut app = Self {

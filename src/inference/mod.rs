@@ -11,7 +11,9 @@
 //! the sample, never zero. A rate needs two samples. Rates and ratios are taken
 //! over the engine's monotonic uptime, because the wall clock can jump.
 
+pub mod http;
 pub mod ironworks;
+pub mod local;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -33,15 +35,44 @@ pub const METRICS_NOT_ENABLED: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProviderKind {
     IronWorks,
+    Ollama,
+    LlamaCpp,
+    Vllm,
+    LmStudio,
+    MlxLm,
 }
 
 impl ProviderKind {
-    pub const ALL: &'static [ProviderKind] = &[ProviderKind::IronWorks];
+    pub const ALL: &'static [ProviderKind] = &[
+        ProviderKind::IronWorks,
+        ProviderKind::Ollama,
+        ProviderKind::LlamaCpp,
+        ProviderKind::Vllm,
+        ProviderKind::LmStudio,
+        ProviderKind::MlxLm,
+    ];
 
     /// The provider segment of its ontology ids, such as `inference.ironworks.*`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IronWorks => "ironworks",
+            Self::Ollama => "ollama",
+            Self::LlamaCpp => "llamacpp",
+            Self::Vllm => "vllm",
+            Self::LmStudio => "lmstudio",
+            Self::MlxLm => "mlx",
+        }
+    }
+
+    /// The name an operator reads on screen.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::IronWorks => "IronWorks",
+            Self::Ollama => "Ollama",
+            Self::LlamaCpp => "llama.cpp",
+            Self::Vllm => "vLLM",
+            Self::LmStudio => "LM Studio",
+            Self::MlxLm => "MLX-LM",
         }
     }
 }
@@ -123,6 +154,9 @@ impl std::error::Error for SourceError {}
 pub struct Identity {
     pub model: Option<String>,
     pub backend: Option<String>,
+    pub version: Option<String>,
+    /// The health status an engine reports about itself, such as `ok`.
+    pub status: Option<String>,
 }
 
 /// A hit ratio, defined by a numerator counter over the sum of a named list of
@@ -155,11 +189,18 @@ pub struct ProviderSample {
     /// A name missing here was not reported this poll, which is not zero. Only
     /// `_total` counters belong here; gauges and peaks go in the provider section.
     pub counters: BTreeMap<String, u64>,
+    /// Current values the engine reported, by name. Gauges are instantaneous
+    /// figures, not cumulative, so they never produce a rate. A name missing here
+    /// was not reported this poll, which is not zero.
+    pub gauges: BTreeMap<String, f64>,
     /// The ratios this provider publishes, each with its named counters.
     pub ratio_defs: &'static [RatioDef],
     /// Provider-specific detail. Only the provider that owns it fills it in.
     pub ironworks: Option<ironworks::Section>,
 }
+
+/// Longest wait a source that does not answer backs off to, for local sources.
+pub const BACKOFF_CAP_LOCAL: Duration = Duration::from_secs(10);
 
 /// One inference engine that can be polled.
 pub trait InferenceSource: Send + Sync {
@@ -167,8 +208,110 @@ pub trait InferenceSource: Send + Sync {
     /// Where the engine is reached, for display and for the ontology's reasons.
     fn endpoint(&self) -> String;
     fn locality(&self) -> Locality;
-    /// One blocking poll that gives up after `timeout`.
+    /// One blocking poll that gives up after `poll_timeout()`.
     fn poll(&self, timeout: Duration) -> Result<ProviderSample, SourceError>;
+    /// The deadline the poller passes to `poll`.
+    fn poll_timeout(&self) -> Duration {
+        POLL_TIMEOUT
+    }
+    /// The least time between polls, whatever the poller's own interval. A remote
+    /// source that bills per request sets this high.
+    fn min_interval(&self) -> Duration {
+        Duration::ZERO
+    }
+    /// The longest wait a run of failed polls backs off to.
+    fn backoff_cap(&self) -> Duration {
+        BACKOFF_CAP_LOCAL
+    }
+}
+
+/// The wait before the next poll: the base interval after a success, doubling
+/// after each consecutive failure, never beyond `cap` (or the base, if larger).
+pub fn next_wait(base: Duration, cap: Duration, failures: u32) -> Duration {
+    if failures <= 1 {
+        return base;
+    }
+    let shift = (failures - 1).min(16);
+    base.saturating_mul(1u32 << shift).min(cap.max(base))
+}
+
+/// One provider's line in a compact group: a state word and its detail. A
+/// provider that is not running says so with its reason; it is never shown as
+/// idle, and nothing it did not report is shown as zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactRow {
+    pub status: &'static str,
+    pub detail: String,
+}
+
+/// The compact row for a provider the tabs do not draw in full.
+pub fn compact_row(state: &SourceState) -> CompactRow {
+    if let (true, Some(sample)) = (state.reachable, state.latest.as_ref()) {
+        return CompactRow {
+            status: "running",
+            detail: sample_detail(sample),
+        };
+    }
+    match state.last_error.as_ref() {
+        None => CompactRow {
+            status: "waiting",
+            detail: "the first poll has not answered yet".into(),
+        },
+        Some(failure) => {
+            let status = match &failure.error {
+                SourceError::Unreachable(_) => "not running",
+                _ => "not answering",
+            };
+            CompactRow {
+                status,
+                detail: local::reason(state.kind, &state.endpoint, &failure.error),
+            }
+        }
+    }
+}
+
+/// What a sample reports, as short phrases. Only values the provider reported
+/// appear, so a missing one is absent rather than shown as zero.
+fn sample_detail(sample: &ProviderSample) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(model) = &sample.identity.model {
+        parts.push(format!("model {model}"));
+    }
+    if let Some(version) = &sample.identity.version {
+        parts.push(format!("version {version}"));
+    }
+    if let Some(status) = &sample.identity.status {
+        parts.push(format!("health {status}"));
+    }
+    if let Some(n) = sample.gauges.get("models_loaded") {
+        parts.push(format!("{} loaded", *n as u64));
+    }
+    if let Some(n) = sample.gauges.get("num_requests_running") {
+        parts.push(format!("{} running", *n as u64));
+    }
+    if let Some(n) = sample.gauges.get("num_requests_waiting") {
+        parts.push(format!("{} waiting", *n as u64));
+    }
+    if let Some(n) = sample.gauges.get("requests_processing") {
+        parts.push(format!("{} processing", *n as u64));
+    }
+    if let Some(p) = sample.gauges.get("kv_cache_usage_perc") {
+        parts.push(format!("KV cache {:.0}%", p * 100.0));
+    }
+    if let Some(n) = sample.counters.get("prompt_tokens_total") {
+        parts.push(format!("{n} prompt tokens"));
+    }
+    if let Some(n) = sample.counters.get("generation_tokens_total") {
+        parts.push(format!("{n} generated"));
+    }
+    if let Some(n) = sample.counters.get("tokens_predicted_total") {
+        parts.push(format!("{n} generated"));
+    }
+    if parts.is_empty() {
+        "running; the server reported none of the values this tab reads".into()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 /// A derived value at one moment: the engine uptime it was taken at and the figure.
@@ -452,13 +595,17 @@ fn poll_loop(
     stop: Receiver<()>,
 ) {
     let mut sampler = InferenceSampler::default();
+    let base = interval.max(source.min_interval());
+    let cap = source.backoff_cap();
+    let mut failures: u32 = 0;
     loop {
-        let outcome = source.poll(POLL_TIMEOUT);
+        let outcome = source.poll(source.poll_timeout());
         let at = Instant::now();
         {
             let mut st = lock(&shared);
             match outcome {
                 Ok(sample) => {
+                    failures = 0;
                     sampler.update(sample.clone());
                     st.latest = Some(sample);
                     st.derived = sampler.derived().clone();
@@ -467,12 +614,16 @@ fn poll_loop(
                     st.last_success = Some(at);
                 }
                 Err(error) => {
+                    // Something that does not answer is asked again more slowly,
+                    // so a provider that is not running costs little.
+                    failures = failures.saturating_add(1);
                     st.reachable = false;
                     st.last_error = Some(Failure { error, at });
                 }
             }
         }
-        match stop.recv_timeout(interval) {
+        let wait = next_wait(base, cap, failures.max(1));
+        match stop.recv_timeout(wait) {
             Err(RecvTimeoutError::Timeout) => {}
             // The poller was dropped (or sent a stop, which nothing does).
             _ => return,

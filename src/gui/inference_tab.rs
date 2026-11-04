@@ -44,7 +44,8 @@ const SPARK_SERIES: &str = "rate:decode.completion_tokens_total";
 /// Called once, from `IronMonitorApp::with_context`, so each app owns one poller and
 /// dropping the app stops its threads.
 pub(super) fn spawn_poller() -> InferencePoller {
-    let sources: Vec<Box<dyn InferenceSource>> = vec![Box::new(IronWorksSource::from_env())];
+    let mut sources: Vec<Box<dyn InferenceSource>> = vec![Box::new(IronWorksSource::from_env())];
+    sources.extend(crate::inference::local::all_from_env());
     InferencePoller::spawn(sources, POLL_INTERVAL)
 }
 
@@ -100,8 +101,27 @@ impl IronMonitorApp {
                 if states.is_empty() {
                     ui.label(RichText::new("No inference engine is configured.").color(secondary));
                 }
-                for state in &states {
+                // IronWorks has the full panel. Every other provider is a compact line,
+                // grouped as Local or Remote.
+                for state in states.iter().filter(|s| s.kind == ProviderKind::IronWorks) {
                     draw_source(ui, state, &gpus);
+                    ui.add_space(12.0);
+                }
+                for (title, locality) in [
+                    ("Local providers", Locality::Local),
+                    ("Remote providers", Locality::Remote),
+                ] {
+                    let group: Vec<&SourceState> = states
+                        .iter()
+                        .filter(|s| s.kind != ProviderKind::IronWorks && s.locality == locality)
+                        .collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+                    ui.add(SectionHeader::new(title));
+                    for state in group {
+                        draw_compact(ui, state);
+                    }
                     ui.add_space(12.0);
                 }
 
@@ -145,9 +165,28 @@ fn draw_source(ui: &mut egui::Ui, state: &SourceState, gpus: &[GpuView]) {
 }
 
 fn provider_name(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::IronWorks => "IronWorks",
-    }
+    kind.display_name()
+}
+
+/// A provider the tab does not draw in full: its name, its state word, and its
+/// detail or reason on one line.
+fn draw_compact(ui: &mut egui::Ui, state: &SourceState) {
+    let row = crate::inference::compact_row(state);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{:<12}", provider_name(state.kind)))
+                .strong()
+                .color(theme::color(ui.ctx(), CyberColors::CYAN)),
+        );
+        ui.label(
+            RichText::new(format!("{:<13}", row.status))
+                .color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
+        );
+        ui.label(
+            RichText::new(row.detail)
+                .color(theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+        );
+    });
 }
 
 /// Where the engine runs, where it is, and what it says it is running. Identity is

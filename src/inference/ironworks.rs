@@ -464,8 +464,11 @@ impl MetricsV1 {
             identity: Identity {
                 model: engine.model,
                 backend: engine.backend,
+                version: None,
+                status: None,
             },
             counters,
+            gauges: BTreeMap::new(),
             ratio_defs: RATIOS,
             ironworks: Some(Section {
                 vram: tiers.vram,

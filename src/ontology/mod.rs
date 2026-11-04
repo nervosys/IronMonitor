@@ -3161,6 +3161,296 @@ impl Ontology {
             add(entity);
         }
 
+        // ── Inference (local providers) ──────────────────────────────────────
+        //
+        // Ollama, llama.cpp, vLLM, LM Studio and MLX-LM, each read from the
+        // endpoints its own documentation names (see inference/local.rs). A value
+        // a server did not report is absent. Each `<provider>.<none>` row carries
+        // the reason when that provider gave no sample. Counters are cumulative;
+        // rates are derived from two samples; gauges are current figures.
+        add(Entity::new(
+            "inference.ollama.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no Ollama data was read, carrying the reason: nothing answered at the endpoint, or the endpoint answered with something other than Ollama's /api/ps.",
+        ));
+        add(Entity::new(
+            "inference.ollama.version",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The Ollama server version, from GET /api/version.",
+        ));
+        add(Entity::new(
+            "inference.ollama.model",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The first model Ollama reports as loaded into memory, from GET /api/ps. Absent when none is loaded.",
+        ));
+        add(Entity::new(
+            "inference.ollama.models_loaded",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many models Ollama reports as loaded into memory right now, from GET /api/ps. Zero is a reading: the list was empty.",
+        ));
+        add(Entity::new(
+            "inference.lmstudio.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no LM Studio data was read, carrying the reason: nothing answered, or the endpoint did not return LM Studio's v1 model listing.",
+        ));
+        add(Entity::new(
+            "inference.lmstudio.model",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The first model LM Studio reports with a non-empty loaded_instances list, from GET /api/v1/models.",
+        ));
+        add(Entity::new(
+            "inference.lmstudio.models_loaded",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many models LM Studio reports with a non-empty loaded_instances list, from GET /api/v1/models. LM Studio's listing carries no runtime counters.",
+        ));
+        add(Entity::new(
+            "inference.mlx.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when MLX-LM did not answer its /health check, carrying the reason. MLX-LM exposes no metrics, so only its health is read.",
+        ));
+        add(Entity::new(
+            "inference.mlx.health",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The status MLX-LM reports from GET /health: \"ok\" while its generation thread is alive.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no llama.cpp metrics were read, carrying the reason. llama-server serves /metrics only when started with --metrics.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.prompt_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prompt tokens llama-server has processed since it started. A counter from llamacpp:prompt_tokens_total; a rate is derived from two samples.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.predicted_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative tokens llama-server has generated since it started. A counter from llamacpp:tokens_predicted_total.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.decodes_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative decode calls llama-server has made since it started. A counter from llamacpp:n_decode_total.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.requests_processing",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests llama-server is processing right now. A current figure, not a counter.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.requests_deferred",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests llama-server has deferred right now. A current figure, not a counter.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.prompt_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Prompt tokens per second over the window between two samples: the change in prompt_tokens_total over the observation window. Absent in a single-shot read.",
+        ).derived(&["inference.llamacpp.prompt_tokens_total"]));
+        add(Entity::new(
+            "inference.llamacpp.predicted_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Generated tokens per second over the window between two samples: the change in predicted_tokens_total over the observation window. Absent in a single-shot read.",
+        ).derived(&["inference.llamacpp.predicted_tokens_total"]));
+        add(Entity::new(
+            "inference.vllm.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no vLLM metrics were read, carrying the reason: nothing answered, or the endpoint answered with something without vllm: series on /metrics.",
+        ));
+        add(Entity::new(
+            "inference.vllm.model",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The model_name label vLLM attaches to its series, as the server names the model it serves.",
+        ));
+        add(Entity::new(
+            "inference.vllm.generation_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative generated tokens since vLLM started, summed over its label sets. A counter from vllm:generation_tokens; a rate is derived from two samples.",
+        ));
+        add(Entity::new(
+            "inference.vllm.prompt_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prompt tokens since vLLM started, summed over its label sets. A counter from vllm:prompt_tokens.",
+        ));
+        add(Entity::new(
+            "inference.vllm.request_success_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative requests vLLM has finished, summed over every finished_reason. A counter from vllm:request_success.",
+        ));
+        add(Entity::new(
+            "inference.vllm.num_preemptions_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative request preemptions since vLLM started. A counter from vllm:num_preemptions.",
+        ));
+        add(Entity::new(
+            "inference.vllm.prefix_cache_hits_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefix-cache hits since vLLM started. A counter from vllm:prefix_cache_hits. The numerator of prefix_cache_hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.vllm.prefix_cache_queries_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefix-cache queries since vLLM started. A counter from vllm:prefix_cache_queries. The denominator of prefix_cache_hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.vllm.requests_running",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests vLLM is running right now. A current figure, from vllm:num_requests_running.",
+        ));
+        add(Entity::new(
+            "inference.vllm.requests_waiting",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests waiting in vLLM's queue right now. A current figure, from vllm:num_requests_waiting.",
+        ));
+        add(Entity::new(
+            "inference.vllm.kv_cache_usage",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            "Share of vLLM's KV cache in use right now, as a percentage. vLLM reports it as a fraction (vllm:kv_cache_usage_perc); the resolver multiplies by 100.",
+        ));
+        add(Entity::new(
+            "inference.vllm.prefix_cache_hit_ratio",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            "Share of vLLM prefix-cache queries that hit, as a percentage over the window between two samples: prefix_cache_hits_total / prefix_cache_queries_total. Absent when no query happened in the window.",
+        ).derived(&[
+            "inference.vllm.prefix_cache_hits_total",
+            "inference.vllm.prefix_cache_queries_total",
+        ]));
+        add(Entity::new(
+            "inference.vllm.generation_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Generated tokens per second over the window between two samples. Absent in a single-shot read.",
+        ).derived(&["inference.vllm.generation_tokens_total"]));
+        add(Entity::new(
+            "inference.vllm.prompt_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Prompt tokens per second over the window between two samples. Absent in a single-shot read.",
+        ).derived(&["inference.vllm.prompt_tokens_total"]));
+
         // ── Inference (IronWorks) ────────────────────────────────────────────
         //
         // Provider-segmented: `inference.ironworks.*` is the first provider and
