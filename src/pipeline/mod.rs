@@ -31,7 +31,7 @@
 //! spawns therefore calls [`com_guard`] first and holds the guard for its lifetime.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -712,6 +712,22 @@ fn collector_loop(
     }
 }
 
+/// The one lock every pass over the hardware readers takes, in this process.
+///
+/// The background collector and the HTTP sampler read the same static reader state,
+/// so their passes must never overlap. Each pass holds this lock for its whole run.
+/// Only [`collect_once`] and the schema resolver's pipeline take it, and neither calls
+/// the other, so no pass nests inside another.
+static READER_PASS: Mutex<()> = Mutex::new(());
+
+/// Acquire the reader lock. A poisoned lock is recovered rather than propagated: a
+/// panic in one pass must not stop every later pass.
+pub(crate) fn reader_pass() -> MutexGuard<'static, ()> {
+    READER_PASS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Run one tick, fanning independent collectors out across scoped threads.
 ///
 /// Each closure borrows a *disjoint* field of [`Sources`], which is what makes
@@ -730,6 +746,7 @@ fn collect_once(
     gpu_static: &[GpuStaticInfo],
     generation: u64,
 ) -> Snapshot {
+    let _pass = reader_pass();
     let started = Instant::now();
 
     // Destructure so each scoped thread captures a distinct field.

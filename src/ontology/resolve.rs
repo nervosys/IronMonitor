@@ -212,6 +212,65 @@ pub fn snapshot() -> Vec<Reading> {
     pipeline(&Ontology::build(), &Scope::all())
 }
 
+/// The schema, built once per process.
+///
+/// Building it is the most expensive thing a request that only needs one value would
+/// otherwise repeat. The schema is constant for the life of the binary, so nothing is
+/// lost by sharing it.
+pub fn ontology() -> &'static Ontology {
+    static ONTOLOGY: std::sync::OnceLock<Ontology> = std::sync::OnceLock::new();
+    ONTOLOGY.get_or_init(Ontology::build)
+}
+
+/// The envelope `ironmon snapshot --format json` prints, shared with the HTTP surface
+/// so the two cannot drift.
+pub fn snapshot_document(readings: &[Reading], problems: &[String]) -> serde_json::Value {
+    let resolved = readings.iter().filter(|r| r.value.is_some()).count();
+    serde_json::json!({
+        "ontology_version": super::ONTOLOGY_VERSION,
+        "resolved": resolved,
+        "unavailable": readings.len() - resolved,
+        "impossible": problems,
+        "readings": readings,
+    })
+}
+
+/// The id segment that owns `id`, when the schema declares `id` as a concrete
+/// (non-template) entity. `None` for templates and undeclared ids.
+pub fn owning_segment(id: &str) -> Option<String> {
+    if Ontology::is_template(id) {
+        return None;
+    }
+    ontology().template_for(id)?;
+    Some(first_segment(id).to_string())
+}
+
+/// Every row whose id starts with `segment`, produced by one pass over the readers
+/// that segment needs.
+///
+/// This is the unit the HTTP sampler works in. The scope is the union of
+/// [`needed_segments`] over every entity the segment owns, so each row is the row
+/// [`get`] would produce for the same id: same readers, same order, same
+/// post-processing. Rows of other segments that the pass happens to produce are
+/// dropped, since their own segment's pass produces them too.
+pub fn sample_segment(segment: &str) -> Vec<Reading> {
+    let ontology = ontology();
+    let mut segments = std::collections::BTreeSet::new();
+    segments.insert(segment.to_string());
+    for entity in ontology
+        .entities
+        .values()
+        .filter(|e| first_segment(&e.id) == segment)
+    {
+        segments.extend(needed_segments(ontology, &entity.id, entity));
+    }
+    close_over_consumes(&mut segments);
+    pipeline(ontology, &Scope::of(segments))
+        .into_iter()
+        .filter(|r| first_segment(&r.id) == segment)
+        .collect()
+}
+
 /// The whole snapshot pipeline, restricted to the readers `scope` needs.
 ///
 /// Every row a scope produces is the row a full snapshot produces for the same id:
@@ -219,6 +278,9 @@ pub fn snapshot() -> Vec<Reading> {
 /// A scope only decides which readers are skipped, so no id gets a value from a
 /// different pass than the one a full snapshot would have made.
 fn pipeline(ontology: &Ontology, scope: &Scope) -> Vec<Reading> {
+    // Shares the reader lock with the background collector, so the HTTP sampler and
+    // the Prometheus collector never read the same static state at once.
+    let _pass = crate::pipeline::reader_pass();
     let mut out = Vec::new();
     run_readers(&mut out, scope);
 
@@ -2204,13 +2266,13 @@ fn detect_board() -> Option<crate::core::platform_info::BoardInfo> {
 /// is the assertion this repository's plausibility tier makes, available to any
 /// consumer rather than only to the test suite.
 pub fn validate(readings: &[Reading]) -> Vec<String> {
-    let ontology = Ontology::build();
+    let ontology = ontology();
     let mut problems = Vec::new();
     for r in readings {
         let Some(value) = r.value.as_ref().and_then(|v| v.as_f64()) else {
             continue;
         };
-        if let Some(entity) = lookup_template(&ontology, &r.id) {
+        if let Some(entity) = lookup_template(ontology, &r.id) {
             if let Some(problem) = entity.validate_range(value) {
                 problems.push(problem);
             }

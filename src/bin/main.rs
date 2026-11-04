@@ -302,8 +302,12 @@ enum Commands {
     /// Prometheus metrics are at /api/v1/metrics/prometheus. Prometheus's
     /// default /metrics is not served at all, so scrape_configs must set
     /// metrics_path explicitly; grafana/README.md has the stanza.
+    ///
+    /// The bound address is printed on stdout as one JSON line, flushed before
+    /// anything else, so a parent process can read the port it was given:
+    /// {"listening":"127.0.0.1:54321"}. Use --port 0 to have the OS choose.
     Serve {
-        /// Port to listen on
+        /// Port to listen on. 0 asks the OS for a free port.
         #[arg(short, long, default_value_t = 9100)]
         port: u16,
         /// Address to bind. Defaults to loopback; set 0.0.0.0 to expose on the
@@ -313,6 +317,16 @@ enum Commands {
         /// Log each request to stderr
         #[arg(long)]
         log_requests: bool,
+        /// File holding the bearer key every route but /api/v1/health requires.
+        /// Read once at startup; an empty or unreadable file refuses to start.
+        /// The key is never taken from the command line. IRONMON_API_KEY works
+        /// too; set one or the other, not both.
+        #[arg(long, value_name = "PATH")]
+        api_key_file: Option<String>,
+        /// Allow browsers from this exact origin to read the API (repeatable).
+        /// Example: --cors-origin http://localhost:5173. Wildcards are refused.
+        #[arg(long = "cors-origin", value_name = "ORIGIN")]
+        cors_origin: Vec<String>,
     },
 }
 
@@ -886,8 +900,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             bind,
             log_requests,
+            api_key_file,
+            cors_origin,
         }) => {
-            handle_serve_command(*port, bind, *log_requests)?;
+            handle_serve_command(
+                *port,
+                bind,
+                *log_requests,
+                api_key_file.as_deref(),
+                cors_origin,
+            )?;
         }
 
         // Default: launch GUI if available, otherwise TUI
@@ -3310,56 +3332,144 @@ fn handle_serve_command(
     port: u16,
     bind: &str,
     log_requests: bool,
+    api_key_file: Option<&str>,
+    cors_origins: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use ironmonitor::http_server::{HttpServer, HttpServerConfig};
+    use ironmonitor::http_server::{
+        is_loopback_address, validate_cors_origin, HttpServer, HttpServerConfig,
+    };
+    use std::io::Write;
+
+    for origin in cors_origins {
+        validate_cors_origin(origin)?;
+    }
+    let api_key = read_api_key(api_key_file)?;
+    let keyed = api_key.is_some();
+    let loopback = is_loopback_address(bind);
 
     let config = HttpServerConfig {
         bind_address: bind.to_string(),
         port,
         request_logging: log_requests,
+        cors_enabled: !cors_origins.is_empty(),
+        cors_origins: cors_origins.to_vec(),
+        api_key,
         ..Default::default()
     };
 
     let server = HttpServer::new(config)?;
+    // Bind before saying anything. A taken port is an error here, not a silent move
+    // to another one, and the announced port is the one really in use.
+    let bound = server.bind()?;
+    let addr = bound.local_addr();
 
-    println!("{}", "═══ IronMonitor HTTP Server ═══".cyan().bold());
-    println!("  {} http://{}:{}", "Listening:".white().bold(), bind, port);
-    println!(
-        "  {} http://{}:{}/api/v1/metrics/prometheus",
+    // stdout carries one machine-readable line, flushed before anything else.
+    {
+        let mut out = std::io::stdout().lock();
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({ "listening": addr.to_string() })
+        )?;
+        out.flush()?;
+    }
+
+    // Everything human-readable goes to stderr, so a parent reading stdout is never
+    // blocked by, or buffered behind, the banner.
+    eprintln!("{}", "═══ IronMonitor HTTP Server ═══".cyan().bold());
+    eprintln!("  {} http://{}", "Listening:".white().bold(), addr);
+    eprintln!(
+        "  {} http://{}/api/v1/metrics/prometheus",
         "Prometheus:".white().bold(),
-        bind,
-        port
+        addr
     );
-    println!(
-        "  {} http://{}:{}/api/v1/context",
-        "Context:".white().bold(),
-        bind,
-        port
+    eprintln!(
+        "  {} http://{}/api/v1/describe",
+        "Schema:".white().bold(),
+        addr
     );
-    println!(
-        "  {} http://{}:{}/health",
+    eprintln!(
+        "  {} http://{}/api/v1/health",
         "Health:".white().bold(),
-        bind,
-        port
+        addr
     );
+    eprintln!(
+        "  {} {}",
+        "Authentication:".white().bold(),
+        if keyed {
+            "bearer key required (except /api/v1/health)"
+        } else {
+            "none"
+        }
+    );
+    if cors_origins.is_empty() {
+        eprintln!(
+            "  {} off (no CORS headers are sent)",
+            "CORS:".white().bold()
+        );
+    } else {
+        eprintln!("  {} {}", "CORS:".white().bold(), cors_origins.join(", "));
+    }
 
-    if bind == "0.0.0.0" {
-        println!(
-            "  {} bound to all interfaces — full hardware telemetry is reachable \
-             from the network",
-            "Warning:".yellow().bold()
+    if !loopback && !keyed {
+        eprintln!(
+            "{}",
+            "WARNING: bound to a non-loopback address with NO API KEY. Full hardware \
+             telemetry is readable by anything that can reach this port. Set \
+             --api-key-file or IRONMON_API_KEY."
+                .yellow()
+                .bold()
+        );
+    } else if !loopback {
+        eprintln!(
+            "  {} bound to a routable address; requests need the bearer key",
+            "Note:".white().bold()
         );
     }
 
-    println!();
-    println!("{}", "Press Ctrl+C to stop.".yellow().italic());
+    eprintln!();
+    eprintln!("{}", "Press Ctrl+C to stop.".yellow().italic());
 
-    // `HttpServer::run` is async; main is not, so drive it on a runtime here rather
+    // `HttpServer::serve` is async; main is not, so drive it on a runtime here rather
     // than making every command pay for one.
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async { server.run().await })?;
+    runtime.block_on(async { server.serve(bound).await })?;
 
     Ok(())
+}
+
+/// The bearer key for `ironmon serve`, from `--api-key-file` or `IRONMON_API_KEY`.
+///
+/// The key is never a command-line value, so it cannot show up in `ps`. An empty key,
+/// an unreadable file, or both sources at once is a startup error: the alternative is
+/// a server that looks protected and is not.
+fn read_api_key(file: Option<&str>) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let from_env = std::env::var("IRONMON_API_KEY").ok();
+    match (file, from_env) {
+        (Some(_), Some(_)) => Err("set --api-key-file or IRONMON_API_KEY, not both".into()),
+        (Some(path), None) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read API key file {path}: {e}"))?;
+            let key = raw.trim();
+            if key.is_empty() {
+                return Err(format!(
+                    "API key file {path} is empty; refusing to start an open server"
+                )
+                .into());
+            }
+            Ok(Some(key.to_string()))
+        }
+        (None, Some(value)) => {
+            let key = value.trim();
+            if key.is_empty() {
+                return Err(
+                    "IRONMON_API_KEY is set but empty; refusing to start an open server".into(),
+                );
+            }
+            Ok(Some(key.to_string()))
+        }
+        (None, None) => Ok(None),
+    }
 }
 
 /// Handle record subcommands for time-series database operations
@@ -4323,14 +4433,7 @@ fn handle_snapshot_command(
         let doc = ironmonitor::ontology::jsonld::document(&readings, &stamp);
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else if format.eq_ignore_ascii_case("json") {
-        let resolved = readings.iter().filter(|r| r.value.is_some()).count();
-        let doc = serde_json::json!({
-            "ontology_version": ironmonitor::ontology::ONTOLOGY_VERSION,
-            "resolved": resolved,
-            "unavailable": readings.len() - resolved,
-            "impossible": problems,
-            "readings": readings,
-        });
+        let doc = resolve::snapshot_document(&readings, &problems);
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else {
         for r in &readings {
@@ -4972,15 +5075,7 @@ fn handle_describe_command(
     };
 
     if format.eq_ignore_ascii_case("json") {
-        // Re-wrap so the JSON always carries the version, even when filtered — a
-        // consumer holding a fragment still needs to know which schema it speaks.
-        let filtered: std::collections::BTreeMap<&str, &ironmonitor::ontology::Entity> =
-            selected.iter().map(|e| (e.id.as_str(), *e)).collect();
-        let doc = serde_json::json!({
-            "version": ontology.version,
-            "entity_count": filtered.len(),
-            "entities": filtered,
-        });
+        let doc = ontology.describe_document(selected.iter().copied());
         println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }

@@ -230,6 +230,93 @@ be turned into something queryable. Tests enforce this rather than trusting
 convention — including a scan of the GUI source that fails any heading spelling a
 domain differently from the ontology.
 
+## The HTTP surface
+
+`ironmon serve` answers the same schema over HTTP, for a program that runs ironmon
+next to it. Bodies are the CLI's own JSON: the same functions produce both, so the
+CLI and the HTTP routes cannot disagree about a field.
+
+```bash
+ironmon serve --port 0 --api-key-file ~/.ironmon.key
+# {"listening":"127.0.0.1:54321"}
+```
+
+The first line on stdout is that announcement, flushed before anything else. It is
+the only thing on stdout: the banner and logs go to stderr. `--port 0` lets the OS
+choose the port, and a taken port is a non-zero exit, never a silent move to another.
+
+Every route is `GET`. Any other method gets 405 with `Allow: GET`.
+
+| Route | Body | Status |
+|---|---|---|
+| `GET /api/v1/describe` | Exactly `ironmon describe --format json`, with a trailing newline. Touches no hardware and starts no sampling. | 200 |
+| `GET /api/v1/snapshot` | The envelope of `ironmon snapshot --format json`: `ontology_version`, `resolved`, `unavailable`, `impossible`, `readings`. Each reading object is the CLI's, plus `sampled_at` and `age_ms`. | 200, 400 for an unknown `?domain=` (body lists `accepted`), 503 while sampling |
+| `GET /api/v1/get/<id>` | The CLI's reading object for `<id>`, plus `sampled_at` and `age_ms`. The id is percent-decoded, so `disk.%3Cnone%3E` is `disk.<none>`. | 200 for a value and for `provenance: unavailable` (no `value` field, a `note`); 404 for an undeclared id, a template, or an id this machine did not produce; 503 while sampling |
+| `GET /api/v1/health` | `status` and `timestamp`, plus `sampler`: `state` (`running` or `idle`) and per-segment `last_sampled_at` and `age_ms`. | 200 |
+
+A 404 is `{"error":"no such entity id","id":...}`. A 503 is:
+
+```json
+{"state":"sampling","segments":["gpu","inference"]}
+```
+
+with `Retry-After: 1`. It means nothing has been learned yet for those segments. It
+is not an `unavailable` reading, and the client should retry.
+
+### Sample age
+
+Every reading from these routes says when it was sampled. `sampled_at` is RFC 3339 in
+UTC, stamped with the moment the pass began, and `age_ms` is the milliseconds since
+then, measured when the response is built. A reading never appears fresher than it
+was. Segments are sampled at different times, so age is per reading, not per response.
+
+### Sampling
+
+The server samples by segment (the ontology domain), using the same readers and the
+same segment closure that `ironmon get` uses. A request marks the segments it needs as
+wanted, then waits at most 250 ms for their samples. Cheap segments answer on the first
+request. Expensive ones answer 503, and a later request gets the sample.
+
+One background thread runs every pass, one at a time, because the readers share
+static state. Concurrent requests for a segment share one pass. A wanted segment is
+resampled as soon as its last sample is two seconds old, so a slow segment lags and
+its age shows the lag.
+
+A segment that nothing has asked for in 60 seconds is no longer sampled. When no
+segment is wanted, the sampler thread blocks with no timer and runs no pass, so a
+server left running with nothing reading it does no sampler work and starts no
+subprocesses.
+
+Rates are not differenced. A rate needs two samples, and the HTTP routes keep the
+CLI's single-sample behaviour: a rate field is `unavailable` with the CLI's reason.
+Differentiate the counters across two responses instead.
+
+### Keys and access
+
+`--api-key-file <path>` or `IRONMON_API_KEY` sets a bearer key. Every route except
+`/api/v1/health` then requires `Authorization: Bearer <key>`. The comparison is
+constant time, and a missing or wrong key gets 401 with no detail. Without a key set,
+the routes are open, which is acceptable only for loopback.
+
+`/api/v1/health` without a valid key returns liveness only, with no sampler state. An
+empty key, an unreadable key file, or both sources at once is a startup error. The key
+is not a command-line value and never appears in output, logs or `Debug` formatting.
+
+Prometheus can send the same header. In `prometheus.yml`, use
+`authorization: { credentials_file: /path/to/key }` on the scrape job.
+
+Responses carry no CORS headers unless `--cors-origin` names the requesting origin
+exactly. `*` is refused at startup, because it would let any web page read the
+telemetry.
+
+When bound to loopback, a request whose `Host` header is not `localhost`,
+`127.0.0.1` or `[::1]` (with or without a port) gets 403. A web page can point a name
+at 127.0.0.1 and read responses as same-origin, which CORS does not stop, so the Host
+header is the check that does.
+
+A non-loopback `--bind` without a key starts with a loud warning. That setup is
+documented in `grafana/README.md`, so it is allowed rather than refused.
+
 ## Guarantees worth relying on
 
 - `ironmon describe` touches no hardware, so it is identical on every machine and can

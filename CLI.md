@@ -51,6 +51,42 @@ ironmon gui --script script.txt     # navigate GUI tabs and assert on painted te
 ironmon gui --frame --tab profiles  # the text a GUI tab paints
 ```
 
+### HTTP server (`ironmon serve`)
+
+`ironmon serve` answers the same schema over HTTP, for a program that runs ironmon
+beside it and reads it over loopback. The routes and their status codes are specified
+in [AGENTS.md](AGENTS.md#the-http-surface).
+
+```bash
+ironmon serve --port 0                                   # an OS-chosen loopback port
+ironmon serve --port 9100 --api-key-file ~/.ironmon.key  # key required on every route but /api/v1/health
+ironmon serve --cors-origin http://localhost:5173        # allow one exact browser origin
+```
+
+| Option | Meaning |
+|---|---|
+| `--port <PORT>` | Port to bind (default 9100). `0` asks the OS for a free one. |
+| `--bind <ADDR>` | Address to bind (default `127.0.0.1`). |
+| `--api-key-file <PATH>` | Bearer key for every route except `/api/v1/health`. An empty or unreadable file is a startup error. |
+| `--cors-origin <ORIGIN>` | Repeatable. Exact origins only; `*` is refused. Default: no CORS headers. |
+| `--log-requests` | Log each request's method and path to stderr. |
+
+The key is never a command-line value. `IRONMON_API_KEY` is the alternative to
+`--api-key-file`; set one or the other. A `--bind` to a non-loopback address without a
+key starts with a warning on stderr, because that setup has been documented and is
+still in use. Requests to a loopback server whose `Host` header is not `localhost`,
+`127.0.0.1` or `[::1]` get 403.
+
+The first line on stdout is the bound address, flushed before anything else, so a
+parent process can read the port it was given:
+
+```
+{"listening":"127.0.0.1:54321"}
+```
+
+Everything else (the banner, warnings, request logs) goes to stderr. If the port is
+taken, the command exits non-zero and announces nothing.
+
 ## Global Options
 
 - `-i, --interval <SECONDS>` - Update interval in seconds (default: 1.0)
@@ -530,6 +566,7 @@ ironmon cli gpu --format json
 ## Environment Variables
 
 - `RUST_LOG` - Set logging level (error, warn, info, debug, trace)
+- `IRONMON_API_KEY` - Bearer key for `ironmon serve`, as an alternative to `--api-key-file`
 
 Example:
 ```bash

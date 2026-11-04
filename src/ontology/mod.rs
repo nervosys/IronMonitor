@@ -4449,6 +4449,23 @@ impl Ontology {
         self.entities.get(id)
     }
 
+    /// The envelope `ironmon describe --format json` prints, over `selected`.
+    ///
+    /// Shared with the HTTP surface. The version is carried even for a filtered
+    /// fragment, so a consumer holding one still knows which schema it speaks.
+    pub fn describe_document<'a>(
+        &self,
+        selected: impl IntoIterator<Item = &'a Entity>,
+    ) -> serde_json::Value {
+        let filtered: BTreeMap<&str, &Entity> =
+            selected.into_iter().map(|e| (e.id.as_str(), e)).collect();
+        serde_json::json!({
+            "version": self.version,
+            "entity_count": filtered.len(),
+            "entities": filtered,
+        })
+    }
+
     /// Entities in one domain, in id order.
     pub fn in_domain(&self, domain: Domain) -> Vec<&Entity> {
         self.entities

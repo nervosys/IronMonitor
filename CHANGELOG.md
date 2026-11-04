@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (HTTP surface)
+
+- `GET /api/v1/describe`, `GET /api/v1/snapshot[?domain=]`, `GET /api/v1/get/<id>` and
+  `GET /api/v1/health` on `ironmon serve`. Bodies are the CLI's own JSON, and each
+  reading carries `sampled_at` and `age_ms`. Values come from a background sampler
+  that samples by segment on demand, and it stops after 60 seconds without a reader.
+  See AGENTS.md, "The HTTP surface", for the status codes.
+- `ironmon serve --port 0` binds an OS-chosen port and announces it as the first
+  stdout line, `{"listening":"127.0.0.1:54321"}`.
+- `ironmon serve --api-key-file <path>` and `IRONMON_API_KEY` set a bearer key.
+- `ironmon serve --cors-origin <origin>` (repeatable) allows exact origins.
+
+### Changed (HTTP surface)
+
+- `ironmon serve` and `HttpServerConfig::default()` send no CORS headers. Clients that
+  read the API from a browser need `--cors-origin`.
+- `/health` requires the bearer key when one is set. `/api/v1/health` is the one route
+  answered without it, and it then reports liveness only.
+- The `ironmon serve` banner is on stderr. Stdout carries only the announce line.
+- A bearer key is now checked exactly on every route, including the Prometheus route.
+  Before, any non-empty `Authorization: Bearer` value passed the gate.
+- Requests to a loopback server with a foreign `Host` header get 403 (DNS rebinding).
+- `--bind 0.0.0.0` without a key still starts, with a warning on stderr.
+- The Prometheus collector now starts when `/api/v1/metrics/prometheus` is scraped and
+  stops after 5 minutes without one, so an idle server no longer reads the hardware
+  every few seconds. The first scrape after idle answers at once from the values last
+  recorded, which can be older than the scrape; fresh values arrive within one
+  collection interval. A metric that has no reading is omitted, never exported as zero.
+- Hardware reads by the HTTP sampler and by the Prometheus collector now take one
+  shared lock, so the two never read the same static reader state at the same time.
+
 ### Changed
 
 - `network.{iface}.link_speed` is declared and emitted in megabits per second

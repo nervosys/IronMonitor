@@ -353,7 +353,10 @@ impl Default for RateLimit {
 }
 
 /// API key configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is written by hand so that the secret never reaches a log line, a panic
+/// message or a `{:?}` in someone else's code. See the `Debug` impl below.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     /// Human-readable name
     pub name: String,
@@ -378,6 +381,23 @@ pub struct ApiKey {
 
 fn default_true() -> bool {
     true
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Every field except the secret itself. The key is replaced by its length, so a
+        // log line still shows that a key was present without showing what it was.
+        f.debug_struct("ApiKey")
+            .field("name", &self.name)
+            .field("key", &format_args!("<redacted {} bytes>", self.key.len()))
+            .field("permissions", &self.permissions)
+            .field("capabilities", &self.capabilities)
+            .field("rate_limit", &self.rate_limit)
+            .field("enabled", &self.enabled)
+            .field("expires_at", &self.expires_at)
+            .field("description", &self.description)
+            .finish()
+    }
 }
 
 impl ApiKey {
@@ -789,6 +809,18 @@ mod tests {
         let p = Permission::parse("admin:*").unwrap();
         assert_eq!(p.capability, Capability::Admin);
         assert_eq!(p.scope, Scope::All);
+    }
+
+    #[test]
+    fn api_key_debug_never_prints_the_secret() {
+        let key = ApiKey::read_only("ci", "sk-very-secret-value");
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("sk-very-secret-value"), "{shown}");
+        assert!(shown.contains("<redacted 20 bytes>"), "{shown}");
+        assert!(shown.contains("ci"), "name stays visible: {shown}");
+        // The wrapping collection must not leak it either.
+        let list = format!("{:?}", vec![key]);
+        assert!(!list.contains("sk-very-secret-value"), "{list}");
     }
 
     #[test]

@@ -13,12 +13,18 @@ ironmon serve --port 9100
 ```
 
 By default this binds to loopback and serves read-only endpoints without
-authentication. To expose it on the network, bind explicitly — note that this
-makes full hardware telemetry readable by anything that can reach the port:
+authentication. That is safe only on the machine itself. To scrape it from another
+host, bind to the network and require a key, because the bind makes full hardware
+telemetry readable by anything that can reach the port:
 
 ```bash
-ironmon serve --port 9100 --bind 0.0.0.0
+ironmon serve --port 9100 --bind 0.0.0.0 --api-key-file /etc/ironmon/api-key
 ```
+
+The key is read from a file, never from the command line. Without a key,
+`--bind 0.0.0.0` still starts, but prints a warning on stderr; that setup is
+supported for existing scrapers and is not recommended. Responses carry no CORS
+headers, which Prometheus does not need.
 
 ### 2. Configure Prometheus
 
@@ -30,11 +36,24 @@ scrape_configs:
   - job_name: 'ironmon'
     scrape_interval: 5s
     metrics_path: /api/v1/metrics/prometheus
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/ironmon-api-key
     static_configs:
       - targets: ['localhost:9100']
         labels:
           instance: 'my-host'
 ```
+
+The `authorization` block is needed only when the server was started with a key. The
+credentials file must hold the same key as the server's `--api-key-file`.
+
+Collection starts when the endpoint is scraped and stops after 5 minutes without a
+scrape. The first scrape after an idle period answers at once, from the values last
+recorded, so it can show readings older than the scrape. Fresh values arrive within
+one collection interval, so the first panels fill in on the second or third scrape.
+A metric with no reading is absent from the output, not zero, so a gap in a panel
+means no reading, not a reading of zero.
 
 ### 3. Import Dashboards
 

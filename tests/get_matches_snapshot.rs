@@ -43,11 +43,23 @@ fn run(args: &[&str]) -> (String, String, i32) {
     )
 }
 
-/// Digits masked, so a count quoted in a note does not make two notes differ.
+/// Each run of digits becomes one `#`, so a count quoted in a note does not make two
+/// notes differ, including when the count grows from 999 to 1000 between the reads.
 fn mask_digits(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_ascii_digit() { '#' } else { c })
-        .collect()
+    let mut out = String::with_capacity(text.len());
+    let mut in_digits = false;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+            }
+            in_digits = true;
+        } else {
+            out.push(c);
+            in_digits = false;
+        }
+    }
+    out
 }
 
 /// The first dotted segment of an id, which is the domain it belongs to.
