@@ -164,6 +164,13 @@ fn get_answers_each_sampled_id_as_the_snapshot_does() {
                 } else {
                     0
                 };
+                // The process list is the largest few at this moment, so a process in
+                // the snapshot can have exited or dropped out by the time get runs. Its
+                // id is then not one this read produced, which is what exit 1 reports.
+                let is_process_instance = id.starts_with("process.") && !id.contains('<');
+                if is_process_instance && code == 1 {
+                    continue;
+                }
                 if code != expected_code {
                     failures.lock().unwrap().push(format!(
                         "{id}: exit {code}, expected {expected_code} for a {} row; stderr: {stderr}",

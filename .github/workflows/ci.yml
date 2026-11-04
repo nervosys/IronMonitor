@@ -113,6 +113,13 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
+    # Debug info and incremental state filled the Linux runner's disk: the linker died
+    # with a bus error, then rustc with "No space left on device". A panic still names
+    # its file and line without them.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
     strategy:
       # Every platform reports, even when another has already failed.
       #
