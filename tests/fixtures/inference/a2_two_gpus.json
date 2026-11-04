@@ -1,0 +1,11 @@
+{"schema_version":1,"sampled_at_ns":1762200000000000000,"uptime_ns":92310442000,
+ "engine":{"model":"glm-5.3-flash","backend":"cuda"},
+ "requests":{"total":642,"active":1,"recent_capacity":32,"recent":[{"id":"cmpl-7f3","prompt_tokens":1204,"completion_tokens":256,"duration_ms":14880,"finish_reason":"stop"}]},
+ "decode":{"prompt_tokens_total":1600000,"completion_tokens_total":500000},
+ "tiers":{
+  "vram":{"configured":true,"policy":"clock","experts_resident":4986,"capacity_experts":4986,"bytes_resident":47237443128,"hits_total":1840221,"fills_total":203145,"bypass_total":1200,"not_admitted_total":300,"evictions_total":198159,"fill_bytes_total":980000000000,"warm_total":5210,"fills_aborted_total":12},
+  "ram":{"configured":true,"experts_resident":10200,"pinned_bytes":96635289600,"hits_total":198337,"misses_total":4808,"waits_total":2210,"evictions_total":0,"bytes_loaded_total":45550822784,"puts_total":4808,"discards_total":3,"loads_abandoned_total":1},
+  "nvme":{"configured":true,"reads_total":4808,"bytes_total":45550822784,"batches_total":4808,"inflight_peak":4,"latency_max_ns":31000000,"queue_depth":2},
+  "prefetch":{"requested_total":41922,"scheduled_total":41000,"dropped_total":922,"loaded_total":40800,"useful_total":38000,"wasted_total":2800,"queue_peak":16,"errors_total":0}
+ },
+ "memory":{"per_gpu":[{"device_index":0,"pci_bus_id":"00000000:01:00.0","uuid":"GPU-a71b3e00-0000-0000-0000-000000000000","engine_vram_used_bytes":23618801664},{"device_index":1,"pci_bus_id":"00000000:03:00.0","uuid":"GPU-5c9e7d00-0000-0000-0000-000000000000","engine_vram_used_bytes":23618801664}],"host":{"engine_pinned_bytes":96635289600}}}

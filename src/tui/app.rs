@@ -1,16 +1,36 @@
 //! Application state management
 
 use crate::agent::{Agent, AgentConfig, AgentResponse};
+use crate::inference::ironworks::{IronWorksSource, MonitorGpu};
+use crate::inference::{InferencePoller, InferenceSource};
 use crate::silicon::NpuInfo;
 use crate::{ProcessMonitor, ProcessMonitorInfo, UnifiedMonitor};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+use super::inference_view::GpuRef;
 
 /// Maximum number of data points to keep in history
 const MAX_HISTORY: usize = 60;
 
 /// Maximum number of agent responses to keep
 const MAX_AGENT_HISTORY: usize = 10;
+
+/// Positions in [`App::tabs`]. Keyed on these, never on bare numbers, so inserting
+/// a tab cannot silently point a binding or a draw arm at the wrong view.
+pub const TAB_INFERENCE: usize = 0;
+pub const TAB_OVERVIEW: usize = 1;
+pub const TAB_PROCESSES: usize = 2;
+pub const TAB_CPU: usize = 3;
+pub const TAB_ACCELERATORS: usize = 4;
+pub const TAB_MEMORY: usize = 5;
+pub const TAB_SYSTEM: usize = 6;
+pub const TAB_PERIPHERALS: usize = 7;
+pub const TAB_PROFILES: usize = 8;
+pub const TAB_AGENT: usize = 9;
+
+/// How often each inference source is polled.
+const INFERENCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Build the agent the TUI should use.
 ///
@@ -644,6 +664,9 @@ pub struct App {
     /// Monotonic counter incremented every time `agent_history` mutates.
     /// Used by the UI to invalidate its render cache.
     pub agent_history_version: u64,
+    /// Inference engines polled in the background for the Inference tab. Built
+    /// once in `new_fast`; dropping the app stops its threads.
+    pub inference: Option<InferencePoller>,
     /// Process display mode - which device's processes to show
     pub process_display_mode: ProcessDisplayMode,
     /// Process monitor for tracking system and GPU processes
@@ -978,7 +1001,11 @@ pub struct NetworkInfo {
 }
 
 impl App {
-    /// Create a new application instance (blocking - full initialization)
+    /// Create a new application instance, waiting for background collection to
+    /// finish. Only one-shot headless paths call this (`--frame`, `--script`). The
+    /// interactive path uses `new_fast` and never blocks on collection or on an
+    /// engine. A one-shot caller that wants inference figures calls
+    /// [`App::await_first_inference_poll`] itself, bounded.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut app = Self::new_fast()?;
         // Wait for background init to complete
@@ -987,6 +1014,54 @@ impl App {
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(app)
+    }
+
+    /// Wait, up to `timeout`, until every inference source has either produced a
+    /// sample or failed once. Only the one-shot headless paths call this: the
+    /// interactive loop repaints until the poller settles on its own.
+    pub fn await_first_inference_poll(&self, timeout: Duration) {
+        let Some(poller) = &self.inference else {
+            return;
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            let settled = (0..poller.len()).all(|i| {
+                poller
+                    .state(i)
+                    .is_some_and(|s| s.latest.is_some() || s.last_error.is_some())
+            });
+            if settled || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The inference sources' latest state, one per source, for drawing.
+    pub fn inference_states(&self) -> Vec<crate::inference::SourceState> {
+        self.inference
+            .as_ref()
+            .map(InferencePoller::states)
+            .unwrap_or_default()
+    }
+
+    /// The GPUs the snapshot enumerated, with the identifiers the inference view
+    /// joins engine GPUs on.
+    pub fn inference_gpus(&self) -> Vec<GpuRef> {
+        self.snapshot
+            .gpu_static
+            .iter()
+            .enumerate()
+            .map(|(i, s)| GpuRef {
+                monitor: MonitorGpu {
+                    index: s.index,
+                    pci_bus_id: s.pci_bus_id.clone(),
+                    uuid: s.uuid.clone(),
+                },
+                name: name_or_unknown(&s.name),
+                memory_total: self.gpu_info.get(i).and_then(|g| g.memory_total),
+            })
+            .collect()
     }
 
     /// Create app with fast startup - slow components initialize in background
@@ -1047,9 +1122,15 @@ impl App {
             }
         });
 
+        // One engine today. Each source gets its own polling thread, which stops when
+        // the app is dropped; this is the only place the poller is spawned.
+        let sources: Vec<Box<dyn InferenceSource>> = vec![Box::new(IronWorksSource::from_env())];
+        let inference = InferencePoller::spawn(sources, INFERENCE_POLL_INTERVAL);
+
         let mut app = Self {
-            selected_tab: 0,
+            selected_tab: TAB_INFERENCE,
             tabs: vec![
+                "Inference",
                 "Overview",
                 "Processes",
                 "CPU",
@@ -1086,6 +1167,7 @@ impl App {
             agent_response_rx: None,
             agent_history_version: 0,
             agent_loading: false,
+            inference: Some(inference),
             process_display_mode: ProcessDisplayMode::default(),
             process_monitor: None, // Will be populated from background thread
             processes: Vec::new(),
@@ -1156,35 +1238,38 @@ impl App {
             // instead of switching tabs (matches the on-screen
             // "[1-5] subsystem" hint). Everywhere else, the
             // number row switches tabs.
-            KeyCode::Char(c @ '1'..='5') if self.selected_tab == 7 => {
+            KeyCode::Char(c @ '1'..='5') if self.selected_tab == TAB_PROFILES => {
                 let idx = (c as u8 - b'1') as usize;
                 if idx < crate::profile::Subsystem::ALL.len() {
                     self.profile_subsystem_idx = idx;
                     self.profile_scroll = 0;
                 }
             }
-            KeyCode::Char('1') => self.set_tab(0),
-            KeyCode::Char('2') => self.set_tab(1),
-            KeyCode::Char('3') => self.set_tab(2),
-            KeyCode::Char('4') => self.set_tab(3),
-            KeyCode::Char('5') => self.set_tab(4),
-            KeyCode::Char('6') => self.set_tab(5),
-            KeyCode::Char('7') => self.set_tab(6),
-            KeyCode::Char('8') => self.set_tab(7),
-            KeyCode::Char('9') => self.set_tab(8),
+            // The number row selects the first nine tabs in order; `0` selects the
+            // tenth, which is Agent, so every tab stays reachable by key.
+            KeyCode::Char('1') => self.set_tab(TAB_INFERENCE),
+            KeyCode::Char('2') => self.set_tab(TAB_OVERVIEW),
+            KeyCode::Char('3') => self.set_tab(TAB_PROCESSES),
+            KeyCode::Char('4') => self.set_tab(TAB_CPU),
+            KeyCode::Char('5') => self.set_tab(TAB_ACCELERATORS),
+            KeyCode::Char('6') => self.set_tab(TAB_MEMORY),
+            KeyCode::Char('7') => self.set_tab(TAB_SYSTEM),
+            KeyCode::Char('8') => self.set_tab(TAB_PERIPHERALS),
+            KeyCode::Char('9') => self.set_tab(TAB_PROFILES),
+            KeyCode::Char('0') => self.set_tab(TAB_AGENT),
             KeyCode::Left => self.previous_tab(),
             KeyCode::Right => self.next_tab(),
             KeyCode::Up => self.select_process_up(),
             KeyCode::Down => self.select_process_down(),
             KeyCode::PageUp => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.profile_scroll = self.profile_scroll.saturating_sub(10);
                 } else {
                     self.scroll_page_up();
                 }
             }
             KeyCode::PageDown => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.profile_scroll = self.profile_scroll.saturating_add(10);
                 } else {
                     self.scroll_page_down();
@@ -1202,30 +1287,31 @@ impl App {
             }
             KeyCode::Char('t') | KeyCode::Char('T') => self.open_theme_picker(),
             KeyCode::Char('r') => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.refresh_profile_snapshot();
                 } else {
                     self.reset_stats();
                 }
             }
             KeyCode::Char('[') => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.profile_prev_subsystem();
                 }
             }
             KeyCode::Char(']') => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.profile_next_subsystem();
                 }
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                if self.selected_tab == 7 {
+                if self.selected_tab == TAB_PROFILES {
                     self.profile_show_deviations = !self.profile_show_deviations;
                 }
             }
             KeyCode::Char('a') | KeyCode::Char('A') => self.toggle_agent_input(),
             KeyCode::Char('c') | KeyCode::Char('C') => {
-                if self.selected_tab == 8 {
+                // The chat box is on the Inference tab as well as the Agent tab.
+                if self.selected_tab == TAB_INFERENCE || self.selected_tab == TAB_AGENT {
                     self.clear_agent_history();
                 }
             }
@@ -1238,6 +1324,50 @@ impl App {
         }
         false
     }
+
+    /// Handle one key press exactly as the interactive loop does, and return `true`
+    /// if the app should quit.
+    ///
+    /// While the agent question box is open it takes every key, so typing a
+    /// question never reaches a tab shortcut or a quit key. Both the loop and the
+    /// headless script driver call this, so they cannot disagree about it.
+    pub fn handle_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        use crossterm::event::KeyCode;
+
+        if self.agent_input_mode {
+            match code {
+                KeyCode::Char(c) => self.agent_input_char(c),
+                KeyCode::Backspace => self.agent_input_backspace(),
+                KeyCode::Enter => self.submit_agent_query(),
+                KeyCode::Esc => self.toggle_agent_input(),
+                _ => {}
+            }
+            return false;
+        }
+
+        match self.view_mode {
+            ViewMode::Main => return self.handle_main_key(code, modifiers),
+            ViewMode::ProcessDetail => match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.close_overlay(),
+                KeyCode::Up => self.select_process_up(),
+                KeyCode::Down => self.select_process_down(),
+                _ => {}
+            },
+            ViewMode::ThemeSelection => match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.close_overlay(),
+                KeyCode::Up => self.theme_picker_prev(),
+                KeyCode::Down => self.theme_picker_next(),
+                KeyCode::Enter => self.apply_selected_theme(),
+                _ => {}
+            },
+        }
+        false
+    }
+
     /// Whether new collector data has arrived since the last frame was drawn.
     ///
     /// Consuming: calling this marks the current generation as rendered. The render
@@ -2119,7 +2249,7 @@ impl App {
         if index < self.tabs.len() {
             self.selected_tab = index;
             self.scroll_position = 0;
-            if self.selected_tab == 7 {
+            if self.selected_tab == TAB_PROFILES {
                 self.ensure_profile_snapshot();
             }
         }
@@ -2128,7 +2258,7 @@ impl App {
     pub fn next_tab(&mut self) {
         self.selected_tab = (self.selected_tab + 1) % self.tabs.len();
         self.scroll_position = 0;
-        if self.selected_tab == 7 {
+        if self.selected_tab == TAB_PROFILES {
             self.ensure_profile_snapshot();
         }
     }
@@ -2140,7 +2270,7 @@ impl App {
             self.selected_tab = self.tabs.len() - 1;
         }
         self.scroll_position = 0;
-        if self.selected_tab == 7 {
+        if self.selected_tab == TAB_PROFILES {
             self.ensure_profile_snapshot();
         }
     }
@@ -2974,6 +3104,7 @@ mod ontology_vocabulary_tests {
 
         // Mirrors the `tabs` vec in `TuiApp::new`.
         let tabs = [
+            "Inference",
             "Overview",
             "Processes",
             "CPU",

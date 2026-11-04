@@ -81,12 +81,71 @@ mod tests {
     #[test]
     fn the_overview_tab_renders_actual_readings() {
         let mut app = app();
-        app.selected_tab = 0;
+        app.selected_tab = super::super::app::TAB_OVERVIEW;
         let frame = render_frame(&app);
         assert!(
             frame.contains("CPU") || frame.contains("Memory"),
             "the Overview tab shows no subsystem at all:\n{frame}"
         );
+    }
+
+    /// Inference is the main view: first in the tab order and the one a fresh
+    /// session opens on.
+    #[test]
+    fn the_inference_tab_is_first_and_selected_by_default() {
+        let app = app();
+        assert_eq!(app.tabs[0], "Inference");
+        assert_eq!(app.selected_tab, 0);
+    }
+
+    /// With no engine running, the tab says who did not answer and why, rather
+    /// than drawing an empty or idle-looking page.
+    #[test]
+    fn the_inference_tab_reports_when_no_engine_answered() {
+        let app = app();
+        app.await_first_inference_poll(std::time::Duration::from_secs(3));
+        let frame = render_frame(&app);
+        assert!(
+            frame.contains("no engine answered at http://127.0.0.1:8080"),
+            "the Inference tab does not say no engine answered:\n{frame}"
+        );
+    }
+
+    /// The chat box is shared: opening it from the Inference tab types into it,
+    /// and a digit typed into it does not switch tabs.
+    #[test]
+    fn typing_into_the_agent_box_does_not_switch_tabs() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut app = app();
+        assert_eq!(app.selected_tab, super::super::app::TAB_INFERENCE);
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::empty());
+        assert!(app.agent_input_mode, "'a' should open the question box");
+
+        app.handle_key(KeyCode::Char('2'), KeyModifiers::empty());
+        app.handle_key(KeyCode::Tab, KeyModifiers::empty());
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, super::super::app::TAB_INFERENCE);
+        assert_eq!(app.agent_input, "2q");
+        assert!(app.agent_input_mode);
+    }
+
+    /// Number keys follow the tab order: `1` is Inference, `0` is Agent.
+    #[test]
+    fn number_keys_follow_the_tab_order() {
+        use super::super::app::{TAB_AGENT, TAB_INFERENCE, TAB_OVERVIEW, TAB_PROFILES};
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut app = app();
+        app.handle_key(KeyCode::Char('2'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_OVERVIEW);
+        app.handle_key(KeyCode::Char('1'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_INFERENCE);
+        app.handle_key(KeyCode::Char('9'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_PROFILES);
+        app.handle_key(KeyCode::Char('0'), KeyModifiers::empty());
+        assert_eq!(app.selected_tab, TAB_AGENT);
+        assert_eq!(app.tabs[app.selected_tab], "Agent");
     }
 
     /// Every tab must render without panicking and produce something.
@@ -253,9 +312,11 @@ fn parse_key(name: &str) -> Option<crossterm::event::KeyCode> {
 
 /// Run a script against `app`.
 ///
-/// Key steps go through [`App::handle_main_key`] — the same function the interactive
+/// Key steps go through [`App::handle_key`] — the same function the interactive
 /// loop calls — so an assertion here is evidence about the real TUI rather than
-/// about a parallel reimplementation of its bindings.
+/// about a parallel reimplementation of its bindings. That includes the agent
+/// question box: a key sent while it is open is typed into it, not run as a
+/// shortcut.
 pub fn run_script(app: &mut App, steps: &[Step], width: u16, height: u16) -> ScriptResult {
     use crossterm::event::KeyModifiers;
 
@@ -283,7 +344,7 @@ pub fn run_script(app: &mut App, steps: &[Step], width: u16, height: u16) -> Scr
                 Some(code) => {
                     // A quit request stops the script rather than the process: a
                     // script ending in `key q` should still report its findings.
-                    if app.handle_main_key(code, KeyModifiers::empty()) {
+                    if app.handle_key(code, KeyModifiers::empty()) {
                         break;
                     }
                 }

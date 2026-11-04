@@ -45,9 +45,9 @@ enum Commands {
         #[arg(long)]
         frame: bool,
 
-        /// Tab to render with --frame (overview, cpu, memory, disk, processes,
-        /// network, system, peripherals, profiles, ai, ...)
-        #[arg(long, default_value = "overview")]
+        /// Tab to render with --frame (inference, overview, cpu, memory, disk,
+        /// processes, network, system, peripherals, profiles, ai, ...)
+        #[arg(long, default_value = "inference")]
         tab: String,
 
         /// Inspect the GUI from a script and report the result; `-` reads stdin
@@ -4801,6 +4801,8 @@ fn handle_tui_script_command(
 
     let mut app = ironmonitor::tui::App::new()?;
     app.update()?;
+    // Bounded: a script waits, at most 3 s, for each engine to answer or fail.
+    app.await_first_inference_poll(std::time::Duration::from_secs(3));
     // Same wait as `--frame`: assertions against a frame rendered before the
     // collector published would be testing the zeroed defaults.
     // Skipping the warm-up generation too: a script asserting on GPU rows against
@@ -4843,6 +4845,8 @@ fn handle_tui_frame_command(
     // data or nothing.
     let mut app = ironmonitor::tui::App::new()?;
     app.update()?;
+    // Bounded: a one-shot frame waits, at most 3 s, for each engine to answer or fail.
+    app.await_first_inference_poll(std::time::Duration::from_secs(3));
 
     // The collector publishes asynchronously. An interactive session repaints until
     // the first snapshot lands and nobody notices the gap; a single frame rendered

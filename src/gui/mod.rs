@@ -13,6 +13,7 @@ pub mod app;
 // TUI became inspectable headlessly and leaving the GUI window-only made it the one
 // surface an agent still could not see.
 pub mod headless;
+mod inference_tab;
 mod profile_tab;
 mod soc;
 mod system_summary;

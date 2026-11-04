@@ -1,0 +1,9 @@
+{"schema_version":1,"sampled_at_ns":1762100000000000000,"uptime_ns":40228110000,
+ "engine":{"model":"qwen3.8-flash-next","backend":"cuda"},
+ "requests":{"total":88,"active":0,"recent_capacity":32,"recent":[]},
+ "decode":{"prompt_tokens_total":210000,"completion_tokens_total":61000},
+ "tiers":{
+  "vram":{"configured":true,"policy":"clock","experts_resident":6000,"capacity_experts":6000,"bytes_resident":8306688000,"hits_total":904233,"fills_total":6044,"bypass_total":0,"not_admitted_total":0,"evictions_total":6044,"fill_bytes_total":8000000000,"warm_total":0,"fills_aborted_total":0},
+  "ram":{"configured":true,"experts_resident":24576,"pinned_bytes":34017312768,"hits_total":12044,"misses_total":0,"waits_total":0,"evictions_total":0,"bytes_loaded_total":0,"puts_total":0,"discards_total":0,"loads_abandoned_total":0},
+  "nvme":{"configured":false,"reason":"model fits in RAM+VRAM; no NVMe tier"}},
+ "memory":{"per_gpu":[{"device_index":0,"pci_bus_id":"00000000:01:00.0","uuid":"GPU-a71b3e00-0000-0000-0000-000000000000","engine_vram_used_bytes":8306688000}],"host":{"engine_pinned_bytes":34017312768}}}

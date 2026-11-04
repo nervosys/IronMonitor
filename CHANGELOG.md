@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TUI's Inference tab, first in the tab order and the one a session opens on. It
+  polls inference engines once a second (IronWorks today) and shows each engine's
+  reachability, model and backend, per-GPU engine VRAM, the VRAM, RAM and NVMe expert
+  tiers, prefetch when the engine has an expert store, and recent requests when the
+  engine lists them. Throughput and hit ratios are derived from two polls and read
+  unknown until then. An engine that runs with metrics off reads "engine running,
+  metrics not enabled — start it with --metrics", and an engine that did not answer
+  reads "no engine answered". The agent chat box is on this tab too, sharing the
+  Agent tab's history. Number keys now run `1` Inference through `9` Profiles, with
+  `0` for Agent.
+- The GUI opens on a new Inference tab, first in the tab bar. It polls IronWorks in
+  the background and shows the same figures: identity, derived tokens per second,
+  per-GPU VRAM joined to the monitor's GPUs, tier residency and hit ratios, prefetch
+  when present, recent requests, and the shared agent box. The two not-answering
+  states are named apart as above.
 - The full hardware inventory in the ontology (version 1.1), from the
   motherboard to the network the machine is attached to. `ironmon snapshot`,
   `get` and `describe` now carry, alongside what they already did:
@@ -37,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     band, channel, security, signal, noise and link rates
     (`network.wifi.{n}.*`). Read by the new `net_context` module.
 - The GUI's Network tab and the TUI's System tab show gateways, DNS and Wi-Fi.
+- An `inference` domain reading IronWorks engine metrics (`/metrics`, schema
+  v1 as agreed on 2026-11-03, endpoint `IRONMON_IRONWORKS_URL`, default
+  `http://127.0.0.1:8080`): `inference.ironworks.*` for the engine's identity,
+  the VRAM, RAM and NVMe expert tiers, prefetch when an expert store exists,
+  request counters, and per-GPU VRAM joined to `gpu.{n}` by PCI address. Each
+  tier that is switched off, or absent, is reported with the engine's reason.
+  Throughput is derived from the decode token counters, and hit ratios use
+  named denominators (VRAM: hits over hits, fills, bypass and not-admitted
+  picks; RAM: hits over hits and misses). Rates and ratios are taken over the
+  engine's uptime, so a restart resets them; peaks are labelled as peaks.
+  `inference.ironworks.<none>` says which of two states holds: the engine is
+  running with metrics off (its 404 reply, which says to start it with
+  `--metrics`), or no engine answered. The reader is written against the
+  schema and tested with hand-written fixtures; it has not been run against a
+  real `/metrics` body yet.
 
 ### Changed
 

@@ -1,0 +1,12 @@
+These fixtures are hand-written from the IronWorks /metrics schema v1 (final,
+agreed 2026-11-03). No real /metrics body exists yet, so nothing here has been
+captured from a running engine. Replace them with real captures once IronWorks
+serves the endpoint, and check the shape against that body first.
+
+  a_nvme_configured.json    every tier configured, including prefetch
+  a2_two_gpus.json          as (a), with two engine GPUs
+  b_nvme_not_configured.json  no expert store: nvme configured:false, no prefetch object
+  c_counter_omitted.json    a configured tier with counters left out
+  metrics_not_enabled.json  the 404 body sent when the engine runs without --metrics
+  unknown_schema.json       schema_version 2, which this build rejects
+  not_json.txt              a web page, not metrics

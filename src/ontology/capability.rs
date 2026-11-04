@@ -471,6 +471,15 @@ pub fn catalogue() -> Vec<Capability> {
                 ]),
                 implemented_everywhere,
             ),
+            D::Inference => (
+                "inference engine metrics: IronWorks identity, expert-cache tiers, prefetch, request counters, and rates derived from two samples",
+                per(&[
+                    (Platform::Linux, Support::Implemented),
+                    (Platform::Windows, Support::Implemented),
+                    (Platform::MacOS, Support::Implemented),
+                ]),
+                implemented_everywhere,
+            ),
         };
         out.push(cap(
             &format!("reading.{}", domain.as_str()),

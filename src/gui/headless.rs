@@ -1028,7 +1028,8 @@ mod overflow_tests {
     use super::*;
 
     /// Tabs in the order `select_tab_by_name` accepts them.
-    const TABS: [&str; 13] = [
+    const TABS: [&str; 14] = [
+        "inference",
         "overview",
         "cpu",
         "accelerators",
@@ -1345,6 +1346,7 @@ mod monochrome_tests {
             ..Default::default()
         };
         for tab in [
+            "inference",
             "overview",
             "cpu",
             "accelerators",

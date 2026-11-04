@@ -103,6 +103,8 @@ pub enum Unit {
     Dbm,
     /// Data rate in megabits per second, as radios and links quote it.
     MegabitsPerSecond,
+    /// Tokens per second, as an inference engine reports them.
+    TokensPerSecond,
 }
 
 impl Unit {
@@ -127,6 +129,7 @@ impl Unit {
             Self::Text => "text",
             Self::Dbm => "dbm",
             Self::MegabitsPerSecond => "megabits_per_second",
+            Self::TokensPerSecond => "tokens_per_second",
         }
     }
 
@@ -190,6 +193,7 @@ pub enum Domain {
     Pci,
     Usb,
     Npu,
+    Inference,
 }
 
 impl Domain {
@@ -207,6 +211,7 @@ impl Domain {
         Domain::Pci,
         Domain::Usb,
         Domain::Npu,
+        Domain::Inference,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -224,6 +229,7 @@ impl Domain {
             Self::Pci => "pci",
             Self::Usb => "usb",
             Self::Npu => "npu",
+            Self::Inference => "inference",
         }
     }
 
@@ -3154,6 +3160,563 @@ impl Ontology {
             entity.writable_via = Some(setting_id.to_string());
             add(entity);
         }
+
+        // ── Inference (IronWorks) ────────────────────────────────────────────
+        //
+        // Provider-segmented: `inference.ironworks.*` is the first provider and
+        // others slot in beside it. Ids follow the engine's schema v1 (final,
+        // 2026-11-03): `tiers.vram.hits_total` is `tier.vram.hits_total`. Everything
+        // is nullable, because the engine may not be running, and every counter is a
+        // measurement the engine reports, so none is `K::Setting`. Peaks and current
+        // figures are named as such, because a peak is not a depth.
+        add(Entity::new(
+            "inference.ironworks.engine.model",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The model the IronWorks engine is serving, as the engine names it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.engine.backend",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The compute backend the IronWorks engine runs on, such as cuda or metal.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.requests.total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative requests the IronWorks engine has served since it started. A counter; a rate is derived from two samples.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.requests.active",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests the IronWorks engine is serving right now. A current count, not a peak.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.decode.prompt_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prompt tokens across every request since the engine started. A counter. Prompt throughput is derived from this counter across two samples, never taken from the engine.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.decode.completion_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative completion tokens across every request since the engine started, from the engine's token accounting. A counter. Output throughput is derived from this counter across two samples.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.decode.completion_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Output tokens per second: the change in decode.completion_tokens_total over the engine's uptime between two samples. Null in a single-shot read, and across an engine restart.",
+        ).derived(&["inference.ironworks.decode.completion_tokens_total"]));
+        add(Entity::new(
+            "inference.ironworks.decode.prompt_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Prompt tokens per second: the change in decode.prompt_tokens_total over the engine's uptime between two samples. Null in a single-shot read, and across an engine restart.",
+        ).derived(&["inference.ironworks.decode.prompt_tokens_total"]));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.policy",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The eviction policy the IronWorks engine applies to its VRAM expert cache.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.experts_resident",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Expert weights resident in the VRAM expert cache right now.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.capacity_experts",
+            D::Inference,
+            K::Limit,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "How many expert weights the VRAM expert cache can hold, as the engine configured it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.bytes_resident",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Bytes of expert weights resident in the VRAM expert cache right now.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.hits_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM expert-cache hits since the engine started. A counter. The numerator of tier.vram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.fills_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM expert-cache fills since the engine started. A counter. A term in the denominator of tier.vram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.bypass_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM expert-cache bypasses, as the engine counts them since it started. A counter. A term in the denominator of tier.vram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.not_admitted_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM picks not admitted to the cache, as the engine counts them since it started. A counter. A term in the denominator of tier.vram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.evictions_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative expert evictions from the VRAM cache since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.fill_bytes_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Cumulative bytes written into the VRAM expert cache since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.warm_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM expert-cache warm-ups, as the engine counts them since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.fills_aborted_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative VRAM expert-cache fills the engine aborted, since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.hit_ratio",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            concat!(
+                "Share of VRAM expert-cache picks served from the cache, as a percentage over the window between two samples: ",
+                "tier.vram.hits_total / (tier.vram.hits_total + tier.vram.fills_total + tier.vram.bypass_total + tier.vram.not_admitted_total), ",
+                "over every deduplicated pick the VRAM tier saw. Unavailable when any of those counters is missing, when the window had no picks, ",
+                "and in a single-shot read. Never zero for a window that had no picks.",
+            ),
+        ).derived(&["inference.ironworks.tier.vram.hits_total","inference.ironworks.tier.vram.fills_total","inference.ironworks.tier.vram.bypass_total","inference.ironworks.tier.vram.not_admitted_total"]));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.experts_resident",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Expert weights resident in the host RAM expert cache right now.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.pinned_bytes",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Bytes of host memory the engine has pinned for the RAM expert cache.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.hits_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative host RAM expert-cache hits since the engine started. A counter. The numerator of tier.ram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.misses_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative host RAM expert-cache misses since the engine started. A counter. A term in the denominator of tier.ram.hit_ratio.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.waits_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative waits on a host RAM expert load, as the engine counts them since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.evictions_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative expert evictions from the host RAM cache since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.bytes_loaded_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Cumulative bytes loaded into the host RAM cache since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.puts_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative host RAM expert-cache puts, as the engine counts them since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.discards_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative host RAM expert-cache discards, as the engine counts them since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.loads_abandoned_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative host RAM expert loads the engine abandoned, since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.hit_ratio",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            concat!(
+                "Share of host RAM expert-cache lookups that hit, as a percentage over the window between two samples: ",
+                "tier.ram.hits_total / (tier.ram.hits_total + tier.ram.misses_total). ",
+                "Unavailable when either counter is missing, when the window had no lookups, and in a single-shot read.",
+            ),
+        ).derived(&["inference.ironworks.tier.ram.hits_total","inference.ironworks.tier.ram.misses_total"]));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.reads_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative reads issued to the NVMe expert store since the engine started. A counter; a rate is derived from two samples.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.bytes_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Cumulative bytes read from the NVMe expert store since the engine started. A counter; the read rate is derived from two samples.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.batches_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative read batches issued to the NVMe expert store since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.inflight_peak",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "The most NVMe reads in flight at once since the engine started. A peak (high-water mark), not the number in flight now.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.latency_p50_ms",
+            D::Inference,
+            K::Measurement,
+            Some(U::Milliseconds),
+            P::Measured,
+            true,
+            "Median NVMe read latency as the engine computes it. The engine reports nanoseconds; this is shown in milliseconds.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.latency_p99_ms",
+            D::Inference,
+            K::Measurement,
+            Some(U::Milliseconds),
+            P::Measured,
+            true,
+            "99th-percentile NVMe read latency as the engine computes it. The engine reports nanoseconds; this is shown in milliseconds.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.latency_max_ms",
+            D::Inference,
+            K::Measurement,
+            Some(U::Milliseconds),
+            P::Measured,
+            true,
+            "The slowest single NVMe read since the engine started. A peak (high-water mark). The engine reports nanoseconds; this is shown in milliseconds.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.queue_depth",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Reads queued against the NVMe expert store right now. Reported only by engine builds that instrument it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.requested_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative expert prefetches requested since the engine started. A counter. Present only with an expert store.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.scheduled_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetches scheduled since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.dropped_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetch requests dropped, as the engine counts them since it started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.loaded_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetched experts loaded since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.useful_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetched experts the engine counts as useful, since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.wasted_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetched experts the engine counts as wasted, since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.errors_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefetch loads that failed, since the engine started. A counter.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.queue_peak",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "The longest the prefetch queue has been since the engine started. A peak (high-water mark), not the queue length now.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.memory.host.engine_pinned_bytes",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            "Host memory the IronWorks engine has pinned, as the engine reports it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.gpu.{n}.vram_used_bytes",
+            D::Inference,
+            K::Measurement,
+            Some(U::Bytes),
+            P::Measured,
+            true,
+            concat!(
+                "VRAM the IronWorks engine is using on this GPU, as the engine reports it, not the device's total use. ",
+                "The engine's GPU is joined to this gpu.{n} by PCI bus address, with UUID as fallback, never by the engine's own device index, ",
+                "which CUDA_VISIBLE_DEVICES can renumber.",
+            ),
+        ));
+        add(Entity::new(
+            "inference.ironworks.gpu.{n}.pci_bus_id",
+            D::Inference,
+            K::Identity,
+            Some(U::Identifier),
+            P::Measured,
+            true,
+            "The PCI bus address of the GPU the IronWorks engine runs on, as the engine reports it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.gpu.{n}.uuid",
+            D::Inference,
+            K::Identity,
+            Some(U::Identifier),
+            P::Measured,
+            true,
+            "The UUID of the GPU the IronWorks engine runs on, as the engine reports it.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            concat!(
+                "Present when no IronWorks metrics were read, carrying the reason. Two different states are named apart: ",
+                "\"engine running, metrics not enabled — start it with --metrics\" (the engine answered 404 with its metrics-off body), ",
+                "and \"no engine answered\" (nothing answered at the endpoint). Also present when the endpoint answered with something other than IronWorks metrics.",
+            ),
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.vram.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when the VRAM expert-cache tier is not configured, or is absent from the engine's metrics, carrying the reason.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.ram.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when the host RAM expert-cache tier is not configured, or is absent from the engine's metrics, carrying the reason.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.nvme.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when the NVMe expert-store tier is not configured, or is absent from the engine's metrics, carrying the engine's reason.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.tier.prefetch.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when the engine's metrics carry no prefetch object. The engine includes one only when an expert store is configured, so its absence means no store, not zero prefetches.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.gpu.<unmatched>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present for each GPU the IronWorks engine uses that could not be matched to one of IronMonitor's own GPUs by PCI bus address or UUID. Its figures are withheld rather than attached to a guessed gpu.{n}, and the reason is given.",
+        ));
+        add(Entity::new(
+            "inference.ironworks.gpu.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when the IronWorks engine reports no per-GPU memory, carrying the reason.",
+        ));
 
         // ── Diagnostics ──────────────────────────────────────────────────────
         //

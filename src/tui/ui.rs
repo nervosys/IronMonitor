@@ -21,7 +21,11 @@ use ratatui::{
     Frame,
 };
 
-use super::app::App;
+use super::app::{
+    App, TAB_ACCELERATORS, TAB_AGENT, TAB_CPU, TAB_INFERENCE, TAB_MEMORY, TAB_OVERVIEW,
+    TAB_PERIPHERALS, TAB_PROCESSES, TAB_PROFILES, TAB_SYSTEM,
+};
+use super::inference_view;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // GLANCES-STYLE COLOR SYSTEM
@@ -233,15 +237,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tab_bar(f, app, chunks[0]);
 
     match app.selected_tab {
-        0 => draw_overview_tab(f, app, chunks[1]),
-        1 => draw_processes_tab(f, app, chunks[1]),
-        2 => draw_cpu_tab(f, app, chunks[1]),
-        3 => draw_accelerators_tab(f, app, chunks[1]),
-        4 => draw_memory_tab(f, app, chunks[1]),
-        5 => draw_system_tab(f, app, chunks[1]),
-        6 => draw_peripherals(f, app, chunks[1]),
-        7 => draw_profiles_tab(f, app, chunks[1]),
-        8 => draw_agent(f, app, chunks[1]),
+        TAB_INFERENCE => draw_inference_tab(f, app, chunks[1]),
+        TAB_OVERVIEW => draw_overview_tab(f, app, chunks[1]),
+        TAB_PROCESSES => draw_processes_tab(f, app, chunks[1]),
+        TAB_CPU => draw_cpu_tab(f, app, chunks[1]),
+        TAB_ACCELERATORS => draw_accelerators_tab(f, app, chunks[1]),
+        TAB_MEMORY => draw_memory_tab(f, app, chunks[1]),
+        TAB_SYSTEM => draw_system_tab(f, app, chunks[1]),
+        TAB_PERIPHERALS => draw_peripherals(f, app, chunks[1]),
+        TAB_PROFILES => draw_profiles_tab(f, app, chunks[1]),
+        TAB_AGENT => draw_agent(f, app, chunks[1]),
         _ => {}
     }
 
@@ -2401,7 +2406,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(" Navigate  "),
         Span::styled(
-            "1-8",
+            "1-9 0",
             Style::default()
                 .fg(glances_colors::TITLE)
                 .add_modifier(Modifier::BOLD),
@@ -2418,7 +2423,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
 
     // Add tab-specific hints
     match app.selected_tab {
-        1 => {
+        TAB_PROCESSES => {
             // Processes tab
             help_spans.extend([
                 Span::styled(
@@ -2451,8 +2456,8 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" Page  "),
             ]);
         }
-        7 => {
-            // Agent tab
+        TAB_INFERENCE | TAB_AGENT => {
+            // The chat box is on both tabs.
             help_spans.extend([
                 Span::styled(
                     "a",
@@ -3032,8 +3037,13 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
+    draw_agent_history(f, app, chunks[1]);
+}
 
-    // Conversation history
+/// The chat box's transcript, or the examples when nothing has been asked yet.
+/// Shared by the Agent and Inference tabs: both read the same `agent_history`, and
+/// the question box itself is drawn by the footer on every tab.
+fn draw_agent_history(f: &mut Frame, app: &App, area: Rect) {
     if app.agent_history.is_empty() {
         let help_text = vec![
             Line::from(""),
@@ -3060,7 +3070,7 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
             .block(Block::default().borders(Borders::ALL).title("Examples"))
             .alignment(Alignment::Left);
 
-        f.render_widget(help, chunks[1]);
+        f.render_widget(help, area);
     } else {
         // Show conversation history (most recent first). Use Paragraph
         // rather than List so long responses wrap to the panel width.
@@ -3090,8 +3100,22 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
             )))
             .wrap(ratatui::widgets::Wrap { trim: false });
 
-        f.render_widget(history, chunks[1]);
+        f.render_widget(history, area);
     }
+}
+
+/// The Inference tab: the provider panels above, and the chat box below them. The
+/// chat box shares the Agent tab's state, so a question asked here is answered in
+/// the same history the Agent tab shows.
+fn draw_inference_tab(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    let states = app.inference_states();
+    let gpus = app.inference_gpus();
+    inference_view::draw(f, chunks[0], &states, &gpus);
+    draw_agent_history(f, app, chunks[1]);
 }
 
 /// Build the cached `Vec<Line>` for the agent conversation history.

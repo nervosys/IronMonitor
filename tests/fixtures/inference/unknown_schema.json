@@ -1,0 +1,6 @@
+{
+  "schema_version": 2,
+  "sampled_at_ns": 5000000000,
+  "engine": { "model": "qwen3-30b-a3b" },
+  "requests": { "total": 1 }
+}

@@ -369,6 +369,7 @@ fn the_gui_renders_a_tab_headlessly() {
 #[test]
 fn every_gui_tab_paints_text() {
     for tab in [
+        "inference",
         "overview",
         "cpu",
         "accelerators",

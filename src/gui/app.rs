@@ -108,14 +108,16 @@ pub struct IronMonitorApp {
     agent_tools: super::agent_tools::AgentToolsPanel,
     // Current tab
     current_tab: Tab,
+    /// Inference engines, polled in the background. Spawned once, in `with_context`.
+    pub(super) inference: crate::inference::InferencePoller,
 
     // Hardware data
     cpu_stats: Option<CpuStats>,
     memory_stats: Option<MemoryStats>,
     #[allow(dead_code)]
     gpu_collection: Option<GpuCollection>,
-    gpu_static_info: Vec<GpuStaticInfo>,
-    gpu_dynamic_info: Vec<GpuDynamicInfo>,
+    pub(super) gpu_static_info: Vec<GpuStaticInfo>,
+    pub(super) gpu_dynamic_info: Vec<GpuDynamicInfo>,
     network_monitor: Option<NetworkMonitor>,
     process_list: Vec<ProcessMonitorInfo>,
 
@@ -437,6 +439,7 @@ enum ChatRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Inference,
     Overview,
     Cpu,
     Accelerators,
@@ -1020,7 +1023,8 @@ impl IronMonitorApp {
 
         let mut app = Self {
             agent_tools: super::agent_tools::AgentToolsPanel::default(),
-            current_tab: Tab::Overview,
+            current_tab: Tab::Inference,
+            inference: super::inference_tab::spawn_poller(),
             cpu_stats: initial_cpu_stats,
             memory_stats: initial_memory_stats,
             gpu_collection,
@@ -1450,6 +1454,7 @@ impl IronMonitorApp {
             Tab::Peripherals => self.peripherals.is_none() && self.system_info_loading,
             Tab::Profiles => self.profile_snapshot_loading,
             Tab::Network => self.net_context.is_none(),
+            Tab::Inference => super::inference_tab::awaiting_first_answer(&self.inference),
             _ => false,
         }
     }
@@ -2272,7 +2277,7 @@ impl IronMonitorApp {
             // and a 220 px reserve the thirteen tabs needed a 1400 px window, so
             // every 13" panel paid a second 26 px row. The host label truncates,
             // so the reserve only has to hold the gear and a useful prefix.
-            const HOST_CONTROLS_WIDTH: f32 = 180.0;
+            const HOST_CONTROLS_WIDTH: f32 = 150.0;
             ui.horizontal_top(|ui| {
                 let tabs_width =
                     (ui.available_width() - HOST_CONTROLS_WIDTH - ui.spacing().item_spacing.x)
@@ -2282,8 +2287,11 @@ impl IronMonitorApp {
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
                         ui.set_min_width(tabs_width);
-                        ui.spacing_mut().button_padding.x = 6.0;
-                        ui.spacing_mut().item_spacing.x = 4.0;
+                        // Four px either side of each label and two between tabs
+                        // are what the fourteen tabs need on one 13" row; the
+                        // label itself is what identifies the tab, so it stays.
+                        ui.spacing_mut().button_padding.x = 4.0;
+                        ui.spacing_mut().item_spacing.x = 2.0;
                         // Tabs - use local variable to avoid borrow issues
                         let current = self.current_tab;
                         let tab_color = |tab: Tab| {
@@ -2294,6 +2302,12 @@ impl IronMonitorApp {
                             }
                         };
 
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Inference,
+                            RichText::new("🧠 Inference")
+                                .color(theme::color(&palette_ctx, tab_color(Tab::Inference))),
+                        );
                         ui.selectable_value(
                             &mut self.current_tab,
                             Tab::Overview,
@@ -2415,6 +2429,7 @@ impl IronMonitorApp {
     /// this, so a frame an agent reads is drawn by the same code a user sees.
     pub fn draw_current_tab(&mut self, ui: &mut egui::Ui) {
         match self.current_tab {
+            Tab::Inference => self.draw_inference_tab(ui),
             Tab::Overview => self.draw_overview(ui),
             Tab::Cpu => self.draw_cpu_tab(ui),
             Tab::Accelerators => self.draw_accelerators_tab(ui),
@@ -2437,6 +2452,7 @@ impl IronMonitorApp {
     /// what it may ask for rather than silently getting the default.
     pub fn select_tab_by_name(&mut self, name: &str) -> Result<(), Vec<&'static str>> {
         let all = [
+            ("inference", Tab::Inference),
             ("overview", Tab::Overview),
             ("cpu", Tab::Cpu),
             ("accelerators", Tab::Accelerators),
@@ -2606,6 +2622,15 @@ impl IronMonitorApp {
             }
         }
         None
+    }
+
+    /// The newest assistant reply in the shared chat, with its inference time.
+    pub(super) fn latest_agent_reply(&self) -> Option<(String, Option<u64>)> {
+        self.agent_history
+            .iter()
+            .rev()
+            .find(|entry| entry.role == ChatRole::Assistant)
+            .map(|entry| (entry.content.clone(), entry.inference_time_ms))
     }
 
     /// Whether a question can actually be sent right now.
@@ -9555,6 +9580,21 @@ mod overview_disk_tests {
             text.iter().any(|label| label == "D:\\  Samsung SSD"),
             "distinct model names should remain: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod inference_default_tab_tests {
+    use super::{IronMonitorApp, Tab};
+
+    /// The app opens on Inference, and Overview is not the default any more. The
+    /// Overview autofit runs on the frame the user first opens Overview, so it does
+    /// not depend on the default tab.
+    #[test]
+    fn the_app_opens_on_the_inference_tab() {
+        let ctx = egui::Context::default();
+        let app = IronMonitorApp::with_context(&ctx);
+        assert_eq!(app.current_tab, Tab::Inference);
     }
 }
 

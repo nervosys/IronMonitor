@@ -4,7 +4,7 @@
 //! It displays CPU, GPU, memory, disk, and system information using the ratatui library.
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -16,6 +16,7 @@ pub mod app;
 // Renders frames into an in-memory buffer, so the TUI is inspectable without a
 // terminal — by tests, and by `ironmon tui --frame` for an agent that has no TTY.
 pub mod headless;
+mod inference_view;
 mod ui;
 
 use app::PeripheralCache;
@@ -118,39 +119,8 @@ where
                 if let Ok(Event::Key(key)) = event::read() {
                     if key.kind == KeyEventKind::Press {
                         events_processed = true;
-                        // Handle agent input mode separately
-                        if app.agent_input_mode {
-                            match key.code {
-                                KeyCode::Char(c) => app.agent_input_char(c),
-                                KeyCode::Backspace => app.agent_input_backspace(),
-                                KeyCode::Enter => app.submit_agent_query(),
-                                KeyCode::Esc => app.toggle_agent_input(),
-                                _ => {}
-                            }
-                        } else {
-                            use crate::tui::app::ViewMode;
-                            match app.view_mode {
-                                ViewMode::Main => {
-                                    if app.handle_main_key(key.code, key.modifiers) {
-                                        return Ok(());
-                                    }
-                                }
-                                ViewMode::ProcessDetail => match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                                        app.close_overlay()
-                                    }
-                                    KeyCode::Up => app.select_process_up(),
-                                    KeyCode::Down => app.select_process_down(),
-                                    _ => {}
-                                },
-                                ViewMode::ThemeSelection => match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => app.close_overlay(),
-                                    KeyCode::Up => app.theme_picker_prev(),
-                                    KeyCode::Down => app.theme_picker_next(),
-                                    KeyCode::Enter => app.apply_selected_theme(),
-                                    _ => {}
-                                },
-                            }
+                        if app.handle_key(key.code, key.modifiers) {
+                            return Ok(());
                         }
                     }
                 }

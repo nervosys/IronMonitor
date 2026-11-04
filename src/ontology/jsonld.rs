@@ -73,6 +73,9 @@ pub fn qudt_unit(unit: Unit) -> Option<&'static str> {
         Unit::Count => "NUM",
         Unit::Dbm => "DeciB_M",
         Unit::MegabitsPerSecond => "MegaBIT-PER-SEC",
+        // No QUDT unit for tokens. `NUM-PER-SEC` says "this many per second"
+        // without claiming to know of what, as it does for transfers.
+        Unit::TokensPerSecond => "NUM-PER-SEC",
         // Not quantities. See the module documentation.
         Unit::Identifier | Unit::Text => return None,
     })
