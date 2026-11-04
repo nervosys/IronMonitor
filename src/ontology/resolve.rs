@@ -147,8 +147,11 @@ impl Scope {
 
 /// Run every reader the scope wants, in the order a full snapshot has always used.
 ///
-/// Each line names the segments its reader emits, taken from a Windows snapshot and the
-/// literals in the reader's source. The order is load-bearing: the GPU
+/// Each line names the segments its reader emits. They were taken from the literals in each
+/// reader's source, across every `#[cfg]` branch, and from the segments of the dynamic
+/// tables a reader iterates (see [`settings_segments`]). Over-declaring only runs an extra
+/// reader, so a line that is too broad is harmless and one that is too narrow is a bug. The
+/// order is load-bearing: the GPU
 /// readers run before inference, which matches its engines' GPUs against `gpu.{n}`
 /// readings, and the extended areas run before both.
 fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
@@ -185,7 +188,7 @@ fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
     run(scope, &["disk"], out, resolve_storage_controllers);
     run(scope, &["power"], out, resolve_power_profiles);
     run(scope, &["gpu"], out, resolve_codecs);
-    run(scope, &["cpu"], out, resolve_settings);
+    run(scope, &settings_segments(), out, resolve_settings);
     // Each area declares the segments it emits, and runs only if one is wanted.
     super::extended::resolve(out, scope);
     run(scope, &["inference"], out, resolve_inference);
@@ -408,6 +411,12 @@ fn needed_segments(
         }
     }
 
+    close_over_consumes(&mut segments);
+    segments
+}
+
+/// Add every segment that a segment in `segments` reads from elsewhere, transitively.
+fn close_over_consumes(segments: &mut std::collections::BTreeSet<String>) {
     loop {
         let before = segments.len();
         for (reader, read) in CONSUMES {
@@ -419,7 +428,6 @@ fn needed_segments(
             break;
         }
     }
-    segments
 }
 
 /// Resolve one id. Templates are rejected: `gpu.{n}.name` is not a question that has
@@ -4035,6 +4043,17 @@ fn resolve_storage_controllers(out: &mut Vec<Reading>) {
 /// mistaken for an unreadable setting. A handler that does not implement it is
 /// one-way by construction — it can change the machine and cannot say what the
 /// machine currently says — and that is what the absence reports.
+/// The id segments [`resolve_settings`] emits on this platform: the domain of each write
+/// handler's subsystem. The handlers differ by platform (Linux sysfs writes gpu and cpu
+/// settings, Windows writes a cpu setting), so the list comes from the handler table rather
+/// than from a hand-written line.
+fn settings_segments() -> Vec<&'static str> {
+    crate::profile::apply::builtin_handlers()
+        .iter()
+        .map(|handler| super::setting_domain(handler.subsystem()).as_str())
+        .collect()
+}
+
 fn resolve_settings(out: &mut Vec<Reading>) {
     for handler in crate::profile::apply::builtin_handlers() {
         let id = format!(
@@ -5978,7 +5997,7 @@ mod inference_resolver_tests {
 #[cfg(test)]
 mod scoped_get_tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn scope_of(segments: &[&str]) -> Scope {
         Scope::of(
@@ -6067,5 +6086,135 @@ mod scoped_get_tests {
         assert!(rows.iter().any(|r| r.id == "memory.total"), "{rows:?}");
         assert!(rows.iter().all(|r| first_segment(&r.id) == "memory"));
         assert!(rows.iter().all(|r| !r.id.contains('<')));
+    }
+
+    /// Digits masked, so a count quoted in a note does not make two passes differ.
+    fn mask(text: &str) -> String {
+        text.chars()
+            .map(|c| if c.is_ascii_digit() { '#' } else { c })
+            .collect()
+    }
+
+    /// `process.<pid>.*` rows describe whichever processes existed during one pass, so two
+    /// passes never agree on them. Every other process row is still compared.
+    fn is_process_instance(id: &str) -> bool {
+        id.strip_prefix("process.")
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    }
+
+    /// `cpu.core.{n}.frequency` on Windows is the nominal clock times the kernel's delivered
+    /// performance, read from a PDH counter (`windows_pdh::processor_performance_percent`).
+    /// That counter returns nothing on the first call in a process, which only primes its
+    /// interval, so whether a given pass reports the row as derived or unavailable depends
+    /// on which pass in the process first read it. The row's declaration does not change.
+    /// Only the full-pass comparison of these rows is skipped; a scoped row for one of them
+    /// that the full pass lacks is still reported.
+    fn is_primed_clock(id: &str) -> bool {
+        id.strip_prefix("cpu.core.")
+            .and_then(|rest| rest.strip_suffix(".frequency"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// Whether two rows for the same id state the same fact, and if not, what differs.
+    fn same_reading(full: &Reading, scoped: &Reading) -> Result<(), String> {
+        let mut differences = Vec::new();
+        if full.provenance != scoped.provenance {
+            differences.push(format!(
+                "provenance {:?} in the full pass, {:?} in the segment pass",
+                full.provenance, scoped.provenance
+            ));
+        }
+        if full.unit != scoped.unit {
+            differences.push(format!(
+                "unit {:?} in the full pass, {:?} in the segment pass",
+                full.unit, scoped.unit
+            ));
+        }
+        if full.value.is_some() != scoped.value.is_some() {
+            differences.push(format!(
+                "value present={} in the full pass, present={} in the segment pass",
+                full.value.is_some(),
+                scoped.value.is_some()
+            ));
+        }
+        let note = |r: &Reading| r.note.as_deref().map(mask);
+        if note(full) != note(scoped) {
+            differences.push(format!(
+                "note {:?} in the full pass, {:?} in the segment pass",
+                note(full),
+                note(scoped)
+            ));
+        }
+        if differences.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("{}: {}", full.id, differences.join("; ")))
+        }
+    }
+
+    /// Every segment's pass agrees with the full pass, row for row.
+    ///
+    /// `get` answers from the readers its segment declares, so each answer is only as good
+    /// as that declaration. A reader that emits ids in a segment it does not declare is
+    /// skipped by a scoped pass, and its rows fall through to the unbound rows with a
+    /// reason that is false for them. The sampled-id test cannot see this: it checks one id
+    /// per domain, and which id sorts first decides whether the bug shows.
+    ///
+    /// One pass per segment, not per id, so the cost is one extra snapshot's worth of
+    /// readers for each segment. Each pass runs the segment's readers and what they read
+    /// from elsewhere (see [`CONSUMES`]).
+    #[test]
+    fn every_segment_pass_agrees_with_the_full_pass() {
+        let ontology = Ontology::build();
+        let full = pipeline(&ontology, &Scope::all());
+        let full_by_id: BTreeMap<&str, &Reading> =
+            full.iter().map(|r| (r.id.as_str(), r)).collect();
+        let segments: BTreeSet<&str> = full.iter().map(|r| first_segment(&r.id)).collect();
+        assert!(!segments.is_empty(), "the full pass produced no rows");
+
+        let mut problems = Vec::new();
+        for &segment in &segments {
+            let mut scope_segments = BTreeSet::new();
+            scope_segments.insert(segment.to_string());
+            close_over_consumes(&mut scope_segments);
+            let scoped = pipeline(&ontology, &Scope::of(scope_segments));
+            let scoped_by_id: BTreeMap<&str, &Reading> =
+                scoped.iter().map(|r| (r.id.as_str(), r)).collect();
+
+            for row in full.iter().filter(|r| {
+                first_segment(&r.id) == segment
+                    && !is_process_instance(&r.id)
+                    && !is_primed_clock(&r.id)
+            }) {
+                match scoped_by_id.get(row.id.as_str()) {
+                    None => problems.push(format!(
+                        "{}: in the full pass, absent from the {segment} pass",
+                        row.id
+                    )),
+                    Some(other) => {
+                        if let Err(problem) = same_reading(row, other) {
+                            problems.push(problem);
+                        }
+                    }
+                }
+            }
+            for row in scoped
+                .iter()
+                .filter(|r| first_segment(&r.id) == segment && !is_process_instance(&r.id))
+            {
+                if !full_by_id.contains_key(row.id.as_str()) {
+                    problems.push(format!(
+                        "{}: in the {segment} pass, absent from the full pass",
+                        row.id
+                    ));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} rows disagree between the full pass and a segment pass:\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
     }
 }
