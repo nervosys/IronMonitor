@@ -118,17 +118,46 @@ impl Reading {
 #[derive(Debug, Clone)]
 pub(super) struct Scope {
     segments: Option<std::collections::BTreeSet<String>>,
+    /// `None` runs readers of both tiers, which is what `snapshot` and `get` do.
+    tier: Option<Tier>,
+}
+
+/// How a reader's rows behave over time, which decides how often the HTTP sampler runs it.
+///
+/// [`Tier::Live`] readers report what changes from moment to moment: utilization,
+/// counters, temperatures, the process list, engine state. [`Tier::Inventory`] readers
+/// mostly report what a machine is, and they are where a pass spends its time. A tier
+/// only decides when a reader runs. It never changes what the reader reports, and a row
+/// from a slower tier says how old it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Live,
+    Inventory,
 }
 
 impl Scope {
     fn all() -> Self {
-        Self { segments: None }
+        Self {
+            segments: None,
+            tier: None,
+        }
     }
 
     fn of(segments: std::collections::BTreeSet<String>) -> Self {
         Self {
             segments: Some(segments),
+            tier: None,
         }
+    }
+
+    fn in_tier(mut self, tier: Tier) -> Self {
+        self.tier = Some(tier);
+        self
+    }
+
+    /// Whether readers of this tier run in this scope.
+    fn runs(&self, tier: Tier) -> bool {
+        self.tier.is_none_or(|only| only == tier)
     }
 
     /// Whether rows of this id segment are wanted.
@@ -155,48 +184,104 @@ impl Scope {
 /// readers run before inference, which matches its engines' GPUs against `gpu.{n}`
 /// readings, and the extended areas run before both.
 fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
-    run(scope, &["cpu"], out, resolve_cpu);
-    run(scope, &["memory"], out, resolve_memory);
-    run(scope, &["system"], out, resolve_system);
-    run(scope, &["board"], out, resolve_board);
-    run(scope, &["gpu"], out, resolve_gpu);
-    run(scope, &["disk"], out, resolve_disk);
-    run(scope, &["network"], out, resolve_network);
-    run(scope, &["process"], out, resolve_process);
-    run(scope, &["thermal"], out, resolve_thermal);
-    run(scope, &["power"], out, resolve_power);
-    run(scope, &["power"], out, resolve_rapl);
-    run(scope, &["board"], out, resolve_sensors);
-    run(scope, &["board"], out, resolve_displays);
-    run(scope, &["system"], out, resolve_virtualization);
-    run(scope, &["memory"], out, resolve_numa);
-    run(scope, &["memory"], out, resolve_ecc);
-    run(scope, &["pci"], out, resolve_pci);
-    run(scope, &["usb"], out, resolve_usb);
-    run(scope, &["memory"], out, resolve_memory_bandwidth);
-    run(scope, &["cpu"], out, resolve_microarch);
-    run(scope, &["cpu"], out, resolve_crypto);
-    run(scope, &["board"], out, resolve_input);
-    run(scope, &["board"], out, resolve_audio);
-    run(scope, &["board"], out, resolve_cameras);
-    run(scope, &["system"], out, resolve_printers);
-    run(scope, &["system"], out, resolve_services);
-    run(scope, &["system"], out, resolve_kernel_params);
-    run(scope, &["system"], out, resolve_secure_boot);
-    run(scope, &["system"], out, resolve_boot_duration);
-    run(scope, &["network"], out, resolve_bluetooth);
-    run(scope, &["disk"], out, resolve_storage_controllers);
-    run(scope, &["power"], out, resolve_power_profiles);
-    run(scope, &["gpu"], out, resolve_codecs);
-    run(scope, &settings_segments(), out, resolve_settings);
+    run(scope, Tier::Live, &["cpu"], out, resolve_cpu);
+    run(scope, Tier::Live, &["memory"], out, resolve_memory);
+    run(scope, Tier::Live, &["system"], out, resolve_system);
+    run(scope, Tier::Live, &["board"], out, resolve_board);
+    run(scope, Tier::Live, &["gpu"], out, resolve_gpu);
+    run(scope, Tier::Live, &["disk"], out, resolve_disk);
+    run(scope, Tier::Live, &["network"], out, resolve_network);
+    run(scope, Tier::Live, &["process"], out, resolve_process);
+    run(scope, Tier::Live, &["thermal"], out, resolve_thermal);
+    run(scope, Tier::Live, &["power"], out, resolve_power);
+    run(scope, Tier::Live, &["power"], out, resolve_rapl);
+    run(scope, Tier::Live, &["board"], out, resolve_sensors);
+    run(scope, Tier::Inventory, &["board"], out, resolve_displays);
+    run(
+        scope,
+        Tier::Inventory,
+        &["system"],
+        out,
+        resolve_virtualization,
+    );
+    run(scope, Tier::Inventory, &["memory"], out, resolve_numa);
+    run(scope, Tier::Inventory, &["memory"], out, resolve_ecc);
+    run(scope, Tier::Inventory, &["pci"], out, resolve_pci);
+    run(scope, Tier::Inventory, &["usb"], out, resolve_usb);
+    run(
+        scope,
+        Tier::Inventory,
+        &["memory"],
+        out,
+        resolve_memory_bandwidth,
+    );
+    run(scope, Tier::Inventory, &["cpu"], out, resolve_microarch);
+    run(scope, Tier::Inventory, &["cpu"], out, resolve_crypto);
+    run(scope, Tier::Inventory, &["board"], out, resolve_input);
+    run(scope, Tier::Inventory, &["board"], out, resolve_audio);
+    run(scope, Tier::Inventory, &["board"], out, resolve_cameras);
+    run(scope, Tier::Inventory, &["system"], out, resolve_printers);
+    run(scope, Tier::Inventory, &["system"], out, resolve_services);
+    run(
+        scope,
+        Tier::Inventory,
+        &["system"],
+        out,
+        resolve_kernel_params,
+    );
+    run(
+        scope,
+        Tier::Inventory,
+        &["system"],
+        out,
+        resolve_secure_boot,
+    );
+    run(
+        scope,
+        Tier::Inventory,
+        &["system"],
+        out,
+        resolve_boot_duration,
+    );
+    run(scope, Tier::Inventory, &["network"], out, resolve_bluetooth);
+    run(
+        scope,
+        Tier::Inventory,
+        &["disk"],
+        out,
+        resolve_storage_controllers,
+    );
+    run(
+        scope,
+        Tier::Inventory,
+        &["power"],
+        out,
+        resolve_power_profiles,
+    );
+    run(scope, Tier::Inventory, &["gpu"], out, resolve_codecs);
+    run(
+        scope,
+        Tier::Inventory,
+        &settings_segments(),
+        out,
+        resolve_settings,
+    );
     // Each area declares the segments it emits, and runs only if one is wanted.
-    super::extended::resolve(out, scope);
-    run(scope, &["inference"], out, resolve_inference);
-    run(scope, &["agents"], out, resolve_agents);
+    if scope.runs(Tier::Inventory) {
+        super::extended::resolve(out, scope);
+    }
+    run(scope, Tier::Live, &["inference"], out, resolve_inference);
+    run(scope, Tier::Live, &["agents"], out, resolve_agents);
 }
 
-fn run(scope: &Scope, emits: &[&str], out: &mut Vec<Reading>, reader: fn(&mut Vec<Reading>)) {
-    if scope.wants(emits) {
+fn run(
+    scope: &Scope,
+    tier: Tier,
+    emits: &[&str],
+    out: &mut Vec<Reading>,
+    reader: fn(&mut Vec<Reading>),
+) {
+    if scope.runs(tier) && scope.wants(emits) {
         reader(out);
     }
 }
@@ -271,6 +356,50 @@ pub fn sample_segment(segment: &str) -> Vec<Reading> {
         .collect()
 }
 
+/// The rows of `segment` that one tier's readers emit, range-checked and in id order.
+///
+/// Together with [`absence_rows`] this splits [`sample_segment`] so the two tiers can be
+/// read at different rates. A live pass keeps the segments its readers consume, since
+/// `resolve_inference` joins engines to the GPU rows of a live reader. Nothing reads an
+/// inventory row from the pass output, so an inventory pass needs only its own segment.
+pub fn sample_tier(segment: &str, tier: Tier) -> Vec<Reading> {
+    let ontology = ontology();
+    let mut segments = std::collections::BTreeSet::new();
+    segments.insert(segment.to_string());
+    if tier == Tier::Live {
+        for entity in ontology
+            .entities
+            .values()
+            .filter(|e| first_segment(&e.id) == segment)
+        {
+            segments.extend(needed_segments(ontology, &entity.id, entity));
+        }
+        close_over_consumes(&mut segments);
+    }
+    let _pass = crate::pipeline::reader_pass();
+    let mut out = Vec::new();
+    run_readers(&mut out, &Scope::of(segments).in_tier(tier));
+    gate_readings(ontology, &mut out);
+    out.retain(|r| first_segment(&r.id) == segment);
+    out
+}
+
+/// The rows `segment` reports for what neither tier emitted: unbound entities, and a
+/// `<none>` row for a domain that produced nothing.
+///
+/// These are claims about both tiers together, so they cannot be made until both have
+/// been read. A live pass alone would report every inventory entity as having no reader.
+pub fn absence_rows(segment: &str, live: &[Reading], inventory: &[Reading]) -> Vec<Reading> {
+    let ontology = ontology();
+    let mut segments = std::collections::BTreeSet::new();
+    segments.insert(segment.to_string());
+    let scope = Scope::of(segments);
+    let emitted = [live, inventory].concat();
+    let mut rows = unbound_rows(ontology, &emitted, &scope);
+    rows.append(&mut missing_domain_rows(ontology, &emitted, &scope));
+    rows
+}
+
 /// The whole snapshot pipeline, restricted to the readers `scope` needs.
 ///
 /// Every row a scope produces is the row a full snapshot produces for the same id:
@@ -290,6 +419,12 @@ fn pipeline(ontology: &Ontology, scope: &Scope) -> Vec<Reading> {
     let mut missing = missing_domain_rows(ontology, &out, scope);
     out.append(&mut missing);
 
+    gate_readings(ontology, &mut out);
+    out
+}
+
+/// The final checks every reading passes through, then id order.
+fn gate_readings(ontology: &Ontology, out: &mut [Reading]) {
     // Last gate: a resolver must not hand an agent a number its own schema calls
     // impossible. Anything outside the declared range becomes unavailable, with the
     // offending value quoted in the note — surfaced, not swallowed, and never
@@ -347,7 +482,6 @@ fn pipeline(ontology: &Ontology, scope: &Scope) -> Vec<Reading> {
     }
 
     out.sort_by(|a, b| a.id.cmp(&b.id));
-    out
 }
 
 /// Rows for entities no reader in `scope` produced, each with the reason.
@@ -6275,6 +6409,57 @@ mod scoped_get_tests {
         assert!(
             problems.is_empty(),
             "{} rows disagree between the full pass and a segment pass:\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
+    }
+
+    /// The live and inventory passes, with the rows about what both left out, report what
+    /// the full pass reports for each segment. This is what lets the HTTP sampler read the
+    /// tiers at different rates without changing any row.
+    #[test]
+    fn the_two_tiers_compose_to_the_segment_pass() {
+        let ontology = Ontology::build();
+        let full = pipeline(&ontology, &Scope::all());
+        let segments: BTreeSet<&str> = full.iter().map(|r| first_segment(&r.id)).collect();
+        assert!(!segments.is_empty(), "the full pass produced no rows");
+
+        let mut problems = Vec::new();
+        for &segment in &segments {
+            let live = sample_tier(segment, Tier::Live);
+            let inventory = sample_tier(segment, Tier::Inventory);
+            let absences = absence_rows(segment, &live, &inventory);
+            let mut composed: BTreeMap<&str, &Reading> = BTreeMap::new();
+            for row in live.iter().chain(&inventory).chain(&absences) {
+                if composed.insert(row.id.as_str(), row).is_some() {
+                    problems.push(format!("{}: produced twice by {segment}", row.id));
+                }
+            }
+            let expected: Vec<&Reading> = full
+                .iter()
+                .filter(|r| first_segment(&r.id) == segment && !is_process_instance(&r.id))
+                .collect();
+            for row in &expected {
+                match composed.get(row.id.as_str()) {
+                    None => problems.push(format!("{}: absent from the two tiers", row.id)),
+                    Some(other) if !is_primed_clock(&row.id) => {
+                        if let Err(problem) = same_reading(row, other) {
+                            problems.push(problem);
+                        }
+                    }
+                    Some(_) => {}
+                }
+            }
+            let known: BTreeSet<&str> = expected.iter().map(|r| r.id.as_str()).collect();
+            for id in composed.keys() {
+                if !known.contains(id) && !is_process_instance(id) {
+                    problems.push(format!("{id}: only in the two tiers"));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} rows disagree between the full pass and the two tiers:\n{}",
             problems.len(),
             problems.join("\n")
         );

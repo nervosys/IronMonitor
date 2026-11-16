@@ -108,11 +108,19 @@ pub(crate) fn health(sampler: &Sampler, detailed: bool) -> Reply {
     let status = sampler.status();
     let mut segments = serde_json::Map::new();
     for segment in status.segments {
-        let value = match segment.last_sampled {
-            Some((at, age)) => json!({ "last_sampled_at": at, "age_ms": age }),
-            None => json!({ "last_sampled_at": null, "age_ms": null }),
+        let (at, age) = match segment.last_sampled {
+            Some((at, age)) => (Some(at), Some(age)),
+            None => (None, None),
         };
-        segments.insert(segment.name, value);
+        segments.insert(
+            segment.name,
+            json!({
+                "last_sampled_at": at,
+                "age_ms": age,
+                "live_age_ms": segment.live_age_ms,
+                "inventory_age_ms": segment.inventory_age_ms,
+            }),
+        );
     }
     Reply::json(
         200,
@@ -162,15 +170,13 @@ fn snapshot(sampler: &Sampler, domain: Option<&str>) -> Reply {
         Err(missing) => return sampling(missing),
     };
 
-    // Each reading carries the age of the sample it came from. Segments are sampled
-    // at different times, so one envelope-wide age would make some readings look
-    // fresher than they were.
+    // Each reading carries the age of the pass it came from. Segments and tiers are
+    // sampled at different times, so one envelope-wide age would make some readings
+    // look fresher than they were.
     let mut rows: Vec<(Reading, String, u64)> = Vec::new();
     for (_, sample) in &samples {
-        let at = sample.sampled_at_rfc3339();
-        let age = sample.age_ms();
-        for reading in &sample.readings {
-            rows.push((reading.clone(), at.clone(), age));
+        for (reading, stamp) in sample.rows() {
+            rows.push((reading.clone(), stamp.sampled_at_rfc3339(), stamp.age_ms()));
         }
     }
     rows.sort_by(|a, b| a.0.id.cmp(&b.0.id));
@@ -212,7 +218,7 @@ fn get(sampler: &Sampler, raw: &str) -> Reply {
     let Some((_, sample)) = samples.first() else {
         return sampling(vec![segment]);
     };
-    let Some(reading) = sample.readings.iter().find(|r| r.id == id) else {
+    let Some((reading, stamp)) = sample.rows().find(|(r, _)| r.id == id) else {
         return not_found();
     };
 
@@ -220,7 +226,7 @@ fn get(sampler: &Sampler, raw: &str) -> Reply {
         Ok(Value::Object(map)) => Value::Object(map),
         _ => return Reply::error(500, "reading did not serialise"),
     };
-    add_sample_fields(&mut object, &sample.sampled_at_rfc3339(), sample.age_ms());
+    add_sample_fields(&mut object, &stamp.sampled_at_rfc3339(), stamp.age_ms());
     Reply::json(200, &object)
 }
 

@@ -9,20 +9,25 @@
 //! - One thread runs every pass, one pass at a time. The readers share static state
 //!   (`PREV_CPU_COUNTERS`, PDH and WMI handles), so two passes at once would corrupt
 //!   each other's rates. The Prometheus collector reads the same state, and the two
-//!   are serialised by one lock: `resolve::sample_segment` takes
+//!   are serialised by one lock: `resolve::sample_tier` takes
 //!   `crate::pipeline::reader_pass`, as does the collector's own pass.
-//! - A pass samples one segment with [`crate::ontology::resolve::sample_segment`], the
-//!   same readers `get` runs. Segments are passed one at a time, so a cheap segment
-//!   is not held up behind an expensive one for a whole snapshot.
+//! - A pass reads one [`Tier`] of one segment with [`crate::ontology::resolve::sample_tier`].
+//!   Live readers are cheap and change constantly. Inventory readers are where the time
+//!   goes, and mostly describe what the machine is. Reading them separately is what
+//!   keeps a segment's counters moving while its slow readers run.
 //! - A route marks the segments it reads as wanted. A segment that nobody has
 //!   wanted within the idle period is not sampled. When no segment is wanted the
 //!   thread blocks on a condition variable and does no work at all.
-//! - A wanted segment is resampled once its last sample is older than the resample
-//!   interval. A slow segment therefore lags, and the age the reader sees says so.
+//! - A wanted segment's live tier is resampled once it is older than the resample
+//!   interval, and its inventory tier once it is older than the inventory interval.
+//!   After an inventory pass, each wanted segment's due live tier runs before the next
+//!   inventory pass, so at most one inventory pass separates two live rounds. Passes are
+//!   never interrupted, so a live reading can still lag by one inventory pass.
 //! - Requests never run a pass themselves. They wait, for a bounded time, for a
-//!   sample that the thread produces.
+//!   sample that the thread produces. A segment answers only once both tiers have
+//!   been read, because rows about what is absent are claims about both.
 
-use crate::ontology::resolve::{self, Reading};
+use crate::ontology::resolve::{self, Reading, Tier};
 use crate::ontology::Domain;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::collections::BTreeMap;
@@ -32,44 +37,53 @@ use std::time::{Duration, Instant};
 /// What a pass reads from. Production uses the resolver; tests substitute a source
 /// that counts passes and takes a chosen time.
 pub(crate) trait SegmentSource: Send + Sync + 'static {
-    fn sample(&self, segment: &str) -> Vec<Reading>;
+    fn sample(&self, segment: &str, tier: Tier) -> Vec<Reading>;
+
+    /// Rows about what neither tier emitted.
+    fn absences(&self, segment: &str, live: &[Reading], inventory: &[Reading]) -> Vec<Reading>;
 }
 
-/// The production source: the resolver's own segment pass.
+/// The production source: the resolver's own tier pass.
 pub(crate) struct ResolverSource;
 
 impl SegmentSource for ResolverSource {
-    fn sample(&self, segment: &str) -> Vec<Reading> {
-        resolve::sample_segment(segment)
+    fn sample(&self, segment: &str, tier: Tier) -> Vec<Reading> {
+        resolve::sample_tier(segment, tier)
+    }
+
+    fn absences(&self, segment: &str, live: &[Reading], inventory: &[Reading]) -> Vec<Reading> {
+        resolve::absence_rows(segment, live, inventory)
     }
 }
 
 /// How long a segment stays wanted after its last request, and how often a wanted
-/// segment is resampled. Injected for tests; the server uses [`Timing::PRODUCTION`].
+/// segment's tiers are resampled. Injected for tests; the server uses
+/// [`Timing::PRODUCTION`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timing {
     pub idle_after: Duration,
     pub resample_every: Duration,
+    pub inventory_every: Duration,
 }
 
 impl Timing {
     pub(crate) const PRODUCTION: Timing = Timing {
         idle_after: Duration::from_secs(60),
         resample_every: Duration::from_secs(2),
+        inventory_every: Duration::from_secs(60),
     };
 }
 
-/// One pass's readings, with the instant the pass started.
+/// When a pass started.
 ///
-/// The sample is stamped with the start of the pass, not its end: a reading is as
-/// old as the moment it began to be taken, so it never appears fresher than it was.
-pub(crate) struct Sample {
-    pub readings: Vec<Reading>,
-    pub sampled_at: DateTime<Utc>,
+/// A pass is stamped with its start, not its end: a reading is as old as the moment it
+/// began to be taken, so it never appears fresher than it was.
+pub(crate) struct Stamp {
+    sampled_at: DateTime<Utc>,
     taken: Instant,
 }
 
-impl Sample {
+impl Stamp {
     /// Milliseconds since the pass started, measured when asked.
     pub(crate) fn age_ms(&self) -> u64 {
         self.taken.elapsed().as_millis() as u64
@@ -80,8 +94,47 @@ impl Sample {
     }
 }
 
+/// One tier's readings from one pass.
+struct Pass {
+    readings: Vec<Reading>,
+    stamp: Stamp,
+}
+
+/// A segment's rows: the latest pass of each tier, and the rows about what both left out.
+pub(crate) struct Sample {
+    live: Arc<Pass>,
+    inventory: Arc<Pass>,
+    absences: Vec<Reading>,
+}
+
+impl Sample {
+    /// Every row with the stamp of the pass it came from. An absence row is a claim about
+    /// both tiers, so it carries the older stamp.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (&Reading, &Stamp)> {
+        let older = self.older();
+        let live = &self.live.stamp;
+        let inventory = &self.inventory.stamp;
+        self.live
+            .readings
+            .iter()
+            .map(move |r| (r, live))
+            .chain(self.inventory.readings.iter().map(move |r| (r, inventory)))
+            .chain(self.absences.iter().map(move |r| (r, older)))
+    }
+
+    fn older(&self) -> &Stamp {
+        if self.live.stamp.taken < self.inventory.stamp.taken {
+            &self.live.stamp
+        } else {
+            &self.inventory.stamp
+        }
+    }
+}
+
 struct Slot {
     wanted_at: Option<Instant>,
+    live: Option<Arc<Pass>>,
+    inventory: Option<Arc<Pass>>,
     sample: Option<Arc<Sample>>,
 }
 
@@ -89,6 +142,9 @@ struct State {
     slots: BTreeMap<String, Slot>,
     started: bool,
     passes: u64,
+    /// When the last inventory pass finished. A live tier older than this is owed a pass
+    /// before the next inventory pass runs.
+    last_inventory_end: Option<Instant>,
 }
 
 struct Shared {
@@ -108,8 +164,11 @@ pub(crate) struct Sampler {
 /// Per-segment state for `/api/v1/health`.
 pub(crate) struct SegmentStatus {
     pub name: String,
-    /// The last sample's start time and its age in milliseconds, if one exists.
+    /// When the older tier of the current sample was read and its age in milliseconds,
+    /// if the segment has a sample. A segment is never reported fresher than its oldest row.
     pub last_sampled: Option<(String, u64)>,
+    pub live_age_ms: Option<u64>,
+    pub inventory_age_ms: Option<u64>,
 }
 
 /// Whether the sampler is busy, and what it last read.
@@ -133,6 +192,8 @@ impl Sampler {
                     d.as_str().to_string(),
                     Slot {
                         wanted_at: None,
+                        live: None,
+                        inventory: None,
                         sample: None,
                     },
                 )
@@ -144,6 +205,7 @@ impl Sampler {
                     slots,
                     started: false,
                     passes: 0,
+                    last_inventory_end: None,
                 }),
                 changed: Condvar::new(),
                 timing,
@@ -229,10 +291,12 @@ impl Sampler {
             .iter()
             .map(|(name, slot)| SegmentStatus {
                 name: name.clone(),
-                last_sampled: slot
-                    .sample
-                    .as_ref()
-                    .map(|s| (s.sampled_at_rfc3339(), s.age_ms())),
+                last_sampled: slot.sample.as_ref().map(|s| {
+                    let older = s.older();
+                    (older.sampled_at_rfc3339(), older.age_ms())
+                }),
+                live_age_ms: slot.live.as_ref().map(|p| p.stamp.age_ms()),
+                inventory_age_ms: slot.inventory.as_ref().map(|p| p.stamp.age_ms()),
             })
             .collect();
         Status { running, segments }
@@ -262,60 +326,117 @@ impl Sampler {
     }
 }
 
+/// Never-sampled work sorts first, in the order it was first wanted, so a cold first round
+/// follows the requests rather than the alphabet; then the oldest sample.
+type Priority = (bool, Option<Instant>);
+
+/// Keep whichever of `current` and the new candidate has the lower priority key.
+fn consider(current: &mut Option<(String, Priority)>, name: &str, key: Priority) {
+    if current.as_ref().is_none_or(|(_, held)| key < *held) {
+        *current = Some((name.to_string(), key));
+    }
+}
+
+/// The next pass to run, if one is due, and otherwise when one will be.
+///
+/// In order: a live tier that has never been read or that predates the last inventory
+/// pass, then a due inventory tier, then any other due live tier. Inventory ranks above
+/// ordinary live work so that a live tier always due cannot starve it, and the first rule
+/// then gives every wanted live tier its turn before the next inventory pass.
+fn choose(
+    state: &State,
+    timing: Timing,
+    now: Instant,
+) -> (Option<(String, Tier)>, Option<Instant>) {
+    let mut owed = None;
+    let mut inventory = None;
+    let mut live = None;
+    let mut wake_at: Option<Instant> = None;
+    let mut wake = |at: Instant| wake_at = Some(wake_at.map_or(at, |w: Instant| w.min(at)));
+
+    for (name, slot) in &state.slots {
+        let Some(wanted) = slot.wanted_at else {
+            continue;
+        };
+        if now.duration_since(wanted) >= timing.idle_after {
+            continue;
+        }
+
+        match &slot.live {
+            None => consider(&mut owed, name, (false, slot.wanted_at)),
+            Some(pass) => {
+                let due_at = pass.stamp.taken + timing.resample_every;
+                if due_at > now {
+                    wake(due_at);
+                } else if state
+                    .last_inventory_end
+                    .is_some_and(|end| pass.stamp.taken < end)
+                {
+                    consider(&mut owed, name, (true, Some(pass.stamp.taken)));
+                } else {
+                    consider(&mut live, name, (true, Some(pass.stamp.taken)));
+                }
+            }
+        }
+
+        match &slot.inventory {
+            None => consider(&mut inventory, name, (false, slot.wanted_at)),
+            Some(pass) => {
+                let due_at = pass.stamp.taken + timing.inventory_every;
+                if due_at > now {
+                    wake(due_at);
+                } else {
+                    consider(&mut inventory, name, (true, Some(pass.stamp.taken)));
+                }
+            }
+        }
+    }
+
+    let next = owed
+        .map(|(name, _)| (name, Tier::Live))
+        .or(inventory.map(|(name, _)| (name, Tier::Inventory)))
+        .or(live.map(|(name, _)| (name, Tier::Live)));
+    (next, wake_at)
+}
+
 fn run(shared: Arc<Shared>) {
     let timing = shared.timing;
     let mut state = lock(&shared);
     loop {
-        let now = Instant::now();
+        let (next, wake_at) = choose(&state, timing, Instant::now());
 
-        // The most overdue wanted segment, if any is due. Never-sampled segments sort
-        // first, in the order they were first wanted, so a cold first round follows the
-        // requests rather than the alphabet; then the oldest sample. A segment outside
-        // its idle window is skipped.
-        type Priority = (bool, Option<Instant>);
-        let mut next_due: Option<(String, Priority)> = None;
-        let mut wake_at: Option<Instant> = None;
-        for (name, slot) in state.slots.iter() {
-            let Some(wanted) = slot.wanted_at else {
-                continue;
+        if let Some((name, tier)) = next {
+            let stamp = Stamp {
+                sampled_at: Utc::now(),
+                taken: Instant::now(),
             };
-            if now.duration_since(wanted) >= timing.idle_after {
-                continue;
-            }
-            let due_at = match &slot.sample {
-                None => now,
-                Some(sample) => sample.taken + timing.resample_every,
-            };
-            if due_at <= now {
-                let key: Priority = (
-                    slot.sample.is_some(),
-                    slot.sample
-                        .as_ref()
-                        .map_or(slot.wanted_at, |s| Some(s.taken)),
-                );
-                if next_due.as_ref().is_none_or(|(_, current)| key < *current) {
-                    next_due = Some((name.clone(), key));
-                }
-            } else {
-                wake_at = Some(wake_at.map_or(due_at, |w| w.min(due_at)));
-            }
-        }
-
-        if let Some((name, _)) = next_due {
-            let started = Instant::now();
-            let sampled_at = Utc::now();
             drop(state);
             // Lock released for the whole pass: requests must be able to wait on
             // the condition variable while it runs.
-            let readings = shared.source.sample(&name);
+            let readings = shared.source.sample(&name, tier);
+            let finished = Instant::now();
             state = lock(&shared);
             state.passes += 1;
+            if tier == Tier::Inventory {
+                state.last_inventory_end = Some(finished);
+            }
             if let Some(slot) = state.slots.get_mut(&name) {
-                slot.sample = Some(Arc::new(Sample {
-                    readings,
-                    sampled_at,
-                    taken: started,
-                }));
+                let pass = Arc::new(Pass { readings, stamp });
+                match tier {
+                    Tier::Live => slot.live = Some(pass),
+                    Tier::Inventory => slot.inventory = Some(pass),
+                }
+                if let (Some(live), Some(inventory)) = (&slot.live, &slot.inventory) {
+                    let absences =
+                        shared
+                            .source
+                            .absences(&name, &live.readings, &inventory.readings);
+                    slot.sample = Some(Arc::new(Sample {
+                        live: Arc::clone(live),
+                        inventory: Arc::clone(inventory),
+                        absences,
+                    }));
+                }
             }
             shared.changed.notify_all();
             continue;
@@ -346,22 +467,41 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A source whose passes are counted and take a fixed time, and which records the
-    /// largest number of passes it ever saw running at once.
+    /// largest number of passes it ever saw running at once. `count` counts live passes.
     struct Counting {
         pause: Duration,
         in_flight: AtomicUsize,
         max_in_flight: AtomicUsize,
+        inventory_pause: Duration,
         per_segment: Mutex<BTreeMap<String, usize>>,
+        log: Mutex<Vec<(String, Tier)>>,
     }
 
     impl Counting {
         fn new(pause: Duration) -> Arc<Self> {
             Arc::new(Self {
                 pause,
+                inventory_pause: pause,
                 in_flight: AtomicUsize::new(0),
                 max_in_flight: AtomicUsize::new(0),
                 per_segment: Mutex::new(BTreeMap::new()),
+                log: Mutex::new(Vec::new()),
             })
+        }
+
+        fn with_inventory_pause(pause: Duration, inventory_pause: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                pause,
+                inventory_pause,
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                per_segment: Mutex::new(BTreeMap::new()),
+                log: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn passes_logged(&self) -> Vec<(String, Tier)> {
+            self.log.lock().unwrap().clone()
         }
 
         fn count(&self, segment: &str) -> usize {
@@ -375,23 +515,39 @@ mod tests {
     }
 
     impl SegmentSource for Counting {
-        fn sample(&self, segment: &str) -> Vec<Reading> {
+        fn sample(&self, segment: &str, tier: Tier) -> Vec<Reading> {
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(self.pause);
-            *self
-                .per_segment
-                .lock()
-                .unwrap()
-                .entry(segment.to_string())
-                .or_insert(0) += 1;
+            std::thread::sleep(match tier {
+                Tier::Live => self.pause,
+                Tier::Inventory => self.inventory_pause,
+            });
+            if tier == Tier::Live {
+                *self
+                    .per_segment
+                    .lock()
+                    .unwrap()
+                    .entry(segment.to_string())
+                    .or_insert(0) += 1;
+            }
+            self.log.lock().unwrap().push((segment.to_string(), tier));
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             vec![Reading {
-                id: format!("{segment}.probe"),
+                id: format!("{segment}.probe.{tier:?}"),
                 value: Some(serde_json::json!(1)),
                 provenance: crate::ontology::Provenance::Measured,
                 unit: None,
                 note: None,
+            }]
+        }
+
+        fn absences(&self, segment: &str, _: &[Reading], _: &[Reading]) -> Vec<Reading> {
+            vec![Reading {
+                id: format!("{segment}.<none>"),
+                value: None,
+                provenance: crate::ontology::Provenance::Unavailable,
+                unit: None,
+                note: Some("nothing here".into()),
             }]
         }
     }
@@ -404,6 +560,7 @@ mod tests {
         Timing {
             idle_after: Duration::from_millis(idle_ms),
             resample_every: Duration::from_millis(resample_ms),
+            inventory_every: Duration::from_millis(resample_ms),
         }
     }
 
@@ -495,6 +652,120 @@ mod tests {
 
         let second = sampler.sample_for(&names(&["inference"]), Duration::from_secs(5));
         assert!(second.is_ok(), "the sample arrives in the background");
+    }
+
+    /// With both tiers always due, every inventory pass is followed by a live pass of each
+    /// wanted segment before the next inventory pass. This is what keeps a segment's
+    /// counters moving while slow inventory is being read.
+    #[test]
+    fn a_live_pass_of_every_segment_follows_each_inventory_pass() {
+        let source = Counting::new(Duration::from_millis(1));
+        let sampler = Sampler::new(source.clone(), timing(60_000, 0));
+        sampler
+            .sample_for(&names(&["cpu", "disk", "memory"]), Duration::from_secs(5))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while source.passes_logged().len() < 60 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let log = source.passes_logged();
+        assert!(log.len() >= 60, "only {} passes ran", log.len());
+
+        let inventories: Vec<usize> = log
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, tier))| *tier == Tier::Inventory)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(inventories.len() > 3, "inventory starved: {log:?}");
+        for pair in inventories.windows(2) {
+            let between: std::collections::BTreeSet<&str> = log[pair[0] + 1..pair[1]]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            assert_eq!(between.len(), 3, "between {pair:?}: {log:?}");
+        }
+    }
+
+    /// Live rows are refreshed while an inventory sample ages, each row reports the age of
+    /// its own pass, and a row about both tiers reports the older of the two.
+    #[test]
+    fn each_row_carries_the_age_of_its_own_tier() {
+        let source = Counting::new(Duration::from_millis(1));
+        let sampler = Sampler::new(
+            source.clone(),
+            Timing {
+                idle_after: Duration::from_secs(60),
+                resample_every: Duration::from_millis(1),
+                inventory_every: Duration::from_secs(600),
+            },
+        );
+        let wanted = names(&["cpu"]);
+        sampler.sample_for(&wanted, Duration::from_secs(5)).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ages = None;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            let got = sampler.sample_for(&wanted, Duration::from_secs(1)).unwrap();
+            let age = |id: &str| {
+                got[0]
+                    .1
+                    .rows()
+                    .find(|(r, _)| r.id == id)
+                    .map(|(_, stamp)| stamp.age_ms())
+                    .unwrap()
+            };
+            let (live, inventory, absent) = (
+                age("cpu.probe.Live"),
+                age("cpu.probe.Inventory"),
+                age("cpu.<none>"),
+            );
+            if live < inventory {
+                ages = Some((live, inventory, absent));
+                break;
+            }
+        }
+        let (live, inventory, absent) = ages.expect("the live rows never became fresher");
+        assert!(live < inventory, "live {live}, inventory {inventory}");
+        assert!(
+            absent >= inventory,
+            "absent {absent}, inventory {inventory}"
+        );
+        assert_eq!(
+            source
+                .passes_logged()
+                .iter()
+                .filter(|(_, tier)| *tier == Tier::Inventory)
+                .count(),
+            1,
+            "inventory is not resampled inside its interval"
+        );
+    }
+
+    /// A slow inventory reader delays a request's first answer, never its later ones.
+    #[test]
+    fn a_slow_inventory_does_not_hold_back_later_live_samples() {
+        let source =
+            Counting::with_inventory_pause(Duration::from_millis(1), Duration::from_millis(50));
+        let sampler = Sampler::new(
+            source.clone(),
+            Timing {
+                idle_after: Duration::from_secs(60),
+                resample_every: Duration::from_millis(1),
+                inventory_every: Duration::from_secs(600),
+            },
+        );
+        sampler
+            .sample_for(&names(&["cpu"]), Duration::from_secs(5))
+            .unwrap();
+        let after_first = source.count("cpu");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while source.count("cpu") < after_first + 10 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(source.count("cpu") >= after_first + 10);
     }
 
     /// Status reports the last sample time for segments that have one and nothing for

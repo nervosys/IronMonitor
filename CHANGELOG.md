@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (HTTP surface)
+
+- The sampler reads each segment's live readers separately from its slower inventory
+  readers, so counters and utilization keep refreshing while inventory is read. Readings
+  of one segment can now have different `sampled_at` and `age_ms`. Inventory is
+  resampled every 60 seconds rather than every two.
+- `/api/v1/health` adds `live_age_ms` and `inventory_age_ms` per segment. `last_sampled_at`
+  and `age_ms` now describe the segment's older tier.
+
+### Fixed
+
+- Updated `clipboard-win` to 5.4.3, replacing the yanked 5.4.1 in `Cargo.lock`.
+
 ## [7.1.0] - 2026-11-04
 
 ### Added (HTTP surface)

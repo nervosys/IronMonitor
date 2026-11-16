@@ -252,7 +252,7 @@ Every route is `GET`. Any other method gets 405 with `Allow: GET`.
 | `GET /api/v1/describe` | Exactly `ironmon describe --format json`, with a trailing newline. Touches no hardware and starts no sampling. | 200 |
 | `GET /api/v1/snapshot` | The envelope of `ironmon snapshot --format json`: `ontology_version`, `resolved`, `unavailable`, `impossible`, `readings`. Each reading object is the CLI's, plus `sampled_at` and `age_ms`. | 200, 400 for an unknown `?domain=` (body lists `accepted`), 503 while sampling |
 | `GET /api/v1/get/<id>` | The CLI's reading object for `<id>`, plus `sampled_at` and `age_ms`. The id is percent-decoded, so `disk.%3Cnone%3E` is `disk.<none>`. | 200 for a value and for `provenance: unavailable` (no `value` field, a `note`); 404 for an undeclared id, a template, or an id this machine did not produce; 503 while sampling |
-| `GET /api/v1/health` | `status` and `timestamp`, plus `sampler`: `state` (`running` or `idle`) and per-segment `last_sampled_at` and `age_ms`. | 200 |
+| `GET /api/v1/health` | `status` and `timestamp`, plus `sampler`: `state` (`running` or `idle`) and per-segment `last_sampled_at`, `age_ms`, `live_age_ms` and `inventory_age_ms`. `last_sampled_at` and `age_ms` describe the segment's older tier, so a segment never looks fresher than its oldest row. | 200 |
 
 A 404 is `{"error":"no such entity id","id":...}`. A 503 is:
 
@@ -268,7 +268,8 @@ is not an `unavailable` reading, and the client should retry.
 Every reading from these routes says when it was sampled. `sampled_at` is RFC 3339 in
 UTC, stamped with the moment the pass began, and `age_ms` is the milliseconds since
 then, measured when the response is built. A reading never appears fresher than it
-was. Segments are sampled at different times, so age is per reading, not per response.
+was. Segments and tiers are sampled at different times, so age is per reading, not per
+response, and two readings of one segment can have different ages.
 
 ### Sampling
 
@@ -278,9 +279,21 @@ wanted, then waits at most 250 ms for their samples. Cheap segments answer on th
 request. Expensive ones answer 503, and a later request gets the sample.
 
 One background thread runs every pass, one at a time, because the readers share
-static state. Concurrent requests for a segment share one pass. A wanted segment is
-resampled as soon as its last sample is two seconds old, so a slow segment lags and
-its age shows the lag.
+static state. Concurrent requests for a segment share one pass.
+
+Each segment's readers are split into two tiers, read separately. The live tier reports
+what changes from moment to moment: utilization, counters, temperatures, the process
+list. The inventory tier mostly reports what the machine is, and is where the time goes.
+A live tier is resampled once it is two seconds old, and an inventory tier once it is 60
+seconds old. After an inventory pass, each wanted segment's due live tier runs before
+the next inventory pass. A pass is never interrupted, so a live reading can still lag by
+one inventory pass. Lag shows in the age.
+
+A tier changes when a reader runs, not what it reports. A few values that change over
+time come from inventory readers, such as Wi-Fi state and SMART attributes, so they
+refresh at the slower rate. Check `age_ms` rather than assuming a rate. A segment first
+answers once both tiers have been read, because rows about what is absent are claims
+about both.
 
 A segment that nothing has asked for in 60 seconds is no longer sampled. When no
 segment is wanted, the sampler thread blocks with no timer and runs no pass, so a
