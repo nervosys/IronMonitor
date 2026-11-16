@@ -540,15 +540,32 @@ fn request_row(r: &RecentRequest) -> Row<'static> {
 }
 
 // ── Monitor view ─────────────────────────────────────────────────────────────
+//
+// Laid out like a terminal serving monitor: an engine header and a model-state
+// row without borders, rounded tiles with bar sparklines, then the gauges and the
+// recent requests under green headings.
 
 use crate::inference::monitor::{Gauge, Monitor, Phase, Tile};
+use ratatui::layout::Alignment;
+use ratatui::widgets::{BorderType, Cell};
 
 const TILE_COLUMNS: usize = 4;
-const TILE_HEIGHT: u16 = 5;
-const LOWER_HEIGHT: u16 = 10;
+/// Border, value, detail, two rows of bars, border.
+const TILE_HEIGHT: u16 = 6;
+/// The accent the headings, lit phase and bars are drawn in.
+const ACCENT: Color = Color::Rgb(46, 204, 145);
+const WARM: Color = Color::Rgb(240, 190, 80);
+const DIM: Color = Color::Rgb(110, 118, 129);
 
-/// Providers that are not running or not configured, listed by name on one line
-/// each, so a machine with every provider polled still fits.
+fn heading(text: impl Into<String>) -> Span<'static> {
+    Span::styled(
+        text.into(),
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )
+}
+
+/// Providers other than the one the monitor follows: each running or failing
+/// provider on its own line, and the ones not running or not configured by name.
 fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut idle: Vec<(&'static str, &'static str)> = Vec::new();
@@ -560,7 +577,8 @@ fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'s
         }
         let mark = if Some(i) == focused { "▶ " } else { "  " };
         let mut line = compact_line(state);
-        line.spans.insert(0, Span::raw(mark));
+        line.spans
+            .insert(0, Span::styled(mark, Style::default().fg(ACCENT)));
         lines.push(line);
     }
     for status in ["not running", "not configured"] {
@@ -570,39 +588,72 @@ fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'s
             .map(|(_, n)| *n)
             .collect();
         if !names.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {status}: "),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(names.join(", "), Style::default().fg(Color::DarkGray)),
-            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  {status}: {}", names.join(", ")),
+                Style::default().fg(DIM),
+            )));
         }
     }
     lines
 }
 
+/// Lines the gauges take: a label line each, and a bar under each that has a ratio.
+fn gauge_height(gauges: &[Gauge]) -> u16 {
+    gauges
+        .iter()
+        .map(|g| if g.ratio.is_some() { 2 } else { 1 })
+        .sum()
+}
+
+fn lower_height(monitor: &Monitor) -> u16 {
+    let requests = if monitor.requests.rows.is_empty() {
+        2
+    } else {
+        2 + monitor.requests.rows.len() as u16
+    };
+    gauge_height(&monitor.gauges).max(requests)
+}
+
 /// The rows the monitor needs, so the chat box below it gets the rest.
 pub fn monitor_height(monitor: &Monitor, states: &[SourceState]) -> u16 {
     let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS) as u16;
-    4 + rows * TILE_HEIGHT + LOWER_HEIGHT + provider_lines(states, monitor.focused).len() as u16 + 2
+    // Header, rule, state row, blank; tiles; blank; lower; blank; providers.
+    4 + rows * TILE_HEIGHT
+        + 1
+        + lower_height(monitor)
+        + 1
+        + 1
+        + provider_lines(states, monitor.focused).len() as u16
 }
 
-/// The monitor: the model-state strip, the tiles, gauges beside recent requests,
-/// and one line per provider.
+/// The monitor, top to bottom.
 pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceState]) {
     let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS);
-    let providers = provider_lines(states, monitor.focused);
-    let mut constraints = vec![Constraint::Length(4)];
+    let mut constraints = vec![
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ];
     constraints.extend(std::iter::repeat_n(Constraint::Length(TILE_HEIGHT), rows));
-    constraints.push(Constraint::Length(LOWER_HEIGHT));
-    constraints.push(Constraint::Min(providers.len() as u16 + 2));
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(lower_height(monitor)));
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Min(0));
     let bands = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    draw_strip(f, bands[0], monitor);
+    draw_header(f, bands[0], monitor, states);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(bands[1].width as usize),
+            Style::default().fg(DIM),
+        )),
+        bands[1],
+    );
+    draw_state_row(f, bands[2], monitor);
     for (r, chunk) in monitor.tiles.chunks(TILE_COLUMNS).enumerate() {
         let cells = Layout::default()
             .direction(Direction::Horizontal)
@@ -610,7 +661,8 @@ pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[Sour
                 Constraint::Ratio(1, TILE_COLUMNS as u32);
                 TILE_COLUMNS
             ])
-            .split(bands[1 + r]);
+            .spacing(2)
+            .split(bands[4 + r]);
         for (tile, cell) in chunk.iter().zip(cells.iter()) {
             draw_tile(f, *cell, tile);
         }
@@ -618,39 +670,89 @@ pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[Sour
     let lower = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(bands[1 + rows]);
+        .spacing(3)
+        .split(bands[5 + rows]);
     draw_gauges(f, lower[0], &monitor.gauges);
     draw_recent(f, lower[1], monitor);
-    f.render_widget(
-        Paragraph::new(providers).block(bordered("Providers")),
-        bands[2 + rows],
-    );
+
+    let mut lines = vec![Line::from(heading("Providers"))];
+    lines.extend(provider_lines(states, monitor.focused));
+    f.render_widget(Paragraph::new(lines), bands[7 + rows]);
 }
 
-fn draw_strip(f: &mut Frame, area: Rect, monitor: &Monitor) {
+/// Engine, endpoint and model on the left; the phase and whether it is live on the right.
+fn draw_header(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceState]) {
+    let state = monitor.focused.map(|i| &states[i]);
+    let left = match state {
+        Some(s) => {
+            let model = s
+                .latest
+                .as_ref()
+                .and_then(|l| l.identity.model.clone())
+                .unwrap_or_else(|| "model not reported".into());
+            Line::from(vec![
+                heading(s.kind.display_name().to_uppercase()),
+                Span::raw("   "),
+                Span::styled(s.endpoint.clone(), Style::default().fg(ACCENT)),
+                Span::raw("   "),
+                Span::styled(model, Style::default().add_modifier(Modifier::BOLD)),
+            ])
+        }
+        None => Line::from(vec![
+            heading("INFERENCE"),
+            Span::raw("   "),
+            Span::styled(monitor.strip.engine.clone(), Style::default().fg(DIM)),
+        ]),
+    };
+    let (dot, live) = match (monitor.strip.lit, state) {
+        (Some(Phase::Error), _) => (Color::Red, "[STALE]"),
+        (_, Some(s)) if s.reachable => (ACCENT, "[LIVE]"),
+        _ => (DIM, ""),
+    };
+    let phase = monitor
+        .strip
+        .lit
+        .map(|p| p.label().to_string())
+        .unwrap_or_else(|| "phase unknown".into());
+    let right = Line::from(vec![
+        Span::styled("● ", Style::default().fg(dot)),
+        Span::styled(phase, Style::default().fg(dot)),
+        Span::raw("   "),
+        Span::styled(live, Style::default().fg(dot)),
+    ])
+    .alignment(Alignment::Right);
+    f.render_widget(Paragraph::new(left), area);
+    f.render_widget(Paragraph::new(right), area);
+}
+
+/// "Model state" and the five phases, the lit one bracketed; the detail on the right.
+fn draw_state_row(f: &mut Frame, area: Rect, monitor: &Monitor) {
     let strip = &monitor.strip;
-    let mut badges = vec![Span::styled("Model state  ", title_style())];
+    let mut spans = vec![heading("Model state"), Span::raw("  ")];
     for phase in Phase::ALL {
         if strip.lit == Some(phase) {
             let color = match phase {
                 Phase::Error => Color::Red,
-                Phase::Queued => Color::Yellow,
-                _ => Color::Green,
+                Phase::Queued => WARM,
+                _ => ACCENT,
             };
-            badges.push(Span::styled(
+            spans.push(Span::styled(
                 format!("[{}]", phase.label()),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ));
         } else {
-            badges.push(Span::styled(
+            spans.push(Span::styled(
                 format!(" {} ", phase.label()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(DIM),
             ));
         }
-        badges.push(Span::raw("  "));
+        spans.push(Span::raw("  "));
     }
-    let lines = vec![Line::from(badges), Line::from(strip.detail.clone())];
-    f.render_widget(Paragraph::new(lines).block(bordered(&strip.engine)), area);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    f.render_widget(
+        Paragraph::new(Line::from(strip.detail.clone()).alignment(Alignment::Right)),
+        area,
+    );
 }
 
 /// Sparkline points scaled to 0..=100 against the tile's fixed top or its own peak.
@@ -669,15 +771,20 @@ fn spark_points(tile: &Tile) -> Vec<u64> {
 fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", tile.title));
-    let inner = block.inner(area);
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(DIM))
+        .title(Span::raw(format!(" {} ", tile.title)));
+    let inner = block.inner(area).inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
     f.render_widget(block, area);
     let headline = match &tile.value {
-        Some(v) => Line::from(vec![
-            Span::styled(v.clone(), Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" {}", tile.unit)),
-        ]),
-        None => Line::from(Span::styled("—", Style::default().fg(Color::DarkGray))),
+        Some(v) => Line::from(Span::styled(
+            format!("{v} {}", tile.unit).trim_end().to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        None => Line::from(Span::styled("—", Style::default().fg(DIM))),
     };
     let detail = Line::from(Span::styled(
         tile.detail.clone(),
@@ -698,9 +805,9 @@ fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
         let width = parts[2].width as usize;
         let shown = &points[points.len().saturating_sub(width)..];
         let color = if tile.title == "GPU temp" {
-            Color::Yellow
+            WARM
         } else {
-            Color::Green
+            ACCENT
         };
         f.render_widget(
             Sparkline::default()
@@ -712,68 +819,119 @@ fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
     }
 }
 
-fn gauge_bar(ratio: f64, width: usize) -> String {
-    let filled = ((ratio.clamp(0.0, 1.0)) * width as f64).round() as usize;
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+/// A bar across the width: filled in the accent, the rest shaded.
+fn gauge_bar(ratio: f64, width: usize, color: Color) -> Line<'static> {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    Line::from(vec![
+        Span::styled("█".repeat(filled), Style::default().fg(color)),
+        Span::styled(
+            "░".repeat(width.saturating_sub(filled)),
+            Style::default().fg(Color::Rgb(45, 50, 58)),
+        ),
+    ])
 }
 
+/// The first gauge is a heading with its figure beside it; the rest are labels.
 fn draw_gauges(f: &mut Frame, area: Rect, gauges: &[Gauge]) {
-    let block = bordered("Memory and cache");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
+    let width = area.width as usize;
     let mut lines = Vec::new();
-    for g in gauges {
-        let label = format!("{:<18}", g.label);
+    for (i, g) in gauges.iter().enumerate() {
+        let label = if i == 0 {
+            heading(format!("{}   ", g.label))
+        } else {
+            Span::styled(
+                format!("{:<20}", g.label),
+                Style::default().fg(Color::White),
+            )
+        };
         lines.push(Line::from(vec![
-            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+            label,
             Span::styled(g.text.clone(), Style::default().fg(Color::Gray)),
         ]));
         if let Some(r) = g.ratio {
             let color = if g.label == "GPU temperature" {
-                Color::Yellow
+                WARM
             } else if r > 0.92 {
                 Color::Red
             } else {
-                Color::Green
+                ACCENT
             };
-            lines.push(Line::from(Span::styled(
-                gauge_bar(r, width),
-                Style::default().fg(color),
-            )));
+            lines.push(gauge_bar(r, width, color));
         }
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
+/// Recent requests under a heading: a table when the engine lists them, else why not.
 fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
     let req = &monitor.requests;
-    let title = format!("Recent requests — {}", req.note);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            heading("Recent requests"),
+            Span::styled(
+                if req.rows.is_empty() {
+                    String::new()
+                } else {
+                    format!("   {}", req.note)
+                },
+                Style::default().fg(DIM),
+            ),
+        ])),
+        parts[0],
+    );
     if req.rows.is_empty() {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
+            Paragraph::new(Span::styled(
                 req.note.clone(),
                 Style::default().fg(Color::Gray),
-            )))
-            .block(bordered("Recent requests")),
-            area,
+            )),
+            parts[1],
         );
         return;
     }
+    // Counts and durations are right-aligned, as figures are.
+    let align = |i: usize| {
+        if i >= 2 {
+            Alignment::Right
+        } else {
+            Alignment::Left
+        }
+    };
     let header = Row::new(
         req.columns
             .iter()
-            .map(|c| c.to_string())
+            .enumerate()
+            .map(|(i, c)| Cell::from(Line::from(*c).alignment(align(i))))
             .collect::<Vec<_>>(),
     )
-    .style(Style::default().add_modifier(Modifier::BOLD));
-    let rows: Vec<Row> = req.rows.iter().map(|r| Row::new(r.clone())).collect();
+    .style(Style::default().fg(Color::Gray));
+    let rows: Vec<Row> = req
+        .rows
+        .iter()
+        .map(|r| {
+            Row::new(
+                r.iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let line = Line::from(v.clone()).alignment(align(i));
+                        if i == 1 {
+                            Cell::from(line).style(Style::default().fg(ACCENT))
+                        } else {
+                            Cell::from(line)
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
     let widths = vec![Constraint::Ratio(1, req.columns.len() as u32); req.columns.len()];
     f.render_widget(
-        Table::new(rows, widths)
-            .header(header)
-            .block(bordered(&title)),
-        area,
+        Table::new(rows, widths).header(header).column_spacing(2),
+        parts[1],
     );
 }
 
@@ -945,6 +1103,61 @@ mod tests {
     }
 
     /// The rendered text of the panels, one string per row.
+    fn render_monitor(states: &[SourceState]) -> String {
+        use crate::inference::monitor::{build, Hardware, History};
+        let (w, h) = (160u16, 50u16);
+        let monitor = build(states, &Hardware::default(), &History::default());
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test backend");
+        terminal
+            .draw(|f| draw_monitor(f, f.area(), &monitor, states))
+            .expect("draw into memory");
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_monitor_has_the_state_row_tiles_gauges_and_requests() {
+        let frame = render_monitor(&[reachable(A_NVME_CONFIGURED)]);
+        assert!(frame.contains("IRONWORKS"), "{frame}");
+        assert!(frame.contains("Model state"), "{frame}");
+        for title in [
+            "╭ Speed",
+            "╭ GPU load",
+            "╭ VRAM",
+            "╭ Power",
+            "╭ Latency",
+            "╭ Cost",
+        ] {
+            assert!(frame.contains(title), "no {title} tile:\n{frame}");
+        }
+        assert!(frame.contains("Recent requests"), "{frame}");
+        assert!(frame.contains("Providers"), "{frame}");
+        // One poll gives no rate, so no phase is lit and the speed is not a number.
+        assert!(!frame.contains("[Generating]"), "{frame}");
+        assert!(frame.contains("needs a second sample"), "{frame}");
+    }
+
+    #[test]
+    fn a_monitor_with_no_engine_lights_nothing_and_says_why() {
+        let frame = render_monitor(&[unreachable(SourceError::Unreachable(
+            "connection refused".into(),
+        ))]);
+        assert!(frame.contains("no IronWorks answered"), "{frame}");
+        assert!(!frame.contains("[LIVE]"), "{frame}");
+        for phase in ["[Idle]", "[Reading]", "[Generating]", "[Queued]", "[Error]"] {
+            assert!(!frame.contains(phase), "{phase} lit:\n{frame}");
+        }
+    }
+
     fn render(states: &[SourceState], gpus: &[GpuRef]) -> String {
         let (w, h) = (130u16, 44u16);
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test backend");
