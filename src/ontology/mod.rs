@@ -91,6 +91,8 @@ pub enum Unit {
     MegatransfersPerSecond,
     Watts,
     Milliwatts,
+    /// Energy, as NVML counts it.
+    Millijoules,
     Volts,
     Rpm,
     Seconds,
@@ -122,6 +124,7 @@ impl Unit {
             Self::MegatransfersPerSecond => "megatransfers_per_second",
             Self::Watts => "watts",
             Self::Milliwatts => "milliwatts",
+            Self::Millijoules => "millijoules",
             Self::Volts => "volts",
             Self::Rpm => "rpm",
             Self::Seconds => "seconds",
@@ -3457,6 +3460,106 @@ impl Ontology {
             true,
             "Prompt tokens per second over the window between two samples. Absent in a single-shot read.",
         ).derived(&["inference.vllm.prompt_tokens_total"]));
+        // vLLM's latency histograms. Only `_sum` and `_count` are read: their change
+        // across two samples is the mean over that window, and their ratio in one
+        // sample is the mean since the engine started. Buckets are never read.
+        for (key, what) in [
+            ("ttft", "time to first token"),
+            ("queue", "time requests spent waiting in the queue"),
+            ("prefill", "time requests spent in the prefill phase"),
+            ("decode", "time requests spent in the decode phase"),
+            ("inter_token", "time between successive output tokens"),
+            ("e2e", "end-to-end request time"),
+        ] {
+            let base = format!("inference.vllm.latency.{key}");
+            add(Entity::new(
+                &format!("{base}.seconds_total"),
+                D::Inference,
+                K::Measurement,
+                Some(U::Seconds),
+                P::Measured,
+                true,
+                &format!("Total {what} vLLM has measured since it started, in seconds: the _sum of its histogram. Divide its change across two samples by the change in {base}.count for the mean over that window."),
+            ));
+            add(Entity::new(
+                &format!("{base}.count"),
+                D::Inference,
+                K::Measurement,
+                Some(U::Count),
+                P::Measured,
+                true,
+                &format!("How many observations of {what} vLLM has recorded since it started: the _count of its histogram."),
+            ));
+            add(Entity::new(
+                &format!("{base}.mean_since_start"),
+                D::Inference,
+                K::Measurement,
+                Some(U::Seconds),
+                P::Measured,
+                true,
+                &format!("Mean {what} since vLLM started: seconds_total over count from one sample. Not a current figure; a recent mean needs two samples. Unavailable before the first observation."),
+            ).derived(&[&format!("{base}.seconds_total"), &format!("{base}.count")]));
+        }
+        add(Entity::new(
+            "inference.llamacpp.prompt_seconds_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Seconds),
+            P::Measured,
+            true,
+            "Seconds llama-server has spent processing prompts since it started (llamacpp:prompt_seconds_total). Idle time is not counted.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.predicted_seconds_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Seconds),
+            P::Measured,
+            true,
+            "Seconds llama-server has spent generating tokens since it started (llamacpp:tokens_predicted_seconds_total). Idle time is not counted.",
+        ));
+        add(Entity::new(
+            "inference.llamacpp.prefill.seconds_per_token_since_start",
+            D::Inference,
+            K::Measurement,
+            Some(U::Seconds),
+            P::Measured,
+            true,
+            "Prompt-processing seconds per prompt token since llama-server started: prompt_seconds_total over prompt_tokens_total. Not a current figure; a recent value needs two samples.",
+        ).derived(&["inference.llamacpp.prompt_seconds_total", "inference.llamacpp.prompt_tokens_total"]));
+        add(Entity::new(
+            "inference.llamacpp.decode.seconds_per_token_since_start",
+            D::Inference,
+            K::Measurement,
+            Some(U::Seconds),
+            P::Measured,
+            true,
+            "Generation seconds per generated token since llama-server started: predicted_seconds_total over predicted_tokens_total. Not a current figure; a recent value needs two samples.",
+        ).derived(&["inference.llamacpp.predicted_seconds_total", "inference.llamacpp.predicted_tokens_total"]));
+        for (provider, gpus_from) in [
+            (
+                "ironworks",
+                "the GPUs IronWorks lists in its metrics, or IRONMON_IRONWORKS_GPUS",
+            ),
+            (
+                "llamacpp",
+                "IRONMON_LLAMACPP_GPUS, since llama-server does not say which GPUs it uses",
+            ),
+            (
+                "vllm",
+                "IRONMON_VLLM_GPUS, since vLLM's metrics do not say which GPUs it uses",
+            ),
+        ] {
+            add(Entity::new(
+                &format!("inference.{provider}.energy.gpu_millijoules_total"),
+                D::Inference,
+                K::Measurement,
+                Some(U::Millijoules),
+                P::Measured,
+                true,
+                &format!("NVML's total energy counter summed over the engine's GPUs, which are taken from {gpus_from}. The whole GPU's energy, including any other work on it. Divide its change across two samples by the change in generated tokens for joules per token. Unavailable when the GPUs are not named or NVML has no energy counter for them."),
+            ));
+        }
 
         // ── Agents (IronObserver recordings) ─────────────────────────────────
         //

@@ -160,6 +160,7 @@ fn draw_source(ui: &mut egui::Ui, state: &SourceState, gpus: &[GpuView]) {
     };
 
     draw_speed(ui, state);
+    draw_serving(ui, state, false);
     draw_memory(ui, section, gpus);
     draw_tiers(ui, state, section);
     draw_requests(ui, state, section);
@@ -182,7 +183,16 @@ fn draw_compact(ui: &mut egui::Ui, state: &SourceState) {
     ui.label(
         RichText::new(row.detail).color(theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
     );
+    draw_serving(ui, state, true);
     ui.add_space(4.0);
+}
+
+/// Latency means, GPU energy, energy cost and tokenization, each with its value or
+/// the reason it has none. The rows come from the builder the TUI uses too.
+fn draw_serving(ui: &mut egui::Ui, state: &SourceState, with_throughput: bool) {
+    for row in crate::inference::serving_rows(state, with_throughput) {
+        kv(ui, row.label, row.value);
+    }
 }
 
 /// Where the engine runs, where it is, and what it says it is running. Identity is

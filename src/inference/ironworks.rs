@@ -471,6 +471,10 @@ impl MetricsV1 {
             gauges: BTreeMap::new(),
             cost: None,
             ratio_defs: RATIOS,
+            seconds: BTreeMap::new(),
+            mean_defs: &[],
+            generated_counter: Some("decode.completion_tokens_total"),
+            energy: None,
             ironworks: Some(Section {
                 vram: tiers.vram,
                 ram: tiers.ram,

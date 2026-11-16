@@ -13,7 +13,8 @@
 use super::http;
 use super::ironworks::locality_of;
 use super::{
-    Identity, InferenceSource, Locality, ProviderKind, ProviderSample, RatioDef, SourceError,
+    Identity, InferenceSource, Locality, MeanDef, ProviderKind, ProviderSample, RatioDef,
+    SourceError,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -84,6 +85,23 @@ const LLAMACPP_COUNTERS: &[&str] = &[
     "n_decode_total",
 ];
 const LLAMACPP_GAUGES: &[&str] = &["requests_processing", "requests_deferred"];
+/// Time totals in seconds beside the token totals: "Prompt process time" and
+/// "Predict process time" in the README's metric table.
+const LLAMACPP_SECONDS: &[&str] = &["prompt_seconds_total", "tokens_predicted_seconds_total"];
+/// Seconds per token while the server was working on prompts, and while it was
+/// generating. Unlike `prompt_tokens_total / window`, these exclude idle time.
+const LLAMACPP_MEANS: &[MeanDef] = &[
+    MeanDef {
+        key: "prefill_per_token",
+        seconds: "prompt_seconds_total",
+        count: "prompt_tokens_total",
+    },
+    MeanDef {
+        key: "decode_per_token",
+        seconds: "tokens_predicted_seconds_total",
+        count: "tokens_predicted_total",
+    },
+];
 const NO_RATIOS: &[RatioDef] = &[];
 
 /// Counters vLLM exports under `vllm:` (https://docs.vllm.ai/en/latest/usage/metrics.html).
@@ -97,6 +115,54 @@ const VLLM_COUNTERS: &[&str] = &[
     "num_preemptions_total",
     "prefix_cache_hits_total",
     "prefix_cache_queries_total",
+    "time_to_first_token_seconds_count",
+    "request_queue_time_seconds_count",
+    "request_prefill_time_seconds_count",
+    "request_decode_time_seconds_count",
+    "inter_token_latency_seconds_count",
+    "e2e_request_latency_seconds_count",
+];
+/// The `_sum` of each latency histogram vLLM documents. Each is divided by its own
+/// `_count` over a window, which is the mean the engine measured. Buckets are not read.
+const VLLM_SECONDS: &[&str] = &[
+    "time_to_first_token_seconds_sum",
+    "request_queue_time_seconds_sum",
+    "request_prefill_time_seconds_sum",
+    "request_decode_time_seconds_sum",
+    "inter_token_latency_seconds_sum",
+    "e2e_request_latency_seconds_sum",
+];
+const VLLM_MEANS: &[MeanDef] = &[
+    MeanDef {
+        key: "ttft",
+        seconds: "time_to_first_token_seconds_sum",
+        count: "time_to_first_token_seconds_count",
+    },
+    MeanDef {
+        key: "queue",
+        seconds: "request_queue_time_seconds_sum",
+        count: "request_queue_time_seconds_count",
+    },
+    MeanDef {
+        key: "prefill",
+        seconds: "request_prefill_time_seconds_sum",
+        count: "request_prefill_time_seconds_count",
+    },
+    MeanDef {
+        key: "decode",
+        seconds: "request_decode_time_seconds_sum",
+        count: "request_decode_time_seconds_count",
+    },
+    MeanDef {
+        key: "inter_token",
+        seconds: "inter_token_latency_seconds_sum",
+        count: "inter_token_latency_seconds_count",
+    },
+    MeanDef {
+        key: "e2e",
+        seconds: "e2e_request_latency_seconds_sum",
+        count: "e2e_request_latency_seconds_count",
+    },
 ];
 const VLLM_GAUGES: &[&str] = &[
     "num_requests_running",
@@ -108,6 +174,39 @@ const VLLM_RATIOS: &[RatioDef] = &[RatioDef {
     numerator: "prefix_cache_hits_total",
     denominator: &["prefix_cache_queries_total"],
 }];
+
+/// What one Prometheus provider exports, and what is derived from it.
+pub struct MetricSpec {
+    pub prefix: &'static str,
+    pub counters: &'static [&'static str],
+    pub gauges: &'static [&'static str],
+    /// Cumulative totals in seconds, which may be fractional.
+    pub seconds: &'static [&'static str],
+    pub ratios: &'static [RatioDef],
+    pub means: &'static [MeanDef],
+    /// The counter of generated tokens.
+    pub generated: &'static str,
+}
+
+pub const LLAMACPP: MetricSpec = MetricSpec {
+    prefix: "llamacpp:",
+    counters: LLAMACPP_COUNTERS,
+    gauges: LLAMACPP_GAUGES,
+    seconds: LLAMACPP_SECONDS,
+    ratios: NO_RATIOS,
+    means: LLAMACPP_MEANS,
+    generated: "tokens_predicted_total",
+};
+
+pub const VLLM: MetricSpec = MetricSpec {
+    prefix: "vllm:",
+    counters: VLLM_COUNTERS,
+    gauges: VLLM_GAUGES,
+    seconds: VLLM_SECONDS,
+    ratios: VLLM_RATIOS,
+    means: VLLM_MEANS,
+    generated: "generation_tokens_total",
+};
 
 /// A local engine at a base URL, read by the adapter for its provider.
 pub struct LocalSource {
@@ -152,22 +251,8 @@ impl InferenceSource for LocalSource {
         let base = self.base.as_str();
         match self.kind {
             ProviderKind::Ollama => poll_ollama(base, timeout),
-            ProviderKind::LlamaCpp => poll_metrics(
-                base,
-                timeout,
-                "llamacpp:",
-                LLAMACPP_COUNTERS,
-                LLAMACPP_GAUGES,
-                NO_RATIOS,
-            ),
-            ProviderKind::Vllm => poll_metrics(
-                base,
-                timeout,
-                "vllm:",
-                VLLM_COUNTERS,
-                VLLM_GAUGES,
-                VLLM_RATIOS,
-            ),
+            ProviderKind::LlamaCpp => poll_metrics(base, timeout, &LLAMACPP),
+            ProviderKind::Vllm => poll_metrics(base, timeout, &VLLM),
             ProviderKind::LmStudio => poll_lmstudio(base, timeout),
             ProviderKind::MlxLm => poll_mlx(base, timeout),
             ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => Err(
@@ -312,6 +397,8 @@ pub struct Prometheus {
     pub counters: BTreeMap<String, u64>,
     /// Summed over label sets, for the gauges asked for.
     pub gauges: BTreeMap<String, f64>,
+    /// Summed over label sets, for the seconds totals asked for.
+    pub seconds: BTreeMap<String, f64>,
     /// The `model_name` label, when a series carries one.
     pub model: Option<String>,
 }
@@ -319,15 +406,16 @@ pub struct Prometheus {
 /// Parse the text exposition format, keeping only the names asked for.
 ///
 /// Counters are summed across their label sets, which gives the engine total.
-/// Histogram and summary parts (`_bucket`, `_sum`, `_count`) are never asked for,
-/// so they cannot be mistaken for a counter. A value that is not a finite
-/// non-negative integer for a counter, or not finite for a gauge, is skipped: an
-/// unreadable value is absent, not zero.
+/// A histogram's `_sum` and `_count` are read only when named, as a seconds total and
+/// a counter; `_bucket` series are never read. A value that is not a finite
+/// non-negative integer for a counter, not finite and non-negative for a seconds
+/// total, or not finite for a gauge, is skipped: an unreadable value is absent, not zero.
 pub fn parse_prometheus(
     body: &str,
     prefix: &str,
     counters: &[&str],
     gauges: &[&str],
+    seconds: &[&str],
 ) -> Prometheus {
     let mut out = Prometheus::default();
     for raw in body.lines() {
@@ -371,6 +459,8 @@ pub fn parse_prometheus(
             }
         } else if gauges.contains(&short) {
             *out.gauges.entry(short.to_string()).or_insert(0.0) += value;
+        } else if seconds.contains(&short) && value >= 0.0 {
+            *out.seconds.entry(short.to_string()).or_insert(0.0) += value;
         }
     }
     out
@@ -393,16 +483,20 @@ fn label(labels: &str, key: &str) -> Option<String> {
 fn poll_metrics(
     base: &str,
     timeout: Duration,
-    prefix: &str,
-    counters: &[&str],
-    gauges: &[&str],
-    ratios: &'static [RatioDef],
+    spec: &MetricSpec,
 ) -> Result<ProviderSample, SourceError> {
+    let prefix = spec.prefix;
     let reply = http::get(&format!("{base}/metrics"), timeout, &[])?;
     if reply.status != 200 {
         return Err(SourceError::Status(reply.status));
     }
-    let parsed = parse_prometheus(&reply.body, prefix, counters, gauges);
+    let parsed = parse_prometheus(
+        &reply.body,
+        prefix,
+        spec.counters,
+        spec.gauges,
+        spec.seconds,
+    );
     if !parsed.recognised {
         return Err(SourceError::Rejected(format!(
             "the body has no {prefix} series"
@@ -418,7 +512,10 @@ fn poll_metrics(
         },
         counters: parsed.counters,
         gauges: parsed.gauges,
-        ratio_defs: ratios,
+        ratio_defs: spec.ratios,
+        seconds: parsed.seconds,
+        mean_defs: spec.means,
+        generated_counter: Some(spec.generated),
         ..ProviderSample::default()
     })
 }
@@ -572,7 +669,13 @@ llamacpp:requests_deferred 0
 
     #[test]
     fn llamacpp_counters_and_gauges_are_read_by_name() {
-        let p = parse_prometheus(LLAMA_BODY, "llamacpp:", LLAMACPP_COUNTERS, LLAMACPP_GAUGES);
+        let p = parse_prometheus(
+            LLAMA_BODY,
+            "llamacpp:",
+            LLAMACPP_COUNTERS,
+            LLAMACPP_GAUGES,
+            &[],
+        );
         assert!(p.recognised);
         assert_eq!(p.counters["prompt_tokens_total"], 1200);
         assert_eq!(p.counters["tokens_predicted_total"], 340);
@@ -587,6 +690,7 @@ llamacpp:requests_deferred 0
             "llamacpp:",
             LLAMACPP_COUNTERS,
             LLAMACPP_GAUGES,
+            LLAMACPP_SECONDS,
         );
         assert!(!p.counters.contains_key("prompt_tokens_total"));
         assert!(!p.gauges.contains_key("requests_deferred"));
@@ -602,19 +706,26 @@ vllm:kv_cache_usage_perc{model_name=\"llama-3\"} 0.25
 vllm:request_success_created{finished_reason=\"stop\"} 1.7e9
 vllm:time_to_first_token_seconds_bucket{le=\"0.1\"} 99
 ";
-        let p = parse_prometheus(body, "vllm:", VLLM_COUNTERS, VLLM_GAUGES);
+        let p = parse_prometheus(body, "vllm:", VLLM_COUNTERS, VLLM_GAUGES, VLLM_SECONDS);
         assert_eq!(p.counters["request_success_total"], 14);
         assert_eq!(p.gauges["num_requests_running"], 3.0);
         assert_eq!(p.gauges["kv_cache_usage_perc"], 0.25);
         assert_eq!(p.model.as_deref(), Some("llama-3"));
-        // Histogram and _created parts are never read as counters.
-        assert!(!p.counters.keys().any(|k| k.contains("time_to_first")));
+        // Buckets and _created parts are never read; a bucket is not a count.
+        assert!(!p.counters.keys().any(|k| k.contains("bucket")));
+        assert!(!p.counters.contains_key("time_to_first_token_seconds_count"));
         assert!(!p.counters.keys().any(|k| k.contains("created")));
     }
 
     #[test]
     fn a_body_without_the_prefix_is_not_this_provider() {
-        let p = parse_prometheus("some_other_metric 1\n", "vllm:", VLLM_COUNTERS, VLLM_GAUGES);
+        let p = parse_prometheus(
+            "some_other_metric 1\n",
+            "vllm:",
+            VLLM_COUNTERS,
+            VLLM_GAUGES,
+            &[],
+        );
         assert!(!p.recognised);
     }
 
@@ -625,9 +736,58 @@ vllm:time_to_first_token_seconds_bucket{le=\"0.1\"} 99
             "vllm:",
             VLLM_COUNTERS,
             VLLM_GAUGES,
+            VLLM_SECONDS,
         );
         assert!(p.recognised);
         assert!(p.counters.is_empty());
+    }
+
+    #[test]
+    fn latency_histograms_are_read_as_a_sum_and_a_count() {
+        let body = "\
+vllm:time_to_first_token_seconds_bucket{le=\"0.1\",model_name=\"m\"} 3
+vllm:time_to_first_token_seconds_sum{model_name=\"m\"} 1.25
+vllm:time_to_first_token_seconds_count{model_name=\"m\"} 5
+vllm:e2e_request_latency_seconds_sum{model_name=\"m\"} 9.5
+";
+        let p = parse_prometheus(body, "vllm:", VLLM_COUNTERS, VLLM_GAUGES, VLLM_SECONDS);
+        assert_eq!(p.seconds["time_to_first_token_seconds_sum"], 1.25);
+        assert_eq!(p.counters["time_to_first_token_seconds_count"], 5);
+        // A sum without its count is kept; the mean is simply not derived.
+        assert_eq!(p.seconds["e2e_request_latency_seconds_sum"], 9.5);
+        assert!(!p.counters.contains_key("e2e_request_latency_seconds_count"));
+    }
+
+    #[test]
+    fn llamacpp_time_totals_give_seconds_per_token_over_a_window() {
+        use crate::inference::InferenceSampler;
+        let sample = |prompt_s: f64, prompt: u64, at: u64| {
+            let body = format!(
+                "llamacpp:prompt_tokens_total {prompt}\nllamacpp:prompt_seconds_total {prompt_s}\n"
+            );
+            let p = parse_prometheus(
+                &body,
+                "llamacpp:",
+                LLAMACPP_COUNTERS,
+                LLAMACPP_GAUGES,
+                LLAMACPP_SECONDS,
+            );
+            ProviderSample {
+                uptime_ns: Some(at),
+                counters: p.counters,
+                seconds: p.seconds,
+                mean_defs: LLAMACPP_MEANS,
+                ..ProviderSample::default()
+            }
+        };
+        let mut s = InferenceSampler::default();
+        s.update(sample(2.0, 1_000, 1_000_000_000));
+        s.update(sample(2.5, 2_000, 9_000_000_000));
+        // Half a second of prompt processing for a thousand tokens: 0.5 ms each,
+        // however long the server sat idle in the eight-second window.
+        let mean = s.derived().mean("prefill_per_token").unwrap();
+        assert!((mean - 0.0005).abs() < 1e-12, "{mean}");
+        assert_eq!(s.derived().mean("decode_per_token"), None);
     }
 
     #[test]

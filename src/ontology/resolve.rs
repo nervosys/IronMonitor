@@ -2771,6 +2771,54 @@ fn resolve_local_inference(out: &mut Vec<Reading>) {
     }
 }
 
+/// A mean since the engine started: a seconds total over its count, from one sample.
+/// Unavailable when either is unreported or nothing has been counted yet.
+fn push_mean(
+    out: &mut Vec<Reading>,
+    id: &str,
+    sample: &crate::inference::ProviderSample,
+    seconds: &str,
+    count: &str,
+) {
+    let reading = match (sample.seconds.get(seconds), sample.counters.get(count)) {
+        (Some(total), Some(&n)) if n > 0 => Reading {
+            id: id.to_string(),
+            value: Some(serde_json::json!(total / n as f64)),
+            provenance: Provenance::Derived,
+            unit: Some(Unit::Seconds),
+            note: None,
+        },
+        (Some(_), Some(_)) => Reading::unavailable(
+            id,
+            Some(Unit::Seconds),
+            "nothing has been counted since the engine started",
+        ),
+        _ => Reading::unavailable(
+            id,
+            Some(Unit::Seconds),
+            "the server does not report this value",
+        ),
+    };
+    out.push(reading);
+}
+
+/// The engine's GPU energy counter, read now from NVML for the GPUs it is known to use.
+fn push_energy(
+    out: &mut Vec<Reading>,
+    kind: crate::inference::ProviderKind,
+    sample: &crate::inference::ProviderSample,
+) {
+    let id = format!("inference.{}.energy.gpu_millijoules_total", kind.as_str());
+    out.push(match crate::inference::energy::read_for(kind, sample) {
+        Ok(energy) => Reading::measured(
+            id,
+            serde_json::json!(energy.millijoules),
+            Some(Unit::Millijoules),
+        ),
+        Err(reason) => Reading::unavailable(id, Some(Unit::Millijoules), reason),
+    });
+}
+
 /// The readings one local provider's sample supports. Only ids declared for that
 /// provider are emitted, and a value the server did not report is unavailable.
 fn push_local_sample(
@@ -2782,6 +2830,7 @@ fn push_local_sample(
     use serde_json::json;
 
     let counter = |name: &str| sample.counters.get(name).map(|v| json!(v));
+    let seconds = |name: &str| sample.seconds.get(name).map(|v| json!(v));
     let gauge_count = |name: &str| sample.gauges.get(name).map(|v| json!(*v as u64));
     let text = |v: &Option<String>| v.as_ref().map(|s| json!(s));
     const NOT_REPORTED: &str = "the server does not report this value";
@@ -2872,6 +2921,33 @@ fn push_local_sample(
                 Some(Unit::Count),
                 NOT_REPORTED,
             );
+            for (id, name) in [
+                (
+                    "inference.llamacpp.prompt_seconds_total",
+                    "prompt_seconds_total",
+                ),
+                (
+                    "inference.llamacpp.predicted_seconds_total",
+                    "tokens_predicted_seconds_total",
+                ),
+            ] {
+                push_opt(out, id, seconds(name), Some(Unit::Seconds), NOT_REPORTED);
+            }
+            push_mean(
+                out,
+                "inference.llamacpp.prefill.seconds_per_token_since_start",
+                sample,
+                "prompt_seconds_total",
+                "prompt_tokens_total",
+            );
+            push_mean(
+                out,
+                "inference.llamacpp.decode.seconds_per_token_since_start",
+                sample,
+                "tokens_predicted_seconds_total",
+                "tokens_predicted_total",
+            );
+            push_energy(out, kind, sample);
             out.push(Reading::unavailable(
                 "inference.llamacpp.prompt_tok_s",
                 Some(Unit::TokensPerSecond),
@@ -2947,6 +3023,40 @@ fn push_local_sample(
                 Some(Unit::Count),
                 NOT_REPORTED,
             );
+            for key in ["ttft", "queue", "prefill", "decode", "inter_token", "e2e"] {
+                let metric = match key {
+                    "ttft" => "time_to_first_token_seconds",
+                    "queue" => "request_queue_time_seconds",
+                    "prefill" => "request_prefill_time_seconds",
+                    "decode" => "request_decode_time_seconds",
+                    "inter_token" => "inter_token_latency_seconds",
+                    _ => "e2e_request_latency_seconds",
+                };
+                let (sum, count) = (format!("{metric}_sum"), format!("{metric}_count"));
+                let base = format!("inference.vllm.latency.{key}");
+                push_opt(
+                    out,
+                    format!("{base}.seconds_total"),
+                    seconds(&sum),
+                    Some(Unit::Seconds),
+                    NOT_REPORTED,
+                );
+                push_opt(
+                    out,
+                    format!("{base}.count"),
+                    counter(&count),
+                    Some(Unit::Count),
+                    NOT_REPORTED,
+                );
+                push_mean(
+                    out,
+                    &format!("{base}.mean_since_start"),
+                    sample,
+                    &sum,
+                    &count,
+                );
+            }
+            push_energy(out, kind, sample);
             // vLLM reports a fraction; the id is a percentage.
             push_opt(
                 out,
@@ -3013,6 +3123,7 @@ fn resolve_ironworks(out: &mut Vec<Reading>, base: &str) {
         return;
     };
 
+    push_energy(out, crate::inference::ProviderKind::IronWorks, &sample);
     let id = &sample.identity;
     push_opt(
         out,

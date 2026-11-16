@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/api/v1/health` adds `live_age_ms` and `inventory_age_ms` per segment. `last_sampled_at`
   and `age_ms` now describe the segment's older tier.
 
+### Added (Inference)
+
+- Latency means for vLLM (time to first token, queue, prefill, decode, inter-token,
+  end-to-end) and prefill and decode time per token for llama.cpp, from each engine's
+  own time totals over the window between two polls.
+- GPU power and joules per generated token from NVML's energy counter, for an engine
+  whose GPUs are known: IronWorks lists them; for vLLM and llama.cpp set
+  `IRONMON_<PROVIDER>_GPUS`. The energy is the whole GPU's and is labelled so.
+- Electricity cost per million tokens at `IRONMON_ELECTRICITY_PRICE`.
+- A tokenization row that says no engine publishes tokenization timing.
+- Schema: `inference.vllm.latency.<phase>.{seconds_total,count,mean_since_start}`,
+  `inference.llamacpp.{prompt,predicted}_seconds_total`, the llama.cpp per-token means
+  since start, and `inference.<provider>.energy.gpu_millijoules_total`. New unit
+  `millijoules`.
+
 ### Fixed
 
 - Updated `clipboard-win` to 5.4.3, replacing the yanked 5.4.1 in `Cargo.lock`.

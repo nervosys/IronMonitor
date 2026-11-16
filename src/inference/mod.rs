@@ -11,6 +11,7 @@
 //! the sample, never zero. A rate needs two samples. Rates and ratios are taken
 //! over the engine's monotonic uptime, because the wall clock can jump.
 
+pub mod energy;
 pub mod http;
 pub mod ironworks;
 pub mod local;
@@ -189,6 +190,20 @@ pub struct RatioDef {
     pub denominator: &'static [&'static str],
 }
 
+/// A mean over a window: the growth of a cumulative seconds total over the growth of
+/// the count of events it times. vLLM exports each latency histogram's `_sum` and
+/// `_count`; llama.cpp exports time totals beside token totals. Either way the mean
+/// is the engine's own figure, divided over the window, never a bucket estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeanDef {
+    /// The key the mean is published under, such as `ttft`.
+    pub key: &'static str,
+    /// A cumulative total, in seconds, from [`ProviderSample::seconds`].
+    pub seconds: &'static str,
+    /// The cumulative count it is divided by, from [`ProviderSample::counters`].
+    pub count: &'static str,
+}
+
 /// One poll's worth of an engine, in the shape every provider maps onto.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderSample {
@@ -211,6 +226,16 @@ pub struct ProviderSample {
     pub cost: Option<remote::CostReading>,
     /// The ratios this provider publishes, each with its named counters.
     pub ratio_defs: &'static [RatioDef],
+    /// Cumulative time totals in seconds, by name. Like `counters`, a name missing
+    /// here was not reported, which is not zero.
+    pub seconds: BTreeMap<String, f64>,
+    /// The means this provider publishes over its `seconds` and `counters`.
+    pub mean_defs: &'static [MeanDef],
+    /// The counter of generated tokens, which energy per token is divided by.
+    pub generated_counter: Option<&'static str>,
+    /// The cumulative energy of the engine's GPUs at this poll, or why none was read.
+    /// `None` for a remote provider, where the question does not arise.
+    pub energy: Option<energy::Energy>,
     /// Provider-specific detail. Only the provider that owns it fills it in.
     pub ironworks: Option<ironworks::Section>,
 }
@@ -285,6 +310,166 @@ pub fn compact_row(state: &SourceState) -> CompactRow {
             }
         }
     }
+}
+
+/// One labelled serving figure: a value, or the reason there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingRow {
+    pub label: &'static str,
+    pub value: String,
+}
+
+/// The label a mean is shown under, in both tabs.
+pub fn mean_label(key: &str) -> &'static str {
+    match key {
+        "ttft" => "Time to first token",
+        "queue" => "Queue time",
+        "prefill" => "Prefill time",
+        "decode" => "Decode time",
+        "inter_token" => "Inter-token latency",
+        "e2e" => "End-to-end latency",
+        "prefill_per_token" => "Prefill per token",
+        "decode_per_token" => "Decode per token",
+        _ => "Mean",
+    }
+}
+
+/// A duration in the unit that reads best.
+pub fn fmt_seconds(seconds: f64) -> String {
+    if seconds >= 1.0 {
+        format!("{seconds:.2} s")
+    } else if seconds >= 1e-3 {
+        format!("{:.1} ms", seconds * 1e3)
+    } else {
+        format!("{:.0} µs", seconds * 1e6)
+    }
+}
+
+/// Serving figures for a running local engine: throughput, latency means, GPU
+/// energy, energy cost and tokenization, each with its value or why it has none.
+///
+/// Both tabs draw these rows, so the two cannot disagree. Throughput is left to the
+/// IronWorks panel's own speed section when `with_throughput` is false.
+pub fn serving_rows(state: &SourceState, with_throughput: bool) -> Vec<ServingRow> {
+    let mut rows = Vec::new();
+    let (true, Some(sample)) = (state.reachable, state.latest.as_ref()) else {
+        return rows;
+    };
+    if state.locality != Locality::Local {
+        return rows;
+    }
+    let d = &state.derived;
+    const NO_WINDOW: &str = "— needs a second sample";
+    let name = state.kind.display_name();
+
+    if with_throughput {
+        let mut parts = Vec::new();
+        if let Some(generated) = sample.generated_counter {
+            parts.push(match d.rate(generated) {
+                Some(r) => format!("generation {r:.1} tok/s"),
+                None => format!("generation {NO_WINDOW}"),
+            });
+        }
+        if sample.counters.contains_key("prompt_tokens_total") {
+            parts.push(match d.rate("prompt_tokens_total") {
+                Some(r) => format!("prompt {r:.1} tok/s"),
+                None => format!("prompt {NO_WINDOW}"),
+            });
+        }
+        if !parts.is_empty() {
+            rows.push(ServingRow {
+                label: "Throughput",
+                value: parts.join(" · "),
+            });
+        }
+    }
+
+    if !sample.mean_defs.is_empty() {
+        let mut shown = Vec::new();
+        let mut idle = Vec::new();
+        let mut unreported = Vec::new();
+        for def in sample.mean_defs {
+            let label = mean_label(def.key).to_lowercase();
+            match d.mean(def.key) {
+                Some(mean) if def.key.ends_with("_per_token") && mean > 0.0 => shown.push(format!(
+                    "{label} {} ({:.0} tok/s busy)",
+                    fmt_seconds(mean),
+                    1.0 / mean
+                )),
+                Some(mean) => shown.push(format!("{label} {}", fmt_seconds(mean))),
+                None if !sample.seconds.contains_key(def.seconds) => unreported.push(label),
+                None => idle.push(label),
+            }
+        }
+        let mut value = if d.window_ns.is_none() {
+            NO_WINDOW.to_string()
+        } else {
+            shown.join(" · ")
+        };
+        if d.window_ns.is_some() && !idle.is_empty() {
+            if !value.is_empty() {
+                value.push_str(" · ");
+            }
+            value.push_str(&format!(
+                "nothing completed in the window: {}",
+                idle.join(", ")
+            ));
+        }
+        if !unreported.is_empty() {
+            if !value.is_empty() {
+                value.push_str(" · ");
+            }
+            value.push_str(&format!(
+                "not reported by {name}: {}",
+                unreported.join(", ")
+            ));
+        }
+        rows.push(ServingRow {
+            label: "Latency",
+            value,
+        });
+    }
+
+    let energy = match (&sample.energy, &d.energy) {
+        (Some(Err(reason)), _) => Err(format!("— {reason}")),
+        (Some(Ok(_)), None) => Err(NO_WINDOW.to_string()),
+        (_, Some(Err(reason))) => Err(format!("— {reason}")),
+        (_, Some(Ok(window))) => Ok(window.clone()),
+        (None, None) => Err("— not read for this engine".to_string()),
+    };
+    rows.push(ServingRow {
+        label: "GPU energy",
+        value: match &energy {
+            Err(reason) => reason.clone(),
+            Ok(window) => format!(
+                "{:.0} W · {} · the whole GPU, other work included",
+                window.watts,
+                match &window.joules_per_token {
+                    Ok(j) => format!("{j:.3} J per token"),
+                    Err(reason) => format!("no J per token: {reason}"),
+                }
+            ),
+        },
+    });
+    rows.push(ServingRow {
+        label: "Energy cost",
+        value: match energy.as_ref().map(|w| w.joules_per_token.clone()) {
+            Ok(Ok(joules)) => match energy::price_from_env() {
+                Ok(price) => format!(
+                    "{:.4} {} per million tokens, electricity only",
+                    energy::cost_of(joules * 1e6, &price),
+                    price.currency
+                ),
+                Err(reason) => format!("— {reason}"),
+            },
+            _ => "— needs energy per token".to_string(),
+        },
+    });
+    rows.push(ServingRow {
+        label: "Tokenization",
+        value: format!("— {name} publishes no tokenization timing"),
+    });
+    rows
 }
 
 /// What a sample reports, as short phrases. Only values the provider reported
@@ -396,6 +581,23 @@ pub struct Derived {
     /// Ratio for each [`RatioDef`] whose counters were present and whose
     /// denominator gained something in the window, by the def's key.
     pub ratios: BTreeMap<String, f64>,
+    /// Mean seconds for each [`MeanDef`] whose totals were present and whose count
+    /// grew in the window, by the def's key.
+    pub means: BTreeMap<String, f64>,
+    /// GPU energy over the window, or why it could not be taken. `None` when the
+    /// source reads no energy (a remote provider) or there is no window yet.
+    pub energy: Option<Result<EnergyWindow, String>>,
+}
+
+/// The engine's GPU energy over one window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnergyWindow {
+    pub joules: f64,
+    /// Mean power, joules over the window's seconds.
+    pub watts: f64,
+    /// Joules per generated token, or why there is none: no token counter, or no
+    /// tokens generated in the window.
+    pub joules_per_token: Result<f64, String>,
 }
 
 impl Derived {
@@ -405,6 +607,10 @@ impl Derived {
 
     pub fn ratio(&self, key: &str) -> Option<f64> {
         self.ratios.get(key).copied()
+    }
+
+    pub fn mean(&self, key: &str) -> Option<f64> {
+        self.means.get(key).copied()
     }
 }
 
@@ -435,6 +641,15 @@ impl InferenceSampler {
             for (key, value) in &self.derived.ratios {
                 push_point(history, format!("ratio:{key}"), at_ns, *value);
             }
+            for (key, value) in &self.derived.means {
+                push_point(history, format!("mean:{key}"), at_ns, *value);
+            }
+            if let Some(Ok(window)) = &self.derived.energy {
+                push_point(history, "energy:watts".into(), at_ns, window.watts);
+                if let Ok(jpt) = window.joules_per_token {
+                    push_point(history, "energy:joules_per_token".into(), at_ns, jpt);
+                }
+            }
         }
         self.previous = Some(sample);
     }
@@ -444,7 +659,8 @@ impl InferenceSampler {
         &self.derived
     }
 
-    /// History series by key: `rate:<counter>` and `ratio:<key>`.
+    /// History series by key: `rate:<counter>`, `ratio:<key>`, `mean:<key>`,
+    /// `energy:watts` and `energy:joules_per_token`.
     pub fn history(&self) -> &BTreeMap<String, Series> {
         &self.history
     }
@@ -465,6 +681,10 @@ fn regressed(prev: &ProviderSample, cur: &ProviderSample) -> bool {
     prev.counters
         .iter()
         .any(|(name, before)| cur.counters.get(name).is_some_and(|now| now < before))
+        || prev
+            .seconds
+            .iter()
+            .any(|(name, before)| cur.seconds.get(name).is_some_and(|now| now < before))
 }
 
 fn derive(prev: &ProviderSample, cur: &ProviderSample) -> Derived {
@@ -510,6 +730,37 @@ fn derive(prev: &ProviderSample, cur: &ProviderSample) -> Derived {
             out.ratios
                 .insert(def.key.to_string(), numerator as f64 / total as f64);
         }
+    }
+
+    for def in cur.mean_defs {
+        let (Some(before), Some(now)) =
+            (prev.seconds.get(def.seconds), cur.seconds.get(def.seconds))
+        else {
+            continue;
+        };
+        let Some(count) = delta(def.count) else {
+            continue;
+        };
+        if count > 0 {
+            out.means
+                .insert(def.key.to_string(), (now - before) / count as f64);
+        }
+    }
+
+    if let (Some(before), Some(now)) = (&prev.energy, &cur.energy) {
+        out.energy = Some(energy::joules_between(before, now).map(|joules| {
+            let joules_per_token = match cur.generated_counter.map(|c| (c, delta(c))) {
+                None => Err("the engine reports no generated-token counter".to_string()),
+                Some((name, None)) => Err(format!("{name} was not reported in both samples")),
+                Some((_, Some(0))) => Err("no tokens were generated in the window".to_string()),
+                Some((_, Some(tokens))) => Ok(joules / tokens as f64),
+            };
+            EnergyWindow {
+                joules,
+                watts: joules / seconds,
+                joules_per_token,
+            }
+        }));
     }
     out
 }
@@ -637,8 +888,11 @@ fn poll_loop(
         {
             let mut st = lock(&shared);
             match outcome {
-                Ok(sample) => {
+                Ok(mut sample) => {
                     failures = 0;
+                    if source.locality() == Locality::Local {
+                        sample.energy = Some(energy::read_for(source.kind(), &sample));
+                    }
                     sampler.update(sample.clone());
                     st.latest = Some(sample);
                     st.derived = sampler.derived().clone();
@@ -701,6 +955,133 @@ mod tests {
     }
 
     const SEC: u64 = 1_000_000_000;
+
+    const TEST_MEANS: &[MeanDef] = &[MeanDef {
+        key: "ttft",
+        seconds: "ttft_seconds_sum",
+        count: "ttft_seconds_count",
+    }];
+
+    fn timed(at: u64, seconds: f64, count: u64, tokens: u64, mj: u64) -> ProviderSample {
+        ProviderSample {
+            uptime_ns: Some(at),
+            counters: [
+                ("ttft_seconds_count".to_string(), count),
+                ("tokens_total".to_string(), tokens),
+            ]
+            .into_iter()
+            .collect(),
+            seconds: [("ttft_seconds_sum".to_string(), seconds)]
+                .into_iter()
+                .collect(),
+            mean_defs: TEST_MEANS,
+            generated_counter: Some("tokens_total"),
+            energy: Some(Ok(energy::EnergyReading {
+                millijoules: mj,
+                gpus: vec!["GPU-a".into()],
+            })),
+            ..ProviderSample::default()
+        }
+    }
+
+    #[test]
+    fn a_window_gives_mean_latency_and_energy_per_token() {
+        let mut s = InferenceSampler::default();
+        s.update(timed(SEC, 10.0, 100, 1_000, 50_000));
+        assert!(s.derived().means.is_empty(), "one sample has no window");
+        assert_eq!(s.derived().energy, None);
+        s.update(timed(3 * SEC, 13.0, 110, 1_400, 250_000));
+        let d = s.derived();
+        // 3 s over 10 requests.
+        assert!((d.mean("ttft").unwrap() - 0.3).abs() < 1e-9);
+        let window = d.energy.clone().unwrap().unwrap();
+        assert_eq!(window.joules, 200.0);
+        assert_eq!(window.watts, 100.0);
+        assert_eq!(window.joules_per_token, Ok(0.5));
+    }
+
+    #[test]
+    fn an_idle_window_has_energy_but_no_mean_or_energy_per_token() {
+        let mut s = InferenceSampler::default();
+        s.update(timed(SEC, 10.0, 100, 1_000, 50_000));
+        s.update(timed(2 * SEC, 10.0, 100, 1_000, 80_000));
+        let d = s.derived();
+        assert_eq!(d.mean("ttft"), None);
+        let window = d.energy.clone().unwrap().unwrap();
+        assert_eq!(window.watts, 30.0);
+        assert!(window.joules_per_token.is_err());
+    }
+
+    #[test]
+    fn a_seconds_total_going_backwards_is_a_restart() {
+        let mut s = InferenceSampler::default();
+        s.update(timed(SEC, 10.0, 100, 1_000, 50_000));
+        s.update(timed(2 * SEC, 4.0, 100, 1_000, 60_000));
+        assert_eq!(s.derived(), &Derived::default());
+    }
+
+    fn running(kind: ProviderKind, samples: Vec<ProviderSample>) -> SourceState {
+        let mut sampler = InferenceSampler::default();
+        for sample in &samples {
+            sampler.update(sample.clone());
+        }
+        SourceState {
+            kind,
+            locality: Locality::Local,
+            endpoint: "http://127.0.0.1:1".into(),
+            latest: samples.last().cloned(),
+            reachable: true,
+            last_success: None,
+            last_error: None,
+            derived: sampler.derived().clone(),
+            history: BTreeMap::new(),
+        }
+    }
+
+    fn row<'a>(rows: &'a [ServingRow], label: &str) -> &'a str {
+        rows.iter()
+            .find(|r| r.label == label)
+            .map(|r| r.value.as_str())
+            .unwrap_or_else(|| panic!("no {label} row in {rows:?}"))
+    }
+
+    #[test]
+    fn serving_rows_give_each_figure_or_its_reason() {
+        let one_poll = running(
+            ProviderKind::Vllm,
+            vec![timed(SEC, 10.0, 100, 1_000, 50_000)],
+        );
+        let rows = serving_rows(&one_poll, true);
+        assert_eq!(
+            row(&rows, "Throughput"),
+            "generation — needs a second sample"
+        );
+        assert_eq!(row(&rows, "Latency"), "— needs a second sample");
+        assert_eq!(row(&rows, "GPU energy"), "— needs a second sample");
+        assert!(row(&rows, "Tokenization").contains("vLLM publishes no tokenization timing"));
+
+        let two = running(
+            ProviderKind::Vllm,
+            vec![
+                timed(SEC, 10.0, 100, 1_000, 50_000),
+                timed(3 * SEC, 13.0, 110, 1_400, 250_000),
+            ],
+        );
+        let rows = serving_rows(&two, true);
+        assert_eq!(row(&rows, "Throughput"), "generation 200.0 tok/s");
+        assert_eq!(row(&rows, "Latency"), "time to first token 300.0 ms");
+        assert!(row(&rows, "GPU energy").starts_with("100 W · 0.500 J per token"));
+    }
+
+    #[test]
+    fn an_engine_without_gpu_identity_says_how_to_name_its_gpus() {
+        let mut sample = timed(SEC, 1.0, 1, 1, 1);
+        sample.energy = Some(Err("set IRONMON_VLLM_GPUS".into()));
+        let rows = serving_rows(&running(ProviderKind::Vllm, vec![sample]), false);
+        assert_eq!(row(&rows, "GPU energy"), "— set IRONMON_VLLM_GPUS");
+        assert_eq!(row(&rows, "Energy cost"), "— needs energy per token");
+        assert!(!rows.iter().any(|r| r.label == "Throughput"));
+    }
 
     #[test]
     fn first_sample_gives_no_rates() {

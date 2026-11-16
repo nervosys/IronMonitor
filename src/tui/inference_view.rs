@@ -65,11 +65,13 @@ pub fn draw(f: &mut Frame, area: Rect, states: &[SourceState], gpus: &[GpuRef]) 
     if !ironworks.is_empty() {
         constraints.push(Constraint::Min(14));
     }
+    let local_lines = group_lines(&local);
+    let remote_lines = group_lines(&remote);
     if !local.is_empty() {
-        constraints.push(Constraint::Length(local.len() as u16 + 2));
+        constraints.push(Constraint::Length(local_lines.len() as u16 + 2));
     }
     if !remote.is_empty() {
-        constraints.push(Constraint::Length(remote.len() as u16 + 2));
+        constraints.push(Constraint::Length(remote_lines.len() as u16 + 2));
     }
     let bands = Layout::default()
         .direction(Direction::Vertical)
@@ -83,20 +85,42 @@ pub fn draw(f: &mut Frame, area: Rect, states: &[SourceState], gpus: &[GpuRef]) 
     }
     if !local.is_empty() {
         if let Some(area) = band.next() {
-            draw_group(f, *area, "Local providers", &local);
+            draw_group(f, *area, "Local providers", local_lines);
         }
     }
     if !remote.is_empty() {
         if let Some(area) = band.next() {
-            draw_group(f, *area, "Remote providers", &remote);
+            draw_group(f, *area, "Remote providers", remote_lines);
         }
     }
 }
 
 /// One group of compact provider lines under a bordered title.
-fn draw_group(f: &mut Frame, area: Rect, title: &str, states: &[&SourceState]) {
-    let lines: Vec<Line<'static>> = states.iter().map(|s| compact_line(s)).collect();
+fn draw_group(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
     f.render_widget(Paragraph::new(lines).block(bordered(title)), area);
+}
+
+/// Each provider's compact line, followed by its serving figures when it is running.
+fn group_lines(states: &[&SourceState]) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for state in states {
+        lines.push(compact_line(state));
+        lines.extend(serving_lines(state, true));
+    }
+    lines
+}
+
+/// Serving figures as indented label and value lines, from the shared builder.
+fn serving_lines(state: &SourceState, with_throughput: bool) -> Vec<Line<'static>> {
+    crate::inference::serving_rows(state, with_throughput)
+        .into_iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(format!("  {:<22}", row.label)),
+                Span::raw(row.value),
+            ])
+        })
+        .collect()
 }
 
 /// A provider's name, its state word and its detail on one line.
@@ -115,7 +139,8 @@ fn compact_line(state: &SourceState) -> Line<'static> {
 fn draw_provider(f: &mut Frame, area: Rect, state: &SourceState, gpus: &[GpuRef]) {
     let current = current_sample(state);
     let reason = no_sample_reason(state);
-    let header = header_lines(state);
+    let mut header = header_lines(state);
+    header.extend(serving_lines(state, false));
     let memory = memory_lines(current, reason, gpus);
     let tiers = tier_lines(state, current, reason);
     let has_speed_history = state
