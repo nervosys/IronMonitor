@@ -539,6 +539,244 @@ fn request_row(r: &RecentRequest) -> Row<'static> {
     ])
 }
 
+// ── Monitor view ─────────────────────────────────────────────────────────────
+
+use crate::inference::monitor::{Gauge, Monitor, Phase, Tile};
+
+const TILE_COLUMNS: usize = 4;
+const TILE_HEIGHT: u16 = 5;
+const LOWER_HEIGHT: u16 = 10;
+
+/// Providers that are not running or not configured, listed by name on one line
+/// each, so a machine with every provider polled still fits.
+fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut idle: Vec<(&'static str, &'static str)> = Vec::new();
+    for (i, state) in states.iter().enumerate() {
+        let row = crate::inference::compact_row(state);
+        if matches!(row.status, "not running" | "not configured") {
+            idle.push((row.status, state.kind.display_name()));
+            continue;
+        }
+        let mark = if Some(i) == focused { "▶ " } else { "  " };
+        let mut line = compact_line(state);
+        line.spans.insert(0, Span::raw(mark));
+        lines.push(line);
+    }
+    for status in ["not running", "not configured"] {
+        let names: Vec<&str> = idle
+            .iter()
+            .filter(|(s, _)| *s == status)
+            .map(|(_, n)| *n)
+            .collect();
+        if !names.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {status}: "),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(names.join(", "), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
+    lines
+}
+
+/// The rows the monitor needs, so the chat box below it gets the rest.
+pub fn monitor_height(monitor: &Monitor, states: &[SourceState]) -> u16 {
+    let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS) as u16;
+    4 + rows * TILE_HEIGHT + LOWER_HEIGHT + provider_lines(states, monitor.focused).len() as u16 + 2
+}
+
+/// The monitor: the model-state strip, the tiles, gauges beside recent requests,
+/// and one line per provider.
+pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceState]) {
+    let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS);
+    let providers = provider_lines(states, monitor.focused);
+    let mut constraints = vec![Constraint::Length(4)];
+    constraints.extend(std::iter::repeat_n(Constraint::Length(TILE_HEIGHT), rows));
+    constraints.push(Constraint::Length(LOWER_HEIGHT));
+    constraints.push(Constraint::Min(providers.len() as u16 + 2));
+    let bands = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    draw_strip(f, bands[0], monitor);
+    for (r, chunk) in monitor.tiles.chunks(TILE_COLUMNS).enumerate() {
+        let cells = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Ratio(1, TILE_COLUMNS as u32);
+                TILE_COLUMNS
+            ])
+            .split(bands[1 + r]);
+        for (tile, cell) in chunk.iter().zip(cells.iter()) {
+            draw_tile(f, *cell, tile);
+        }
+    }
+    let lower = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(bands[1 + rows]);
+    draw_gauges(f, lower[0], &monitor.gauges);
+    draw_recent(f, lower[1], monitor);
+    f.render_widget(
+        Paragraph::new(providers).block(bordered("Providers")),
+        bands[2 + rows],
+    );
+}
+
+fn draw_strip(f: &mut Frame, area: Rect, monitor: &Monitor) {
+    let strip = &monitor.strip;
+    let mut badges = vec![Span::styled("Model state  ", title_style())];
+    for phase in Phase::ALL {
+        if strip.lit == Some(phase) {
+            let color = match phase {
+                Phase::Error => Color::Red,
+                Phase::Queued => Color::Yellow,
+                _ => Color::Green,
+            };
+            badges.push(Span::styled(
+                format!("[{}]", phase.label()),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            badges.push(Span::styled(
+                format!(" {} ", phase.label()),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        badges.push(Span::raw("  "));
+    }
+    let lines = vec![Line::from(badges), Line::from(strip.detail.clone())];
+    f.render_widget(Paragraph::new(lines).block(bordered(&strip.engine)), area);
+}
+
+/// Sparkline points scaled to 0..=100 against the tile's fixed top or its own peak.
+fn spark_points(tile: &Tile) -> Vec<u64> {
+    let peak = tile.spark.iter().copied().fold(0.0_f64, f64::max);
+    let top = tile.spark_max.unwrap_or(peak);
+    if top <= 0.0 {
+        return Vec::new();
+    }
+    tile.spark
+        .iter()
+        .map(|v| ((v / top) * 100.0).clamp(0.0, 100.0).round() as u64)
+        .collect()
+}
+
+fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", tile.title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let headline = match &tile.value {
+        Some(v) => Line::from(vec![
+            Span::styled(v.clone(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!(" {}", tile.unit)),
+        ]),
+        None => Line::from(Span::styled("—", Style::default().fg(Color::DarkGray))),
+    };
+    let detail = Line::from(Span::styled(
+        tile.detail.clone(),
+        Style::default().fg(Color::Gray),
+    ));
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(headline), parts[0]);
+    f.render_widget(Paragraph::new(detail), parts[1]);
+    let points = spark_points(tile);
+    if !points.is_empty() && parts[2].height > 0 {
+        let width = parts[2].width as usize;
+        let shown = &points[points.len().saturating_sub(width)..];
+        let color = if tile.title == "GPU temp" {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        f.render_widget(
+            Sparkline::default()
+                .data(shown)
+                .max(100)
+                .style(Style::default().fg(color)),
+            parts[2],
+        );
+    }
+}
+
+fn gauge_bar(ratio: f64, width: usize) -> String {
+    let filled = ((ratio.clamp(0.0, 1.0)) * width as f64).round() as usize;
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+fn draw_gauges(f: &mut Frame, area: Rect, gauges: &[Gauge]) {
+    let block = bordered("Memory and cache");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let width = inner.width as usize;
+    let mut lines = Vec::new();
+    for g in gauges {
+        let label = format!("{:<18}", g.label);
+        lines.push(Line::from(vec![
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(g.text.clone(), Style::default().fg(Color::Gray)),
+        ]));
+        if let Some(r) = g.ratio {
+            let color = if g.label == "GPU temperature" {
+                Color::Yellow
+            } else if r > 0.92 {
+                Color::Red
+            } else {
+                Color::Green
+            };
+            lines.push(Line::from(Span::styled(
+                gauge_bar(r, width),
+                Style::default().fg(color),
+            )));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
+    let req = &monitor.requests;
+    let title = format!("Recent requests — {}", req.note);
+    if req.rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                req.note.clone(),
+                Style::default().fg(Color::Gray),
+            )))
+            .block(bordered("Recent requests")),
+            area,
+        );
+        return;
+    }
+    let header = Row::new(
+        req.columns
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
+    )
+    .style(Style::default().add_modifier(Modifier::BOLD));
+    let rows: Vec<Row> = req.rows.iter().map(|r| Row::new(r.clone())).collect();
+    let widths = vec![Constraint::Ratio(1, req.columns.len() as u32); req.columns.len()];
+    f.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .block(bordered(&title)),
+        area,
+    );
+}
+
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
 /// The sample to read: only when the most recent poll succeeded. A stale sample is

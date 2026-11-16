@@ -133,7 +133,7 @@ mod tests {
         app.await_first_inference_poll(Duration::from_secs(5));
         let frame = render_frame(&app);
         assert!(
-            frame.contains("no engine answered at http://127.0.0.1:8080"),
+            frame.contains("no IronWorks answered at http://127.0.0.1:8080"),
             "the Inference tab does not say no engine answered:\n{frame}"
         );
     }

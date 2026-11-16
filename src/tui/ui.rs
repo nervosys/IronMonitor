@@ -2480,6 +2480,19 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(" Ask  "),
                 Span::styled(
+                    "v",
+                    Style::default()
+                        .fg(glances_colors::TITLE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(
+                    if app.inference_details && app.selected_tab == TAB_INFERENCE {
+                        " Monitor  "
+                    } else {
+                        " Details  "
+                    },
+                ),
+                Span::styled(
                     "c",
                     Style::default()
                         .fg(glances_colors::TITLE)
@@ -3121,13 +3134,33 @@ fn draw_agent_history(f: &mut Frame, app: &App, area: Rect) {
 /// chat box shares the Agent tab's state, so a question asked here is answered in
 /// the same history the Agent tab shows.
 fn draw_inference_tab(f: &mut Frame, app: &App, area: Rect) {
+    let states = app.inference_states();
+    if app.inference_details {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        let gpus = app.inference_gpus();
+        inference_view::draw(f, chunks[0], &states, &gpus);
+        draw_agent_history(f, app, chunks[1]);
+        return;
+    }
+    let hardware = app.inference_hardware();
+    let monitor = {
+        let mut history = app
+            .inference_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        history.record(std::time::Instant::now(), &hardware);
+        crate::inference::monitor::build(&states, &hardware, &history)
+    };
+    // The monitor takes what it needs; the chat box keeps at least a few rows.
+    let wanted = inference_view::monitor_height(&monitor, &states);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .constraints([Constraint::Max(wanted), Constraint::Min(5)])
         .split(area);
-    let states = app.inference_states();
-    let gpus = app.inference_gpus();
-    inference_view::draw(f, chunks[0], &states, &gpus);
+    inference_view::draw_monitor(f, chunks[0], &monitor, &states);
     draw_agent_history(f, app, chunks[1]);
 }
 

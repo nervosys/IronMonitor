@@ -111,6 +111,8 @@ pub struct IronMonitorApp {
     /// Inference engines, polled in the background. Spawned once, in `with_context`.
     pub(super) inference: crate::inference::InferencePoller,
     pub(super) agents: crate::agents::ironobs::AgentsPoller,
+    /// Sparkline history for the Inference monitor's hardware tiles.
+    pub(super) inference_history: crate::inference::monitor::History,
 
     // Hardware data
     cpu_stats: Option<CpuStats>,
@@ -252,7 +254,7 @@ pub struct IronMonitorApp {
     /// Background collector. Dropping this stops and joins the thread.
     collector: Option<crate::pipeline::Collector>,
     /// Newest published snapshot.
-    snapshot: std::sync::Arc<crate::pipeline::Snapshot>,
+    pub(super) snapshot: std::sync::Arc<crate::pipeline::Snapshot>,
     /// Generation already folded into UI state, so repeated frames do no work.
     applied_generation: u64,
 
@@ -1027,6 +1029,7 @@ impl IronMonitorApp {
             agent_tools: super::agent_tools::AgentToolsPanel::default(),
             current_tab: Tab::Inference,
             inference: super::inference_tab::spawn_poller(),
+            inference_history: Default::default(),
             agents: crate::agents::ironobs::AgentsPoller::spawn(),
             cpu_stats: initial_cpu_stats,
             memory_stats: initial_memory_stats,

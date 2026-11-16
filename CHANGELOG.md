@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (Inference)
 
+- The Inference tab is a monitor in both the TUI and the GUI: a model-state strip
+  (Idle, Reading, Generating, Queued, Error), tiles with sparklines for speed, GPU
+  load, VRAM, GPU temperature, power, PCIe, CPU, disk read, latency, energy, cost and
+  requests, memory and cache gauges, and the engine's recent requests. The phase is lit
+  only from the engine's own counts and counters, and no phase is lit when they do not
+  say. Both front ends draw one model, built in `inference::monitor`. In the TUI, `v`
+  switches to the per-engine detail panels; in the GUI they follow the monitor.
 - Latency means for vLLM (time to first token, queue, prefill, decode, inter-token,
   end-to-end) and prefill and decode time per token for llama.cpp, from each engine's
   own time totals over the window between two polls.

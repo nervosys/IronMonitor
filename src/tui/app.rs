@@ -673,6 +673,12 @@ pub struct App {
     pub agents: Option<AgentsPoller>,
     /// First line the Agents tab shows; moved by the arrow and page keys there.
     pub agents_scroll: u16,
+    /// Whether the Inference tab shows each engine's detail panels instead of the
+    /// monitor. Toggled with `v`.
+    pub inference_details: bool,
+    /// Sparkline history for the Inference monitor's hardware tiles. Behind a lock
+    /// because frames are drawn from a shared reference.
+    pub inference_history: std::sync::Mutex<crate::inference::monitor::History>,
     /// Process display mode - which device's processes to show
     pub process_display_mode: ProcessDisplayMode,
     /// Process monitor for tracking system and GPU processes
@@ -1062,6 +1068,39 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The machine's readings for the Inference monitor, from the same state the
+    /// other tabs draw.
+    pub fn inference_hardware(&self) -> crate::inference::monitor::Hardware {
+        use crate::inference::monitor::{GpuHw, Hardware};
+        let rates = |f: fn(&DiskInfo) -> Option<f64>| {
+            let known: Vec<f64> = self.disk_info.iter().filter_map(f).collect();
+            (!known.is_empty()).then(|| known.iter().sum())
+        };
+        Hardware {
+            sampled: self.snapshot.generation > 0,
+            gpus: self
+                .snapshot
+                .gpu_static
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    GpuHw::from_readings(
+                        s,
+                        self.snapshot.gpu_dynamic.get(i).and_then(|d| d.as_ref()),
+                    )
+                })
+                .collect(),
+            cpu_utilization: self.cpu_info.utilization.map(f64::from),
+            cores: self.cpu_info.cores,
+            threads: self.cpu_info.threads,
+            ram_used: self.memory_info.used,
+            ram_total: self.memory_info.total,
+            disk_read: rates(|d| d.read_rate),
+            disk_write: rates(|d| d.write_rate),
+            ..Hardware::from_snapshot(&self.snapshot)
+        }
+    }
+
     /// The GPUs the snapshot enumerated, with the identifiers the inference view
     /// joins engine GPUs on.
     pub fn inference_gpus(&self) -> Vec<GpuRef> {
@@ -1192,6 +1231,8 @@ impl App {
             inference: Some(inference),
             agents: Some(AgentsPoller::spawn()),
             agents_scroll: 0,
+            inference_details: false,
+            inference_history: Default::default(),
             process_display_mode: ProcessDisplayMode::default(),
             process_monitor: None, // Will be populated from background thread
             processes: Vec::new(),
@@ -1350,6 +1391,11 @@ impl App {
                 }
             }
             KeyCode::Char('a') | KeyCode::Char('A') => self.toggle_agent_input(),
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                if self.selected_tab == TAB_INFERENCE {
+                    self.inference_details = !self.inference_details;
+                }
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 // The chat box is on the Inference tab as well as the Agent tab.
                 if self.selected_tab == TAB_INFERENCE || self.selected_tab == TAB_AGENT {

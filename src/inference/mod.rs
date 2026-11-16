@@ -15,6 +15,7 @@ pub mod energy;
 pub mod http;
 pub mod ironworks;
 pub mod local;
+pub mod monitor;
 pub mod remote;
 
 use std::collections::{BTreeMap, VecDeque};
