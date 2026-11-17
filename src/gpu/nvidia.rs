@@ -202,6 +202,15 @@ impl Gpu for NvidiaGpu {
         let pcie_width = self.device.current_pcie_link_width().ok().map(|w| w as u8);
         let max_pcie_width = self.device.max_pcie_link_width().ok().map(|w| w as u8);
 
+        // NVML samples PCIe traffic over about 20 ms and reports KB/s; `None` where
+        // the device or driver does not support the counter.
+        let throughput = |counter| {
+            self.device
+                .pcie_throughput(counter)
+                .ok()
+                .map(|kb| u64::from(kb) * 1024)
+        };
+        use nvml_wrapper::enum_wrappers::device::PcieUtilCounter;
         let pcie = PcieLinkInfo {
             current_gen: pcie_gen,
             max_gen: max_pcie_gen,
@@ -209,8 +218,8 @@ impl Gpu for NvidiaGpu {
             max_width: max_pcie_width,
             current_speed: None,
             max_speed: None,
-            tx_throughput: None,
-            rx_throughput: None,
+            tx_throughput: throughput(PcieUtilCounter::Send),
+            rx_throughput: throughput(PcieUtilCounter::Receive),
         };
 
         // Engines

@@ -237,8 +237,74 @@ pub struct ProviderSample {
     /// The cumulative energy of the engine's GPUs at this poll, or why none was read.
     /// `None` for a remote provider, where the question does not arise.
     pub energy: Option<energy::Energy>,
+    /// What an engine says about the request in flight and the ones before it, for
+    /// an engine that publishes that. `None` for one that does not.
+    pub serving: Option<ServingDetail>,
     /// Provider-specific detail. Only the provider that owns it fills it in.
     pub ironworks: Option<ironworks::Section>,
+}
+
+/// The engine's own word for what it is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineState {
+    Idle,
+    /// Reading the prompt: prefill.
+    Reading,
+    Generating,
+    /// Running with no model loaded.
+    Unloaded,
+    Other(String),
+}
+
+/// How far the request in flight is, in the engine's own counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    /// What is counted, such as "tokens of max_tokens".
+    pub what: &'static str,
+}
+
+/// One finished request, as the engine reports it. A field it did not report is `None`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RequestRow {
+    /// When it finished, seconds since the UNIX epoch.
+    pub time_unix: Option<f64>,
+    pub id: Option<String>,
+    /// The engine's finish reason, such as `stop` or `length`.
+    pub status: Option<String>,
+    pub prompt: Option<u64>,
+    /// Prompt tokens served from cache rather than read.
+    pub reused: Option<u64>,
+    pub output: Option<u64>,
+    /// Fresh prompt tokens over the engine's prompt time.
+    pub prefill_tok_s: Option<f64>,
+    pub decode_tok_s: Option<f64>,
+    pub duration_s: Option<f64>,
+}
+
+/// The serving detail some engines publish beyond counters.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServingDetail {
+    pub state: Option<EngineState>,
+    /// The engine's name for the step it is in, where it gives one.
+    pub phase: Option<String>,
+    pub queued: Option<u64>,
+    pub progress: Option<Progress>,
+    /// Generation speed the engine measures for the request in flight.
+    pub tok_s_now: Option<f64>,
+    /// Prompt tokens per second the engine measures while reading prompts.
+    pub prefill_tok_s: Option<f64>,
+    /// The context the model is served with, in tokens.
+    pub context_max: Option<u64>,
+    /// Tokens of context in use, and which request they belong to.
+    pub context_used: Option<(u64, &'static str)>,
+    /// Experts cached in VRAM, and the bytes they take where reported.
+    pub experts_cached: Option<(u64, Option<u64>)>,
+    /// Finished requests, most recent first.
+    pub recent: Option<Vec<RequestRow>>,
+    /// How many finished requests the engine keeps.
+    pub recent_kept: Option<u64>,
 }
 
 /// Longest wait a source that does not answer backs off to, for local sources.

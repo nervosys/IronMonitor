@@ -18,6 +18,7 @@ pub mod app;
 mod agents_view;
 pub mod headless;
 mod inference_view;
+mod style;
 mod ui;
 
 use app::PeripheralCache;

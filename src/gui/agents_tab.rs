@@ -44,14 +44,55 @@ impl IronMonitorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for line in &report.summary {
-                    ui.label(RichText::new(line).color(primary));
+                for (i, line) in report.summary.iter().enumerate() {
+                    let text = RichText::new(line);
+                    ui.label(if i == 0 {
+                        text.color(primary).strong()
+                    } else {
+                        text.color(secondary)
+                    });
                 }
-                for section in &report.sections {
+                for (n, section) in report.sections.iter().enumerate() {
                     ui.add_space(10.0);
                     ui.add(SectionHeader::new(section.title));
+                    if !section.columns.is_empty() {
+                        egui::Grid::new(("agents_table", n))
+                            .striped(true)
+                            .spacing([18.0, 4.0])
+                            .show(ui, |ui| {
+                                for (name, _) in &section.columns {
+                                    ui.label(RichText::new(*name).color(secondary).strong());
+                                }
+                                ui.end_row();
+                                for row in &section.table {
+                                    for (i, cell) in row.iter().enumerate() {
+                                        let right = section.columns.get(i).is_some_and(|(_, r)| *r);
+                                        let colour = if cell == "unknown" {
+                                            secondary
+                                        } else {
+                                            primary
+                                        };
+                                        let label = RichText::new(cell).color(colour);
+                                        if right {
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| ui.label(label),
+                                            );
+                                        } else {
+                                            ui.label(label);
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    }
                     for row in &section.rows {
-                        ui.label(RichText::new(row).color(primary));
+                        let colour = if row.starts_with("Not read") || row.starts_with("unknown") {
+                            secondary
+                        } else {
+                            primary
+                        };
+                        ui.label(RichText::new(row).color(colour));
                     }
                     if section.not_shown > 0 {
                         ui.label(

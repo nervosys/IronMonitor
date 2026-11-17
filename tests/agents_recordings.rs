@@ -158,9 +158,9 @@ fn tui_agents_frame_shows_the_recordings_and_no_path_or_session_text() {
         frame.contains(&format!("Sessions: {SESSIONS} ")),
         "the frame does not show the session count:\n{frame}"
     );
-    assert!(frame.contains("1 subagent run(s)"), "{frame}");
-    assert!(frame.contains("1 workflow(s)"), "{frame}");
-    assert!(frame.contains("Coverage"), "{frame}");
+    assert!(frame.contains("1 subagent run "), "{frame}");
+    assert!(frame.contains("1 workflow"), "{frame}");
+    assert!(frame.contains("COVERAGE"), "{frame}");
     assert_no_leak(&frame);
     let _ = std::fs::remove_dir_all(&dir);
 }

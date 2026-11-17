@@ -20,12 +20,18 @@ pub const LIST_CAP: usize = 25;
 /// Most workflows listed.
 pub const WORKFLOW_CAP: usize = 10;
 
-/// One titled block of rows.
+/// One titled block: a table where the rows have columns, and lines of text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub title: &'static str,
+    /// Column headings, and whether the column's cells align right (counts do).
+    /// Empty when the section has no table.
+    pub columns: Vec<(&'static str, bool)>,
+    /// One entry per table row, one cell per column.
+    pub table: Vec<Vec<String>>,
+    /// Lines of text under the table, or in its place when there is nothing to list.
     pub rows: Vec<String>,
-    /// How many rows were left out of `rows` by the cap, stated to the reader.
+    /// How many table rows were left out by the cap, stated to the reader.
     pub not_shown: usize,
 }
 
@@ -33,10 +39,48 @@ impl Section {
     fn new(title: &'static str) -> Self {
         Self {
             title,
+            columns: Vec::new(),
+            table: Vec::new(),
             rows: Vec::new(),
             not_shown: 0,
         }
     }
+
+    /// Every line of the section as text, table rows with their cells joined.
+    pub fn text(&self) -> Vec<String> {
+        self.table
+            .iter()
+            .map(|cells| cells.join("  "))
+            .chain(self.rows.iter().cloned())
+            .collect()
+    }
+}
+
+/// Columns of a session table.
+const SESSION_COLUMNS: [(&str, bool); 9] = [
+    ("AGENT", false),
+    ("KIND", false),
+    ("MODEL", false),
+    ("STARTED", false),
+    ("LAST EVENT", false),
+    ("EVENTS", true),
+    ("TOKENS IN", true),
+    ("TOKENS OUT", true),
+    ("STATE", false),
+];
+
+/// `n` and a noun, the noun plural unless `n` is one.
+fn count_of(n: usize, one: &str, many: &str) -> String {
+    format!(
+        "{} {}",
+        crate::inference::monitor::fmt_count(n as u64),
+        if n == 1 { one } else { many }
+    )
+}
+
+/// When a session last did something: its last event, else its start.
+fn last_seen(s: &Session) -> Option<DateTime<Utc>> {
+    s.ended.or(s.started)
 }
 
 /// The whole tab, as text.
@@ -53,39 +97,55 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     let mut summary = Vec::new();
     summary.push(sessions_line(state.scan.as_ref(), &scan));
     summary.push(format!("Import: {}", cycle_text(state, now)));
-    summary.push(format!(
-        "Recordings: {} file(s), {} recording(s) read, {} file(s) unusable, {} recording(s) refused{}",
-        scan.files,
-        scan.recordings(),
-        scan.corrupt_files,
-        scan.refused_count(),
-        if scan.files_truncated > 0 {
-            format!(", {} file(s) past the read bound", scan.files_truncated)
-        } else {
-            String::new()
-        }
-    ));
+    let mut recordings = format!(
+        "Recordings: {} read from {}",
+        crate::inference::monitor::fmt_count(scan.recordings() as u64),
+        count_of(scan.files, "file", "files"),
+    );
+    if scan.corrupt_files > 0 {
+        recordings.push_str(&format!(
+            " · {} unusable",
+            count_of(scan.corrupt_files, "file", "files")
+        ));
+    }
+    if scan.refused_count() > 0 {
+        recordings.push_str(&format!(
+            " · {} refused",
+            count_of(scan.refused_count(), "recording", "recordings")
+        ));
+    }
+    if scan.files_truncated > 0 {
+        recordings.push_str(&format!(
+            " · {} past the read bound",
+            count_of(scan.files_truncated, "file", "files")
+        ));
+    }
+    summary.push(recordings);
 
     let mut sections = Vec::new();
 
+    // Active: every recording that shows in progress, most recently heard from first.
     let mut active = Section::new("Active");
-    let active_sessions: Vec<&Session> = scan
+    let mut active_sessions: Vec<&Session> = scan
         .sessions
         .iter()
         .filter(|s| s.in_progress == InProgress::True)
         .collect();
+    active_sessions.sort_by_key(|s| std::cmp::Reverse(last_seen(s)));
     if scan.recordings() == 0 || !scan.is_complete() {
         active.rows.push(format!("unknown: {}", none_reason(&scan)));
     } else if active_sessions.is_empty() {
         active.rows.push("no recording shows in progress".into());
     } else {
+        active.columns = SESSION_COLUMNS.to_vec();
         for s in active_sessions.iter().take(LIST_CAP) {
-            active.rows.push(session_row(s, now));
+            active.table.push(session_cells(s, now));
         }
         active.not_shown = active_sessions.len().saturating_sub(LIST_CAP);
     }
     sections.push(active);
 
+    // Recent: top-level sessions not listed under Active, most recent first.
     let mut recent = Section::new("Recent");
     if scan.recordings() == 0 || !scan.is_complete() {
         recent.rows.push(format!("unknown: {}", none_reason(&scan)));
@@ -93,11 +153,18 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
         let mut tops: Vec<&Session> = scan
             .sessions
             .iter()
-            .filter(|s| super::recording::is_top_level(s))
+            .filter(|s| super::recording::is_top_level(s) && s.in_progress != InProgress::True)
             .collect();
-        tops.sort_by_key(|s| std::cmp::Reverse(s.started.or(s.ended)));
+        tops.sort_by_key(|s| std::cmp::Reverse(last_seen(s)));
+        if tops.is_empty() {
+            recent
+                .rows
+                .push("every session read is listed under Active".into());
+        } else {
+            recent.columns = SESSION_COLUMNS.to_vec();
+        }
         for s in tops.iter().take(LIST_CAP) {
-            recent.rows.push(session_row(s, now));
+            recent.table.push(session_cells(s, now));
         }
         recent.not_shown = tops.len().saturating_sub(LIST_CAP);
     }
@@ -114,20 +181,30 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
             .iter()
             .filter(|s| super::recording::is_top_level(s) && s.child_count > 0)
             .collect();
-        flows.sort_by_key(|s| std::cmp::Reverse(s.started.or(s.ended)));
+        flows.sort_by_key(|s| std::cmp::Reverse(last_seen(s)));
         if flows.is_empty() {
             workflows
                 .rows
                 .push("no multi-agent runs in the recordings read".into());
+        } else {
+            workflows.columns = vec![
+                ("AGENT", false),
+                ("MODEL", false),
+                ("SUBAGENTS", true),
+                ("STARTED", false),
+                ("LAST EVENT", false),
+                ("EVENTS", true),
+            ];
         }
         for s in flows.iter().take(WORKFLOW_CAP) {
-            workflows.rows.push(format!(
-                "{} · {} subagent run(s) · started {} · {} event(s)",
+            workflows.table.push(vec![
                 producer_label(&s.producer),
-                s.child_count,
+                s.model.clone().unwrap_or_else(|| "unknown".into()),
+                crate::inference::monitor::fmt_count(s.child_count as u64),
                 time_or_unknown(s.started, now),
-                s.event_count
-            ));
+                time_or_unknown(s.ended, now),
+                crate::inference::monitor::fmt_count(s.event_count as u64),
+            ]);
         }
         workflows.not_shown = flows.len().saturating_sub(WORKFLOW_CAP);
     }
@@ -146,11 +223,17 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
         }
         Some(e) => {
             engines.rows.push(match e.active {
-                Some(n) => format!("{n} request(s) in flight, from IronWorks"),
+                Some(n) => format!(
+                    "{} in flight, from IronWorks",
+                    count_of(n as usize, "request", "requests")
+                ),
                 None => "in flight: unknown, the engine did not report it".into(),
             });
             engines.rows.push(match e.recent {
-                Some(n) => format!("{n} entr(y/ies) in the engine's recent-request buffer"),
+                Some(n) => format!(
+                    "{} in the engine's recent-request buffer",
+                    count_of(n as usize, "entry", "entries")
+                ),
                 None => "recent requests: unknown, the engine did not report them".into(),
             });
             if !e.reachable {
@@ -169,21 +252,25 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     for p in KNOWN_PRODUCERS {
         let n = scan.producer_count(p.key);
         let import = state.imports.iter().find(|i| i.importer.key() == p.key);
-        let row = match (p.not_read, import) {
-            (Some(why), _) => format!("Not read: {} — {why}", p.label),
-            (None, Some(imp)) => producer_row(p.label, n, imp, state, now),
-            (None, None) => format!("Not read: {} — not imported by this IronMonitor", p.label),
-        };
-        coverage.rows.push(row);
+        match (p.not_read, import) {
+            (Some(why), _) => coverage.rows.push(format!("Not read: {} — {why}", p.label)),
+            (None, Some(imp)) => coverage
+                .rows
+                .extend(producer_rows(p.label, n, imp, state, now)),
+            (None, None) => coverage.rows.push(format!(
+                "Not read: {} — not imported by this IronMonitor",
+                p.label
+            )),
+        }
     }
     for key in scan.producers() {
         if KNOWN_PRODUCERS.iter().any(|p| p.key == key) {
             continue;
         }
         coverage.rows.push(format!(
-            "Read: {} — {} recording(s)",
+            "Read: {} — {}",
             producer_label(&key),
-            scan.producer_count(&key)
+            count_of(scan.producer_count(&key), "recording", "recordings")
         ));
     }
     coverage.rows.push(format!("Not read: {REMOTE_NOT_READ}"));
@@ -193,21 +280,22 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
     Report { summary, sections }
 }
 
-/// One producer's coverage row: what was read, and the state of its import.
-fn producer_row(
+/// One producer's coverage: what was read, then each note on its import indented
+/// beneath it.
+fn producer_rows(
     label: &str,
     n: usize,
     imp: &ProducerImport,
     state: &AgentsState,
     now: DateTime<Utc>,
-) -> String {
+) -> Vec<String> {
     let head = if !imp.source_exists && n == 0 {
         format!(
             "Not read: {label} — no `{}` folder to import",
             imp.importer.source_folder()
         )
     } else if n > 0 {
-        format!("Read: {label} — {n} recording(s)")
+        format!("Read: {label} — {}", count_of(n, "recording", "recordings"))
     } else {
         format!("Read when ironobs imports it: {label} — none in the recordings read yet")
     };
@@ -228,11 +316,9 @@ fn producer_row(
     if imp.source_exists {
         notes.push(window_note(imp));
     }
-    if notes.is_empty() {
-        head
-    } else {
-        format!("{head} · {}", notes.join(" · "))
-    }
+    std::iter::once(head)
+        .chain(notes.into_iter().map(|n| format!("  {n}")))
+        .collect()
 }
 
 /// The first import's selection, stated on every row that has a source folder: the window
@@ -261,11 +347,11 @@ fn sessions_line(raw: Option<&Scan>, scan: &Scan) -> String {
         return format!("Sessions: unknown — {}", none_reason(scan));
     }
     format!(
-        "Sessions: {} · {} recording(s) show in progress · {} subagent run(s) · {} workflow(s)",
-        scan.sessions_count(),
-        scan.active_count(),
-        scan.subagent_count(),
-        scan.workflow_count()
+        "Sessions: {} · {} in progress · {} · {}",
+        crate::inference::monitor::fmt_count(scan.sessions_count() as u64),
+        crate::inference::monitor::fmt_count(scan.active_count() as u64),
+        count_of(scan.subagent_count(), "subagent run", "subagent runs"),
+        count_of(scan.workflow_count(), "workflow", "workflows"),
     )
 }
 
@@ -339,35 +425,34 @@ pub fn cycle_text(state: &AgentsState, now: DateTime<Utc>) -> String {
     }
 }
 
-fn session_row(s: &Session, now: DateTime<Utc>) -> String {
-    let status = match s.in_progress {
+/// A session's cells, in [`SESSION_COLUMNS`] order. An absent figure is `unknown`.
+fn session_cells(s: &Session, now: DateTime<Utc>) -> Vec<String> {
+    let state = match s.in_progress {
         InProgress::True => "in progress",
         InProgress::False => "closed",
-        InProgress::NotEvidenced => "in progress not evidenced",
+        // The recording does not say either way.
+        InProgress::NotEvidenced => "not stated",
     };
-    let tokens = match (s.input_tokens, s.output_tokens) {
-        (None, None) => "tokens unknown".to_string(),
-        (i, o) => format!(
-            "tokens in {} / out {}",
-            i.map_or("unknown".to_string(), |v| v.to_string()),
-            o.map_or("unknown".to_string(), |v| v.to_string())
-        ),
-    };
-    let child = if s.is_subagent {
-        " · subagent"
+    let kind = if s.is_subagent {
+        "subagent"
     } else if s.parent_missing {
-        " · parent not read"
+        "parent not read"
     } else {
-        ""
+        "session"
     };
-    format!(
-        "{}{child} · {} · started {} · ended {} · {} event(s) · {tokens} · {status}",
+    let tokens =
+        |v: Option<u64>| v.map_or_else(|| "unknown".into(), crate::inference::monitor::fmt_count);
+    vec![
         producer_label(&s.producer),
-        s.model.as_deref().unwrap_or("model unknown"),
+        kind.into(),
+        s.model.clone().unwrap_or_else(|| "unknown".into()),
         time_or_unknown(s.started, now),
         time_or_unknown(s.ended, now),
-        s.event_count,
-    )
+        crate::inference::monitor::fmt_count(s.event_count as u64),
+        tokens(s.input_tokens),
+        tokens(s.output_tokens),
+        state.into(),
+    ]
 }
 
 /// The label for a producer key: its known name, or the key itself.
@@ -489,11 +574,15 @@ mod tests {
         );
         let r = build(&st, None, Utc::now());
         let active = section(&r, "Active");
-        assert_eq!(active.rows.len(), 1);
-        assert!(active.rows[0].ends_with("in progress"));
-        let recent = section(&r, "Recent").rows.join("\n");
+        assert_eq!(active.table.len(), 1);
+        assert_eq!(active.table[0].last().unwrap(), "in progress");
+        let recent = section(&r, "Recent").text().join("\n");
         assert!(recent.contains("closed"));
-        assert!(recent.contains("in progress not evidenced"));
+        assert!(recent.contains("not stated"));
+        assert!(
+            !recent.contains("in progress"),
+            "an active session is listed once, under Active: {recent}"
+        );
     }
 
     #[test]
@@ -504,7 +593,7 @@ mod tests {
         let st = state_with(&format!("[{}]", rows.join(",")));
         let r = build(&st, None, Utc::now());
         let active = section(&r, "Active");
-        assert_eq!(active.rows.len(), LIST_CAP);
+        assert_eq!(active.table.len(), LIST_CAP);
         assert_eq!(active.not_shown, 7);
     }
 
@@ -512,10 +601,14 @@ mod tests {
     fn absent_times_and_models_render_as_unknown() {
         let st = state_with(r#"[{"run":"a","events":[]}]"#);
         let r = build(&st, None, Utc::now());
-        let row = &section(&r, "Recent").rows[0];
-        assert!(row.contains("started unknown"), "{row}");
-        assert!(row.contains("model unknown"), "{row}");
-        assert!(row.contains("tokens unknown"), "{row}");
+        let recent = section(&r, "Recent");
+        let cell = |name: &str| {
+            let i = recent.columns.iter().position(|(c, _)| *c == name).unwrap();
+            recent.table[0][i].clone()
+        };
+        for name in ["STARTED", "MODEL", "TOKENS IN", "TOKENS OUT"] {
+            assert_eq!(cell(name), "unknown", "{name}");
+        }
     }
 
     #[test]
@@ -526,9 +619,9 @@ mod tests {
         );
         let r = build(&st, None, Utc::now());
         let wf = section(&r, "Workflows");
-        assert_eq!(wf.rows.len(), 1);
-        assert!(wf.rows[0].contains("1 subagent run(s)"), "{:?}", wf.rows);
-        assert!(wf.rows[0].starts_with("Claude Code"));
+        assert_eq!(wf.table.len(), 1);
+        assert_eq!(wf.table[0][2], "1", "{:?}", wf.table);
+        assert_eq!(wf.table[0][0], "Claude Code");
     }
 
     #[test]

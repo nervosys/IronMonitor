@@ -13,6 +13,7 @@
 //! - CRITICAL (Red): 90-100%
 
 #[allow(unused_imports)]
+use super::style;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -37,31 +38,31 @@ mod glances_colors {
     use ratatui::style::Color;
 
     /// OK status - safe level (0-50%)
-    pub const OK: Color = Color::Green;
+    pub const OK: Color = super::style::ACCENT;
     /// CAREFUL status - watch level (50-70%)
-    pub const CAREFUL: Color = Color::Cyan;
+    pub const CAREFUL: Color = Color::Rgb(90, 190, 220);
     /// WARNING status - attention needed (70-90%)
-    pub const WARNING: Color = Color::Yellow;
+    pub const WARNING: Color = super::style::WARM;
     /// CRITICAL status - urgent (90-100%)
-    pub const CRITICAL: Color = Color::Red;
+    pub const CRITICAL: Color = super::style::HOT;
     /// Title/header color (generic)
-    pub const TITLE: Color = Color::Cyan;
+    pub const TITLE: Color = super::style::ACCENT;
     /// Separator/border color
-    pub const SEPARATOR: Color = Color::DarkGray;
+    pub const SEPARATOR: Color = super::style::DIM;
     /// Inactive/disabled color
-    pub const INACTIVE: Color = Color::DarkGray;
+    pub const INACTIVE: Color = super::style::DIM;
 
     // ── Device-class title colors (bright cyberpunk neon) ────────────────
     /// CPU title color – neon cyan
-    pub const CPU_TITLE: Color = Color::Rgb(0, 255, 255);
+    pub const CPU_TITLE: Color = super::style::ACCENT;
     /// Accelerator (GPU/NPU) title color – neon green
-    pub const ACCEL_TITLE: Color = Color::Rgb(57, 255, 20);
+    pub const ACCEL_TITLE: Color = super::style::ACCENT;
     /// Memory title color – neon magenta
-    pub const MEMORY_TITLE: Color = Color::Rgb(255, 0, 255);
+    pub const MEMORY_TITLE: Color = super::style::ACCENT;
     /// Disk title color – neon orange
-    pub const DISK_TITLE: Color = Color::Rgb(255, 165, 0);
+    pub const DISK_TITLE: Color = super::style::ACCENT;
     /// Network title color – neon blue
-    pub const NETWORK_TITLE: Color = Color::Rgb(0, 150, 255);
+    pub const NETWORK_TITLE: Color = super::style::ACCENT;
 }
 
 /// Get color based on percentage threshold (Glances-style, generic fallback)
@@ -117,16 +118,6 @@ fn disk_color(percent: f32) -> Color {
         p if p >= 70.0 => Color::Rgb(255, 255, 0),  // neon yellow
         p if p >= 50.0 => Color::Rgb(255, 200, 50), // bright amber
         _ => Color::Rgb(255, 165, 0),               // neon orange
-    }
-}
-
-/// Network color – Neon Blue family
-fn network_color(percent: f32) -> Color {
-    match percent {
-        p if p >= 90.0 => Color::Rgb(255, 60, 60),  // neon red
-        p if p >= 70.0 => Color::Rgb(255, 255, 0),  // neon yellow
-        p if p >= 50.0 => Color::Rgb(80, 180, 255), // bright blue
-        _ => Color::Rgb(0, 150, 255),               // neon blue
     }
 }
 
@@ -284,7 +275,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let tabs = Tabs::new(titles)
         .block(
-            Block::default().borders(Borders::ALL).title(Span::styled(
+            style::block().title(Span::styled(
                 title_text,
                 Style::default()
                     .fg(glances_colors::TITLE)
@@ -303,94 +294,119 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, area);
 }
 
-/// Overview tab: compact bars for all hardware categories with sparkline history
+/// Overview tab: the machine as Inference-style tiles, then each accelerator.
 fn draw_overview_tab(f: &mut Frame, app: &App, area: Rect) {
-    let accel_count = app.accelerators.len();
-    let accel_height: u16 = if accel_count > 0 {
-        (accel_count * 3) as u16
-    } else {
-        0
-    };
-
-    let mut constraints = vec![Constraint::Length(3)]; // CPU
-    if accel_height > 0 {
-        constraints.push(Constraint::Length(accel_height));
-    }
-    constraints.push(Constraint::Length(3)); // RAM
-    constraints.push(Constraint::Length(3)); // Disk
-    constraints.push(Constraint::Length(3)); // Network
-    constraints.push(Constraint::Min(5)); // Sparkline history area
-
+    let tiles = overview_tiles(app);
+    let grid = style::grid_height(tiles.len());
+    let accel_rows = (app.accelerators.len().max(1) * 3) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(grid),
+            Constraint::Length(1),
+            Constraint::Length(accel_rows),
+            Constraint::Min(0),
+        ])
         .split(area);
-
-    let mut idx = 0;
-    draw_cpu_bar(f, app, chunks[idx]);
-    idx += 1;
-    if accel_height > 0 {
-        draw_accelerators(f, app, chunks[idx]);
-        idx += 1;
-    }
-    draw_memory_bar(f, app, chunks[idx]);
-    idx += 1;
-    draw_disk_bar(f, app, chunks[idx]);
-    idx += 1;
-    draw_network_bar(f, app, chunks[idx]);
-    idx += 1;
-
-    // Sparkline history section
-    draw_overview_sparklines(f, app, chunks[idx]);
+    style::tile_grid(f, chunks[0], &tiles);
+    draw_accelerators(f, app, chunks[2]);
 }
 
-/// Draw sparkline history charts in the overview tab
-fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
-    let spark_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    // CPU history sparkline
-    let cpu_data: Vec<u64> = app.cpu_history.iter().copied().collect();
-    if !cpu_data.is_empty() {
-        let sparkline = Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("CPU History (60s)"),
-            )
-            .data(&cpu_data)
-            .style(
-                Style::default().fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color)),
-            );
-        f.render_widget(sparkline, spark_chunks[0]);
-    } else {
-        let empty = Block::default()
-            .borders(Borders::ALL)
-            .title("CPU History (60s)");
-        f.render_widget(empty, spark_chunks[0]);
-    }
-
-    // Memory history sparkline
-    let mem_data: Vec<u64> = app.memory_history.iter().copied().collect();
-    let mem_pct = disk_percent(app.memory_info.used, app.memory_info.total).map(|p| p as f32);
-    if !mem_data.is_empty() {
-        let sparkline = Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Memory History (60s)"),
-            )
-            .data(&mem_data)
-            .style(Style::default().fg(mem_pct.map_or(Color::DarkGray, memory_color)));
-        f.render_widget(sparkline, spark_chunks[1]);
-    } else {
-        let empty = Block::default()
-            .borders(Borders::ALL)
-            .title("Memory History (60s)");
-        f.render_widget(empty, spark_chunks[1]);
-    }
+/// The Overview's tiles: the hardware tiles the Inference monitor draws, then
+/// memory, swap, disk space and network.
+fn overview_tiles(app: &App) -> Vec<crate::inference::monitor::Tile> {
+    use crate::inference::monitor::{hardware_tiles, Tile};
+    let hardware = app.inference_hardware();
+    let mut tiles = {
+        let mut history = app
+            .inference_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        history.record(std::time::Instant::now(), &hardware);
+        hardware_tiles(&hardware, &history)
+    };
+    let absent = |title: &'static str, why: &str| Tile {
+        title,
+        value: None,
+        unit: String::new(),
+        detail: why.to_string(),
+        spark: Vec::new(),
+        spark_max: None,
+    };
+    let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+    let mem = &app.memory_info;
+    tiles.push(match (mem.used, mem.total) {
+        (Some(u), Some(t)) if t > 0 => Tile {
+            title: "Memory",
+            value: Some(format!("{:.1} / {:.0}", gb(u), gb(t))),
+            unit: "GB".into(),
+            detail: format!(
+                "{:.0}% used · {} available",
+                u as f64 / t as f64 * 100.0,
+                auto_unit_opt(mem.available)
+            ),
+            spark: app.memory_history.iter().map(|v| *v as f64).collect(),
+            spark_max: Some(100.0),
+        },
+        _ => absent("Memory", "not read yet"),
+    });
+    tiles.push(match (mem.swap_used, mem.swap_total) {
+        (Some(u), Some(t)) if t > 0 => Tile {
+            title: "Swap",
+            value: Some(format!("{:.1} / {:.0}", gb(u), gb(t))),
+            unit: "GB".into(),
+            detail: format!("{:.0}% used", u as f64 / t as f64 * 100.0),
+            spark: Vec::new(),
+            spark_max: None,
+        },
+        (_, Some(0)) => absent("Swap", "no swap configured"),
+        _ => absent("Swap", "the pagefile was not read"),
+    });
+    let total: Option<u64> = app.disk_info.iter().map(|d| d.total).sum();
+    let used: Option<u64> = app.disk_info.iter().map(|d| d.used).sum();
+    tiles.push(match (used, total) {
+        _ if app.disk_info.is_empty() => absent("Disk space", "no disks enumerated"),
+        (Some(u), Some(t)) if t > 0 => Tile {
+            title: "Disk space",
+            value: Some(format!("{:.0}", u as f64 / t as f64 * 100.0)),
+            unit: "%".into(),
+            detail: format!(
+                "{} / {} across {} disks",
+                auto_unit(u),
+                auto_unit(t),
+                app.disk_info.len()
+            ),
+            spark: Vec::new(),
+            spark_max: None,
+        },
+        _ => absent("Disk space", "a disk's capacity was not read"),
+    });
+    let net = &app.network_info;
+    let rate_tile = |title: &'static str, rate: Option<f64>, total: u64, hist: Vec<f64>| match rate
+    {
+        Some(r) => Tile {
+            title,
+            value: Some(format_bandwidth(Some(r))),
+            unit: String::new(),
+            detail: format!("{} since boot", auto_unit(total)),
+            spark: hist,
+            spark_max: None,
+        },
+        None => absent(title, "a rate needs a second sample"),
+    };
+    tiles.push(rate_tile(
+        "Network in",
+        net.total_rx_rate,
+        net.total_rx_bytes,
+        app.network_rx_history.iter().map(|v| *v as f64).collect(),
+    ));
+    tiles.push(rate_tile(
+        "Network out",
+        net.total_tx_rate,
+        net.total_tx_bytes,
+        app.network_tx_history.iter().map(|v| *v as f64).collect(),
+    ));
+    tiles
 }
 
 /// Processes tab: full-screen process table
@@ -475,7 +491,7 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
     info_lines.extend(per_core_lines);
 
     let info = Paragraph::new(info_lines)
-        .block(Block::default().borders(Borders::ALL).title("CPU Details"))
+        .block(style::titled("CPU Details"))
         .style(Style::default().fg(Color::White));
     f.render_widget(info, chunks[1]);
 
@@ -483,11 +499,7 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
     let cpu_data: Vec<u64> = app.cpu_history.iter().copied().collect();
     if !cpu_data.is_empty() {
         let sparkline = Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("CPU Utilization History (60s)"),
-            )
+            .block(style::titled("CPU Utilization History (60s)"))
             .data(&cpu_data)
             .style(
                 Style::default().fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color)),
@@ -505,7 +517,7 @@ fn draw_accelerators_tab(f: &mut Frame, app: &App, area: Rect) {
             "No accelerators detected"
         };
         let para = Paragraph::new(msg)
-            .block(Block::default().borders(Borders::ALL).title("Accelerators"))
+            .block(style::titled("Accelerators"))
             .alignment(Alignment::Center);
         f.render_widget(para, area);
         return;
@@ -543,7 +555,7 @@ fn draw_accelerators_tab(f: &mut Frame, app: &App, area: Rect) {
                 if !data.is_empty() {
                     let title = format!("{} {} History", accel.accel_type, idx);
                     let sparkline = Sparkline::default()
-                        .block(Block::default().borders(Borders::ALL).title(title))
+                        .block(style::block().title(title))
                         .data(&data)
                         .style(
                             Style::default()
@@ -669,11 +681,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let info = Paragraph::new(info_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Memory Details"),
-        )
+        .block(style::titled("Memory Details"))
         .style(Style::default().fg(Color::White));
     f.render_widget(info, chunks[1]);
 
@@ -681,11 +689,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
     let mem_data: Vec<u64> = app.memory_history.iter().copied().collect();
     if !mem_data.is_empty() {
         let sparkline = Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Memory Usage History (60s)"),
-            )
+            .block(style::titled("Memory Usage History (60s)"))
             .data(&mem_data)
             .style(
                 Style::default().fg(mem_pct.map_or(Color::DarkGray, |p| memory_color(p as f32))),
@@ -743,11 +747,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let sys_info = Paragraph::new(sys_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("System Information"),
-        )
+        .block(style::titled("System Information"))
         .style(Style::default().fg(Color::White));
     f.render_widget(sys_info, chunks[0]);
 
@@ -803,7 +803,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let disks = List::new(disk_items)
-        .block(Block::default().borders(Borders::ALL).title("Disks"))
+        .block(style::titled("Disks"))
         .style(Style::default().fg(Color::White));
     f.render_widget(disks, chunks[2]);
 
@@ -845,11 +845,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let net_list = List::new(net_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Network Interfaces"),
-        )
+        .block(style::titled("Network Interfaces"))
         .style(Style::default().fg(Color::White));
     f.render_widget(net_list, chunks[4]);
 
@@ -946,11 +942,7 @@ fn draw_network_context(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let panel = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Network Context"),
-        )
+        .block(style::titled("Network Context"))
         .style(Style::default().fg(Color::White));
     f.render_widget(panel, area);
 }
@@ -964,7 +956,7 @@ fn draw_accelerators(f: &mut Frame, app: &App, area: Rect) {
             "No accelerators detected"
         };
         let no_accel = Paragraph::new(message)
-            .block(Block::default().borders(Borders::ALL).title("Accelerators"))
+            .block(style::titled("Accelerators"))
             .alignment(Alignment::Center);
         f.render_widget(no_accel, area);
         return;
@@ -1000,18 +992,14 @@ fn draw_single_accelerator(
         _ => String::new(),
     };
 
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        format!(
-            "{} {} │ {} ({}){}",
-            type_str, idx, accel.name, accel.vendor, pcie_str
-        ),
-        Style::default()
-            .fg(glances_colors::ACCEL_TITLE)
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let title = format!(
+        "{} {} · {} ({}){}",
+        type_str,
+        idx,
+        accel.name,
+        accel.vendor,
+        pcie_str.replace(" │ ", " · ")
+    );
 
     // Memory percentage for threshold color, absent when either figure is.
     let mem_percent = match (accel.memory_used, accel.memory_total) {
@@ -1045,13 +1033,11 @@ fn draw_single_accelerator(
     // snapshot publishes as unavailable. And the memory percentage was
     // formatted `{:.0}` over a *string*, where `.0` means "at most zero
     // characters": it printed "(%)" on every card.
-    let accel_util_label = format!(
-        "{}: {} @ {} │ MEM: {}/{} ({}) @ {} │ {} │ {}{}{}",
-        type_str,
-        // A device with no utilization counter shows a dash, not 0%.
-        accel
-            .utilization
-            .map_or_else(|| "-".to_string(), |u| format!("{u:.0}%")),
+    let value = accel
+        .utilization
+        .map_or_else(|| "—".to_string(), |u| format!("{u:.0}%"));
+    let detail = format!(
+        "@ {} · mem {} / {} ({}) @ {} · {} · {}{}{}",
         mhz_opt(accel.clock_core),
         auto_unit_opt(accel.memory_used),
         auto_unit_opt(accel.memory_total),
@@ -1059,18 +1045,17 @@ fn draw_single_accelerator(
         mhz_opt(accel.clock_memory),
         celsius_opt(accel.temperature),
         watts_opt(accel.power, accel.power_limit),
-        fan_str,
-        enc_dec_str
+        fan_str.replace(" │ ", " · "),
+        enc_dec_str.replace(" │ ", " · ")
     );
-
-    // No reading draws an empty grey bar, not a green 0% one.
-    let accel_clr = accel.utilization.map_or(Color::DarkGray, accel_color);
-
-    let accel_gauge = Gauge::default()
-        .gauge_style(Style::default().fg(accel_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(accel.utilization.unwrap_or(0.0)))
-        .label(accel_util_label);
-    f.render_widget(accel_gauge, inner);
+    style::metric_bar(
+        f,
+        area,
+        title,
+        &value,
+        &detail,
+        accel.utilization.map(|u| f64::from(u) / 100.0),
+    );
 }
 
 /// Draw all GPU bars with detailed metrics (nvtop style) - DEPRECATED, use draw_accelerators
@@ -1078,7 +1063,7 @@ fn draw_single_accelerator(
 fn draw_nvtop_gpus(f: &mut Frame, app: &App, area: Rect) {
     if app.gpu_info.is_empty() {
         let no_gpu = Paragraph::new("No GPUs detected")
-            .block(Block::default().borders(Borders::ALL).title("GPUs"))
+            .block(style::titled("GPUs"))
             .alignment(Alignment::Center);
         f.render_widget(no_gpu, area);
         return;
@@ -1102,7 +1087,7 @@ fn draw_nvtop_gpus(f: &mut Frame, app: &App, area: Rect) {
 /// Draw a single GPU with all its metrics (Glances-style compact format) - DEPRECATED, use draw_single_accelerator
 #[allow(dead_code)]
 fn draw_single_gpu(f: &mut Frame, gpu: &super::app::GpuInfo, idx: usize, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+    let block = style::block().title(Span::styled(
         format!("GPU {} │ {} ({})", idx, gpu.name, gpu.vendor),
         Style::default()
             .fg(glances_colors::ACCEL_TITLE)
@@ -1205,36 +1190,25 @@ fn draw_cpu_bar(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    let cpu_pct_text = app
+    let value = app
         .cpu_info
         .utilization
-        .map_or_else(|| "--".to_string(), |u| format!("{u:.0}%"));
-    let cpu_label = format!(
-        "CPU {} {} │ {}{}{} {}",
-        trend_arrow,
-        cpu_pct_text,
+        .map_or_else(|| "—".to_string(), |u| format!("{u:.0}% {trend_arrow}"));
+    let detail = format!(
+        "{}{}{}  {}",
         cores_text(&app.cpu_info),
         opt_mhz(app.cpu_info.frequency, " @ "),
-        opt_celsius(app.cpu_info.temperature, " │ "),
+        opt_celsius(app.cpu_info.temperature, " · "),
         per_core_display
     );
-
-    let cpu_clr = app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color);
-
-    let cpu_gauge = Gauge::default()
-        .block(
-            Block::default().borders(Borders::ALL).title(Span::styled(
-                "CPU",
-                Style::default()
-                    .fg(glances_colors::CPU_TITLE)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        )
-        .gauge_style(Style::default().fg(cpu_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(app.cpu_info.utilization.unwrap_or(0.0)))
-        .label(cpu_label);
-
-    f.render_widget(cpu_gauge, area);
+    style::metric_bar(
+        f,
+        area,
+        "CPU",
+        value.trim_end(),
+        &detail,
+        app.cpu_info.utilization.map(|u| f64::from(u) / 100.0),
+    );
 }
 
 /// Draw memory utilization bar gauge with Glances-style formatting
@@ -1247,33 +1221,21 @@ fn draw_memory_bar(f: &mut Frame, app: &App, area: Rect) {
         Some(mem) => trend_indicator(mem as f32, prev_mem.unwrap_or(mem as f32)).0,
         None => "",
     };
-    let mem_pct_text = mem_percent.map_or_else(|| "--".to_string(), |p| format!("{p:.0}%"));
-
-    let mem_label = format!(
-        "MEM {} {} │ {}/{} │ SWAP: {}",
-        trend_arrow,
-        mem_pct_text,
+    let value = mem_percent.map_or_else(|| "—".to_string(), |p| format!("{p:.0}% {trend_arrow}"));
+    let detail = format!(
+        "{} / {} used · swap {}",
         auto_unit_or_unknown(app.memory_info.used),
         auto_unit_or_unknown(app.memory_info.total),
         auto_unit_opt(app.memory_info.swap_used)
     );
-
-    let mem_clr = mem_percent.map_or(Color::DarkGray, |p| memory_color(p as f32));
-
-    let mem_gauge = Gauge::default()
-        .block(
-            Block::default().borders(Borders::ALL).title(Span::styled(
-                "Memory",
-                Style::default()
-                    .fg(glances_colors::MEMORY_TITLE)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        )
-        .gauge_style(Style::default().fg(mem_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(mem_percent.unwrap_or(0.0) as f32))
-        .label(mem_label);
-
-    f.render_widget(mem_gauge, area);
+    style::metric_bar(
+        f,
+        area,
+        "Memory",
+        value.trim_end(),
+        &detail,
+        mem_percent.map(|p| p / 100.0),
+    );
 }
 
 /// A capacity in GB, or a dash where the reading was not taken.
@@ -1341,7 +1303,7 @@ fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
     // Format I/O rates
     let io_str = if total_read > 0.0 || total_write > 0.0 {
         format!(
-            " │ R:{}/s W:{}/s",
+            " · read {}/s write {}/s",
             auto_unit(total_read as u64),
             auto_unit(total_write as u64)
         )
@@ -1349,46 +1311,25 @@ fn draw_disk_bar(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    let share = percent_or_unknown(fleet_percent);
-    let used_label = auto_unit_or_unknown(used_space);
-    let total_label = auto_unit_or_unknown(total_space);
-
-    let disk_label = if !disk_list.is_empty() {
-        format!(
-            "DISK {} │ {}/{}{}│ {}",
-            share,
-            used_label,
-            total_label,
-            io_str,
+    let detail = format!(
+        "{} / {} used{}  {}",
+        auto_unit_or_unknown(used_space),
+        auto_unit_or_unknown(total_space),
+        io_str,
+        if disk_list.is_empty() {
+            "no disks".to_string()
+        } else {
             disk_list.join(" ")
-        )
-    } else {
-        format!(
-            "DISK {} │ {}/{}{} │ No disks",
-            share, used_label, total_label, io_str
-        )
-    };
-
-    // The gauge itself has no way to draw "unknown": it is a bar, and every
-    // width it can take is a claim. An empty bar is the least wrong of them,
-    // and the label beside it reads `--%`.
-    let filled = fleet_percent.unwrap_or(0.0) as f32;
-    let disk_clr = disk_color(filled);
-
-    let disk_gauge = Gauge::default()
-        .block(
-            Block::default().borders(Borders::ALL).title(Span::styled(
-                "Disk",
-                Style::default()
-                    .fg(glances_colors::DISK_TITLE)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        )
-        .gauge_style(Style::default().fg(disk_clr).add_modifier(Modifier::BOLD))
-        .percent(safe_percent(filled))
-        .label(disk_label);
-
-    f.render_widget(disk_gauge, area);
+        }
+    );
+    style::metric_bar(
+        f,
+        area,
+        "Disk",
+        &percent_or_unknown(fleet_percent),
+        &detail,
+        fleet_percent.map(|p| p / 100.0),
+    );
 }
 
 /// Draw network bar gauge with Glances-style formatting
@@ -1455,47 +1396,27 @@ fn draw_network_bar(f: &mut Frame, app: &App, area: Rect) {
         "No interfaces".to_string()
     };
 
-    let net_label = format!(
-        "NET ↓{} ↑{} │ Total: ↓{} ↑{} │ {}",
-        rx_rate,
-        tx_rate,
+    let detail = format!(
+        "total ↓{} ↑{}  {}",
         auto_unit(net_info.total_rx_bytes),
         auto_unit(net_info.total_tx_bytes),
         iface_list
     );
-
-    // Calculate a visual gauge based on activity (normalize to something reasonable)
-    // Use logarithmic scale for better visualization
-    // With neither rate read there is no activity to plot: the bar stays empty and
-    // grey. It used to floor the total at 1 B/s, which drew a 30% bar.
-    // A total needs both directions: with one unread, the sum would count that
-    // direction as idle and plot a bar for traffic that was only half measured.
-    let known_total = match (net_info.total_rx_rate, net_info.total_tx_rate) {
-        (Some(rx), Some(tx)) => Some(rx + tx),
-        _ => None,
-    };
-    let gauge_percent = known_total.map_or(0, |total| {
-        let max_rate = total.max(1.0);
-        ((max_rate.log10() + 3.0) * 10.0).clamp(0.0, 100.0) as u16
-    });
-
-    // Color based on activity (network-class colors: cyan/teal family)
-    let net_clr = known_total.map_or(Color::DarkGray, |_| network_color(gauge_percent as f32));
-
-    let net_gauge = Gauge::default()
-        .block(
-            Block::default().borders(Borders::ALL).title(Span::styled(
-                "Network",
-                Style::default()
-                    .fg(glances_colors::NETWORK_TITLE)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        )
-        .gauge_style(Style::default().fg(net_clr).add_modifier(Modifier::BOLD))
-        .percent(gauge_percent)
-        .label(net_label);
-
-    f.render_widget(net_gauge, area);
+    // A rate is not a share of anything, so the network panel carries no bar.
+    let value = format!("↓{rx_rate} ↑{tx_rate}");
+    let panel = style::titled("Network");
+    let inner = panel.inner(area);
+    f.render_widget(panel, area);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{value}   "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(detail, Style::default().fg(Color::Gray)),
+        ])),
+        inner,
+    );
 }
 
 /// Format bandwidth to human-readable with auto unit (B/s, KB/s, MB/s, GB/s)
@@ -1548,7 +1469,7 @@ fn draw_cpu_graph(f: &mut Frame, app: &App, area: Rect) {
         cpu_text.push(Line::from(format!("@ {mhz} MHz")));
     }
     let cpu_info = Paragraph::new(cpu_text)
-        .block(Block::default().borders(Borders::ALL).title("CPU"))
+        .block(style::titled("CPU"))
         .style(Style::default().fg(Color::White));
     f.render_widget(cpu_info, inner_chunks[0]);
 
@@ -1605,7 +1526,7 @@ fn draw_memory_graph(f: &mut Frame, app: &App, area: Rect) {
         }),
     ];
     let mem_info = Paragraph::new(mem_text)
-        .block(Block::default().borders(Borders::ALL).title("Memory"))
+        .block(style::titled("Memory"))
         .style(Style::default().fg(Color::White));
     f.render_widget(mem_info, inner_chunks[0]);
 
@@ -1649,7 +1570,7 @@ fn draw_disk_graph(f: &mut Frame, app: &App, area: Rect) {
         Line::from(format!("/ {}", gb_or_unknown(total_space))),
     ];
     let disk_info = Paragraph::new(disk_text)
-        .block(Block::default().borders(Borders::ALL).title("Disk"))
+        .block(style::titled("Disk"))
         .style(Style::default().fg(Color::White));
     f.render_widget(disk_info, inner_chunks[0]);
 
@@ -2352,7 +2273,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(style::block().title(title))
         .column_spacing(1);
 
     f.render_widget(table, area);
@@ -2368,7 +2289,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 .fg(glances_colors::OK)
                 .add_modifier(Modifier::BOLD),
         )]))
-        .block(Block::default().borders(Borders::ALL))
+        .block(style::block())
         .alignment(Alignment::Center);
         f.render_widget(status, area);
         return;
@@ -2392,7 +2313,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ]))
-        .block(Block::default().borders(Borders::ALL))
+        .block(style::block())
         .alignment(Alignment::Left);
         f.render_widget(input, area);
         return;
@@ -2524,7 +2445,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let help = Paragraph::new(Line::from(help_spans))
-        .block(Block::default().borders(Borders::ALL))
+        .block(style::block())
         .alignment(Alignment::Center);
 
     f.render_widget(help, area);
@@ -2536,7 +2457,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = app.tabs.iter().map(|t| Line::from(*t)).collect();
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title("IronMonitor"))
+        .block(style::titled("IronMonitor"))
         .select(app.selected_tab)
         .style(Style::default().fg(Color::Cyan))
         .highlight_style(
@@ -2575,9 +2496,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // CPU Overview
-    let cpu_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("CPU - {}", app.cpu_info.name));
+    let cpu_block = style::block().title(format!("CPU - {}", app.cpu_info.name));
 
     let cpu_gauge = Gauge::default()
         .block(cpu_block)
@@ -2601,7 +2520,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 
     // Memory Overview
     let mem_percent = disk_percent(app.memory_info.used, app.memory_info.total);
-    let mem_block = Block::default().borders(Borders::ALL).title("Memory");
+    let mem_block = style::titled("Memory");
 
     let mem_gauge = Gauge::default()
         .block(mem_block)
@@ -2629,9 +2548,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     // GPU Overview
     if !app.gpu_info.is_empty() {
         let gpu = &app.gpu_info[0];
-        let gpu_block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!("GPU - {} ({})", gpu.name, gpu.vendor));
+        let gpu_block = style::block().title(format!("GPU - {} ({})", gpu.name, gpu.vendor));
 
         let gpu_gauge = Gauge::default()
             .block(gpu_block)
@@ -2652,7 +2569,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(gpu_gauge, chunks[2]);
     } else {
         let no_gpu = Paragraph::new("No GPUs detected")
-            .block(Block::default().borders(Borders::ALL).title("GPU"))
+            .block(style::titled("GPU"))
             .alignment(Alignment::Center);
         f.render_widget(no_gpu, chunks[2]);
     }
@@ -2698,11 +2615,7 @@ fn draw_cpu(f: &mut Frame, app: &App, area: Rect) {
     }));
 
     let info = Paragraph::new(info_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("CPU Information"),
-        )
+        .block(style::titled("CPU Information"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
@@ -2710,11 +2623,7 @@ fn draw_cpu(f: &mut Frame, app: &App, area: Rect) {
     // CPU History Graph
     let sparkline_data: Vec<u64> = app.cpu_history.iter().copied().collect();
     let sparkline = Sparkline::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("CPU History (60s)"),
-        )
+        .block(style::titled("CPU History (60s)"))
         .data(&sparkline_data)
         .style(Style::default().fg(Color::Cyan));
 
@@ -2725,7 +2634,7 @@ fn draw_cpu(f: &mut Frame, app: &App, area: Rect) {
 fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
     if app.gpu_info.is_empty() {
         let no_gpu = Paragraph::new("No GPUs detected")
-            .block(Block::default().borders(Borders::ALL).title("GPU"))
+            .block(style::titled("GPU"))
             .alignment(Alignment::Center);
         f.render_widget(no_gpu, area);
         return;
@@ -2782,11 +2691,7 @@ fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let info = Paragraph::new(info_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("GPU Information"),
-        )
+        .block(style::titled("GPU Information"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
@@ -2795,11 +2700,7 @@ fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
     if !app.gpu_histories.is_empty() {
         let sparkline_data: Vec<u64> = app.gpu_histories[0].iter().copied().collect();
         let sparkline = Sparkline::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("GPU Utilization History (60s)"),
-            )
+            .block(style::titled("GPU Utilization History (60s)"))
             .data(&sparkline_data)
             .style(Style::default().fg(Color::Green));
 
@@ -2867,11 +2768,7 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let info = Paragraph::new(info_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Memory Information"),
-        )
+        .block(style::titled("Memory Information"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
@@ -2879,11 +2776,7 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
     // Memory History
     let sparkline_data: Vec<u64> = app.memory_history.iter().copied().collect();
     let sparkline = Sparkline::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Memory Usage History (60s)"),
-        )
+        .block(style::titled("Memory Usage History (60s)"))
         .data(&sparkline_data)
         .style(Style::default().fg(Color::Magenta));
 
@@ -2916,11 +2809,7 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let info = Paragraph::new(info_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("System Information"),
-        )
+        .block(style::titled("System Information"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
@@ -2944,7 +2833,7 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let disks = List::new(disk_items)
-        .block(Block::default().borders(Borders::ALL).title("Disks"))
+        .block(style::titled("Disks"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(disks, chunks[1]);
@@ -2960,7 +2849,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         )]))
-        .block(Block::default().borders(Borders::ALL))
+        .block(style::block())
         .alignment(Alignment::Center);
         f.render_widget(status, area);
     } else if app.agent_input_mode {
@@ -2981,7 +2870,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ]))
-        .block(Block::default().borders(Borders::ALL))
+        .block(style::block())
         .alignment(Alignment::Left);
         f.render_widget(input, area);
     } else {
@@ -3000,7 +2889,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         ];
 
         let help = Paragraph::new(Line::from(help_text))
-            .block(Block::default().borders(Borders::ALL))
+            .block(style::block())
             .alignment(Alignment::Center);
 
         f.render_widget(help, area);
@@ -3055,11 +2944,7 @@ fn draw_agent(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let info = Paragraph::new(info_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("AI Agent - Natural Language Queries"),
-        )
+        .block(style::titled("AI Agent - Natural Language Queries"))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(info, chunks[0]);
@@ -3093,7 +2978,7 @@ fn draw_agent_history(f: &mut Frame, app: &App, area: Rect) {
         ];
 
         let help = Paragraph::new(help_text)
-            .block(Block::default().borders(Borders::ALL).title("Examples"))
+            .block(style::titled("Examples"))
             .alignment(Alignment::Left);
 
         f.render_widget(help, area);
@@ -3120,7 +3005,7 @@ fn draw_agent_history(f: &mut Frame, app: &App, area: Rect) {
         });
 
         let history = Paragraph::new(history_paragraph)
-            .block(Block::default().borders(Borders::ALL).title(format!(
+            .block(style::block().title(format!(
                 "Conversation History ({} queries)",
                 app.agent_history.len()
             )))
@@ -3151,7 +3036,9 @@ fn draw_inference_tab(f: &mut Frame, app: &App, area: Rect) {
             .inference_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        history.record(std::time::Instant::now(), &hardware);
+        let now = std::time::Instant::now();
+        history.record(now, &hardware);
+        history.record_engine(now, &states);
         crate::inference::monitor::build(&states, &hardware, &history)
     };
     // The monitor takes what it needs; the chat box keeps at least a few rows.
@@ -3253,43 +3140,33 @@ fn draw_peripherals(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Audio section (from cache)
-    let audio_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Audio Devices")
-        .border_style(Style::default().fg(glances_colors::TITLE));
+    let audio_block =
+        style::titled("Audio Devices").border_style(Style::default().fg(glances_colors::TITLE));
     let audio_para = Paragraph::new(app.peripheral_cache.audio_info.as_str()).block(audio_block);
     f.render_widget(audio_para, chunks[0]);
 
     // Display section (from cache)
-    let display_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Displays")
-        .border_style(Style::default().fg(glances_colors::TITLE));
+    let display_block =
+        style::titled("Displays").border_style(Style::default().fg(glances_colors::TITLE));
     let display_para =
         Paragraph::new(app.peripheral_cache.display_info.as_str()).block(display_block);
     f.render_widget(display_para, chunks[1]);
 
     // USB section (from cache)
-    let usb_block = Block::default()
-        .borders(Borders::ALL)
-        .title("USB Devices")
-        .border_style(Style::default().fg(glances_colors::TITLE));
+    let usb_block =
+        style::titled("USB Devices").border_style(Style::default().fg(glances_colors::TITLE));
     let usb_para = Paragraph::new(app.peripheral_cache.usb_info.as_str()).block(usb_block);
     f.render_widget(usb_para, chunks[2]);
 
     // Bluetooth section (from cache)
-    let bt_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Bluetooth")
-        .border_style(Style::default().fg(glances_colors::TITLE));
+    let bt_block =
+        style::titled("Bluetooth").border_style(Style::default().fg(glances_colors::TITLE));
     let bt_para = Paragraph::new(app.peripheral_cache.bluetooth_info.as_str()).block(bt_block);
     f.render_widget(bt_para, chunks[3]);
 
     // Battery section (from cache)
-    let battery_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Battery / Power")
-        .border_style(Style::default().fg(glances_colors::TITLE));
+    let battery_block =
+        style::titled("Battery / Power").border_style(Style::default().fg(glances_colors::TITLE));
     let battery_para =
         Paragraph::new(app.peripheral_cache.battery_info.as_str()).block(battery_block);
     f.render_widget(battery_para, chunks[4]);
@@ -3299,8 +3176,7 @@ fn draw_process_detail_overlay(f: &mut Frame, app: &App) {
     let area = centered_rect(60, 50, f.area());
 
     // Semi-transparent background
-    let block = Block::default()
-        .borders(Borders::ALL)
+    let block = style::block()
         .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
         .title(" Process Detail (Enter/Esc to close) ")
         .title_style(
@@ -3404,8 +3280,7 @@ fn draw_theme_picker_overlay(f: &mut Frame, app: &App) {
     let height = (themes.len() + 4) as u16;
     let area = centered_rect(40, height.min(20), f.area());
 
-    let block = Block::default()
-        .borders(Borders::ALL)
+    let block = style::block()
         .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
         .title(" Select Theme (Enter to apply, Esc to cancel) ")
         .title_style(
@@ -3487,9 +3362,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<&str> = Subsystem::ALL.iter().map(|s| s.as_str()).collect();
     let sub_tabs = Tabs::new(titles)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Profile Inspector — [1-5] subsystem · [r] refresh · [d] deviations · [↑↓ PgUp/PgDn] scroll "),
+            style::titled(" Profile Inspector — [1-5] subsystem · [r] refresh · [d] deviations · [↑↓ PgUp/PgDn] scroll "),
         )
         .select(app.profile_subsystem_idx)
         .highlight_style(
@@ -3509,7 +3382,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
             Line::from(""),
             Line::from("Press 'r' to fetch — initial NVML/registry/SMBIOS reads take a moment."),
         ])
-        .block(Block::default().borders(Borders::ALL));
+        .block(style::block());
         f.render_widget(msg, chunks[1]);
         return;
     };
@@ -3608,7 +3481,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(format!(
+        .block(style::block().title(format!(
             " {} — Hardware Profile Inspector ",
             sub.as_str().to_uppercase()
         )))
@@ -3692,11 +3565,7 @@ fn draw_profile_deviations_overlay(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     }
-    let dev_para = Paragraph::new(dev_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Deviations from default "),
-    );
+    let dev_para = Paragraph::new(dev_lines).block(style::titled(" Deviations from default "));
     f.render_widget(dev_para, chunks[0]);
 
     // Audit log tail
@@ -3754,11 +3623,7 @@ fn draw_profile_deviations_overlay(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    let audit_para = Paragraph::new(audit_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Apply audit log (tail) "),
-    );
+    let audit_para = Paragraph::new(audit_lines).block(style::titled(" Apply audit log (tail) "));
     f.render_widget(audit_para, chunks[1]);
 }
 

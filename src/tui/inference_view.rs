@@ -545,24 +545,11 @@ fn request_row(r: &RecentRequest) -> Row<'static> {
 // row without borders, rounded tiles with bar sparklines, then the gauges and the
 // recent requests under green headings.
 
-use crate::inference::monitor::{Gauge, Monitor, Phase, Tile};
+use crate::inference::monitor::{Gauge, Monitor, Phase};
 use ratatui::layout::Alignment;
-use ratatui::widgets::{BorderType, Cell};
+use ratatui::widgets::Cell;
 
-const TILE_COLUMNS: usize = 4;
-/// Border, value, detail, two rows of bars, border.
-const TILE_HEIGHT: u16 = 6;
-/// The accent the headings, lit phase and bars are drawn in.
-const ACCENT: Color = Color::Rgb(46, 204, 145);
-const WARM: Color = Color::Rgb(240, 190, 80);
-const DIM: Color = Color::Rgb(110, 118, 129);
-
-fn heading(text: impl Into<String>) -> Span<'static> {
-    Span::styled(
-        text.into(),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    )
-}
+use super::style::{draw_tile, gauge_bar, heading, ACCENT, DIM, TILE_COLUMNS, TILE_HEIGHT, WARM};
 
 /// Providers other than the one the monitor follows: each running or failing
 /// provider on its own line, and the ones not running or not configured by name.
@@ -599,17 +586,21 @@ fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'s
 
 /// Lines the gauges take: a label line each, and a bar under each that has a ratio.
 fn gauge_height(gauges: &[Gauge]) -> u16 {
-    gauges
+    let lines: u16 = gauges
         .iter()
         .map(|g| if g.ratio.is_some() { 2 } else { 1 })
-        .sum()
+        .sum();
+    lines + gauges.len().saturating_sub(1) as u16
 }
+
+/// Request rows the TUI lists; the rest are counted in the note.
+const REQUEST_ROWS: usize = 8;
 
 fn lower_height(monitor: &Monitor) -> u16 {
     let requests = if monitor.requests.rows.is_empty() {
-        2
+        3
     } else {
-        2 + monitor.requests.rows.len() as u16
+        2 + monitor.requests.rows.len().min(REQUEST_ROWS) as u16
     };
     gauge_height(&monitor.gauges).max(requests)
 }
@@ -654,6 +645,21 @@ pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[Sour
         bands[1],
     );
     draw_state_row(f, bands[2], monitor);
+    if let Some(p) = monitor.strip.progress {
+        f.render_widget(
+            Paragraph::new(gauge_bar(p, bands[3].width as usize, ACCENT)),
+            bands[3],
+        );
+    } else if let Some(note) = &monitor.strip.progress_note {
+        // No bar rather than an empty one: an empty bar would read as 0%.
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Progress   ", Style::default().fg(DIM)),
+                Span::styled(format!("— {note}"), Style::default().fg(DIM)),
+            ])),
+            bands[3],
+        );
+    }
     for (r, chunk) in monitor.tiles.chunks(TILE_COLUMNS).enumerate() {
         let cells = Layout::default()
             .direction(Direction::Horizontal)
@@ -683,22 +689,29 @@ pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[Sour
 /// Engine, endpoint and model on the left; the phase and whether it is live on the right.
 fn draw_header(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceState]) {
     let state = monitor.focused.map(|i| &states[i]);
-    let left = match state {
-        Some(s) => {
-            let model = s
-                .latest
-                .as_ref()
-                .and_then(|l| l.identity.model.clone())
+    let strip = &monitor.strip;
+    let left = match (strip.name, &strip.endpoint) {
+        (Some(name), Some(endpoint)) => {
+            let model = strip
+                .model
+                .clone()
                 .unwrap_or_else(|| "model not reported".into());
+            let context = strip
+                .context
+                .map(|c| format!(" {}", crate::inference::monitor::fmt_k(c)))
+                .unwrap_or_default();
             Line::from(vec![
-                heading(s.kind.display_name().to_uppercase()),
+                heading(name.to_uppercase()),
                 Span::raw("   "),
-                Span::styled(s.endpoint.clone(), Style::default().fg(ACCENT)),
+                Span::styled(endpoint.clone(), Style::default().fg(ACCENT)),
                 Span::raw("   "),
-                Span::styled(model, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{model}{context}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
             ])
         }
-        None => Line::from(vec![
+        _ => Line::from(vec![
             heading("INFERENCE"),
             Span::raw("   "),
             Span::styled(monitor.strip.engine.clone(), Style::default().fg(DIM)),
@@ -709,18 +722,26 @@ fn draw_header(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceSta
         (_, Some(s)) if s.reachable => (ACCENT, "[LIVE]"),
         _ => (DIM, ""),
     };
-    let phase = monitor
+    let mut phase = monitor
         .strip
         .lit
         .map(|p| p.label().to_string())
         .unwrap_or_else(|| "phase unknown".into());
-    let right = Line::from(vec![
+    if let Some(step) = &strip.step {
+        phase = format!("{phase} {step}");
+    }
+    if let Some(p) = strip.progress {
+        phase = format!("{phase} · {:.0}%", p * 100.0);
+    }
+    let mut right = vec![
         Span::styled("● ", Style::default().fg(dot)),
         Span::styled(phase, Style::default().fg(dot)),
-        Span::raw("   "),
-        Span::styled(live, Style::default().fg(dot)),
-    ])
-    .alignment(Alignment::Right);
+    ];
+    if !live.is_empty() {
+        right.push(Span::raw("   "));
+        right.push(Span::styled(live, Style::default().fg(dot)));
+    }
+    let right = Line::from(right).alignment(Alignment::Right);
     f.render_widget(Paragraph::new(left), area);
     f.render_widget(Paragraph::new(right), area);
 }
@@ -755,87 +776,14 @@ fn draw_state_row(f: &mut Frame, area: Rect, monitor: &Monitor) {
     );
 }
 
-/// Sparkline points scaled to 0..=100 against the tile's fixed top or its own peak.
-fn spark_points(tile: &Tile) -> Vec<u64> {
-    let peak = tile.spark.iter().copied().fold(0.0_f64, f64::max);
-    let top = tile.spark_max.unwrap_or(peak);
-    if top <= 0.0 {
-        return Vec::new();
-    }
-    tile.spark
-        .iter()
-        .map(|v| ((v / top) * 100.0).clamp(0.0, 100.0).round() as u64)
-        .collect()
-}
-
-fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
-        .title(Span::raw(format!(" {} ", tile.title)));
-    let inner = block.inner(area).inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 0,
-    });
-    f.render_widget(block, area);
-    let headline = match &tile.value {
-        Some(v) => Line::from(Span::styled(
-            format!("{v} {}", tile.unit).trim_end().to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        None => Line::from(Span::styled("—", Style::default().fg(DIM))),
-    };
-    let detail = Line::from(Span::styled(
-        tile.detail.clone(),
-        Style::default().fg(Color::Gray),
-    ));
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(inner);
-    f.render_widget(Paragraph::new(headline), parts[0]);
-    f.render_widget(Paragraph::new(detail), parts[1]);
-    let points = spark_points(tile);
-    if !points.is_empty() && parts[2].height > 0 {
-        let width = parts[2].width as usize;
-        let shown = &points[points.len().saturating_sub(width)..];
-        let color = if tile.title == "GPU temp" {
-            WARM
-        } else {
-            ACCENT
-        };
-        f.render_widget(
-            Sparkline::default()
-                .data(shown)
-                .max(100)
-                .style(Style::default().fg(color)),
-            parts[2],
-        );
-    }
-}
-
-/// A bar across the width: filled in the accent, the rest shaded.
-fn gauge_bar(ratio: f64, width: usize, color: Color) -> Line<'static> {
-    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
-    Line::from(vec![
-        Span::styled("█".repeat(filled), Style::default().fg(color)),
-        Span::styled(
-            "░".repeat(width.saturating_sub(filled)),
-            Style::default().fg(Color::Rgb(45, 50, 58)),
-        ),
-    ])
-}
-
 /// The first gauge is a heading with its figure beside it; the rest are labels.
 fn draw_gauges(f: &mut Frame, area: Rect, gauges: &[Gauge]) {
     let width = area.width as usize;
     let mut lines = Vec::new();
     for (i, g) in gauges.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::default());
+        }
         let label = if i == 0 {
             heading(format!("{}   ", g.label))
         } else {
@@ -884,11 +832,19 @@ fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
         parts[0],
     );
     if req.rows.is_empty() {
+        // The columns stay on screen, so every figure the table carries is named
+        // even when the engine keeps no history to fill it.
         f.render_widget(
-            Paragraph::new(Span::styled(
-                req.note.clone(),
-                Style::default().fg(Color::Gray),
-            )),
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    req.columns.join("   "),
+                    Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    req.note.clone(),
+                    Style::default().fg(Color::Gray),
+                )),
+            ]),
             parts[1],
         );
         return;
@@ -912,6 +868,7 @@ fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
     let rows: Vec<Row> = req
         .rows
         .iter()
+        .take(REQUEST_ROWS)
         .map(|r| {
             Row::new(
                 r.iter()

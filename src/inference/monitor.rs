@@ -9,7 +9,10 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use super::{energy, fmt_seconds, mean_label, Locality, ProviderKind, SourceState};
+use super::{
+    energy, fmt_seconds, mean_label, EngineState, Locality, ProviderKind, ServingDetail,
+    SourceState,
+};
 
 /// Points kept per hardware sparkline: about two minutes at one point a second.
 pub const SPARK_POINTS: usize = 120;
@@ -201,6 +204,8 @@ pub struct History {
     disk_last: Option<(u64, Instant, u64, u64, usize)>,
     /// Read and write bytes per second between the last two snapshots.
     disk_rate: Option<(f64, f64)>,
+    /// When the engine's own speed was last recorded.
+    speed_last: Option<Instant>,
 }
 
 impl History {
@@ -266,6 +271,37 @@ impl History {
         }
     }
 
+    /// Record the followed engine's own generation speed, at most once a second:
+    /// its measured tok/s while generating, and zero while it says it is idle. A
+    /// state with no speed adds no point.
+    pub fn record_engine(&mut self, now: Instant, states: &[SourceState]) {
+        if let Some(last) = self.speed_last {
+            if now.saturating_duration_since(last) < Duration::from_secs(1) {
+                return;
+            }
+        }
+        let detail = focus(states)
+            .map(|i| &states[i])
+            .filter(|s| s.reachable)
+            .and_then(serving_of);
+        let Some(detail) = detail else {
+            return;
+        };
+        let speed = match detail.state {
+            Some(EngineState::Generating) => detail.tok_s_now,
+            Some(EngineState::Idle) => Some(0.0),
+            _ => None,
+        };
+        self.speed_last = Some(now);
+        if let Some(v) = speed {
+            let series = self.series.entry("speed").or_default();
+            if series.len() == SPARK_POINTS {
+                series.pop_front();
+            }
+            series.push_back(v);
+        }
+    }
+
     pub fn series(&self, key: &str) -> Vec<f64> {
         self.series
             .get(key)
@@ -309,9 +345,73 @@ impl Phase {
 pub struct StateStrip {
     /// Engine name, model and endpoint, or that no engine answered.
     pub engine: String,
+    /// The followed engine's name, endpoint, model and context, for a header.
+    pub name: Option<&'static str>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub context: Option<u64>,
     /// The lit phase, or `None` when the engine's figures do not say.
     pub lit: Option<Phase>,
+    /// The engine's own name for its step, where it gives one.
+    pub step: Option<String>,
     pub detail: String,
+    /// How far the request in flight is, 0 to 1, where the engine counts it.
+    pub progress: Option<f64>,
+    /// Why there is no progress to draw, when there is none.
+    pub progress_note: Option<String>,
+}
+
+impl StateStrip {
+    fn bare(engine: String, detail: String) -> Self {
+        StateStrip {
+            engine,
+            name: None,
+            endpoint: None,
+            model: None,
+            context: None,
+            lit: None,
+            step: None,
+            detail,
+            progress: None,
+            progress_note: None,
+        }
+    }
+}
+
+/// A count with thousands separators, as the monitor prints counts.
+pub fn fmt_count(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A token count in thousands, as a context size reads: 32768 is 32K.
+pub fn fmt_k(n: u64) -> String {
+    if n >= 1024 && n % 1024 == 0 {
+        format!("{}K", n / 1024)
+    } else if n >= 1000 {
+        format!("{}K", (n as f64 / 1000.0).round() as u64)
+    } else {
+        n.to_string()
+    }
+}
+
+fn serving_of(state: &SourceState) -> Option<&ServingDetail> {
+    state.latest.as_ref()?.serving.as_ref()
+}
+
+/// A mean since the counters started: a seconds total over a count, from one sample.
+fn since_start(state: &SourceState, seconds: &str, count: &str) -> Option<f64> {
+    let sample = state.latest.as_ref()?;
+    let s = *sample.seconds.get(seconds)?;
+    let n = *sample.counters.get(count)?;
+    (s > 0.0 && n > 0).then(|| n as f64 / s)
 }
 
 /// One tile: a headline value with its unit, a line of detail, and a sparkline.
@@ -394,7 +494,17 @@ fn load_of(state: &SourceState) -> (Option<u64>, Option<u64>) {
         ),
         ProviderKind::Vllm => (gauge("num_requests_running"), gauge("num_requests_waiting")),
         ProviderKind::LlamaCpp => (gauge("requests_processing"), gauge("requests_deferred")),
-        _ => (None, None),
+        _ => match serving_of(state) {
+            Some(d) => (
+                d.state.as_ref().and_then(|s| match s {
+                    EngineState::Reading | EngineState::Generating => Some(1),
+                    EngineState::Idle | EngineState::Unloaded => Some(0),
+                    EngineState::Other(_) => None,
+                }),
+                d.queued,
+            ),
+            None => (None, None),
+        },
     }
 }
 
@@ -412,15 +522,14 @@ fn strip(states: &[SourceState], focused: Option<usize>) -> StateStrip {
             .iter()
             .filter(|s| s.locality == Locality::Local)
             .collect();
-        return StateStrip {
-            engine: "no engine answered".into(),
-            lit: None,
-            detail: match local.as_slice() {
+        return StateStrip::bare(
+            "no engine answered".into(),
+            match local.as_slice() {
                 [] => "no local inference engine is configured".into(),
                 [only] => super::compact_row(only).detail,
                 many => format!("{} local engines polled; none has answered", many.len()),
             },
-        };
+        );
     };
     let name = state.kind.display_name();
     let model = state
@@ -429,6 +538,14 @@ fn strip(states: &[SourceState], focused: Option<usize>) -> StateStrip {
         .and_then(|s| s.identity.model.clone())
         .unwrap_or_else(|| "model not reported".into());
     let engine = format!("{name} · {model} · {}", state.endpoint);
+    let serving = serving_of(state);
+    let base = StateStrip {
+        name: Some(name),
+        endpoint: Some(state.endpoint.clone()),
+        model: state.latest.as_ref().and_then(|s| s.identity.model.clone()),
+        context: serving.and_then(|d| d.context_max),
+        ..StateStrip::bare(engine, String::new())
+    };
     if !state.reachable {
         let why = state
             .last_error
@@ -436,9 +553,64 @@ fn strip(states: &[SourceState], focused: Option<usize>) -> StateStrip {
             .map(|f| f.error.to_string())
             .unwrap_or_else(|| "the last poll failed".into());
         return StateStrip {
-            engine,
             lit: Some(Phase::Error),
             detail: format!("stopped answering: {why}"),
+            ..base
+        };
+    }
+    // An engine that says what it is doing is taken at its word.
+    if let Some((d, es)) = serving.and_then(|d| Some((d, d.state.as_ref()?))) {
+        let progress = d.progress.as_ref().filter(|p| p.total > 0);
+        let ratio = progress.map(|p| (p.done as f64 / p.total as f64).min(1.0));
+        let counted = progress.map(|p| {
+            format!(
+                "{} / {} {} · {:.0}%",
+                fmt_count(p.done),
+                fmt_count(p.total),
+                p.what,
+                ratio.unwrap_or(0.0) * 100.0
+            )
+        });
+        let queued = d.queued.unwrap_or(0);
+        let (lit, detail, progress) = match es {
+            _ if queued > 0 => (Some(Phase::Queued), format!("{queued} waiting"), ratio),
+            EngineState::Reading => (
+                Some(Phase::Reading),
+                counted.unwrap_or_else(|| "reading the prompt".into()),
+                ratio,
+            ),
+            EngineState::Generating => {
+                let speed = d.tok_s_now.map(|t| format!(" · {t:.1} tok/s"));
+                (
+                    Some(Phase::Generating),
+                    format!(
+                        "{}{}",
+                        counted.unwrap_or_else(|| "generating".into()),
+                        speed.unwrap_or_default()
+                    ),
+                    ratio,
+                )
+            }
+            EngineState::Idle => {
+                let last = d.recent.as_ref().and_then(|r| r.first());
+                let detail = match last.and_then(|r| r.output) {
+                    Some(n) => match last.and_then(|r| r.decode_tok_s) {
+                        Some(t) => format!("last: {} tokens at {t:.1} tok/s", fmt_count(n)),
+                        None => format!("last: {} tokens", fmt_count(n)),
+                    },
+                    None => "waiting for a request".into(),
+                };
+                (Some(Phase::Idle), detail, None)
+            }
+            EngineState::Unloaded => (None, "running with no model loaded".into(), None),
+            EngineState::Other(s) => (None, format!("{name} reports its state as {s}"), None),
+        };
+        return StateStrip {
+            lit,
+            step: d.phase.clone(),
+            detail,
+            progress,
+            ..base
         };
     }
     let d = &state.derived;
@@ -481,9 +653,9 @@ fn strip(states: &[SourceState], focused: Option<usize>) -> StateStrip {
         }
     };
     StateStrip {
-        engine,
         lit,
         detail,
+        ..base
     }
 }
 
@@ -523,7 +695,7 @@ const NO_WINDOW: &str = "needs a second sample";
 
 const NOT_SAMPLED: &str = "waiting for the first hardware sample";
 
-fn hardware_tiles(hw: &Hardware, history: &History) -> Vec<Tile> {
+pub fn hardware_tiles(hw: &Hardware, history: &History) -> Vec<Tile> {
     if !hw.sampled {
         return [
             "GPU load",
@@ -646,10 +818,52 @@ fn hardware_tiles(hw: &Hardware, history: &History) -> Vec<Tile> {
     tiles
 }
 
-fn speed_tile(state: Option<&SourceState>) -> Tile {
+fn speed_tile(state: Option<&SourceState>, history: &History) -> Tile {
     let Some(state) = state.filter(|s| s.reachable) else {
         return absent("Speed", NO_ENGINE);
     };
+    // An engine that measures its own speed: now while generating, else its run
+    // average from its totals, else its last request.
+    if let Some(d) = serving_of(state).filter(|d| d.state.is_some()) {
+        let prefill = d
+            .prefill_tok_s
+            .or_else(|| since_start(state, "prompt_seconds_total", "prompt_read_tokens_total"));
+        let average = since_start(state, "decode_seconds_total", "output_tokens_total");
+        let last = d
+            .recent
+            .as_ref()
+            .and_then(|r| r.first())
+            .and_then(|r| r.decode_tok_s);
+        let (value, basis) = match (&d.state, d.tok_s_now, average, last) {
+            (Some(EngineState::Generating), Some(now), _, _) => (Some(now), "now"),
+            (_, _, Some(avg), _) => (Some(avg), "decode · run average"),
+            (_, _, None, Some(last)) => (Some(last), "decode last request"),
+            _ => (None, ""),
+        };
+        let detail = |basis: &str| match prefill {
+            Some(p) => format!("{basis} · prefill {} tok/s", fmt_count(p.round() as u64)),
+            None => basis.to_string(),
+        };
+        if let Some(v) = value {
+            return Tile {
+                title: "Speed",
+                value: Some(format!("{v:.1}")),
+                unit: "tok/s".into(),
+                detail: detail(basis),
+                spark: history.series("speed"),
+                spark_max: None,
+            };
+        }
+        // No figure of its own: its token counter across two polls, if it has one.
+        if state
+            .latest
+            .as_ref()
+            .and_then(|s| s.generated_counter)
+            .is_none()
+        {
+            return absent("Speed", detail("no request finished yet"));
+        }
+    }
     let Some(generated) = state.latest.as_ref().and_then(|s| s.generated_counter) else {
         return absent(
             "Speed",
@@ -686,16 +900,36 @@ fn latency_tile(state: Option<&SourceState>) -> Tile {
         return absent("Latency", format!("{name} publishes no latency figures"));
     }
     let d = &state.derived;
-    if d.window_ns.is_none() {
-        return absent("Latency", NO_WINDOW);
-    }
-    let known: Vec<(&str, f64)> = sample
+    let windowed: Vec<(&str, f64)> = sample
         .mean_defs
         .iter()
         .filter_map(|def| Some((def.key, d.mean(def.key)?)))
         .collect();
+    // With nothing finished in the last window, the means since the engine's
+    // counters started, from one sample, labelled as such.
+    let (known, since_start) = if windowed.is_empty() {
+        let totals: Vec<(&str, f64)> = sample
+            .mean_defs
+            .iter()
+            .filter_map(|def| {
+                let s = *sample.seconds.get(def.seconds)?;
+                let n = *sample.counters.get(def.count)?;
+                (n > 0).then(|| (def.key, s / n as f64))
+            })
+            .collect();
+        (totals, true)
+    } else {
+        (windowed, false)
+    };
     let Some(&(first, value)) = known.first() else {
-        return absent("Latency", "no request completed in the last window");
+        return absent(
+            "Latency",
+            if d.window_ns.is_none() {
+                NO_WINDOW
+            } else {
+                "no request completed in the last window"
+            },
+        );
     };
     let rest: Vec<String> = known[1..]
         .iter()
@@ -704,6 +938,9 @@ fn latency_tile(state: Option<&SourceState>) -> Tile {
     let mut detail = mean_label(first).to_lowercase();
     if !rest.is_empty() {
         detail = format!("{detail} · {}", rest.join(" · "));
+    }
+    if since_start {
+        detail = format!("{detail} · since start");
     }
     Tile {
         title: "Latency",
@@ -845,27 +1082,43 @@ fn requests_tile(state: Option<&SourceState>) -> Tile {
 fn gauges(hw: &Hardware, state: Option<&SourceState>) -> Vec<Gauge> {
     let mut out = Vec::new();
     let answering = state.filter(|s| s.reachable);
-    let kv = answering.and_then(|s| {
-        let v = s.latest.as_ref()?.gauges.get("kv_cache_usage_perc")?;
-        Some(v.clamp(0.0, 1.0))
-    });
-    out.push(match (kv, answering) {
-        (Some(f), _) => Gauge {
-            label: "KV cache",
-            text: format!("{:.0}%", f * 100.0),
-            ratio: Some(f),
+    let name = answering.map(|s| s.kind.display_name());
+    let detail = answering.and_then(serving_of);
+    out.push(context_gauge(answering, detail));
+    out.push(match (detail.and_then(|d| d.experts_cached), name) {
+        (Some((n, bytes)), _) => Gauge {
+            label: "Experts in VRAM",
+            text: match bytes {
+                Some(b) => format!("{} · {:.1} GB", fmt_count(n), gib(b)),
+                None => fmt_count(n),
+            },
+            ratio: match (bytes, hw.vram().map(|(_, t)| t)) {
+                (Some(b), Some(t)) if t > 0 => Some((b as f64 / t as f64).min(1.0)),
+                _ => None,
+            },
         },
-        (None, Some(s)) => Gauge {
-            label: "KV cache",
-            text: format!("{} does not report it", s.kind.display_name()),
+        (None, Some(name)) => Gauge {
+            label: "Experts in VRAM",
+            text: format!("{name} does not report expert placement"),
             ratio: None,
         },
         (None, None) => Gauge {
-            label: "KV cache",
+            label: "Experts in VRAM",
             text: NO_ENGINE.into(),
             ratio: None,
         },
     });
+    // Cache use across all requests, where the engine reports it.
+    if let Some(f) = answering.and_then(|s| {
+        let v = s.latest.as_ref()?.gauges.get("kv_cache_usage_perc")?;
+        Some(v.clamp(0.0, 1.0))
+    }) {
+        out.push(Gauge {
+            label: "KV cache",
+            text: format!("{:.0}%", f * 100.0),
+            ratio: Some(f),
+        });
+    }
     if let Some(s) = answering {
         let (label, key) = match s.kind {
             ProviderKind::IronWorks => ("Expert VRAM hits", "tier.vram"),
@@ -918,54 +1171,129 @@ fn gauges(hw: &Hardware, state: Option<&SourceState>) -> Vec<Gauge> {
     out
 }
 
+/// Context in use against the context the model is served with.
+fn context_gauge(answering: Option<&SourceState>, detail: Option<&ServingDetail>) -> Gauge {
+    let gauge = |text: String, ratio| Gauge {
+        label: "Context fill",
+        text,
+        ratio,
+    };
+    let Some(state) = answering else {
+        return gauge(NO_ENGINE.into(), None);
+    };
+    let name = state.kind.display_name();
+    let max = detail.and_then(|d| d.context_max).filter(|m| *m > 0);
+    let used = detail.and_then(|d| d.context_used).map(|(u, _)| u);
+    let idle = matches!(
+        detail.and_then(|d| d.state.as_ref()),
+        Some(EngineState::Idle)
+    );
+    match (used, max) {
+        (Some(u), Some(m)) => {
+            let r = (u as f64 / m as f64).min(1.0);
+            gauge(
+                format!("{} / {}   {:.0}%", fmt_k(u), fmt_k(m), r * 100.0),
+                Some(r),
+            )
+        }
+        (None, Some(m)) if idle => gauge(format!("— / {} · no request in flight", fmt_k(m)), None),
+        (None, Some(m)) => gauge(
+            format!(
+                "— / {} · {name} does not report the tokens in use",
+                fmt_k(m)
+            ),
+            None,
+        ),
+        (Some(u), None) => gauge(
+            format!("{} · {name} does not report its context size", fmt_k(u)),
+            None,
+        ),
+        (None, None) => gauge(format!("{name} does not report its context"), None),
+    }
+}
+
+/// The columns of the recent-requests table, whichever engine fills it.
+const REQUEST_COLUMNS: [&str; 8] = [
+    "TIME",
+    "STATUS",
+    "PROMPT",
+    "REUSED",
+    "OUTPUT",
+    "PREFILL T/S",
+    "TOK/S",
+    "DURATION",
+];
+
 fn requests(state: Option<&SourceState>) -> Requests {
-    let columns = vec!["ID", "STATUS", "PROMPT", "OUTPUT", "DURATION"];
     let empty = |note: String| Requests {
-        columns: columns.clone(),
+        columns: REQUEST_COLUMNS.to_vec(),
         rows: Vec::new(),
         note,
     };
     let Some(state) = state.filter(|s| s.reachable) else {
         return empty(NO_ENGINE.into());
     };
-    let name = state.kind.display_name();
-    let section = state.latest.as_ref().and_then(|s| s.ironworks.as_ref());
-    let Some(recent) = section.and_then(|s| s.recent.as_ref()) else {
-        return empty(if state.kind == ProviderKind::IronWorks {
-            "IronWorks does not publish its recent requests yet".into()
-        } else {
-            format!("{name} publishes no per-request history; the Latency tile has its means")
-        });
-    };
-    let dash = |v: Option<u64>| v.map_or_else(|| "—".to_string(), |v| v.to_string());
+    let detail = serving_of(state);
+    match detail.and_then(|d| d.recent.as_ref()) {
+        Some(recent) => serving_requests(recent, detail.and_then(|d| d.recent_kept)),
+        None if state.kind == ProviderKind::IronWorks => {
+            empty("IronWorks does not publish its recent requests yet".into())
+        }
+        None => empty(format!(
+            "{} publishes no per-request history; the Latency tile has its means",
+            state.kind.display_name()
+        )),
+    }
+}
+
+/// The words a finish reason reads as, the way a serving monitor shows them.
+fn status_word(reason: &str) -> String {
+    match reason {
+        "stop" => "Done".into(),
+        "length" => "Max tokens".into(),
+        "cancel" => "Stopped".into(),
+        "disconnect" => "Closed".into(),
+        "error" => "Error".into(),
+        "timeout" => "Timeout".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Finished requests with the columns a serving monitor lists, from the engine's
+/// own per-request figures. A figure it did not report is a dash.
+fn serving_requests(recent: &[super::RequestRow], kept: Option<u64>) -> Requests {
+    let dash = || "—".to_string();
+    let count = |v: Option<u64>| v.map_or_else(dash, fmt_count);
     let rows: Vec<Vec<String>> = recent
         .iter()
         .map(|r| {
             vec![
-                match &r.id {
-                    Some(serde_json::Value::String(s)) => s.clone(),
-                    Some(other) => other.to_string(),
-                    None => "—".into(),
-                },
-                r.finish_reason.clone().unwrap_or_else(|| "—".into()),
-                dash(r.prompt_tokens),
-                dash(r.completion_tokens),
-                r.duration_ms
-                    .map_or_else(|| "—".into(), |ms| format!("{:.1} s", ms as f64 / 1000.0)),
+                r.time_unix
+                    .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
+                            .format("%H:%M:%S")
+                            .to_string()
+                    })
+                    .unwrap_or_else(dash),
+                r.status.as_deref().map_or_else(dash, status_word),
+                count(r.prompt),
+                count(r.reused),
+                count(r.output),
+                r.prefill_tok_s
+                    .map_or_else(dash, |v| fmt_count(v.round() as u64)),
+                r.decode_tok_s.map_or_else(dash, |v| format!("{v:.1}")),
+                r.duration_s.map_or_else(dash, |v| format!("{v:.1} s")),
             ]
         })
         .collect();
-    let total = state
-        .latest
-        .as_ref()
-        .and_then(|s| s.counters.get("requests.total"));
-    let note = match (rows.is_empty(), total) {
-        (true, _) => "no requests yet".into(),
-        (false, Some(t)) => format!("the last {} of {t} requests", rows.len()),
-        (false, None) => format!("the last {} requests", rows.len()),
+    let note = match (rows.len(), kept) {
+        (0, _) => "no requests yet".into(),
+        (n, Some(k)) if k as usize > n => format!("{n} of {k} kept"),
+        (n, _) => format!("{n} kept"),
     };
     Requests {
-        columns,
+        columns: REQUEST_COLUMNS.to_vec(),
         rows,
         note,
     }
@@ -975,14 +1303,41 @@ fn requests(state: Option<&SourceState>) -> Requests {
 pub fn build(states: &[SourceState], hw: &Hardware, history: &History) -> Monitor {
     let focused = focus(states);
     let state = focused.map(|i| &states[i]);
-    let mut tiles = vec![speed_tile(state)];
+    let mut tiles = vec![speed_tile(state, history)];
     tiles.extend(hardware_tiles(hw, history));
+    let experts = state
+        .filter(|s| s.reachable)
+        .and_then(serving_of)
+        .and_then(|d| d.experts_cached);
+    if let (Some((n, _)), Some(vram)) = (experts, tiles.iter_mut().find(|t| t.title == "VRAM")) {
+        if vram.value.is_some() && hw.gpus.len() <= 1 {
+            vram.detail = format!("{} experts cached", fmt_count(n));
+        }
+    }
     tiles.push(latency_tile(state));
     tiles.push(energy_tile(state));
     tiles.push(cost_tile(states, state));
     tiles.push(requests_tile(state));
+    let mut strip = strip(states, focused);
+    if strip.progress.is_none() {
+        strip.progress_note = state.filter(|s| s.reachable).map(|s| {
+            let d = serving_of(s);
+            match d.and_then(|d| d.state.as_ref()) {
+                Some(EngineState::Idle) => "no request in flight".to_string(),
+                Some(EngineState::Unloaded) => "no model loaded".to_string(),
+                Some(_) if d.is_some_and(|d| d.progress.is_none()) => format!(
+                    "{} does not say how far the request in flight is",
+                    s.kind.display_name()
+                ),
+                _ => format!(
+                    "{} does not report per-request progress",
+                    s.kind.display_name()
+                ),
+            }
+        });
+    }
     Monitor {
-        strip: strip(states, focused),
+        strip,
         tiles,
         gauges: gauges(hw, state),
         requests: requests(state),
@@ -1028,6 +1383,131 @@ mod tests {
 
     fn tile<'a>(m: &'a Monitor, title: &str) -> &'a Tile {
         m.tiles.iter().find(|t| t.title == title).unwrap()
+    }
+
+    /// An engine that reports its own state, progress, context and requests.
+    fn serving(detail: crate::inference::ServingDetail) -> SourceState {
+        let mut s = vllm(&[(1, 100, 1000, 1.0)]);
+        s.latest.as_mut().unwrap().serving = Some(detail);
+        s
+    }
+
+    fn generating() -> crate::inference::ServingDetail {
+        use crate::inference::{EngineState, Progress, RequestRow, ServingDetail};
+        ServingDetail {
+            state: Some(EngineState::Generating),
+            phase: Some("reply".into()),
+            queued: Some(0),
+            progress: Some(Progress {
+                done: 3197,
+                total: 9830,
+                what: "tokens of max_tokens",
+            }),
+            tok_s_now: Some(45.1),
+            context_max: Some(32768),
+            context_used: Some((10197, "the request in flight")),
+            experts_cached: Some((3099, Some(3 << 30))),
+            recent: Some(vec![
+                RequestRow {
+                    time_unix: Some(1_791_212_863.0),
+                    status: Some("stop".into()),
+                    prompt: Some(18187),
+                    reused: Some(17593),
+                    output: Some(261),
+                    decode_tok_s: Some(36.3),
+                    duration_s: Some(8.7),
+                    ..Default::default()
+                },
+                RequestRow {
+                    time_unix: Some(1_791_212_850.0),
+                    status: Some("length".into()),
+                    prompt: Some(100),
+                    output: Some(5),
+                    ..Default::default()
+                },
+            ]),
+            recent_kept: Some(36),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_engine_that_states_its_phase_is_taken_at_its_word_with_progress() {
+        let m = build(
+            &[serving(generating())],
+            &Hardware::default(),
+            &History::default(),
+        );
+        assert_eq!(m.strip.lit, Some(Phase::Generating));
+        assert_eq!(m.strip.step.as_deref(), Some("reply"));
+        assert_eq!(m.strip.context, Some(32768));
+        let p = m.strip.progress.unwrap();
+        assert!((p - 3197.0 / 9830.0).abs() < 1e-9);
+        assert!(
+            m.strip.detail.contains("3,197 / 9,830"),
+            "{}",
+            m.strip.detail
+        );
+        let speed = tile(&m, "Speed");
+        assert_eq!(speed.value.as_deref(), Some("45.1"));
+        assert!(speed.detail.starts_with("now"), "{}", speed.detail);
+        let fill = m.gauges.iter().find(|g| g.label == "Context fill").unwrap();
+        assert_eq!(fill.text, "10K / 32K   31%");
+        let experts = m
+            .gauges
+            .iter()
+            .find(|g| g.label == "Experts in VRAM")
+            .unwrap();
+        assert_eq!(experts.text, "3,099 · 3.0 GB");
+    }
+
+    #[test]
+    fn recent_requests_read_as_words_and_unreported_figures_as_dashes() {
+        let m = build(
+            &[serving(generating())],
+            &Hardware::default(),
+            &History::default(),
+        );
+        let r = &m.requests;
+        assert_eq!(r.columns, REQUEST_COLUMNS, "every column, reported or not");
+        assert!(
+            r.rows.iter().all(|row| row[5] == "—"),
+            "no prefill rate reported"
+        );
+        assert_eq!(r.rows[0][1], "Done");
+        assert_eq!(r.rows[1][1], "Max tokens");
+        assert_eq!(r.rows[0][2], "18,187");
+        assert_eq!(
+            r.rows[1][3], "—",
+            "an unreported figure is a dash, not zero"
+        );
+        assert_eq!(r.note, "2 of 36 kept");
+    }
+
+    #[test]
+    fn an_engine_with_requests_but_no_stated_phase_keeps_its_counter_speed() {
+        use crate::inference::{RequestRow, ServingDetail};
+        let mut s = vllm(&[(1, 100, 1000, 2.0), (3, 500, 1000, 2.0)]);
+        s.latest.as_mut().unwrap().serving = Some(ServingDetail {
+            recent: Some(vec![RequestRow {
+                id: Some("r1".into()),
+                status: Some("stop".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        let m = build(&[s], &Hardware::default(), &History::default());
+        assert_eq!(m.strip.lit, Some(Phase::Generating));
+        assert_eq!(tile(&m, "Speed").value.as_deref(), Some("200.0"));
+        assert_eq!(m.requests.rows[0][1], "Done");
+        let fill = m.gauges.iter().find(|g| g.label == "Context fill").unwrap();
+        assert_eq!(fill.ratio, None);
+        assert!(
+            fill.text.contains("does not report its context"),
+            "{}",
+            fill.text
+        );
+        assert!(m.strip.progress_note.is_some(), "a missing bar says why");
     }
 
     #[test]

@@ -13,8 +13,8 @@
 use super::http;
 use super::ironworks::locality_of;
 use super::{
-    Identity, InferenceSource, Locality, MeanDef, ProviderKind, ProviderSample, RatioDef,
-    SourceError,
+    EngineState, Identity, InferenceSource, Locality, MeanDef, Progress, ProviderKind,
+    ProviderSample, RatioDef, ServingDetail, SourceError,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -251,8 +251,14 @@ impl InferenceSource for LocalSource {
         let base = self.base.as_str();
         match self.kind {
             ProviderKind::Ollama => poll_ollama(base, timeout),
-            ProviderKind::LlamaCpp => poll_metrics(base, timeout, &LLAMACPP),
-            ProviderKind::Vllm => poll_metrics(base, timeout, &VLLM),
+            ProviderKind::LlamaCpp => poll_metrics(base, timeout, &LLAMACPP).map(|mut s| {
+                s.serving = llamacpp_serving(base, timeout);
+                s
+            }),
+            ProviderKind::Vllm => poll_metrics(base, timeout, &VLLM).map(|mut s| {
+                s.serving = vllm_serving(base, timeout);
+                s
+            }),
             ProviderKind::LmStudio => poll_lmstudio(base, timeout),
             ProviderKind::MlxLm => poll_mlx(base, timeout),
             ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => Err(
@@ -321,6 +327,8 @@ struct PsReply {
 struct PsModel {
     name: Option<String>,
     model: Option<String>,
+    /// The context the model was loaded with, in tokens.
+    context_length: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,6 +341,16 @@ struct VersionReply {
 pub struct Loaded {
     pub count: usize,
     pub first: Option<String>,
+    /// The first loaded model's context, in tokens, where the listing gives it.
+    pub context: Option<u64>,
+}
+
+/// Serving detail carrying only a context size, or none without one.
+fn context_only(context: Option<u64>) -> Option<ServingDetail> {
+    context.map(|c| ServingDetail {
+        context_max: Some(c),
+        ..ServingDetail::default()
+    })
 }
 
 pub fn parse_ps(body: &str) -> Result<Loaded, SourceError> {
@@ -347,6 +365,7 @@ pub fn parse_ps(body: &str) -> Result<Loaded, SourceError> {
     Ok(Loaded {
         count: models.len(),
         first,
+        context: models.first().and_then(|m| m.context_length),
     })
 }
 
@@ -381,6 +400,7 @@ fn poll_ollama(base: &str, timeout: Duration) -> Result<ProviderSample, SourceEr
             status: None,
         },
         gauges,
+        serving: context_only(loaded.context),
         ..ProviderSample::default()
     })
 }
@@ -520,6 +540,124 @@ fn poll_metrics(
     })
 }
 
+// ── Serving detail: llama.cpp and vLLM ──────────────────────────────────────
+
+/// One llama-server slot, as `GET /slots` reports it. Only the counts are read: a
+/// slot also carries its prompt text, which is never parsed.
+/// Source: https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/server/README.md
+#[derive(Debug, Deserialize)]
+struct Slot {
+    n_ctx: Option<u64>,
+    is_processing: Option<bool>,
+    params: Option<SlotParams>,
+    /// An object in most builds; an array of them in some.
+    next_token: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlotParams {
+    /// Tokens to generate; -1 for no limit.
+    n_predict: Option<i64>,
+}
+
+/// What llama-server says through its slots: busy or idle, how far the busy slot
+/// has generated, and the context each slot holds.
+pub fn parse_slots(body: &str) -> Result<ServingDetail, SourceError> {
+    let slots: Vec<Slot> =
+        serde_json::from_str(body).map_err(|e| SourceError::NotJson(e.to_string()))?;
+    let Some(first) = slots.first() else {
+        return Err(SourceError::Rejected("the server lists no slots".into()));
+    };
+    let busy = slots.iter().find(|s| s.is_processing == Some(true));
+    let token = |s: &Slot, key: &str| -> Option<i64> {
+        let t = s.next_token.as_ref()?;
+        let t = if t.is_array() { t.get(0)? } else { t };
+        t.get(key)?.as_i64()
+    };
+    let (state, progress) = match busy {
+        Some(slot) => {
+            let decoded = token(slot, "n_decoded").filter(|n| *n >= 0);
+            let total = match (decoded, token(slot, "n_remain")) {
+                (Some(d), Some(r)) if r >= 0 => Some(d + r),
+                _ => slot
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.n_predict)
+                    .filter(|n| *n > 0),
+            };
+            let state = match decoded {
+                Some(d) if d > 0 => EngineState::Generating,
+                Some(_) => EngineState::Reading,
+                None => EngineState::Other("processing".into()),
+            };
+            let progress = match (&state, decoded, total) {
+                (EngineState::Generating, Some(d), Some(t)) if t > 0 => Some(Progress {
+                    done: d as u64,
+                    total: t as u64,
+                    what: "tokens of n_predict",
+                }),
+                _ => None,
+            };
+            (Some(state), progress)
+        }
+        None if slots.iter().all(|s| s.is_processing.is_some()) => (Some(EngineState::Idle), None),
+        None => (None, None),
+    };
+    Ok(ServingDetail {
+        state,
+        queued: None,
+        progress,
+        context_max: first.n_ctx,
+        ..ServingDetail::default()
+    })
+}
+
+/// `GET /props`: the context size from `default_generation_settings.n_ctx`.
+fn llamacpp_context(base: &str, timeout: Duration) -> Option<u64> {
+    let reply = http::get(&format!("{base}/props"), timeout, &[]).ok()?;
+    if reply.status != 200 {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&reply.body).ok()?;
+    v.pointer("/default_generation_settings/n_ctx")?.as_u64()
+}
+
+/// llama-server's slots, else its context size alone. Both are second, optional
+/// reads: a server started with `--no-slots` still gives its metrics.
+fn llamacpp_serving(base: &str, timeout: Duration) -> Option<ServingDetail> {
+    let slots = http::get(&format!("{base}/slots"), timeout, &[])
+        .ok()
+        .filter(|r| r.status == 200)
+        .and_then(|r| parse_slots(&r.body).ok());
+    match slots {
+        Some(mut d) => {
+            if d.context_max.is_none() {
+                d.context_max = llamacpp_context(base, timeout);
+            }
+            Some(d)
+        }
+        None => context_only(llamacpp_context(base, timeout)),
+    }
+}
+
+/// vLLM's `GET /v1/models` gives each served model's `max_model_len`.
+/// Source: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+pub fn parse_vllm_models(body: &str) -> Option<u64> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    v.get("data")?
+        .as_array()?
+        .iter()
+        .find_map(|m| m.get("max_model_len")?.as_u64())
+}
+
+fn vllm_serving(base: &str, timeout: Duration) -> Option<ServingDetail> {
+    let reply = http::get(&format!("{base}/v1/models"), timeout, &[]).ok()?;
+    if reply.status != 200 {
+        return None;
+    }
+    context_only(parse_vllm_models(&reply.body))
+}
+
 // ── LM Studio ────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/models`, the v1 REST listing. The top-level key is `models`, and
@@ -547,9 +685,16 @@ pub fn parse_lmstudio(body: &str) -> Result<Loaded, SourceError> {
         .iter()
         .filter(|m| m.loaded_instances.as_ref().is_some_and(|v| !v.is_empty()))
         .collect();
+    // Source: https://lmstudio.ai/docs/developer/rest/list — each loaded instance
+    // carries `config.context_length`.
+    let context = loaded
+        .first()
+        .and_then(|m| m.loaded_instances.as_ref()?.first())
+        .and_then(|i| i.pointer("/config/context_length")?.as_u64());
     Ok(Loaded {
         count: loaded.len(),
         first: loaded.first().and_then(|m| m.key.clone()),
+        context,
     })
 }
 
@@ -569,6 +714,7 @@ fn poll_lmstudio(base: &str, timeout: Duration) -> Result<ProviderSample, Source
             status: None,
         },
         gauges,
+        serving: context_only(loaded.context),
         ..ProviderSample::default()
     })
 }
@@ -605,6 +751,66 @@ fn poll_mlx(base: &str, timeout: Duration) -> Result<ProviderSample, SourceError
         None => Err(SourceError::Rejected(
             "the health reply has no status".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod serving_tests {
+    use super::*;
+
+    #[test]
+    fn a_generating_slot_gives_its_progress_and_never_its_prompt() {
+        let body = r#"[{"id":0,"n_ctx":8192,"is_processing":true,"prompt":"PRIVATE TEXT",
+            "params":{"n_predict":-1},
+            "next_token":{"has_next_token":true,"n_remain":300,"n_decoded":200}},
+            {"id":1,"n_ctx":8192,"is_processing":false}]"#;
+        let d = parse_slots(body).unwrap();
+        assert_eq!(d.state, Some(EngineState::Generating));
+        let p = d.progress.clone().unwrap();
+        assert_eq!((p.done, p.total), (200, 500));
+        assert_eq!(d.context_max, Some(8192));
+        assert!(!format!("{d:?}").contains("PRIVATE"));
+    }
+
+    #[test]
+    fn a_slot_reading_its_prompt_has_no_generation_progress() {
+        let body = r#"[{"n_ctx":4096,"is_processing":true,
+            "next_token":[{"n_remain":-1,"n_decoded":0}]}]"#;
+        let d = parse_slots(body).unwrap();
+        assert_eq!(d.state, Some(EngineState::Reading));
+        assert!(d.progress.is_none());
+    }
+
+    #[test]
+    fn idle_slots_say_idle_and_a_limitless_request_has_no_total() {
+        let idle = parse_slots(r#"[{"n_ctx":4096,"is_processing":false}]"#).unwrap();
+        assert_eq!(idle.state, Some(EngineState::Idle));
+        let open = parse_slots(
+            r#"[{"is_processing":true,"params":{"n_predict":-1},
+                "next_token":{"n_remain":-1,"n_decoded":9}}]"#,
+        )
+        .unwrap();
+        assert_eq!(open.state, Some(EngineState::Generating));
+        assert!(
+            open.progress.is_none(),
+            "no limit, so no total to count against"
+        );
+    }
+
+    #[test]
+    fn context_sizes_come_from_each_engines_listing() {
+        assert_eq!(
+            parse_vllm_models(r#"{"data":[{"id":"m","max_model_len":32768}]}"#),
+            Some(32768)
+        );
+        assert_eq!(parse_vllm_models(r#"{"data":[{"id":"m"}]}"#), None);
+        let ps = parse_ps(r#"{"models":[{"name":"m","context_length":4096}]}"#).unwrap();
+        assert_eq!(ps.context, Some(4096));
+        let lms = parse_lmstudio(
+            r#"{"models":[{"key":"m","loaded_instances":[{"id":"m","config":{"context_length":8192}}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(lms.context, Some(8192));
     }
 }
 

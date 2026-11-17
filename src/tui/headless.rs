@@ -564,11 +564,11 @@ mod agents_tab_tests {
         for needle in [
             "Agents",
             "Sessions:",
-            "Active",
-            "Recent",
-            "Workflows",
-            "Engine requests",
-            "Coverage",
+            "ACTIVE",
+            "RECENT",
+            "WORKFLOWS",
+            "ENGINE REQUESTS",
+            "COVERAGE",
             "Gemini CLI",
         ] {
             assert!(frame.contains(needle), "missing {needle:?} in:\n{frame}");

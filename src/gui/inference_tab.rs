@@ -98,6 +98,8 @@ impl IronMonitorApp {
         let hardware = crate::inference::monitor::Hardware::from_snapshot(&self.snapshot);
         self.inference_history
             .record(std::time::Instant::now(), &hardware);
+        self.inference_history
+            .record_engine(std::time::Instant::now(), &states);
         let monitor = crate::inference::monitor::build(&states, &hardware, &self.inference_history);
 
         egui::ScrollArea::vertical()
@@ -723,11 +725,25 @@ fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
                 ui.add_space(6.0);
             }
         });
+        let mut engine = strip.engine.clone();
+        if let Some(c) = strip.context {
+            engine = format!("{engine} · {} context", crate::inference::monitor::fmt_k(c));
+        }
         ui.label(
-            RichText::new(&strip.engine)
-                .color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
+            RichText::new(engine).color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
         );
         ui.label(RichText::new(&strip.detail).color(secondary));
+        // How far the request in flight is, where the engine counts it.
+        if let Some(p) = strip.progress {
+            ui.add(
+                egui::ProgressBar::new(p as f32)
+                    .desired_height(8.0)
+                    .fill(theme::color(ui.ctx(), CyberColors::SUCCESS)),
+            );
+        } else if let Some(note) = &strip.progress_note {
+            // No bar rather than an empty one: an empty bar would read as 0%.
+            ui.label(RichText::new(format!("Progress — {note}")).color(secondary));
+        }
     });
 }
 

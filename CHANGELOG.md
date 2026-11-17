@@ -32,6 +32,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose GPUs are known: IronWorks lists them; for vLLM and llama.cpp set
   `IRONMON_<PROVIDER>_GPUS`. The energy is the whole GPU's and is labelled so.
 - Electricity cost per million tokens at `IRONMON_ELECTRICITY_PRICE`.
+- For an engine that reports them, the monitor shows the request in flight's progress
+  with a bar, the context size in the header, a context-fill gauge, experts held in
+  VRAM, the measured speed now, and recent requests with time, status, prompt, reused,
+  output, prefill and decode tok/s and duration. A column no request reports is left
+  out. IronWorks supplies experts resident in VRAM and its recent requests.
+- NVIDIA PCIe transmit and receive throughput from NVML, shown on the PCIe tile.
+
+### Changed (TUI)
+
+- Every tab takes the Inference tab's look, from one shared style: rounded panels with
+  dim borders, green headings, and text one column in from the border. Overview is now
+  the Inference monitor's hardware tiles with sparklines, plus memory, swap, disk space
+  and network in and out, then a row per accelerator. The CPU, memory, disk and
+  accelerator bars print their figure and detail beside a bar instead of over it, and
+  draw no bar at all when there is no reading. The network panel has no bar, since a
+  rate is not a share of anything.
+- The Inference monitor always shows a context-fill gauge, an experts-in-VRAM gauge, a
+  progress row and every request column, each with the reason when an engine does not
+  report it. Context size is read from llama.cpp (`/slots`, `/props`), vLLM
+  (`/v1/models`), Ollama (`/api/ps`) and LM Studio; llama.cpp's `/slots` also gives
+  the request in flight's state and its progress against `n_predict`. Slot prompt text
+  is never parsed.
+
+### Changed (Agents)
+
+- The Agents tab lists sessions and workflows as aligned columns (agent, kind, model,
+  started, last event, events, tokens in and out, state) rather than one run-on line
+  each. Counts carry thousands separators. A session in progress is listed once, under
+  Active; Recent holds the rest, ordered by last event. A recording that does not say
+  whether its session ended reads "not stated". Import notes sit on their own lines.
 - A tokenization row that says no engine publishes tokenization timing.
 - Schema: `inference.vllm.latency.<phase>.{seconds_total,count,mean_since_start}`,
   `inference.llamacpp.{prompt,predicted}_seconds_total`, the llama.cpp per-token means

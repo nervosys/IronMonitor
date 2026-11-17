@@ -475,6 +475,29 @@ impl MetricsV1 {
             mean_defs: &[],
             generated_counter: Some("decode.completion_tokens_total"),
             energy: None,
+            serving: Some(super::ServingDetail {
+                experts_cached: match &tiers.vram {
+                    Some(Tier::Configured(v)) => v.experts_resident.map(|n| (n, v.bytes_resident)),
+                    _ => None,
+                },
+                recent: requests.recent.as_ref().map(|rs| {
+                    rs.iter()
+                        .map(|r| super::RequestRow {
+                            id: r.id.as_ref().map(|id| match id {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            }),
+                            status: r.finish_reason.clone(),
+                            prompt: r.prompt_tokens,
+                            output: r.completion_tokens,
+                            duration_s: r.duration_ms.map(|ms| ms as f64 / 1000.0),
+                            ..super::RequestRow::default()
+                        })
+                        .collect()
+                }),
+                recent_kept: requests.recent_capacity,
+                ..super::ServingDetail::default()
+            }),
             ironworks: Some(Section {
                 vram: tiers.vram,
                 ram: tiers.ram,
