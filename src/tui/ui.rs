@@ -3281,47 +3281,50 @@ fn draw_theme_picker_overlay(f: &mut Frame, app: &App) {
     use super::app::ColorTheme;
 
     let themes = ColorTheme::all();
-    let height = (themes.len() + 4) as u16;
-    let area = centered_rect(40, height.min(20), f.area());
+    let screen = f.area();
+    // Sized in rows and columns, not as a share of the screen, so every theme
+    // fits when the terminal is tall enough; otherwise the list scrolls.
+    let width = 46.min(screen.width);
+    let height = (themes.len() as u16 + 2).min(screen.height);
+    let area = Rect {
+        x: screen.x + (screen.width - width) / 2,
+        y: screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    };
 
-    let block = style::block()
-        .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
-        .title(" Select Theme (Enter to apply, Esc to cancel) ")
-        .title_style(
-            Style::default()
-                .fg(Color::Rgb(137, 180, 250))
-                .add_modifier(Modifier::BOLD),
-        )
-        .style(Style::default().bg(Color::Rgb(30, 30, 46)));
-
+    let block = style::titled("Theme · Enter applies · Esc cancels");
     let inner = block.inner(area);
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(block, area);
 
     let items: Vec<ListItem> = themes
         .iter()
-        .enumerate()
-        .map(|(idx, theme)| {
-            let is_selected = idx == app.selected_theme_idx;
-            let is_current = *theme == app.color_theme;
-            let name = if is_current {
+        .map(|theme| {
+            let name = if *theme == app.color_theme {
                 format!("{} (current)", theme.name())
             } else {
                 theme.name().to_string()
             };
-            let style = if is_selected {
-                Style::default()
-                    .bg(Color::Rgb(69, 71, 90))
-                    .fg(Color::Rgb(205, 214, 244))
-            } else {
-                Style::default().fg(Color::Rgb(166, 173, 200))
-            };
-            ListItem::new(name).style(style)
+            // Each name carries a swatch of its own accent, ok, warm and hot.
+            let p = theme.palette();
+            let mut spans: Vec<Span> = [p.accent, p.ok, p.warm, p.hot]
+                .into_iter()
+                .map(|c| Span::styled("■", Style::default().fg(c)))
+                .collect();
+            spans.push(Span::raw(format!("  {name}")));
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let list = List::new(items);
-    f.render_widget(list, inner);
+    let list = List::new(items).highlight_symbol("▶ ").highlight_style(
+        Style::default()
+            .fg(style::accent())
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(app.selected_theme_idx));
+    f.render_stateful_widget(list, inner, &mut state);
 }
 
 /// Helper to create a centered rectangle
