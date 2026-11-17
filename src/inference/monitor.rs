@@ -383,7 +383,7 @@ pub fn fmt_count(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -393,7 +393,7 @@ pub fn fmt_count(n: u64) -> String {
 
 /// A token count in thousands, as a context size reads: 32768 is 32K.
 pub fn fmt_k(n: u64) -> String {
-    if n >= 1024 && n % 1024 == 0 {
+    if n >= 1024 && n.is_multiple_of(1024) {
         format!("{}K", n / 1024)
     } else if n >= 1000 {
         format!("{}K", (n as f64 / 1000.0).round() as u64)

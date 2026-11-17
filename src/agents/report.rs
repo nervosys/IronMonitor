@@ -232,7 +232,7 @@ pub fn build(state: &AgentsState, engine: Option<EngineRequests>, now: DateTime<
             engines.rows.push(match e.recent {
                 Some(n) => format!(
                     "{} in the engine's recent-request buffer",
-                    count_of(n as usize, "entry", "entries")
+                    count_of(n, "entry", "entries")
                 ),
                 None => "recent requests: unknown, the engine did not report them".into(),
             });
