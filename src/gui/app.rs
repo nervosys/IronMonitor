@@ -2182,57 +2182,63 @@ impl eframe::App for IronMonitorApp {
                 // Readings, so the bold data face; the buttons and help text
                 // set their own small style and are unaffected.
                 ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
-                // Quick stats
-                match self.cpu_usage() {
-                    Some(cpu_usage) => {
-                        ui.label(RichText::new(format!("CPU: {:.1}%", cpu_usage)).color(
-                            theme::color(&palette_ctx, theme::utilization_color(cpu_usage)),
-                        ));
-                    }
-                    None => {
-                        ui.label(
-                            RichText::new("CPU: --")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                        );
-                    }
-                }
-                ui.separator();
-
-                match self.memory_usage() {
-                    Some(mem_usage) => {
-                        ui.label(RichText::new(format!("RAM: {:.1}%", mem_usage)).color(
-                            theme::color(&palette_ctx, theme::utilization_color(mem_usage)),
-                        ));
-                    }
-                    None => {
-                        ui.label(
-                            RichText::new("RAM: --")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                        );
-                    }
-                }
-                ui.separator();
-
-                for (i, gpu) in self.gpu_dynamic_info.iter().enumerate() {
-                    ui.label(
-                        RichText::new(match gpu.utilization {
-                            Some(u) => format!("GPU{i}: {u}%"),
-                            None => format!("GPU{i}: -"),
-                        })
-                        // No reading, no threshold colour: a neutral colour
-                        // rather than the "idle" colour for 0%.
-                        .color(match gpu.utilization {
-                            Some(u) => theme::color(ui.ctx(), theme::utilization_color(u as f32)),
-                            None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
-                        }),
-                    );
-                    if let Some(temp) = gpu.thermal.temperature {
-                        ui.label(RichText::new(format!("{}°C", temp)).color(theme::color(
-                            ui.ctx(),
-                            theme::temperature_color(temp as u32),
-                        )));
+                // Quick stats, on every tab but Overview, whose QuickLook
+                // bars already show these figures on the same screen.
+                if !matches!(self.current_tab, Tab::Overview) {
+                    // Quick stats
+                    match self.cpu_usage() {
+                        Some(cpu_usage) => {
+                            ui.label(RichText::new(format!("CPU: {:.1}%", cpu_usage)).color(
+                                theme::color(&palette_ctx, theme::utilization_color(cpu_usage)),
+                            ));
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("CPU: --")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
+                        }
                     }
                     ui.separator();
+
+                    match self.memory_usage() {
+                        Some(mem_usage) => {
+                            ui.label(RichText::new(format!("RAM: {:.1}%", mem_usage)).color(
+                                theme::color(&palette_ctx, theme::utilization_color(mem_usage)),
+                            ));
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("RAM: --")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
+                        }
+                    }
+                    ui.separator();
+
+                    for (i, gpu) in self.gpu_dynamic_info.iter().enumerate() {
+                        ui.label(
+                            RichText::new(match gpu.utilization {
+                                Some(u) => format!("GPU{i}: {u}%"),
+                                None => format!("GPU{i}: -"),
+                            })
+                            // No reading, no threshold colour: a neutral colour
+                            // rather than the "idle" colour for 0%.
+                            .color(match gpu.utilization {
+                                Some(u) => {
+                                    theme::color(ui.ctx(), theme::utilization_color(u as f32))
+                                }
+                                None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                            }),
+                        );
+                        if let Some(temp) = gpu.thermal.temperature {
+                            ui.label(RichText::new(format!("{}°C", temp)).color(theme::color(
+                                ui.ctx(),
+                                theme::temperature_color(temp as u32),
+                            )));
+                        }
+                        ui.separator();
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3761,97 +3767,71 @@ impl IronMonitorApp {
                             );
                         });
 
-                        // Visual breakdown bar (stacked)
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Memory Map: ")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            // Show proportional bar
-                            if total_mb > 0.0 {
-                                // A segment is drawn only from a figure that was read.
-                                // An unread quantity gets no segment, rather than a
-                                // "0%" that reads as none. Used is net of each of
-                                // buffers and cache that was read; one that was not
-                                // read is still inside used, and the label names it.
-                                let mut used_net = used_mb;
-                                let mut unsplit: Vec<&str> = Vec::new();
-                                match buffers_mb {
-                                    Some(b) => used_net -= b,
-                                    None => unsplit.push("buffers"),
-                                }
-                                match cached_mb {
-                                    Some(c) => used_net -= c,
-                                    None => unsplit.push("cache"),
-                                }
-                                let used_pct = used_net.max(0.0) / total_mb;
-
-                                let _bar_width = ui.available_width() - 100.0;
-
-                                let used_text = if unsplit.is_empty() {
-                                    format!("█{:.0}%", used_pct * 100.0)
-                                } else {
-                                    format!(
-                                        "█{:.0}% (incl. unread {})",
-                                        used_pct * 100.0,
-                                        unsplit.join("/")
-                                    )
-                                };
-                                ui.label(
-                                    RichText::new(used_text)
-                                        .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
-                                        .small(),
-                                );
-                                if let Some(b) = buffers_mb {
-                                    ui.label(
-                                        RichText::new(format!("█{:.0}%", b / total_mb * 100.0))
-                                            .color(theme::color(
-                                                &palette_ctx,
-                                                CyberColors::NEON_ORANGE,
-                                            ))
-                                            .small(),
-                                    );
-                                }
-                                if let Some(c) = cached_mb {
-                                    ui.label(
-                                        RichText::new(format!("█{:.0}%", c / total_mb * 100.0))
-                                            .color(theme::color(
-                                                &palette_ctx,
-                                                CyberColors::NEON_YELLOW,
-                                            ))
-                                            .small(),
-                                    );
-                                }
-                                if let Some(f) = free_mb {
-                                    ui.label(
-                                        RichText::new(format!("█{:.0}%", f / total_mb * 100.0))
-                                            .color(theme::color(
-                                                &palette_ctx,
-                                                CyberColors::THRESHOLD_OK,
-                                            ))
-                                            .small(),
-                                    );
-                                }
-
-                                // Legend, right-aligned by measuring. See the note on
-                                // the accelerator metrics: the 117 px overrun this was
-                                // written to fix was the guard measuring a right-aligned
-                                // galley from its anchor, not a defect on screen.
-                                const LEGEND: &str = "(used/buffers/cache/free)";
-                                let galley = ui.painter().layout_no_wrap(
-                                    LEGEND.to_owned(),
-                                    egui::TextStyle::Small.resolve(ui.style()),
-                                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                                );
-                                ui.add_space((ui.available_width() - galley.size().x).max(0.0));
-                                ui.label(
-                                    RichText::new(LEGEND)
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                        .small(),
-                                );
+                        // How the total divides, as one bar and a legend. The
+                        // bar is painted rather than drawn with block glyphs,
+                        // which the bundled fonts lack. A segment is drawn only
+                        // from a figure that was read: an unread quantity gets no
+                        // segment rather than a "0%" that reads as none, and
+                        // "used" names what it still contains.
+                        if total_mb > 0.0 {
+                            let mut used_net = used_mb;
+                            let mut unsplit: Vec<&str> = Vec::new();
+                            match buffers_mb {
+                                Some(b) => used_net -= b,
+                                None => unsplit.push("buffers"),
                             }
-                        });
+                            match cached_mb {
+                                Some(c) => used_net -= c,
+                                None => unsplit.push("cache"),
+                            }
+                            let hue = |c: egui::Color32| theme::color(&palette_ctx, c);
+                            let used = if unsplit.is_empty() {
+                                "used".to_string()
+                            } else {
+                                format!("used, incl. unread {}", unsplit.join("/"))
+                            };
+                            let mut parts = vec![(
+                                used,
+                                used_net.max(0.0) / total_mb,
+                                hue(CyberColors::MAGENTA),
+                            )];
+                            if let Some(b) = buffers_mb {
+                                parts.push((
+                                    "buffers".into(),
+                                    b / total_mb,
+                                    hue(CyberColors::NEON_ORANGE),
+                                ));
+                            }
+                            if let Some(c) = cached_mb {
+                                parts.push((
+                                    "cache".into(),
+                                    c / total_mb,
+                                    hue(CyberColors::NEON_YELLOW),
+                                ));
+                            }
+                            if let Some(f) = free_mb {
+                                parts.push((
+                                    "free".into(),
+                                    f / total_mb,
+                                    hue(CyberColors::THRESHOLD_OK),
+                                ));
+                            }
+                            ui.add_space(8.0);
+                            let segments: Vec<(f64, egui::Color32)> =
+                                parts.iter().map(|(_, r, c)| (*r, *c)).collect();
+                            cards::stacked_bar(ui, &segments);
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for (name, ratio, colour) in &parts {
+                                    cards::chip(
+                                        ui,
+                                        &format!("{name} {:.0}%", ratio * 100.0),
+                                        *colour,
+                                        false,
+                                    );
+                                }
+                            });
+                        }
                     },
                 );
 

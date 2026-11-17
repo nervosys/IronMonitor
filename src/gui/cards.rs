@@ -273,6 +273,31 @@ pub fn area_spark(ui: &mut egui::Ui, points: &[f64], max: Option<f64>, hue: Colo
 }
 
 /// A thin rounded bar of `ratio` over a pale track.
+/// One bar divided into coloured segments, each a fraction of the whole, laid
+/// left to right. What the segments leave uncovered shows as the track.
+pub fn stacked_bar(ui: &mut egui::Ui, segments: &[(f64, Color32)]) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 10.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(5),
+        hairline(ui.ctx()).gamma_multiply(0.7),
+    );
+    let mut x = rect.min.x;
+    for (ratio, hue) in segments {
+        let w = rect.width() * ratio.clamp(0.0, 1.0) as f32;
+        let end = (x + w).min(rect.max.x);
+        if end > x {
+            painter.rect_filled(
+                Rect::from_min_max(egui::pos2(x, rect.min.y), egui::pos2(end, rect.max.y)),
+                CornerRadius::ZERO,
+                *hue,
+            );
+        }
+        x = end;
+    }
+}
+
 pub fn thin_bar(ui: &mut egui::Ui, ratio: f64, hue: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 7.0), Sense::hover());
     let painter = ui.painter();
