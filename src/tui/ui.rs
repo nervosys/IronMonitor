@@ -35,7 +35,6 @@ use super::inference_view;
 
 /// Glances-style threshold colors
 mod glances_colors {
-    //! Status and title colours, read from the selected theme.
     use super::style;
     use ratatui::style::Color;
 
