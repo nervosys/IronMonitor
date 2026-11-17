@@ -655,7 +655,7 @@ fn draw_monitor(
     states: &[SourceState],
     gpus: &[GpuView],
 ) {
-    const GAP: f32 = 14.0;
+    const GAP: f32 = cards::GAP;
     ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
     // The bottom row's height as drawn last frame, so the tiles take exactly what
     // is left; the first frame uses a typical height.
@@ -679,6 +679,14 @@ fn draw_monitor(
     // Three columns: the gauges, the requests table, the providers. Each is its
     // own top-down area, so its rows stack rather than run across.
     let width = ui.available_width();
+    // Too narrow for three columns: stack the cards instead.
+    if width < 1100.0 {
+        ui.spacing_mut().item_spacing.y = GAP;
+        draw_gauges(ui, monitor);
+        draw_recent(ui, monitor);
+        draw_providers(ui, states, gpus);
+        return;
+    }
     let usable = (width - 2.0 * GAP).max(0.0);
     let widths = [usable * 0.30, usable * 0.44, usable * 0.26];
     let origin = ui.cursor().min;
@@ -775,7 +783,7 @@ const TILE_MAX: f32 = 200.0;
 fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
     cards::card(ui, |ui| {
         let ctx = ui.ctx().clone();
-        let inner = height - 36.0;
+        let inner = height - 2.0 * cards::MARGIN as f32;
         ui.set_min_height(inner);
         ui.set_max_height(inner);
         ui.spacing_mut().item_spacing.y = 6.0;

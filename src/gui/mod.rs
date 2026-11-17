@@ -18,7 +18,6 @@ pub mod headless;
 mod inference_tab;
 mod profile_tab;
 mod soc;
-mod system_summary;
 mod theme;
 pub mod widgets;
 

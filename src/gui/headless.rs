@@ -306,6 +306,9 @@ fn shape_kind(shape: &egui::Shape) -> &'static str {
         egui::Shape::Ellipse(_) => "ellipse",
         egui::Shape::LineSegment { .. } => "line",
         egui::Shape::Path(_) => "path",
+        // A stroked, unblurred rect is a card's or a chart's outline: part of
+        // what a reader sees. Fills and shadows stay "rect".
+        egui::Shape::Rect(r) if r.stroke.width > 0.0 && r.blur_width == 0.0 => "outline",
         egui::Shape::Rect(_) => "rect",
         egui::Shape::Text(_) => "text",
         egui::Shape::Mesh(_) => "mesh",
@@ -590,10 +593,10 @@ mod app_tab_tests {
     /// when no model has been selected — and say which condition is unmet rather
     /// than reporting the backend dead.
     #[test]
-    fn the_overview_ask_bar_renders_and_explains_itself() {
+    fn the_ask_bar_renders_and_explains_itself() {
         let (mut app, ctx) = app_and_ctx();
         let blob = painted_blob(&ctx, |ui| {
-            app.draw_overview_chat_bar(ui);
+            app.draw_agent_composer(ui);
         });
 
         assert!(
@@ -628,13 +631,10 @@ mod app_tab_tests {
                 assert!((dashboard.rect.width() - full_width).abs() < 1.0);
                 assert_eq!(dashboard.rect.height(), 48.0);
             });
-            for ai_page in [false, true] {
+            // The chat is the AI tab's alone; Overview no longer repeats it.
+            {
                 let text = painted_text_rects_sized(&ctx, size, |ui| {
-                    if ai_page {
-                        app.draw_ai_assistant_tab(ui);
-                    } else {
-                        app.draw_overview(ui);
-                    }
+                    app.draw_ai_assistant_tab(ui);
                 });
                 assert!(!text.iter().any(|(text, _)| text == "Ask IronMonitor"));
                 let (_, input) = text
@@ -659,11 +659,7 @@ mod app_tab_tests {
                     },
                     |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
-                            if ai_page {
-                                app.draw_ai_assistant_tab(ui);
-                            } else {
-                                app.draw_overview(ui);
-                            }
+                            app.draw_ai_assistant_tab(ui);
                         });
                     },
                 );
@@ -693,6 +689,16 @@ mod app_tab_tests {
                 );
             }
         }
+    }
+
+    /// The agent chat is drawn on the AI tab only. Overview summarises the
+    /// machine and does not repeat the composer.
+    #[test]
+    fn the_overview_does_not_repeat_the_ai_composer() {
+        let (mut app, ctx) = app_and_ctx();
+        let blob = painted_blob(&ctx, |ui| app.draw_overview(ui));
+        assert!(!blob.lines().any(|l| l.starts_with("Ask ")), "{blob}");
+        assert!(!blob.lines().any(|l| l == "Send"), "{blob}");
     }
 
     /// The failure this whole thread began with: a tab that rendered every one of
@@ -1452,11 +1458,12 @@ mod laptop_fit_tests {
         for _ in 0..3 {
             let _ = painted_shape_rects(ctx, size, |ui| app.draw_current_tab(ui));
         }
-        // Text and strokes only: the panel paints a background rect the size of
-        // the whole canvas, which would report every canvas as exactly full.
+        // Text, strokes and card outlines only: the panel paints a background
+        // rect the size of the whole canvas, which would report every canvas as
+        // exactly full.
         painted_shape_rects(ctx, size, |ui| app.draw_current_tab(ui))
             .into_iter()
-            .filter(|(kind, _)| matches!(*kind, "text" | "path" | "line" | "mesh"))
+            .filter(|(kind, _)| matches!(*kind, "text" | "path" | "line" | "mesh" | "outline"))
             .map(|(_, rect)| rect.max.y)
             .fold(0.0, f32::max)
     }

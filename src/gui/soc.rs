@@ -201,77 +201,70 @@ pub(super) fn npu_count(details: Option<&SiliconDetails>) -> usize {
 }
 
 /// One panel per NPU, below the GPUs on the Accelerators tab.
-pub(super) fn draw_npus(ui: &mut egui::Ui, details: Option<&SiliconDetails>, width: f32) {
+pub(super) fn draw_npus(ui: &mut egui::Ui, details: Option<&SiliconDetails>) {
     let ctx = ui.ctx().clone();
     let Some(Ok(npus)) = details.and_then(|d| d.npus.as_ref()) else {
         return;
     };
     for npu in npus {
-        ui.add_space(2.0);
-        egui::Frame::NONE
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                theme::color(&ctx, CyberColors::BORDER),
-            ))
-            .corner_radius(4)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                ui.set_width(width - 16.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("⚡")
-                            .color(theme::color(&ctx, DeviceTitleColors::ACCEL))
-                            .size(20.0),
-                    );
-                    ui.label(
-                        RichText::new(&npu.name)
-                            .color(theme::color(&ctx, CyberColors::TEXT_PRIMARY))
-                            .strong()
-                            .size(18.0),
-                    );
-                });
-                row(ui, "Type", "NPU", DeviceTitleColors::ACCEL);
+        ui.add_space(super::cards::GAP);
+        super::cards::frame(&ctx).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("⚡")
+                        .color(theme::color(&ctx, DeviceTitleColors::ACCEL))
+                        .size(20.0),
+                );
+                ui.label(
+                    RichText::new(&npu.name)
+                        .color(theme::color(&ctx, CyberColors::TEXT_PRIMARY))
+                        .strong()
+                        .size(18.0),
+                );
+            });
+            row(ui, "Type", "NPU", DeviceTitleColors::ACCEL);
+            row(
+                ui,
+                "Vendor",
+                npu.vendor.as_deref().unwrap_or("unknown"),
+                DeviceTitleColors::ACCEL,
+            );
+            if let Some(cores) = npu.cores {
+                row(ui, "Cores", &cores.to_string(), DeviceTitleColors::ACCEL);
+            }
+            if let Some(util) = npu.utilization {
                 row(
                     ui,
-                    "Vendor",
-                    npu.vendor.as_deref().unwrap_or("unknown"),
+                    "Utilization",
+                    &format!("{util}%"),
                     DeviceTitleColors::ACCEL,
                 );
-                if let Some(cores) = npu.cores {
-                    row(ui, "Cores", &cores.to_string(), DeviceTitleColors::ACCEL);
-                }
-                if let Some(util) = npu.utilization {
-                    row(
-                        ui,
-                        "Utilization",
-                        &format!("{util}%"),
-                        DeviceTitleColors::ACCEL,
-                    );
-                }
-                if let Some(power) = npu.power_watts {
-                    row(
-                        ui,
-                        "Power",
-                        &format!("{power:.1} W"),
-                        CyberColors::NEON_ORANGE,
-                    );
-                }
-                if let Some(mhz) = npu.frequency_mhz {
-                    row(ui, "Clock", &format!("{mhz} MHz"), CyberColors::NEON_BLUE);
-                }
-                if npu.utilization.is_none() && npu.power_watts.is_none() {
-                    note(
-                        ui,
-                        if npu.vendor.as_deref() == Some("Apple") {
-                            "No live figures: the Neural Engine's power comes from \
+            }
+            if let Some(power) = npu.power_watts {
+                row(
+                    ui,
+                    "Power",
+                    &format!("{power:.1} W"),
+                    CyberColors::NEON_ORANGE,
+                );
+            }
+            if let Some(mhz) = npu.frequency_mhz {
+                row(ui, "Clock", &format!("{mhz} MHz"), CyberColors::NEON_BLUE);
+            }
+            if npu.utilization.is_none() && npu.power_watts.is_none() {
+                note(
+                    ui,
+                    if npu.vendor.as_deref() == Some("Apple") {
+                        "No live figures: the Neural Engine's power comes from \
                              powermetrics, which needs root, and macOS reports no \
                              activity figure for it."
-                        } else {
-                            "No live figures: the driver reports none for this NPU."
-                        },
-                    );
-                }
-            });
+                    } else {
+                        "No live figures: the driver reports none for this NPU."
+                    },
+                );
+            }
+        });
     }
 }
 

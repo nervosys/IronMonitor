@@ -13,7 +13,11 @@ use eframe::egui::{
 use super::theme::{self, CyberColors};
 
 /// Corner radius of a card.
-const RADIUS: u8 = 14;
+const RADIUS: u8 = 12;
+/// Padding inside a card, and the gap between cards. Every tab uses these, so
+/// the tabs read as one design.
+pub const MARGIN: i8 = 14;
+pub const GAP: f32 = 12.0;
 
 /// The card surface for the active theme: white on Light, a lifted panel on dark.
 fn surface(ctx: &egui::Context) -> Color32 {
@@ -57,21 +61,42 @@ pub fn caution(ctx: &egui::Context) -> Color32 {
     theme::color(ctx, CyberColors::WARNING)
 }
 
-/// A rounded card filling the available width.
-pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let ctx = ui.ctx().clone();
+/// A card holding a section: its header, then its body, then the gap to the
+/// next card. The header is a `SectionHeader` so the heading-spelling scan in
+/// widgets.rs still sees each literal title.
+pub fn section<R>(
+    ui: &mut egui::Ui,
+    header: super::widgets::SectionHeader<'_>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let out = card(ui, |ui| {
+        ui.add(header);
+        add(ui)
+    });
+    ui.add_space(GAP);
+    out
+}
+
+/// The card's frame, for panes that manage their own width and contents.
+pub fn frame(ctx: &egui::Context) -> egui::Frame {
     let dark = ctx.style().visuals.dark_mode;
     egui::Frame::new()
-        .fill(surface(&ctx))
-        .stroke(Stroke::new(1.0_f32, hairline(&ctx)))
+        .fill(surface(ctx))
+        .stroke(Stroke::new(1.0_f32, hairline(ctx)))
         .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::same(18))
+        .inner_margin(Margin::same(MARGIN))
         .shadow(Shadow {
             offset: [0, 2],
             blur: 12,
             spread: 0,
             color: Color32::from_black_alpha(if dark { 60 } else { 18 }),
         })
+}
+
+/// A rounded card filling the available width.
+pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let ctx = ui.ctx().clone();
+    frame(&ctx)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)

@@ -928,7 +928,9 @@ impl<'a> SectionHeader<'a> {
 
 impl Widget for SectionHeader<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let desired_size = Vec2::new(ui.available_width(), 28.0);
+        // A card's heading: strong text, no rule. The card's edge does the
+        // separating the rule used to.
+        let desired_size = Vec2::new(ui.available_width(), 26.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
         if ui.is_rect_visible(rect) {
@@ -945,26 +947,8 @@ impl Widget for SectionHeader<'_> {
                 Pos2::new(rect.min.x, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 title_text,
-                egui::FontId::proportional(14.0),
-                theme::color(ui.ctx(), CyberColors::CYAN),
-            );
-
-            // Decorative line
-            let line_start = rect.min.x
-                + painter
-                    .layout_no_wrap(
-                        self.title.to_string(),
-                        egui::FontId::proportional(14.0),
-                        theme::color(ui.ctx(), CyberColors::CYAN),
-                    )
-                    .rect
-                    .width()
-                + 20.0;
-
-            painter.hline(
-                line_start..=rect.max.x,
-                rect.center().y,
-                Stroke::new(1.0_f32, theme::color(ui.ctx(), CyberColors::BORDER)),
+                egui::FontId::proportional(16.0),
+                theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY),
             );
         }
 

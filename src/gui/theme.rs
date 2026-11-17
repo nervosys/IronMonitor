@@ -358,26 +358,6 @@ pub fn cpu_color(percent: f32) -> Color32 {
     }
 }
 
-/// Accelerator (GPU/NPU) device-class color (Neon Green family)
-pub fn accel_color(percent: f32) -> Color32 {
-    match percent {
-        p if p >= 90.0 => CyberColors::NEON_RED,
-        p if p >= 70.0 => CyberColors::NEON_YELLOW,
-        p if p >= 50.0 => CyberColors::NEON_GREEN, // shared Overview accent
-        _ => Color32::from_rgb(87, 235, 148),      // neon green
-    }
-}
-
-/// Memory device-class color (Neon Magenta family)
-pub fn memory_color(percent: f32) -> Color32 {
-    match percent {
-        p if p >= 90.0 => CyberColors::NEON_RED,
-        p if p >= 70.0 => CyberColors::NEON_YELLOW,
-        p if p >= 50.0 => CyberColors::MAGENTA, // shared Overview accent
-        _ => Color32::from_rgb(184, 140, 255),  // neon magenta
-    }
-}
-
 /// Disk device-class color (Neon Orange family)
 #[allow(dead_code)]
 pub fn disk_color(percent: f32) -> Color32 {

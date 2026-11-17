@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (GUI)
+
+- Every tab is drawn in one card style: rounded cards with a heading, the same padding
+  and gaps, and large figures with small units.
+- Each figure is shown once per tab. Overview summarises; the detail is on the domain's
+  own tab:
+  - Overview drops its metric tiles, the second task count and the unlabelled app
+    uptime. Its accelerator charts carry each GPU's temperature and VRAM.
+  - CPU time, vmstat and load average move from Overview to the CPU tab's Scheduler card.
+  - The agent chat is the AI tab's alone; Overview and Inference no longer repeat it.
+  - Memory drops the usage bar and Usage card, which the history chart already shows.
+  - Accelerators drops the utilization label and bar, and the header temperature,
+    which its charts already show.
+  - System drops its live summary (owned by CPU, Memory, Accelerators and Processes),
+    the storage list (the Disk tab's) and GPU temperatures (the Accelerators tab's).
+  - Peripherals drops network ports (the Network tab's adapters). Processes drops its
+    second total.
+- Inference sizes its tiles to the window and stacks its bottom cards below 1100 px.
+- Network rates on Overview were labelled KB/s and on the Network tab "Total MB". Both
+  were MB/s, and are now labelled so.
+
 ### Changed (TUI themes)
 
 - The `t` theme picker recolours every tab again. The restyle had fixed the colours, so

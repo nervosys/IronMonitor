@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use super::cards;
 use super::theme::{self, threshold_color, trend_indicator, CyberColors, DeviceTitleColors};
 use super::widgets::{
     CyberProgressBar, MetricCard, QuickLookPanel, SectionHeader, SparklineChart, ThresholdLegend,
@@ -2781,34 +2782,10 @@ impl IronMonitorApp {
         }
     }
 
-    pub(super) fn draw_overview_chat_bar(&mut self, ui: &mut egui::Ui) {
-        self.draw_agent_composer(ui);
-        if let Some(entry) = self
-            .agent_history
-            .iter()
-            .rev()
-            .find(|entry| entry.role == ChatRole::Assistant)
-        {
-            let mut text: String = entry.content.trim().chars().take(401).collect();
-            if text.chars().count() > 400 {
-                text.pop();
-                text.push('…');
-            }
-            ui.add_space(4.0);
-            ui.label(RichText::new(text).color(theme::color(ui.ctx(), CyberColors::TEXT_PRIMARY)));
-            if let Some(ms) = entry.inference_time_ms {
-                ui.label(
-                    RichText::new(format!("{ms}ms"))
-                        .small()
-                        .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
-                );
-            }
-        }
-    }
+    /// Overview: the one tab that summarises. Each figure appears once here, and
+    /// its detail lives on the domain's own tab. The agent chat is the AI tab's.
     pub(super) fn draw_overview(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        self.draw_overview_chat_bar(ui);
-        ui.add_space(6.0);
 
         // Chart heights are the one part of this tab that can give, so they are
         // what absorbs a short window. Every chart row's graph is drawn at
@@ -2866,572 +2843,118 @@ impl IronMonitorApp {
                 })
                 .unwrap_or("→");
 
-            ui.add(
-                QuickLookPanel::new(cpu_usage, mem_usage, swap_usage, load_avg)
-                    .with_trends(cpu_trend, mem_trend),
-            );
-
-            ui.add_space(4.0);
-
-            // Threshold legend
-            ui.add(ThresholdLegend);
-
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(2.0);
-
-            // System status bar (htop-style)
-            ui.horizontal(|ui| {
-                ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
-                // Uptime
-                let uptime = self.start_time.elapsed();
-                let hours = uptime.as_secs() / 3600;
-                let minutes = (uptime.as_secs() % 3600) / 60;
-                let seconds = uptime.as_secs() % 60;
-                ui.label(
-                    RichText::new(format!("⏱ {:02}:{:02}:{:02}", hours, minutes, seconds))
-                        .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
+            let summary = super::widgets::domain_section_title("system", "Summary");
+            cards::section(ui, SectionHeader::new(&summary).icon("📈"), |ui| {
+                ui.add(
+                    QuickLookPanel::new(cpu_usage, mem_usage, swap_usage, load_avg)
+                        .with_trends(cpu_trend, mem_trend),
                 );
-                ui.separator();
-
-                // Process state summary (htop-style: Tasks: X, Y thr; 1 running)
-                let running_count = self.process_list.iter().filter(|p| p.state == 'R').count();
-                let sleeping_count = self.process_list.iter().filter(|p| p.state == 'S').count();
-                let zombie_count = self.process_list.iter().filter(|p| p.state == 'Z').count();
-                let disk_wait_count = self.process_list.iter().filter(|p| p.state == 'D').count();
-                let stopped_count = self.process_list.iter().filter(|p| p.state == 'T').count();
-
-                ui.label(
-                    RichText::new(format!("Tasks: {}", self.process_list.len()))
-                        .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                );
-                // Platforms that do not report per-process scheduling state mark it
-                // 'U'. Showing "0R 0S" there would be as wrong as the "420R 0S" this
-                // replaced — say the breakdown is unavailable instead.
-                if running_count + sleeping_count + zombie_count + disk_wait_count + stopped_count
-                    > 0
-                {
-                    ui.label(
-                        RichText::new(format!("{}R", running_count))
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
-                    );
-                    ui.label(
-                        RichText::new(format!("{}S", sleeping_count))
-                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
-                    );
-                }
-                if zombie_count > 0 {
-                    ui.label(
-                        RichText::new(format!("{}Z", zombie_count))
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
-                    );
-                }
-                if disk_wait_count > 0 {
-                    ui.label(
-                        RichText::new(format!("{}D", disk_wait_count))
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
-                    );
-                }
-                if stopped_count > 0 {
-                    ui.label(
-                        RichText::new(format!("{}T", stopped_count))
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                    );
-                }
-                ui.separator();
-
-                // Connections count
-                ui.label(
-                    RichText::new(format!("🔌 {} Conn", self.connections.len()))
-                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                );
-                ui.separator();
-
-                // Accelerator count
-                if !self.gpu_static_info.is_empty() {
-                    ui.label(
-                        RichText::new(format!("⚡ {} Accel", self.gpu_static_info.len()))
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                    );
-                }
+                ui.add_space(4.0);
+                ui.add(ThresholdLegend);
+                ui.add_space(4.0);
+                self.draw_overview_status_row(ui);
             });
-
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            // Top metric cards
-            ui.horizontal_wrapped(|ui| {
-                // CPU Card
-                let (value, color) = match self.cpu_usage() {
-                    Some(cpu_usage) => (
-                        format!("{:.1}", cpu_usage),
-                        theme::color(&palette_ctx, theme::cpu_color(cpu_usage)),
-                    ),
-                    None => (
-                        "--".to_string(),
-                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                    ),
-                };
-                ui.add(MetricCard::new("CPU Usage", value).unit("%").color(color));
-
-                // Memory Card
-                if let Some(ref mem) = self.memory_stats {
-                    let usage = mem.ram_usage_percent();
-                    // `RamInfo` is in KiB, so this is gibibytes — the card was
-                    // labelled MB and read "78.6 MB" next to a bar showing 84% of
-                    // 93.6 GB.
-                    let used_gb = mem.ram.used as f64 / 1024.0 / 1024.0;
-                    // No RAM total, no usage: the card reads "--" rather than 0.0 GB.
-                    let (value, color) = match usage {
-                        Some(usage) => (
-                            format!("{:.1}", used_gb),
-                            theme::color(&palette_ctx, theme::memory_color(usage)),
-                        ),
-                        None => (
-                            "--".to_string(),
-                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                        ),
-                    };
-                    ui.add(MetricCard::new("Memory", value).unit("GB").color(color));
-                }
-
-                // Accelerator Cards
-                for (i, (static_info, dynamic_info)) in self
-                    .gpu_static_info
-                    .iter()
-                    .zip(self.gpu_dynamic_info.iter())
-                    .enumerate()
-                {
-                    use crate::gpu::GpuVendor;
-                    let accel_type = match static_info.vendor {
-                        GpuVendor::Nvidia
-                        | GpuVendor::Amd
-                        | GpuVendor::Intel
-                        | GpuVendor::Apple => "GPU",
-                    };
-                    ui.add(
-                        MetricCard::new(
-                            &format!("{} {}", accel_type, i),
-                            dynamic_info
-                                .utilization
-                                .map_or_else(|| "-".to_string(), |u| u.to_string()),
-                        )
-                        .unit("%")
-                        // No reading, no threshold colour (see the GPU memory
-                        // card below): neutral rather than the 0% colour.
-                        .color(match dynamic_info.utilization {
-                            Some(u) => theme::color(ui.ctx(), theme::accel_color(u as f32)),
-                            None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
-                        }),
-                    );
-
-                    if let Some(temp) = dynamic_info.thermal.temperature {
-                        ui.add(
-                            MetricCard::new(
-                                &format!(
-                                    "{} Temp",
-                                    &static_info.name[..static_info.name.len().min(10)]
-                                ),
-                                temp,
-                            )
-                            .unit("°C")
-                            .color(theme::color(
-                                ui.ctx(),
-                                theme::temperature_color(temp as u32),
-                            )),
-                        );
-                    }
-
-                    // GPU Memory. A dash where the device reported none,
-                    // rather than a card reading 0%.
-                    let mem_label = dynamic_info
-                        .memory
-                        .utilization
-                        .map_or_else(|| "-".to_string(), |p| format!("{p}"));
-                    ui.add(
-                        MetricCard::new(&format!("GPU{} Mem", i), mem_label)
-                            .unit("%")
-                            // No reading, no threshold colour: 0% would paint
-                            // the card the "plenty free" colour for a device
-                            // whose memory nobody could read.
-                            .color(match dynamic_info.memory.utilization {
-                                Some(p) => theme::color(ui.ctx(), theme::memory_color(p as f32)),
-                                None => theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
-                            }),
-                    );
-                }
-            });
-
-            ui.add_space(10.0);
 
             // Storage capacity uses the background snapshot, never device I/O
             // on the paint thread.
-            draw_overview_disk_usage(ui, &self.snapshot.disks);
-            ui.add_space(10.0);
+            cards::card(ui, |ui| draw_overview_disk_usage(ui, &self.snapshot.disks));
+            ui.add_space(cards::GAP);
 
-            // Charts section. On a wide window network I/O joins this row rather
-            // than taking a section of its own below: a laptop has width to
-            // spare and no height, and the separate section cost a heading and
-            // a second chart row.
-            let network_in_first_row = ui.available_width() >= OVERVIEW_FOUR_CHART_WIDTH;
-            let first_row_height = chart_row(100.0);
-            ui.columns(if network_in_first_row { 4 } else { 2 }, |columns| {
-                // CPU Chart
-                columns[0].add(
-                    SparklineChart::from_history(&self.cpu_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
-                        .height(first_row_height)
-                        .title("CPU Usage")
-                        .unit("%")
-                        .max_value(100.0)
-                        .show_scale(true)
-                        .show_min_max(true),
-                );
-
-                // Memory Chart
-                columns[1].add(
-                    SparklineChart::from_history(&self.memory_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
-                        .height(first_row_height)
-                        .title("Memory Usage")
-                        .unit("%")
-                        .max_value(100.0)
-                        .show_scale(true)
-                        .show_min_max(true),
-                );
-
-                if network_in_first_row {
-                    columns[2].add(
-                        SparklineChart::from_history(&self.network_rx_history)
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .height(first_row_height)
-                            .title("Network Download")
-                            .unit("KB/s")
-                            .show_scale(true),
-                    );
-                    columns[3].add(
-                        SparklineChart::from_history(&self.network_tx_history)
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .height(first_row_height)
-                            .title("Network Upload")
-                            .unit("KB/s")
-                            .show_scale(true),
-                    );
+            // History: four charts in one row on a wide window, two rows of two
+            // on a narrow one. Network rates are kept in MB/s (see where they are
+            // sampled), so that is the unit here.
+            let cpu = theme::color(&palette_ctx, DeviceTitleColors::CPU);
+            let mem = theme::color(&palette_ctx, DeviceTitleColors::MEMORY);
+            let net = theme::color(&palette_ctx, DeviceTitleColors::NETWORK);
+            let charts = [
+                (&self.cpu_history, cpu, "CPU Usage", "%", true),
+                (&self.memory_history, mem, "Memory Usage", "%", true),
+                (
+                    &self.network_rx_history,
+                    net,
+                    "Network Download",
+                    "MB/s",
+                    false,
+                ),
+                (
+                    &self.network_tx_history,
+                    net,
+                    "Network Upload",
+                    "MB/s",
+                    false,
+                ),
+            ];
+            let per_row = if ui.available_width() >= OVERVIEW_FOUR_CHART_WIDTH {
+                4
+            } else {
+                2
+            };
+            let row_heights: Vec<f32> = charts.chunks(per_row).map(|_| chart_row(100.0)).collect();
+            cards::section(ui, SectionHeader::new("History").icon("📉"), |ui| {
+                for (row, height) in charts.chunks(per_row).zip(row_heights) {
+                    ui.columns(per_row, |columns| {
+                        for ((history, colour, title, unit, percent), col) in
+                            row.iter().zip(columns.iter_mut())
+                        {
+                            let mut chart = SparklineChart::from_history(history)
+                                .color(*colour)
+                                .height(height)
+                                .title(*title)
+                                .unit(*unit)
+                                .show_scale(true);
+                            if *percent {
+                                chart = chart.max_value(100.0).show_min_max(true);
+                            }
+                            col.add(chart);
+                        }
+                    });
                 }
             });
 
-            ui.add_space(10.0);
-
-            // GPU Charts
+            // One chart per accelerator, its temperature and memory in the title,
+            // so the accelerator's figures are in one place.
             if !self.gpu_history.is_empty() {
+                let titles: Vec<String> = (0..self.gpu_history.len())
+                    .map(|i| {
+                        let mut title = format!("GPU {i}");
+                        if let Some(d) = self.gpu_dynamic_info.get(i) {
+                            if let Some(t) = d.thermal.temperature {
+                                title.push_str(&format!(" · {t} °C"));
+                            }
+                            if let Some(m) = d.memory.utilization {
+                                title.push_str(&format!(" · VRAM {m}%"));
+                            }
+                        }
+                        title
+                    })
+                    .collect();
+                let per_row = self.gpu_history.len().min(4);
+                let row_heights: Vec<f32> = self
+                    .gpu_history
+                    .chunks(per_row)
+                    .map(|_| chart_row(80.0))
+                    .collect();
                 let gpu_title = super::widgets::domain_section_title("gpu", "Utilization");
-                ui.add(SectionHeader::new(&gpu_title).icon("🎮"));
-                let gpu_row_height = chart_row(80.0);
-                let num_cols = self.gpu_history.len().min(4);
-                ui.columns(num_cols.max(1), |columns| {
-                    for (i, hist) in self.gpu_history.iter().enumerate() {
-                        if i < columns.len() {
-                            columns[i].add(
-                                SparklineChart::from_history(hist)
-                                    .color(theme::color(&palette_ctx, DeviceTitleColors::ACCEL))
-                                    .height(gpu_row_height)
-                                    .title(format!("GPU {}", i))
-                                    .unit("%")
-                                    .max_value(100.0)
-                                    .show_scale(true),
-                            );
-                        }
-                    }
-                });
-            }
-
-            ui.add_space(10.0);
-
-            // Linux/BSD style System Stats (like htop/vmstat)
-            // Not Linux/BSD-only: uptime and CPU count render on every platform, and
-            // the entries that are Linux-sourced hide themselves when absent.
-            let t = super::widgets::domain_section_title("system", "Stats");
-            ui.add(SectionHeader::new(&t).icon("📈"));
-
-            // System info row
-            ui.horizontal(|ui| {
-                ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
-                // Load Average (htop/uptime style)
-                if let Some(ref stats) = self.system_stats {
-                    if let Some(ref load) = stats.load_average {
-                        ui.label(
-                            RichText::new(format!(
-                                "⚖ Load: {:.2}, {:.2}, {:.2}",
-                                load.one, load.five, load.fifteen
-                            ))
-                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
-                        );
-                        ui.separator();
-                    }
-
-                    // System uptime (from OS, not app)
-                    if let Some(uptime) = stats.uptime_seconds {
-                        let days = uptime / 86400;
-                        let hours = (uptime % 86400) / 3600;
-                        let mins = (uptime % 3600) / 60;
-                        let uptime_str = if days > 0 {
-                            format!("🖥 Uptime: {}d {:02}h {:02}m", days, hours, mins)
-                        } else {
-                            format!("🖥 Uptime: {:02}h {:02}m", hours, mins)
-                        };
-                        ui.label(
-                            RichText::new(uptime_str)
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
-                        );
-                        ui.separator();
-                    }
-
-                    // Running/Total processes. Each half is shown only if it
-                    // was read: Windows reports a total and no runnable count,
-                    // macOS reports neither.
-                    let tasks = match (stats.running_processes, stats.total_processes) {
-                        (Some(running), Some(total)) => {
-                            Some(format!("🔄 Tasks: {running} running, {total} total"))
-                        }
-                        (None, Some(total)) => Some(format!("🔄 Tasks: {total} total")),
-                        (Some(running), None) => Some(format!("🔄 Tasks: {running} running")),
-                        (None, None) => None,
-                    };
-                    if let Some(tasks) = tasks {
-                        ui.label(
-                            RichText::new(tasks)
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                        );
-                        ui.separator();
-                    }
-
-                    // CPUs
-                    // An unread count shows as unknown, not as zero CPUs.
-                    let cpus = match stats.num_cpus {
-                        Some(n) => format!("💻 {} CPUs", n),
-                        None => "💻 unknown CPUs".to_string(),
-                    };
-                    ui.label(
-                        RichText::new(cpus)
-                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                    );
-                }
-            });
-
-            ui.add_space(4.0);
-
-            // CPU Time breakdown (like vmstat/top)
-            if let Some(ref stats) = self.system_stats {
-                if let Some(ref cpu_time) = stats.cpu_time {
-                    let total = cpu_time.total() as f32;
-                    if total > 0.0 {
-                        ui.horizontal(|ui| {
-                            ui.style_mut().override_font_id =
-                                Some(theme::data_font(ui.ctx(), 12.0));
-                            ui.label(
-                                RichText::new("CPU Time: ").color(theme::text_color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_PRIMARY,
-                                )),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "us:{:.1}%",
-                                    (cpu_time.user as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "sy:{:.1}%",
-                                    (cpu_time.system as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "ni:{:.1}%",
-                                    (cpu_time.nice as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "id:{:.1}%",
-                                    (cpu_time.idle as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "wa:{:.1}%",
-                                    (cpu_time.iowait as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "hi:{:.1}%",
-                                    (cpu_time.irq as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::MAGENTA)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "si:{:.1}%",
-                                    (cpu_time.softirq as f32 / total) * 100.0
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                            );
-                            if cpu_time.steal > 0 {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "st:{:.1}%",
-                                        (cpu_time.steal as f32 / total) * 100.0
-                                    ))
-                                    .color(theme::text_color(
-                                        &palette_ctx,
-                                        CyberColors::NEON_YELLOW,
-                                    )),
+                let accel = theme::color(&palette_ctx, DeviceTitleColors::ACCEL);
+                cards::section(ui, SectionHeader::new(&gpu_title).icon("🎮"), |ui| {
+                    let rows = self.gpu_history.chunks(per_row).zip(titles.chunks(per_row));
+                    for ((hists, names), height) in rows.zip(row_heights) {
+                        ui.columns(per_row, |columns| {
+                            for ((hist, name), col) in
+                                hists.iter().zip(names).zip(columns.iter_mut())
+                            {
+                                col.add(
+                                    SparklineChart::from_history(hist)
+                                        .color(accel)
+                                        .height(height)
+                                        .title(name.as_str())
+                                        .unit("%")
+                                        .max_value(100.0)
+                                        .show_scale(true),
                                 );
                             }
                         });
                     }
-                }
-
-                // VMstat info (context switches, interrupts, etc.)
-                if let Some(ref vm) = stats.vm_stats {
-                    ui.horizontal(|ui| {
-                        ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 12.0));
-                        ui.label(
-                            RichText::new("VMstat: ")
-                                .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                        );
-                        // Show rates per second
-                        // No interval sampled yet reads "--", not a rate of 0.
-                        let rate = |h: &VecDeque<f32>| {
-                            h.back()
-                                .map_or_else(|| "--".to_string(), |r| format!("{r:.0}"))
-                        };
-                        ui.label(
-                            RichText::new(format!(
-                                "ctx/s:{}",
-                                rate(&self.context_switches_history)
-                            ))
-                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
-                        );
-                        ui.label(
-                            RichText::new(format!("int/s:{}", rate(&self.interrupts_history)))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
-                        );
-                        // Unread counters show "--", never 0.
-                        let count =
-                            |v: Option<u64>| v.map_or_else(|| "--".to_string(), |n| n.to_string());
-                        // Shown only when known to be nonzero; unknown is not a reason to show it.
-                        if vm.processes_blocked.is_some_and(|n| n > 0) {
-                            ui.label(
-                                RichText::new(format!(
-                                    "blocked:{}",
-                                    vm.processes_blocked
-                                        .map_or_else(|| "--".to_string(), |n| n.to_string())
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
-                            );
-                        }
-                        ui.label(
-                            RichText::new(format!("pgpgin:{}", count(vm.pages_in)))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                        );
-                        ui.label(
-                            RichText::new(format!("pgpgout:{}", count(vm.pages_out)))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                        );
-                        if vm.swap_in.is_some_and(|n| n > 0) || vm.swap_out.is_some_and(|n| n > 0) {
-                            ui.label(
-                                RichText::new(format!(
-                                    "swin:{} swout:{}",
-                                    count(vm.swap_in),
-                                    count(vm.swap_out)
-                                ))
-                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
-                            );
-                        }
-                    });
-                }
-            }
-
-            ui.add_space(4.0);
-
-            // Context Switches and Interrupts charts (vmstat-style).
-            //
-            // Only drawn where the counters exist. They come from /proc/stat, so on
-            // Windows and macOS `vm_stats` is None and the histories keep the zeros
-            // they were seeded with — which rendered as two flat lines reading
-            // "0.0/s", asserting the machine performs no context switches and takes
-            // no interrupts.
-            if self
-                .system_stats
-                .as_ref()
-                .is_some_and(|s| s.vm_stats.is_some())
-            {
-                let vmstat_row_height = chart_row(70.0);
-                ui.columns(2, |columns| {
-                    columns[0].add(
-                        SparklineChart::from_history(&self.context_switches_history)
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .height(vmstat_row_height)
-                            .title("Context Switches")
-                            .unit("/s")
-                            .show_scale(true),
-                    );
-
-                    columns[1].add(
-                        SparklineChart::from_history(&self.interrupts_history)
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                            .height(vmstat_row_height)
-                            .title("Interrupts")
-                            .unit("/s")
-                            .show_scale(true),
-                    );
-                });
-            } else {
-                ui.label(
-                    RichText::new(
-                        "Context switch and interrupt counters are not exposed by this platform",
-                    )
-                    .color(theme::text_color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                    .small(),
-                );
-            }
-
-            // Network Charts, where they did not fit in the first row.
-            if !network_in_first_row {
-                ui.add_space(10.0);
-                let net_title = super::widgets::domain_section_title("network", "I/O");
-                ui.add(SectionHeader::new(&net_title).icon("🌐"));
-                let network_row_height = chart_row(70.0);
-                ui.columns(2, |columns| {
-                    columns[0].add(
-                        SparklineChart::from_history(&self.network_rx_history)
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .height(network_row_height)
-                            .title("Download")
-                            .unit("KB/s")
-                            .show_scale(true),
-                    );
-
-                    columns[1].add(
-                        SparklineChart::from_history(&self.network_tx_history)
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .height(network_row_height)
-                            .title("Upload")
-                            .unit("KB/s")
-                            .show_scale(true),
-                    );
                 });
             }
         });
@@ -3463,149 +2986,436 @@ impl IronMonitorApp {
         self.overview_shortfall = Some(fixed + natural_chart_height - room);
     }
 
-    fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {
+    /// Overview's one line of counts: tasks, OS uptime, CPUs, connections and
+    /// accelerators. Each is drawn once, and only from what was read.
+    fn draw_overview_status_row(&self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        ScrollArea::vertical().show(ui, |ui| {
-            let cpu_title = super::widgets::domain_section_title("cpu", "Overview");
-            ui.add(SectionHeader::new(&cpu_title).icon("🔲"));
+        ui.horizontal_wrapped(|ui| {
+            ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 13.0));
+            // Process state summary (htop-style: Tasks: X, Y thr; 1 running)
+            let running_count = self.process_list.iter().filter(|p| p.state == 'R').count();
+            let sleeping_count = self.process_list.iter().filter(|p| p.state == 'S').count();
+            let zombie_count = self.process_list.iter().filter(|p| p.state == 'Z').count();
+            let disk_wait_count = self.process_list.iter().filter(|p| p.state == 'D').count();
+            let stopped_count = self.process_list.iter().filter(|p| p.state == 'T').count();
 
-            if let Some(ref cpu) = self.cpu_stats {
-                // Overall utilization with Glances-style threshold colors
-                let cpu_usage = 100.0 - cpu.total.idle;
-
-                // Get trend from history
-                let cpu_trend = self
-                    .cpu_history
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .map(|&prev| trend_indicator(cpu_usage, prev).0)
-                    .unwrap_or("→");
-
-                ui.add(
-                    CyberProgressBar::new(cpu_usage / 100.0)
-                        .with_threshold_color()
-                        .with_trend(cpu_trend)
-                        .label("Total CPU")
-                        .height(28.0),
+            ui.label(
+                RichText::new(format!("Tasks: {}", self.process_list.len()))
+                    .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+            );
+            // Platforms that do not report per-process scheduling state mark it
+            // 'U'. Showing "0R 0S" there would be as wrong as the "420R 0S" this
+            // replaced — say the breakdown is unavailable instead.
+            if running_count + sleeping_count + zombie_count + disk_wait_count + stopped_count > 0 {
+                ui.label(
+                    RichText::new(format!("{}R", running_count))
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
                 );
-
-                ui.add_space(8.0);
-
-                // CPU History
-                ui.add(
-                    SparklineChart::from_history(&self.cpu_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
-                        .height(120.0)
-                        .title("CPU History")
-                        .unit("%")
-                        .max_value(100.0)
-                        .show_scale(true)
-                        .show_min_max(true),
+                ui.label(
+                    RichText::new(format!("{}S", sleeping_count))
+                        .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
                 );
+            }
+            if zombie_count > 0 {
+                ui.label(
+                    RichText::new(format!("{}Z", zombie_count))
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
+                );
+            }
+            if disk_wait_count > 0 {
+                ui.label(
+                    RichText::new(format!("{}D", disk_wait_count))
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                );
+            }
+            if stopped_count > 0 {
+                ui.label(
+                    RichText::new(format!("{}T", stopped_count))
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                );
+            }
+            let stats = self.system_stats.as_ref();
+            if let Some(uptime) = stats.and_then(|s| s.uptime_seconds) {
+                ui.separator();
+                let (days, hours, mins) = (
+                    uptime / 86400,
+                    (uptime % 86400) / 3600,
+                    (uptime % 3600) / 60,
+                );
+                let text = if days > 0 {
+                    format!("Uptime: {days}d {hours:02}h {mins:02}m")
+                } else {
+                    format!("Uptime: {hours:02}h {mins:02}m")
+                };
+                ui.label(
+                    RichText::new(text)
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
+                );
+            }
+            ui.separator();
+            // An unread count shows as unknown, not as zero CPUs.
+            let cpus = match stats.and_then(|s| s.num_cpus) {
+                Some(n) => format!("{n} CPUs"),
+                None => "unknown CPUs".to_string(),
+            };
+            ui.label(
+                RichText::new(cpus)
+                    .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+            );
+            ui.separator();
+            ui.label(
+                RichText::new(format!("{} connections", self.connections.len()))
+                    .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
+            );
+            if !self.gpu_static_info.is_empty() {
+                ui.separator();
+                ui.label(
+                    RichText::new(format!("{} accelerators", self.gpu_static_info.len()))
+                        .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                );
+            }
+        });
+    }
 
-                // Per-core sparklines (if available)
-                if !self.per_core_history.is_empty() {
-                    ui.add_space(16.0);
-                    ui.add(SectionHeader::new("Per-Core History").icon("⚡"));
-
-                    let num_cols =
-                        (self.per_core_history.len().min(8) as f32).sqrt().ceil() as usize;
-                    let num_cols = num_cols.clamp(2, 4);
-
-                    ui.columns(num_cols, |columns| {
-                        for (i, hist) in self.per_core_history.iter().enumerate() {
-                            let col = i % num_cols;
-                            if col < columns.len() {
-                                let core_color = hist
-                                    .back()
-                                    .map_or(CyberColors::TEXT_SECONDARY, |&u| theme::cpu_color(u));
-                                columns[col].add(
-                                    SparklineChart::from_history(hist)
-                                        .color(theme::color(&palette_ctx, core_color))
-                                        .height(60.0)
-                                        .title(format!("Core {}", i))
-                                        .unit("%")
-                                        .max_value(100.0)
-                                        .show_scale(true),
-                                );
-                            }
+    /// The CPU tab's scheduler card: load average, where CPU time went, and the
+    /// vmstat counters, each only where the platform reports it.
+    fn draw_cpu_scheduler(&self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
+        if let Some(load) = self
+            .system_stats
+            .as_ref()
+            .and_then(|s| s.load_average.as_ref())
+        {
+            ui.label(
+                RichText::new(format!(
+                    "Load: {:.2}, {:.2}, {:.2}",
+                    load.one, load.five, load.fifteen
+                ))
+                .font(theme::data_font(ui.ctx(), 13.0))
+                .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
+            );
+        }
+        // CPU Time breakdown (like vmstat/top)
+        if let Some(ref stats) = self.system_stats {
+            if let Some(ref cpu_time) = stats.cpu_time {
+                let total = cpu_time.total() as f32;
+                if total > 0.0 {
+                    ui.horizontal(|ui| {
+                        ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 12.0));
+                        ui.label(
+                            RichText::new("CPU Time: ")
+                                .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "us:{:.1}%",
+                                (cpu_time.user as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "sy:{:.1}%",
+                                (cpu_time.system as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "ni:{:.1}%",
+                                (cpu_time.nice as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "id:{:.1}%",
+                                (cpu_time.idle as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "wa:{:.1}%",
+                                (cpu_time.iowait as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "hi:{:.1}%",
+                                (cpu_time.irq as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::MAGENTA)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "si:{:.1}%",
+                                (cpu_time.softirq as f32 / total) * 100.0
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                        );
+                        if cpu_time.steal > 0 {
+                            ui.label(
+                                RichText::new(format!(
+                                    "st:{:.1}%",
+                                    (cpu_time.steal as f32 / total) * 100.0
+                                ))
+                                .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                            );
                         }
                     });
                 }
+            }
 
-                // CPU Info
-                ui.add_space(16.0);
-                let t = super::widgets::domain_section_title("cpu", "Information");
-                ui.add(SectionHeader::new(&t).icon("ℹ️"));
-
-                let cores = &cpu.cores;
-                egui::Grid::new("cpu_info_grid")
-                    .num_columns(2)
-                    .spacing([40.0, 8.0])
-                    .show(ui, |ui| {
+            // VMstat info (context switches, interrupts, etc.)
+            if let Some(ref vm) = stats.vm_stats {
+                ui.horizontal(|ui| {
+                    ui.style_mut().override_font_id = Some(theme::data_font(ui.ctx(), 12.0));
+                    ui.label(
+                        RichText::new("VMstat: ")
+                            .color(theme::text_color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                    );
+                    // Show rates per second
+                    // No interval sampled yet reads "--", not a rate of 0.
+                    let rate = |h: &VecDeque<f32>| {
+                        h.back()
+                            .map_or_else(|| "--".to_string(), |r| format!("{r:.0}"))
+                    };
+                    ui.label(
+                        RichText::new(format!("ctx/s:{}", rate(&self.context_switches_history)))
+                            .color(theme::text_color(&palette_ctx, CyberColors::CYAN)),
+                    );
+                    ui.label(
+                        RichText::new(format!("int/s:{}", rate(&self.interrupts_history)))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_GREEN)),
+                    );
+                    // Unread counters show "--", never 0.
+                    let count =
+                        |v: Option<u64>| v.map_or_else(|| "--".to_string(), |n| n.to_string());
+                    // Shown only when known to be nonzero; unknown is not a reason to show it.
+                    if vm.processes_blocked.is_some_and(|n| n > 0) {
                         ui.label(
-                            RichText::new("Cores:")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            RichText::new(format!(
+                                "blocked:{}",
+                                vm.processes_blocked
+                                    .map_or_else(|| "--".to_string(), |n| n.to_string())
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_RED)),
                         );
+                    }
+                    ui.label(
+                        RichText::new(format!("pgpgin:{}", count(vm.pages_in)))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                    );
+                    ui.label(
+                        RichText::new(format!("pgpgout:{}", count(vm.pages_out)))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                    );
+                    if vm.swap_in.is_some_and(|n| n > 0) || vm.swap_out.is_some_and(|n| n > 0) {
                         ui.label(
-                            RichText::new(format!("{}", cores.len()))
-                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                            RichText::new(format!(
+                                "swin:{} swout:{}",
+                                count(vm.swap_in),
+                                count(vm.swap_out)
+                            ))
+                            .color(theme::text_color(&palette_ctx, CyberColors::NEON_YELLOW)),
                         );
-                        ui.end_row();
+                    }
+                });
+            }
+        }
 
-                        ui.label(
-                            RichText::new("Online:")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                        );
-                        ui.label(
-                            RichText::new(
-                                cpu.online_count()
-                                    .map_or_else(|| "unknown".to_string(), |n| n.to_string()),
-                            )
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
-                        );
-                        ui.end_row();
+        ui.add_space(4.0);
+        // Context Switches and Interrupts charts (vmstat-style).
+        //
+        // Only drawn where the counters exist. They come from /proc/stat, so on
+        // Windows and macOS `vm_stats` is None and the histories keep the zeros
+        // they were seeded with — which rendered as two flat lines reading
+        // "0.0/s", asserting the machine performs no context switches and takes
+        // no interrupts.
+        if self
+            .system_stats
+            .as_ref()
+            .is_some_and(|s| s.vm_stats.is_some())
+        {
+            let vmstat_row_height = 70.0;
+            ui.columns(2, |columns| {
+                columns[0].add(
+                    SparklineChart::from_history(&self.context_switches_history)
+                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                        .height(vmstat_row_height)
+                        .title("Context Switches")
+                        .unit("/s")
+                        .show_scale(true),
+                );
 
-                        if let Some(core) = cores.first() {
-                            if let Some(ref freq) = core.frequency {
-                                ui.label(RichText::new("Frequency:").color(theme::color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )));
-                                ui.label(
-                                    RichText::new(match freq.current {
-                                        Some(mhz) => format!("{mhz} MHz"),
-                                        None => "not read".to_string(),
-                                    })
-                                    .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
-                                );
-                                ui.end_row();
-                            }
+                columns[1].add(
+                    SparklineChart::from_history(&self.interrupts_history)
+                        .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
+                        .height(vmstat_row_height)
+                        .title("Interrupts")
+                        .unit("/s")
+                        .show_scale(true),
+                );
+            });
+        } else {
+            ui.label(
+                RichText::new(
+                    "Context switch and interrupt counters are not exposed by this platform",
+                )
+                .color(theme::text_color(&palette_ctx, CyberColors::TEXT_SECONDARY))
+                .small(),
+            );
+        }
+    }
 
-                            // An unread model is shown as unknown, not left out.
-                            ui.label(
-                                RichText::new("Model:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.label(
-                                RichText::new(
-                                    core.model
-                                        .as_deref()
-                                        .filter(|m| !m.trim().is_empty())
-                                        .unwrap_or("unknown"),
-                                )
-                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
-                            );
-                            ui.end_row();
-                        }
-                    });
-            } else {
+    fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {
+        let palette_ctx = ui.ctx().clone();
+        ScrollArea::vertical().show(ui, |ui| {
+            let Some(cpu) = self.cpu_stats.as_ref() else {
                 ui.label(
                     RichText::new("Unable to read CPU statistics")
                         .color(theme::color(&palette_ctx, CyberColors::ERROR)),
                 );
+                super::soc::draw_cpu_section(ui, self.silicon.get());
+                return;
+            };
+
+            // The history chart carries the current figure, so there is no
+            // separate total bar; the processor's identity sits beside it.
+            let cpu_title = super::widgets::domain_section_title("cpu", "Overview");
+            cards::section(ui, SectionHeader::new(&cpu_title).icon("🔲"), |ui| {
+                // Beside each other where there is room; stacked where the
+                // processor's name would not fit beside the chart.
+                let width = ui.available_width();
+                let draw_info = |ui: &mut egui::Ui| {
+                    let cores = &cpu.cores;
+                    egui::Grid::new("cpu_info_grid")
+                        .num_columns(2)
+                        .spacing([40.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Cores:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
+                            ui.label(
+                                RichText::new(format!("{}", cores.len()))
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                RichText::new("Online:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    cpu.online_count()
+                                        .map_or_else(|| "unknown".to_string(), |n| n.to_string()),
+                                )
+                                .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                            );
+                            ui.end_row();
+
+                            if let Some(core) = cores.first() {
+                                if let Some(ref freq) = core.frequency {
+                                    ui.label(RichText::new("Frequency:").color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
+                                    ui.label(
+                                        RichText::new(match freq.current {
+                                            Some(mhz) => format!("{mhz} MHz"),
+                                            None => "not read".to_string(),
+                                        })
+                                        .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                // An unread model is shown as unknown, not left out.
+                                ui.label(RichText::new("Model:").color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
+                                ui.label(
+                                    RichText::new(
+                                        core.model
+                                            .as_deref()
+                                            .filter(|m| !m.trim().is_empty())
+                                            .unwrap_or("unknown"),
+                                    )
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::CPU)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                };
+                let draw_chart = |ui: &mut egui::Ui| {
+                    ui.add(
+                        SparklineChart::from_history(&self.cpu_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
+                            .height(120.0)
+                            .title("CPU History")
+                            .unit("%")
+                            .max_value(100.0)
+                            .show_scale(true)
+                            .show_min_max(true),
+                    );
+                };
+                if width >= 1100.0 {
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui(egui::vec2(width * 0.66, 0.0), draw_chart);
+                        ui.add_space(cards::GAP);
+                        ui.vertical(|ui| {
+                            draw_info(ui);
+                        });
+                    });
+                } else {
+                    draw_chart(ui);
+                    ui.add_space(cards::GAP);
+                    draw_info(ui);
+                }
+            });
+
+            // Per-core charts, as many across as the width holds.
+            if !self.per_core_history.is_empty() {
+                cards::section(
+                    ui,
+                    SectionHeader::new("Per-Core History").icon("⚡"),
+                    |ui| {
+                        let num_cols =
+                            ((ui.available_width() / 170.0).floor() as usize).clamp(2, 8);
+                        for (row, chunk) in self.per_core_history.chunks(num_cols).enumerate() {
+                            ui.columns(num_cols, |columns| {
+                                for (j, (hist, col)) in
+                                    chunk.iter().zip(columns.iter_mut()).enumerate()
+                                {
+                                    let core_color =
+                                        hist.back().map_or(CyberColors::TEXT_SECONDARY, |&u| {
+                                            theme::cpu_color(u)
+                                        });
+                                    col.add(
+                                        SparklineChart::from_history(hist)
+                                            .color(theme::color(&palette_ctx, core_color))
+                                            .height(44.0)
+                                            .title(format!("Core {}", row * num_cols + j))
+                                            .unit("%")
+                                            .max_value(100.0)
+                                            .show_scale(true),
+                                    );
+                                }
+                            });
+                        }
+                    },
+                );
             }
+
+            let sched = super::widgets::domain_section_title("cpu", "Scheduler");
+            cards::section(ui, SectionHeader::new(&sched).icon("⏱"), |ui| {
+                self.draw_cpu_scheduler(ui);
+            });
             super::soc::draw_cpu_section(ui, self.silicon.get());
         });
     }
@@ -3632,7 +3442,6 @@ impl IronMonitorApp {
 
         // Auto-scale layout based on device count
         let device_count = self.gpu_static_info.len();
-        let available_width = ui.available_width();
 
         // Scale elements based on device count
         let chart_height = if device_count == 1 {
@@ -3660,17 +3469,9 @@ impl IronMonitorApp {
             {
                 let accel_color = theme::color(&palette_ctx, DeviceTitleColors::ACCEL);
 
-                // Device pane frame - compact
-                let frame = egui::Frame::NONE
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        theme::color(&palette_ctx, CyberColors::BORDER),
-                    ))
-                    .corner_radius(4)
-                    .inner_margin(8.0);
-
-                frame.show(ui, |ui| {
-                    ui.set_width(available_width - 16.0);
+                // One card per device.
+                cards::frame(&palette_ctx).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     if self.snapshot.gpu_dynamic.get(i).is_none_or(Option::is_none) {
                         ui.label(RichText::new("Live accelerator readings unavailable this cycle; detected hardware is shown below.")
                             .small().color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
@@ -3712,13 +3513,9 @@ impl IronMonitorApp {
                         // Emitted in reverse, because right-to-left placed the
                         // first label rightmost and this reads left to right.
                         const METRIC_SIZE: f32 = 15.0;
+                        // Temperature is not repeated here: its chart below
+                        // carries the current value.
                         let mut metrics: Vec<(String, egui::Color32)> = Vec::new();
-                        if let Some(temp) = dynamic_info.thermal.temperature {
-                            metrics.push((
-                                format!("{}°C", temp),
-                                theme::temperature_color(temp as u32),
-                            ));
-                        }
                         if let Some(power) = dynamic_info.power.draw {
                             metrics.push((
                                 format!("{:.0}W", power as f64 / 1000.0),
@@ -3763,27 +3560,9 @@ impl IronMonitorApp {
                         ui.vertical(|ui| {
                             ui.set_width(220.0);
 
-                            // Utilization bar
-                            ui.label(
-                                RichText::new(match dynamic_info.utilization {
-                                    Some(u) => format!("Utilization {u}%"),
-                                    None => "Utilization -".to_string(),
-                                })
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                                .size(13.0),
-                            );
-                            // No reading, no bar: an empty bar and a bar at
-                            // zero look the same, and only one is a reading.
-                            if let Some(util) = dynamic_info.utilization {
-                                ui.add(
-                                    CyberProgressBar::new(util as f32 / 100.0)
-                                        .color(theme::color(&palette_ctx, accel_color))
-                                        .height(bar_height),
-                                );
-                            }
-
-                            ui.add_space(4.0);
-
+                            // Utilization is the chart beside this column,
+                            // which carries the current value; it is not
+                            // repeated as a label and a bar here.
                             // VRAM bar
                             let mb = |v: Option<u64>| {
                                 v.map_or_else(|| "-".to_string(), |b| (b / 1024 / 1024).to_string())
@@ -3885,13 +3664,12 @@ impl IronMonitorApp {
                     });
                 });
 
-                // Minimal gap between device panes
                 if i < device_count - 1 {
-                    ui.add_space(2.0);
+                    ui.add_space(cards::GAP);
                 }
             }
 
-            super::soc::draw_npus(ui, silicon.get(), available_width);
+            super::soc::draw_npus(ui, silicon.get());
         });
     }
 
@@ -3933,252 +3711,226 @@ impl IronMonitorApp {
                 // RAM whenever the cache was non-zero.
                 let available_mb = (total_mb - used_mb).max(0.0);
 
-                ui.add(SectionHeader::new("Physical Memory").icon("💾"));
-
-                // Get trend from history
-                let mem_trend = self
-                    .memory_history
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .map(|&prev| trend_indicator(usage, prev).0)
-                    .unwrap_or("→");
-
-                ui.add(
-                    CyberProgressBar::new(usage / 100.0)
-                        .with_threshold_color()
-                        .with_trend(mem_trend)
-                        .label(format!("{:.1} MB / {:.1} MB", used_mb, total_mb))
-                        .height(32.0),
-                );
-
-                ui.add_space(8.0);
-
-                // Memory breakdown like `free -h` output
-                let t = super::widgets::domain_section_title("memory", "Breakdown (free -h style)");
-                ui.add(SectionHeader::new(&t).icon("📈"));
-
-                // Main row: total, used, free, shared, buff/cache, available
-                ui.horizontal(|ui| {
-                    ui.add(
-                        MetricCard::new("Total", format!("{:.0}", total_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
-                    );
-                    ui.add(
-                        MetricCard::new("Used", format!("{:.0}", used_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, threshold_color(usage))),
-                    );
-                    ui.add(
-                        MetricCard::new("Free", card(free_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
-                    );
-                    ui.add(
-                        MetricCard::new("Shared", card(shared_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                    );
-                });
-
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    ui.add(
-                        MetricCard::new("Buffers", card(buffers_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                    );
-                    ui.add(
-                        MetricCard::new("Cached", card(cached_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
-                    );
-                    ui.add(
-                        MetricCard::new("Available", format!("{:.0}", available_mb))
-                            .unit("MB")
-                            .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
-                    );
-                    ui.add(
-                        MetricCard::new("Usage", format!("{:.1}", usage))
-                            .unit("%")
-                            .color(theme::color(&palette_ctx, threshold_color(usage))),
-                    );
-                });
-
-                // Visual breakdown bar (stacked)
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Memory Map: ")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                    );
-                    // Show proportional bar
-                    if total_mb > 0.0 {
-                        // A segment is drawn only from a figure that was read.
-                        // An unread quantity gets no segment, rather than a
-                        // "0%" that reads as none. Used is net of each of
-                        // buffers and cache that was read; one that was not
-                        // read is still inside used, and the label names it.
-                        let mut used_net = used_mb;
-                        let mut unsplit: Vec<&str> = Vec::new();
-                        match buffers_mb {
-                            Some(b) => used_net -= b,
-                            None => unsplit.push("buffers"),
-                        }
-                        match cached_mb {
-                            Some(c) => used_net -= c,
-                            None => unsplit.push("cache"),
-                        }
-                        let used_pct = used_net.max(0.0) / total_mb;
-
-                        let _bar_width = ui.available_width() - 100.0;
-
-                        let used_text = if unsplit.is_empty() {
-                            format!("█{:.0}%", used_pct * 100.0)
-                        } else {
-                            format!(
-                                "█{:.0}% (incl. unread {})",
-                                used_pct * 100.0,
-                                unsplit.join("/")
-                            )
-                        };
-                        ui.label(
-                            RichText::new(used_text)
-                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
-                                .small(),
-                        );
-                        if let Some(b) = buffers_mb {
-                            ui.label(
-                                RichText::new(format!("█{:.0}%", b / total_mb * 100.0))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                    .small(),
-                            );
-                        }
-                        if let Some(c) = cached_mb {
-                            ui.label(
-                                RichText::new(format!("█{:.0}%", c / total_mb * 100.0))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                    .small(),
-                            );
-                        }
-                        if let Some(f) = free_mb {
-                            ui.label(
-                                RichText::new(format!("█{:.0}%", f / total_mb * 100.0))
-                                    .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK))
-                                    .small(),
-                            );
-                        }
-
-                        // Legend, right-aligned by measuring. See the note on
-                        // the accelerator metrics: the 117 px overrun this was
-                        // written to fix was the guard measuring a right-aligned
-                        // galley from its anchor, not a defect on screen.
-                        const LEGEND: &str = "(used/buffers/cache/free)";
-                        let galley = ui.painter().layout_no_wrap(
-                            LEGEND.to_owned(),
-                            egui::TextStyle::Small.resolve(ui.style()),
-                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                        );
-                        ui.add_space((ui.available_width() - galley.size().x).max(0.0));
-                        ui.label(
-                            RichText::new(LEGEND)
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .small(),
-                        );
-                    }
-                });
-
-                ui.add_space(16.0);
-
-                // Memory history
-                ui.add(
-                    SparklineChart::from_history(&self.memory_history)
-                        .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
-                        .height(150.0)
-                        .title("Memory Usage History")
-                        .unit("%")
-                        .max_value(100.0)
-                        .show_scale(true)
-                        .show_min_max(true),
-                );
-
-                // Swap info
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("Swap Memory").icon("🔄"));
-
-                // `total_or_zero()` discarded the `Option` that `SwapInfo`
-                // carries specifically so an unread pagefile is distinguishable
-                // from an absent one -- and the `else` branch below then told
-                // the user "No swap configured", which is a statement about the
-                // machine rather than about the reading. Windows swap is read
-                // through a WMI query that can fail.
-                let swap_usage = mem.swap_usage_percent();
-                let swap_total_mb = mem.swap.total.map(|v| v as f64 / 1024.0);
-                let swap_used_mb = mem.swap.used.map(|v| v as f64 / 1024.0);
-                let swap_free_mb = match (swap_total_mb, swap_used_mb) {
-                    (Some(total), Some(used)) => Some(total - used),
-                    _ => None,
-                };
-                let swap_cached_mb = mem.swap.cached.map(|v| v as f64 / 1024.0);
-
-                let mb = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.0}"));
-
-                if swap_total_mb.is_some_and(|t| t > 0.0) {
-                    // No bar for an unread usage: an empty bar would read as
-                    // zero swap in use. The MB figures below still show.
-                    if let Some(usage) = swap_usage {
-                        ui.add(
-                            CyberProgressBar::new(usage / 100.0)
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE))
-                                .label(format!(
-                                    "Swap: {} MB / {} MB",
-                                    mb(swap_used_mb),
-                                    mb(swap_total_mb)
-                                ))
-                                .height(24.0),
-                        );
-                    }
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            MetricCard::new("Swap Total", mb(swap_total_mb))
-                                .unit("MB")
-                                .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
-                        );
-                        ui.add(
-                            MetricCard::new("Swap Used", mb(swap_used_mb))
-                                .unit("MB")
-                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
-                        );
-                        ui.add(
-                            MetricCard::new("Swap Free", mb(swap_free_mb))
-                                .unit("MB")
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                        );
-                        if swap_cached_mb.is_some_and(|c| c > 0.0) {
+                // The figures once each: the cards, then the map of how they
+                // divide. The history chart below carries the usage percentage.
+                cards::section(
+                    ui,
+                    SectionHeader::new("Physical Memory").icon("💾"),
+                    |ui| {
+                        // Main row: total, used, free, shared, buff/cache, available
+                        ui.horizontal(|ui| {
                             ui.add(
-                                MetricCard::new("Swap Cached", mb(swap_cached_mb))
+                                MetricCard::new("Total", format!("{:.0}", total_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
+                            );
+                            ui.add(
+                                MetricCard::new("Used", format!("{:.0}", used_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, threshold_color(usage))),
+                            );
+                            ui.add(
+                                MetricCard::new("Free", card(free_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
+                            );
+                            ui.add(
+                                MetricCard::new("Shared", card(shared_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                            );
+                        });
+
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                MetricCard::new("Buffers", card(buffers_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                            );
+                            ui.add(
+                                MetricCard::new("Cached", card(cached_mb))
                                     .unit("MB")
                                     .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
                             );
-                        }
-                    });
-                } else if swap_total_mb.is_some() {
-                    ui.label(
-                        RichText::new("No swap configured")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            ui.add(
+                                MetricCard::new("Available", format!("{:.0}", available_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::THRESHOLD_OK)),
+                            );
+                        });
+
+                        // Visual breakdown bar (stacked)
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Memory Map: ")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                            );
+                            // Show proportional bar
+                            if total_mb > 0.0 {
+                                // A segment is drawn only from a figure that was read.
+                                // An unread quantity gets no segment, rather than a
+                                // "0%" that reads as none. Used is net of each of
+                                // buffers and cache that was read; one that was not
+                                // read is still inside used, and the label names it.
+                                let mut used_net = used_mb;
+                                let mut unsplit: Vec<&str> = Vec::new();
+                                match buffers_mb {
+                                    Some(b) => used_net -= b,
+                                    None => unsplit.push("buffers"),
+                                }
+                                match cached_mb {
+                                    Some(c) => used_net -= c,
+                                    None => unsplit.push("cache"),
+                                }
+                                let used_pct = used_net.max(0.0) / total_mb;
+
+                                let _bar_width = ui.available_width() - 100.0;
+
+                                let used_text = if unsplit.is_empty() {
+                                    format!("█{:.0}%", used_pct * 100.0)
+                                } else {
+                                    format!(
+                                        "█{:.0}% (incl. unread {})",
+                                        used_pct * 100.0,
+                                        unsplit.join("/")
+                                    )
+                                };
+                                ui.label(
+                                    RichText::new(used_text)
+                                        .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
+                                        .small(),
+                                );
+                                if let Some(b) = buffers_mb {
+                                    ui.label(
+                                        RichText::new(format!("█{:.0}%", b / total_mb * 100.0))
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::NEON_ORANGE,
+                                            ))
+                                            .small(),
+                                    );
+                                }
+                                if let Some(c) = cached_mb {
+                                    ui.label(
+                                        RichText::new(format!("█{:.0}%", c / total_mb * 100.0))
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::NEON_YELLOW,
+                                            ))
+                                            .small(),
+                                    );
+                                }
+                                if let Some(f) = free_mb {
+                                    ui.label(
+                                        RichText::new(format!("█{:.0}%", f / total_mb * 100.0))
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::THRESHOLD_OK,
+                                            ))
+                                            .small(),
+                                    );
+                                }
+
+                                // Legend, right-aligned by measuring. See the note on
+                                // the accelerator metrics: the 117 px overrun this was
+                                // written to fix was the guard measuring a right-aligned
+                                // galley from its anchor, not a defect on screen.
+                                const LEGEND: &str = "(used/buffers/cache/free)";
+                                let galley = ui.painter().layout_no_wrap(
+                                    LEGEND.to_owned(),
+                                    egui::TextStyle::Small.resolve(ui.style()),
+                                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                );
+                                ui.add_space((ui.available_width() - galley.size().x).max(0.0));
+                                ui.label(
+                                    RichText::new(LEGEND)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                        .small(),
+                                );
+                            }
+                        });
+                    },
+                );
+
+                // Memory history
+                cards::card(ui, |ui| {
+                    ui.add(
+                        SparklineChart::from_history(&self.memory_history)
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
+                            .height(150.0)
+                            .title("Memory Usage History")
+                            .unit("%")
+                            .max_value(100.0)
+                            .show_scale(true)
+                            .show_min_max(true),
                     );
-                } else {
-                    // Not the same sentence. One is a fact about the machine,
-                    // the other about this reading of it.
-                    ui.label(
-                        RichText::new("Swap not reported by this platform")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                }
+                });
+                ui.add_space(cards::GAP);
+
+                // Swap info
+                cards::section(ui, SectionHeader::new("Swap Memory").icon("🔄"), |ui| {
+                    // `total_or_zero()` discarded the `Option` that `SwapInfo`
+                    // carries specifically so an unread pagefile is distinguishable
+                    // from an absent one -- and the `else` branch below then told
+                    // the user "No swap configured", which is a statement about the
+                    // machine rather than about the reading. Windows swap is read
+                    // through a WMI query that can fail.
+                    let swap_total_mb = mem.swap.total.map(|v| v as f64 / 1024.0);
+                    let swap_used_mb = mem.swap.used.map(|v| v as f64 / 1024.0);
+                    let swap_free_mb = match (swap_total_mb, swap_used_mb) {
+                        (Some(total), Some(used)) => Some(total - used),
+                        _ => None,
+                    };
+                    let swap_cached_mb = mem.swap.cached.map(|v| v as f64 / 1024.0);
+
+                    let mb =
+                        |v: Option<f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.0}"));
+
+                    if swap_total_mb.is_some_and(|t| t > 0.0) {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                MetricCard::new("Swap Total", mb(swap_total_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY)),
+                            );
+                            ui.add(
+                                MetricCard::new("Swap Used", mb(swap_used_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
+                            );
+                            ui.add(
+                                MetricCard::new("Swap Free", mb(swap_free_mb))
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                            );
+                            if swap_cached_mb.is_some_and(|c| c > 0.0) {
+                                ui.add(
+                                    MetricCard::new("Swap Cached", mb(swap_cached_mb))
+                                        .unit("MB")
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::NEON_YELLOW,
+                                        )),
+                                );
+                            }
+                        });
+                    } else if swap_total_mb.is_some() {
+                        ui.label(
+                            RichText::new("No swap configured")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                    } else {
+                        // Not the same sentence. One is a fact about the machine,
+                        // the other about this reading of it.
+                        ui.label(
+                            RichText::new("Swap not reported by this platform")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                    }
+                });
             } else {
                 ui.label(
                     RichText::new("Unable to read memory statistics")
@@ -4191,330 +3943,334 @@ impl IronMonitorApp {
 
     fn draw_processes_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        ui.add(SectionHeader::new("Running Processes (htop-style)").icon("📋"));
-
-        // Task summary (htop-style: "Tasks: 150, 43 thr; 1 running")
-        let running = self.process_list.iter().filter(|p| p.state == 'R').count();
-        let sleeping = self
-            .process_list
-            .iter()
-            .filter(|p| p.state == 'S' || p.state == 'I')
-            .count();
-        let disk_wait = self.process_list.iter().filter(|p| p.state == 'D').count();
-        let zombie = self.process_list.iter().filter(|p| p.state == 'Z').count();
-        let stopped = self.process_list.iter().filter(|p| p.state == 'T').count();
-        let gpu_procs = self
-            .process_list
-            .iter()
-            .filter(|p| p.total_gpu_memory_bytes.is_some_and(|b| b > 0))
-            .count();
-
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Tasks:")
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-            );
-            ui.label(
-                RichText::new(format!("{}", self.process_list.len()))
-                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
-            );
-            ui.separator();
-            ui.label(
-                RichText::new(format!("{} running", running))
-                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-            );
-            ui.label(
-                RichText::new(format!("{} sleeping", sleeping))
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-            );
-            if disk_wait > 0 {
-                ui.label(
-                    RichText::new(format!("{} D-wait", disk_wait))
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                );
-            }
-            if zombie > 0 {
-                ui.label(
-                    RichText::new(format!("{} zombie", zombie))
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
-                );
-            }
-            if stopped > 0 {
-                ui.label(
-                    RichText::new(format!("{} stopped", stopped))
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                );
-            }
-            ui.separator();
-            if gpu_procs > 0 {
-                ui.label(
-                    RichText::new(format!("🎮 {} GPU", gpu_procs))
-                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                );
-            }
-        });
-
-        ui.add_space(4.0);
-
-        // Filter bar
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("🔍").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.process_filter)
-                    .hint_text("Filter processes...")
-                    .desired_width(200.0),
-            );
-
-            ui.separator();
-
-            // Sort options
-            ui.label(
-                RichText::new("Sort by:")
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-            );
-            if ui
-                .selectable_label(self.process_sort_column == ProcessSortColumn::Name, "Name")
-                .clicked()
-            {
-                self.process_sort_column = ProcessSortColumn::Name;
-            }
-            if ui
-                .selectable_label(self.process_sort_column == ProcessSortColumn::Cpu, "CPU")
-                .clicked()
-            {
-                self.process_sort_column = ProcessSortColumn::Cpu;
-            }
-            if ui
-                .selectable_label(
-                    self.process_sort_column == ProcessSortColumn::Memory,
-                    "Memory",
-                )
-                .clicked()
-            {
-                self.process_sort_column = ProcessSortColumn::Memory;
-            }
-            if ui
-                .selectable_label(self.process_sort_column == ProcessSortColumn::Pid, "PID")
-                .clicked()
-            {
-                self.process_sort_column = ProcessSortColumn::Pid;
-            }
-
-            if ui
-                .button(if self.process_sort_ascending {
-                    "↑"
-                } else {
-                    "↓"
-                })
-                .clicked()
-            {
-                self.process_sort_ascending = !self.process_sort_ascending;
-            }
-
-            ui.label(
-                RichText::new(format!("Total: {}", self.process_list.len()))
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-            );
-        });
-
-        ui.add_space(8.0);
-
-        // Rebuild the sorted/filtered view only when something that affects
-        // it has actually changed. Per-frame the cached view is reused.
-        let want_key = (
-            self.process_filter.clone(),
-            self.process_sort_column,
-            self.process_sort_ascending,
-            self.process_list_version,
-        );
-        if self.processes_view_key.as_ref() != Some(&want_key) {
-            let mut view = self.process_list.clone();
-            if !self.process_filter.is_empty() {
-                let filter = self.process_filter.to_lowercase();
-                view.retain(|p| p.name.to_lowercase().contains(&filter));
-            }
-            let ascending = self.process_sort_ascending;
-            match self.process_sort_column {
-                ProcessSortColumn::Name => view.sort_by(|a, b| {
-                    if ascending {
-                        a.name.cmp(&b.name)
-                    } else {
-                        b.name.cmp(&a.name)
-                    }
-                }),
-                ProcessSortColumn::Pid => view.sort_by(|a, b| {
-                    if ascending {
-                        a.pid.cmp(&b.pid)
-                    } else {
-                        b.pid.cmp(&a.pid)
-                    }
-                }),
-                ProcessSortColumn::Cpu => view.sort_by(|a, b| {
-                    let cmp = a
-                        .cpu_percent
-                        .partial_cmp(&b.cpu_percent)
-                        .unwrap_or(std::cmp::Ordering::Equal);
-                    if ascending {
-                        cmp
-                    } else {
-                        cmp.reverse()
-                    }
-                }),
-                ProcessSortColumn::Memory => view.sort_by(|a, b| {
-                    let cmp = a.memory_bytes.cmp(&b.memory_bytes);
-                    if ascending {
-                        cmp
-                    } else {
-                        cmp.reverse()
-                    }
-                }),
-            }
-            self.processes_view_cache = view;
-            self.processes_view_key = Some(want_key);
-        }
-
-        // Process table
-        ScrollArea::vertical().show(ui, |ui| {
-            let processes = &self.processes_view_cache;
-
-            // Table header (htop-style)
-            ui.horizontal(|ui| {
-                ui.set_min_height(24.0);
-                ui.label(
-                    RichText::new("PID")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                );
-                ui.add_space(40.0);
-                ui.label(
-                    RichText::new("ST")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                ); // State
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("PRI")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                ); // Priority
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("Name")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                );
-                ui.add_space(160.0);
-                ui.label(
-                    RichText::new("CPU %")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                );
-                ui.add_space(30.0);
-                ui.label(
-                    RichText::new("Memory")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                );
-                ui.add_space(40.0);
-                ui.label(
-                    RichText::new("GPU Mem")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
-                );
-            });
-            ui.separator();
-
-            // Process rows (htop-style with state and priority)
-            for process in processes.iter().take(100) {
-                let cpu_color = process
-                    .cpu_percent
-                    .map_or(CyberColors::TEXT_SECONDARY, theme::utilization_color);
-                let mem_mb = process.memory_bytes as f64 / 1024.0 / 1024.0;
-                let gpu_mem_mb = process
-                    .total_gpu_memory_bytes
-                    .map(|b| b as f64 / 1024.0 / 1024.0);
-
-                // State color coding like htop
-                let state_color = match process.state {
-                    'R' => theme::color(&palette_ctx, CyberColors::NEON_GREEN), // Running
-                    'S' | 'I' => theme::color(&palette_ctx, CyberColors::TEXT_MUTED), // Sleeping/Idle
-                    'D' => theme::color(&palette_ctx, CyberColors::NEON_ORANGE), // Disk wait (uninterruptible)
-                    'Z' => theme::color(&palette_ctx, CyberColors::NEON_RED),    // Zombie
-                    'T' | 't' => theme::color(&palette_ctx, CyberColors::NEON_PURPLE), // Stopped/Traced
-                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                };
+        cards::section(
+            ui,
+            SectionHeader::new("Running Processes (htop-style)").icon("📋"),
+            |ui| {
+                // Task summary (htop-style: "Tasks: 150, 43 thr; 1 running")
+                let running = self.process_list.iter().filter(|p| p.state == 'R').count();
+                let sleeping = self
+                    .process_list
+                    .iter()
+                    .filter(|p| p.state == 'S' || p.state == 'I')
+                    .count();
+                let disk_wait = self.process_list.iter().filter(|p| p.state == 'D').count();
+                let zombie = self.process_list.iter().filter(|p| p.state == 'Z').count();
+                let stopped = self.process_list.iter().filter(|p| p.state == 'T').count();
+                let gpu_procs = self
+                    .process_list
+                    .iter()
+                    .filter(|p| p.total_gpu_memory_bytes.is_some_and(|b| b > 0))
+                    .count();
 
                 ui.horizontal(|ui| {
-                    ui.set_min_height(20.0);
                     ui.label(
-                        RichText::new(format!("{:>6}", process.pid))
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .monospace(),
+                        RichText::new("Tasks:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                     );
-                    ui.add_space(20.0);
-                    // State column
                     ui.label(
-                        RichText::new(format!("{}", process.state))
-                            .color(theme::color(&palette_ctx, state_color))
-                            .monospace(),
+                        RichText::new(format!("{}", self.process_list.len()))
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                     );
-                    ui.add_space(8.0);
-                    // Priority/nice column
-                    let pri_str = process
-                        .priority
-                        .map(|p| format!("{:>3}", p))
-                        .unwrap_or_else(|| "  -".to_string());
+                    ui.separator();
                     ui.label(
-                        RichText::new(pri_str)
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .monospace(),
+                        RichText::new(format!("{} running", running))
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                     );
-                    ui.add_space(8.0);
-                    // Name
-                    ui.add_sized(
-                        Vec2::new(200.0, 20.0),
-                        egui::Label::new(
-                            RichText::new(&process.name)
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                        ),
-                    );
-                    // CPU
                     ui.label(
-                        RichText::new(
-                            process
-                                .cpu_percent
-                                .map_or_else(|| format!("{:>6}", "--"), |c| format!("{c:>5.1}%")),
-                        )
-                        .color(theme::color(&palette_ctx, cpu_color))
-                        .monospace(),
+                        RichText::new(format!("{} sleeping", sleeping))
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
-                    ui.add_space(10.0);
-                    // Memory
-                    ui.label(
-                        RichText::new(format!("{:>8.1} MB", mem_mb))
-                            .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
-                            .monospace(),
-                    );
-                    ui.add_space(20.0);
-                    // GPU Memory (if using GPU)
-                    if let Some(mb) = gpu_mem_mb.filter(|m| *m > 0.1) {
+                    if disk_wait > 0 {
                         ui.label(
-                            RichText::new(format!("{mb:>6.0} MB"))
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                .monospace(),
+                            RichText::new(format!("{} D-wait", disk_wait))
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
-                    } else {
+                    }
+                    if zombie > 0 {
                         ui.label(
-                            RichText::new("     -   ")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .monospace(),
+                            RichText::new(format!("{} zombie", zombie))
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_RED)),
+                        );
+                    }
+                    if stopped > 0 {
+                        ui.label(
+                            RichText::new(format!("{} stopped", stopped))
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
+                        );
+                    }
+                    ui.separator();
+                    if gpu_procs > 0 {
+                        ui.label(
+                            RichText::new(format!("🎮 {} GPU", gpu_procs))
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
                         );
                     }
                 });
-            }
-        });
+
+                ui.add_space(4.0);
+
+                // Filter bar
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("🔍")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.process_filter)
+                            .hint_text("Filter processes...")
+                            .desired_width(200.0),
+                    );
+
+                    ui.separator();
+
+                    // Sort options
+                    ui.label(
+                        RichText::new("Sort by:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                    );
+                    if ui
+                        .selectable_label(
+                            self.process_sort_column == ProcessSortColumn::Name,
+                            "Name",
+                        )
+                        .clicked()
+                    {
+                        self.process_sort_column = ProcessSortColumn::Name;
+                    }
+                    if ui
+                        .selectable_label(self.process_sort_column == ProcessSortColumn::Cpu, "CPU")
+                        .clicked()
+                    {
+                        self.process_sort_column = ProcessSortColumn::Cpu;
+                    }
+                    if ui
+                        .selectable_label(
+                            self.process_sort_column == ProcessSortColumn::Memory,
+                            "Memory",
+                        )
+                        .clicked()
+                    {
+                        self.process_sort_column = ProcessSortColumn::Memory;
+                    }
+                    if ui
+                        .selectable_label(self.process_sort_column == ProcessSortColumn::Pid, "PID")
+                        .clicked()
+                    {
+                        self.process_sort_column = ProcessSortColumn::Pid;
+                    }
+
+                    if ui
+                        .button(if self.process_sort_ascending {
+                            "↑"
+                        } else {
+                            "↓"
+                        })
+                        .clicked()
+                    {
+                        self.process_sort_ascending = !self.process_sort_ascending;
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                // Rebuild the sorted/filtered view only when something that affects
+                // it has actually changed. Per-frame the cached view is reused.
+                let want_key = (
+                    self.process_filter.clone(),
+                    self.process_sort_column,
+                    self.process_sort_ascending,
+                    self.process_list_version,
+                );
+                if self.processes_view_key.as_ref() != Some(&want_key) {
+                    let mut view = self.process_list.clone();
+                    if !self.process_filter.is_empty() {
+                        let filter = self.process_filter.to_lowercase();
+                        view.retain(|p| p.name.to_lowercase().contains(&filter));
+                    }
+                    let ascending = self.process_sort_ascending;
+                    match self.process_sort_column {
+                        ProcessSortColumn::Name => view.sort_by(|a, b| {
+                            if ascending {
+                                a.name.cmp(&b.name)
+                            } else {
+                                b.name.cmp(&a.name)
+                            }
+                        }),
+                        ProcessSortColumn::Pid => view.sort_by(|a, b| {
+                            if ascending {
+                                a.pid.cmp(&b.pid)
+                            } else {
+                                b.pid.cmp(&a.pid)
+                            }
+                        }),
+                        ProcessSortColumn::Cpu => view.sort_by(|a, b| {
+                            let cmp = a
+                                .cpu_percent
+                                .partial_cmp(&b.cpu_percent)
+                                .unwrap_or(std::cmp::Ordering::Equal);
+                            if ascending {
+                                cmp
+                            } else {
+                                cmp.reverse()
+                            }
+                        }),
+                        ProcessSortColumn::Memory => view.sort_by(|a, b| {
+                            let cmp = a.memory_bytes.cmp(&b.memory_bytes);
+                            if ascending {
+                                cmp
+                            } else {
+                                cmp.reverse()
+                            }
+                        }),
+                    }
+                    self.processes_view_cache = view;
+                    self.processes_view_key = Some(want_key);
+                }
+
+                // Process table
+                ScrollArea::vertical().show(ui, |ui| {
+                    let processes = &self.processes_view_cache;
+
+                    // Table header (htop-style)
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(24.0);
+                        ui.label(
+                            RichText::new("PID")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.add_space(40.0);
+                        ui.label(
+                            RichText::new("ST")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        ); // State
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("PRI")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        ); // Priority
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Name")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.add_space(160.0);
+                        ui.label(
+                            RichText::new("CPU %")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.add_space(30.0);
+                        ui.label(
+                            RichText::new("Memory")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                        ui.add_space(40.0);
+                        ui.label(
+                            RichText::new("GPU Mem")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
+                        );
+                    });
+                    ui.separator();
+
+                    // Process rows (htop-style with state and priority)
+                    for process in processes.iter().take(100) {
+                        let cpu_color = process
+                            .cpu_percent
+                            .map_or(CyberColors::TEXT_SECONDARY, theme::utilization_color);
+                        let mem_mb = process.memory_bytes as f64 / 1024.0 / 1024.0;
+                        let gpu_mem_mb = process
+                            .total_gpu_memory_bytes
+                            .map(|b| b as f64 / 1024.0 / 1024.0);
+
+                        // State color coding like htop
+                        let state_color = match process.state {
+                            'R' => theme::color(&palette_ctx, CyberColors::NEON_GREEN), // Running
+                            'S' | 'I' => theme::color(&palette_ctx, CyberColors::TEXT_MUTED), // Sleeping/Idle
+                            'D' => theme::color(&palette_ctx, CyberColors::NEON_ORANGE), // Disk wait (uninterruptible)
+                            'Z' => theme::color(&palette_ctx, CyberColors::NEON_RED),    // Zombie
+                            'T' | 't' => theme::color(&palette_ctx, CyberColors::NEON_PURPLE), // Stopped/Traced
+                            _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(20.0);
+                            ui.label(
+                                RichText::new(format!("{:>6}", process.pid))
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .monospace(),
+                            );
+                            ui.add_space(20.0);
+                            // State column
+                            ui.label(
+                                RichText::new(format!("{}", process.state))
+                                    .color(theme::color(&palette_ctx, state_color))
+                                    .monospace(),
+                            );
+                            ui.add_space(8.0);
+                            // Priority/nice column
+                            let pri_str = process
+                                .priority
+                                .map(|p| format!("{:>3}", p))
+                                .unwrap_or_else(|| "  -".to_string());
+                            ui.label(
+                                RichText::new(pri_str)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .monospace(),
+                            );
+                            ui.add_space(8.0);
+                            // Name
+                            ui.add_sized(
+                                Vec2::new(200.0, 20.0),
+                                egui::Label::new(
+                                    RichText::new(&process.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                ),
+                            );
+                            // CPU
+                            ui.label(
+                                RichText::new(process.cpu_percent.map_or_else(
+                                    || format!("{:>6}", "--"),
+                                    |c| format!("{c:>5.1}%"),
+                                ))
+                                .color(theme::color(&palette_ctx, cpu_color))
+                                .monospace(),
+                            );
+                            ui.add_space(10.0);
+                            // Memory
+                            ui.label(
+                                RichText::new(format!("{:>8.1} MB", mem_mb))
+                                    .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
+                                    .monospace(),
+                            );
+                            ui.add_space(20.0);
+                            // GPU Memory (if using GPU)
+                            if let Some(mb) = gpu_mem_mb.filter(|m| *m > 0.1) {
+                                ui.label(
+                                    RichText::new(format!("{mb:>6.0} MB"))
+                                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
+                                        .monospace(),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("     -   ")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                        .monospace(),
+                                );
+                            }
+                        });
+                    }
+                });
+            },
+        );
     }
 
     fn draw_network_tab(&mut self, ui: &mut egui::Ui) {
@@ -4524,70 +4280,69 @@ impl IronMonitorApp {
 
         ScrollArea::vertical().show(ui, |ui| {
             let t = super::widgets::domain_section_title("network", "Interfaces");
-            ui.add(SectionHeader::new(&t).icon("🌐"));
+            cards::section(ui, SectionHeader::new(&t).icon("🌐"), |ui| {
+                // Show total bandwidth rates at the top
+                // A total only when every interface has a rate. This summed the
+                // interfaces that had one, which understated the total while any
+                // interface was still waiting for its second sample.
+                let rate_text = |r: Option<f64>| match r {
+                    Some(r) => format!("{}/s", format_bytes(r)),
+                    None => "—".to_string(),
+                };
+                let any = !rates.is_empty();
+                let total_rx_rate = rates
+                    .values()
+                    .map(|(rx, _)| *rx)
+                    .sum::<Option<f64>>()
+                    .filter(|_| any);
+                let total_tx_rate = rates
+                    .values()
+                    .map(|(_, tx)| *tx)
+                    .sum::<Option<f64>>()
+                    .filter(|_| any);
 
-            // Show total bandwidth rates at the top
-            // A total only when every interface has a rate. This summed the
-            // interfaces that had one, which understated the total while any
-            // interface was still waiting for its second sample.
-            let rate_text = |r: Option<f64>| match r {
-                Some(r) => format!("{}/s", format_bytes(r)),
-                None => "—".to_string(),
-            };
-            let any = !rates.is_empty();
-            let total_rx_rate = rates
-                .values()
-                .map(|(rx, _)| *rx)
-                .sum::<Option<f64>>()
-                .filter(|_| any);
-            let total_tx_rate = rates
-                .values()
-                .map(|(_, tx)| *tx)
-                .sum::<Option<f64>>()
-                .filter(|_| any);
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(
+                        RichText::new("Total Bandwidth:")
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
+                    ui.label(
+                        RichText::new(format!("↓ {}", rate_text(total_rx_rate)))
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!("↑ {}", rate_text(total_tx_rate)))
+                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
+                            .strong(),
+                    );
+                });
+                ui.add_space(8.0);
 
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                ui.label(
-                    RichText::new("Total Bandwidth:")
-                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                );
-                ui.label(
-                    RichText::new(format!("↓ {}", rate_text(total_rx_rate)))
+                // Network charts - stacked vertically, left-aligned
+                ui.add(
+                    SparklineChart::from_history(&self.network_rx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .strong(),
+                        .height(80.0)
+                        .title("Download")
+                        .unit("MB/s")
+                        .show_scale(true)
+                        .show_min_max(true),
                 );
-                ui.label(
-                    RichText::new(format!("↑ {}", rate_text(total_tx_rate)))
+
+                ui.add_space(4.0);
+
+                ui.add(
+                    SparklineChart::from_history(&self.network_tx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .strong(),
+                        .height(80.0)
+                        .title("Upload")
+                        .unit("MB/s")
+                        .show_scale(true)
+                        .show_min_max(true),
                 );
             });
-            ui.add_space(8.0);
-
-            // Network charts - stacked vertically, left-aligned
-            ui.add(
-                SparklineChart::from_history(&self.network_rx_history)
-                    .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                    .height(80.0)
-                    .title("Download (Total MB)")
-                    .unit("MB")
-                    .show_scale(true)
-                    .show_min_max(true),
-            );
-
-            ui.add_space(4.0);
-
-            ui.add(
-                SparklineChart::from_history(&self.network_tx_history)
-                    .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                    .height(80.0)
-                    .title("Upload (Total MB)")
-                    .unit("MB")
-                    .show_scale(true)
-                    .show_min_max(true),
-            );
-
             ui.add_space(16.0);
             self.draw_network_context(ui);
             ui.add_space(16.0);
@@ -4616,125 +4371,124 @@ impl IronMonitorApp {
                             None => "—".to_string(),
                         };
 
-                        ui.add(SectionHeader::new(&iface.name).icon("📡"));
-
-                        // Bandwidth rate row
-                        ui.horizontal(|ui| {
-                            ui.add_space(20.0);
-                            ui.label(
-                                RichText::new("Rate:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(format!("↓ {}", fmt(rx_rate)))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                                    .monospace(),
-                            );
-                            ui.label(
-                                RichText::new(format!("↑ {}", fmt(tx_rate)))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                    .monospace(),
-                            );
-                            if let Some(speed) = iface.speed_mbps {
-                                ui.separator();
+                        cards::section(ui, SectionHeader::new(&iface.name).icon("📡"), |ui| {
+                            // Bandwidth rate row
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
                                 ui.label(
-                                    RichText::new("Link:")
+                                    RichText::new("Rate:")
                                         .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
-                                    RichText::new(format!("{} Mbps", speed))
-                                        .color(theme::color(&palette_ctx, iface_color))
+                                    RichText::new(format!("↓ {}", fmt(rx_rate)))
+                                        .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
                                         .monospace(),
                                 );
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                MetricCard::new(
-                                    "Received",
-                                    format!("{:.1}", iface.rx_bytes as f64 / 1024.0 / 1024.0),
-                                )
-                                .unit("MB")
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                            );
-
-                            ui.add(
-                                MetricCard::new(
-                                    "Sent",
-                                    format!("{:.1}", iface.tx_bytes as f64 / 1024.0 / 1024.0),
-                                )
-                                .unit("MB")
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                            );
-
-                            ui.add(
-                                MetricCard::new("Packets In", iface.rx_packets)
-                                    .color(theme::color(&palette_ctx, iface_color)),
-                            );
-
-                            ui.add(
-                                MetricCard::new("Packets Out", iface.tx_packets)
-                                    .color(theme::color(&palette_ctx, iface_color)),
-                            );
-                        });
-
-                        // Status and IP addresses
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Status:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.label(
-                                RichText::new(match iface.is_up {
-                                    Some(true) => "UP",
-                                    Some(false) => "DOWN",
-                                    None => "unknown",
-                                })
-                                .color(theme::color(
-                                    ui.ctx(),
-                                    match iface.is_up {
-                                        Some(true) => {
-                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                        }
-                                        Some(false) => {
-                                            theme::color(&palette_ctx, CyberColors::ERROR)
-                                        }
-                                        None => {
-                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
-                                        }
-                                    },
-                                )),
-                            );
-
-                            // `None` means the platform did not enumerate addresses,
-                            // which is not the same as having none.
-                            match &iface.ipv4_addresses {
-                                None => {
+                                ui.label(
+                                    RichText::new(format!("↑ {}", fmt(tx_rate)))
+                                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
+                                        .monospace(),
+                                );
+                                if let Some(speed) = iface.speed_mbps {
                                     ui.separator();
-                                    ui.label(RichText::new("IPv4: unknown").color(theme::color(
+                                    ui.label(RichText::new("Link:").color(theme::color(
                                         &palette_ctx,
-                                        CyberColors::TEXT_SECONDARY,
+                                        CyberColors::TEXT_MUTED,
                                     )));
+                                    ui.label(
+                                        RichText::new(format!("{} Mbps", speed))
+                                            .color(theme::color(&palette_ctx, iface_color))
+                                            .monospace(),
+                                    );
                                 }
-                                Some(ips) if !ips.is_empty() => {
-                                    ui.separator();
-                                    ui.label(RichText::new("IPv4:").color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_SECONDARY,
-                                    )));
-                                    for ip in ips {
-                                        ui.label(
-                                            RichText::new(ip)
-                                                .color(theme::color(&palette_ctx, iface_color))
-                                                .monospace(),
-                                        );
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    MetricCard::new(
+                                        "Received",
+                                        format!("{:.1}", iface.rx_bytes as f64 / 1024.0 / 1024.0),
+                                    )
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                                );
+
+                                ui.add(
+                                    MetricCard::new(
+                                        "Sent",
+                                        format!("{:.1}", iface.tx_bytes as f64 / 1024.0 / 1024.0),
+                                    )
+                                    .unit("MB")
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
+                                );
+
+                                ui.add(
+                                    MetricCard::new("Packets In", iface.rx_packets)
+                                        .color(theme::color(&palette_ctx, iface_color)),
+                                );
+
+                                ui.add(
+                                    MetricCard::new("Packets Out", iface.tx_packets)
+                                        .color(theme::color(&palette_ctx, iface_color)),
+                                );
+                            });
+
+                            // Status and IP addresses
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Status:").color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
+                                ui.label(
+                                    RichText::new(match iface.is_up {
+                                        Some(true) => "UP",
+                                        Some(false) => "DOWN",
+                                        None => "unknown",
+                                    })
+                                    .color(theme::color(
+                                        ui.ctx(),
+                                        match iface.is_up {
+                                            Some(true) => {
+                                                theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                            }
+                                            Some(false) => {
+                                                theme::color(&palette_ctx, CyberColors::ERROR)
+                                            }
+                                            None => theme::color(
+                                                &palette_ctx,
+                                                CyberColors::TEXT_SECONDARY,
+                                            ),
+                                        },
+                                    )),
+                                );
+
+                                // `None` means the platform did not enumerate addresses,
+                                // which is not the same as having none.
+                                match &iface.ipv4_addresses {
+                                    None => {
+                                        ui.separator();
+                                        ui.label(RichText::new("IPv4: unknown").color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                        ));
                                     }
+                                    Some(ips) if !ips.is_empty() => {
+                                        ui.separator();
+                                        ui.label(RichText::new("IPv4:").color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_SECONDARY,
+                                        )));
+                                        for ip in ips {
+                                            ui.label(
+                                                RichText::new(ip)
+                                                    .color(theme::color(&palette_ctx, iface_color))
+                                                    .monospace(),
+                                            );
+                                        }
+                                    }
+                                    Some(_) => {}
                                 }
-                                Some(_) => {}
-                            }
+                            });
                         });
-
                         ui.add_space(8.0);
                     }
                 }
@@ -4774,139 +4528,145 @@ impl IronMonitorApp {
         };
 
         let t = super::widgets::domain_section_title("network", "Gateways");
-        ui.add(SectionHeader::new(&t).icon("🛣"));
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            if ui
-                .small_button("Refresh")
-                .on_hover_text("Re-read gateways, DNS and Wi-Fi")
-                .clicked()
-            {
-                self.start_net_context_load(true);
+        cards::section(ui, SectionHeader::new(&t).icon("🛣"), |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                if ui
+                    .small_button("Refresh")
+                    .on_hover_text("Re-read gateways, DNS and Wi-Fi")
+                    .clicked()
+                {
+                    self.start_net_context_load(true);
+                }
+            });
+            match &context.gateways {
+                Ok(gateways) if gateways.is_empty() => unread(ui, "no default route is configured"),
+                Ok(gateways) => {
+                    for g in gateways {
+                        let mut text = g.address.clone();
+                        if let Some(iface) = &g.interface {
+                            text.push_str(&format!("  via {iface}"));
+                        }
+                        if let Some(mac) = &g.mac {
+                            text.push_str(&format!("  MAC {mac}"));
+                        }
+                        if let Some(metric) = g.metric {
+                            text.push_str(&format!("  metric {metric}"));
+                        }
+                        row(ui, &g.family.to_uppercase(), text);
+                    }
+                }
+                Err(e) => unread(ui, e),
             }
         });
-        match &context.gateways {
-            Ok(gateways) if gateways.is_empty() => unread(ui, "no default route is configured"),
-            Ok(gateways) => {
-                for g in gateways {
-                    let mut text = g.address.clone();
-                    if let Some(iface) = &g.interface {
-                        text.push_str(&format!("  via {iface}"));
-                    }
-                    if let Some(mac) = &g.mac {
-                        text.push_str(&format!("  MAC {mac}"));
-                    }
-                    if let Some(metric) = g.metric {
-                        text.push_str(&format!("  metric {metric}"));
-                    }
-                    row(ui, &g.family.to_uppercase(), text);
-                }
-            }
-            Err(e) => unread(ui, e),
-        }
 
         let t = super::widgets::domain_section_title("network", "DNS");
-        ui.add(SectionHeader::new(&t).icon("📖"));
-        match &context.dns_servers {
-            Ok(servers) if servers.is_empty() => unread(ui, "no DNS servers are configured"),
-            Ok(servers) => row(ui, "Servers", servers.join(", ")),
-            Err(e) => unread(ui, e),
-        }
-        if let Ok(search) = &context.search_domains {
-            if !search.is_empty() {
-                row(ui, "Search", search.join(", "));
+        cards::section(ui, SectionHeader::new(&t).icon("📖"), |ui| {
+            match &context.dns_servers {
+                Ok(servers) if servers.is_empty() => unread(ui, "no DNS servers are configured"),
+                Ok(servers) => row(ui, "Servers", servers.join(", ")),
+                Err(e) => unread(ui, e),
             }
-        }
+            if let Ok(search) = &context.search_domains {
+                if !search.is_empty() {
+                    row(ui, "Search", search.join(", "));
+                }
+            }
+        });
 
         let t = super::widgets::domain_section_title("network", "Wi-Fi");
-        ui.add(SectionHeader::new(&t).icon("📶"));
-        match &context.wifi {
-            Ok(wifi) if wifi.is_empty() => unread(ui, "no Wi-Fi interface on this machine"),
-            Ok(wifi) => {
-                for w in wifi {
-                    let state = w
-                        .state
-                        .clone()
-                        .unwrap_or_else(|| "state not reported".into());
-                    row(ui, &w.interface, state);
-                    if let Some(d) = &w.description {
-                        row(ui, "Adapter", d.clone());
-                    }
-                    if w.connected != Some(true) {
-                        continue;
-                    }
-                    let or_dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "—".into());
-                    row(ui, "SSID", or_dash(&w.ssid));
-                    row(ui, "BSSID", or_dash(&w.bssid));
-                    let mut radio = Vec::new();
-                    radio.extend(w.radio_type.clone());
-                    radio.extend(w.band.clone());
-                    radio.extend(w.channel.map(|c| format!("channel {c}")));
-                    radio.extend(w.channel_width_mhz.map(|m| format!("{m} MHz wide")));
-                    if !radio.is_empty() {
-                        row(ui, "Radio", radio.join(", "));
-                    }
-                    let mut signal = Vec::new();
-                    signal.extend(w.signal_percent.map(|p| format!("{p}%")));
-                    signal.extend(w.rssi_dbm.map(|r| format!("{r} dBm")));
-                    signal.extend(w.noise_dbm.map(|n| format!("noise {n} dBm")));
-                    if !signal.is_empty() {
-                        row(ui, "Signal", signal.join(", "));
-                    }
-                    let mut security = Vec::new();
-                    security.extend(w.authentication.clone());
-                    security.extend(w.cipher.clone());
-                    if !security.is_empty() {
-                        row(ui, "Security", security.join(" / "));
-                    }
-                    if w.receive_rate_mbps.is_some() || w.transmit_rate_mbps.is_some() {
-                        let rate = |r: Option<f64>| {
-                            r.map(|v| format!("{v} Mbps")).unwrap_or_else(|| "—".into())
-                        };
-                        row(
-                            ui,
-                            "Link rate",
-                            format!(
-                                "↓ {}  ↑ {}",
-                                rate(w.receive_rate_mbps),
-                                rate(w.transmit_rate_mbps)
-                            ),
-                        );
+        cards::section(ui, SectionHeader::new(&t).icon("📶"), |ui| {
+            match &context.wifi {
+                Ok(wifi) if wifi.is_empty() => unread(ui, "no Wi-Fi interface on this machine"),
+                Ok(wifi) => {
+                    for w in wifi {
+                        let state = w
+                            .state
+                            .clone()
+                            .unwrap_or_else(|| "state not reported".into());
+                        row(ui, &w.interface, state);
+                        if let Some(d) = &w.description {
+                            row(ui, "Adapter", d.clone());
+                        }
+                        if w.connected != Some(true) {
+                            continue;
+                        }
+                        let or_dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "—".into());
+                        row(ui, "SSID", or_dash(&w.ssid));
+                        row(ui, "BSSID", or_dash(&w.bssid));
+                        let mut radio = Vec::new();
+                        radio.extend(w.radio_type.clone());
+                        radio.extend(w.band.clone());
+                        radio.extend(w.channel.map(|c| format!("channel {c}")));
+                        radio.extend(w.channel_width_mhz.map(|m| format!("{m} MHz wide")));
+                        if !radio.is_empty() {
+                            row(ui, "Radio", radio.join(", "));
+                        }
+                        let mut signal = Vec::new();
+                        signal.extend(w.signal_percent.map(|p| format!("{p}%")));
+                        signal.extend(w.rssi_dbm.map(|r| format!("{r} dBm")));
+                        signal.extend(w.noise_dbm.map(|n| format!("noise {n} dBm")));
+                        if !signal.is_empty() {
+                            row(ui, "Signal", signal.join(", "));
+                        }
+                        let mut security = Vec::new();
+                        security.extend(w.authentication.clone());
+                        security.extend(w.cipher.clone());
+                        if !security.is_empty() {
+                            row(ui, "Security", security.join(" / "));
+                        }
+                        if w.receive_rate_mbps.is_some() || w.transmit_rate_mbps.is_some() {
+                            let rate = |r: Option<f64>| {
+                                r.map(|v| format!("{v} Mbps")).unwrap_or_else(|| "—".into())
+                            };
+                            row(
+                                ui,
+                                "Link rate",
+                                format!(
+                                    "↓ {}  ↑ {}",
+                                    rate(w.receive_rate_mbps),
+                                    rate(w.transmit_rate_mbps)
+                                ),
+                            );
+                        }
                     }
                 }
+                Err(e) => unread(ui, e),
             }
-            Err(e) => unread(ui, e),
-        }
 
-        // What the traffic counters below do not say: MAC, addresses, driver.
+            // What the traffic counters below do not say: MAC, addresses, driver.
+        });
         let t = super::widgets::domain_section_title("network", "Adapters");
-        ui.add(SectionHeader::new(&t).icon("🔌"));
-        match &context.adapters {
-            Ok(adapters) => {
-                for a in adapters {
-                    let mut parts = vec![a.status.clone().unwrap_or_else(|| "—".into())];
-                    parts.extend(a.mac.clone());
-                    for ip in &a.addresses {
-                        parts.push(match ip.prefix_length {
-                            Some(p) => format!("{}/{p}", ip.address),
-                            None => ip.address.clone(),
-                        });
-                    }
-                    row(ui, &a.name, parts.join("  "));
-                    let mut driver = Vec::new();
-                    driver.extend(a.description.clone());
-                    driver.extend(a.driver.clone());
-                    driver.extend(a.driver_version.clone());
-                    if !driver.is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(40.0);
-                            ui.label(RichText::new(driver.join(" · ")).color(muted).small());
-                        });
+        cards::section(
+            ui,
+            SectionHeader::new(&t).icon("🔌"),
+            |ui| match &context.adapters {
+                Ok(adapters) => {
+                    for a in adapters {
+                        let mut parts = vec![a.status.clone().unwrap_or_else(|| "—".into())];
+                        parts.extend(a.mac.clone());
+                        for ip in &a.addresses {
+                            parts.push(match ip.prefix_length {
+                                Some(p) => format!("{}/{p}", ip.address),
+                                None => ip.address.clone(),
+                            });
+                        }
+                        row(ui, &a.name, parts.join("  "));
+                        let mut driver = Vec::new();
+                        driver.extend(a.description.clone());
+                        driver.extend(a.driver.clone());
+                        driver.extend(a.driver_version.clone());
+                        if !driver.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(40.0);
+                                ui.label(RichText::new(driver.join(" · ")).color(muted).small());
+                            });
+                        }
                     }
                 }
-            }
-            Err(e) => unread(ui, e),
-        }
+                Err(e) => unread(ui, e),
+            },
+        );
     }
 
     fn draw_disk_tab(&mut self, ui: &mut egui::Ui) {
@@ -4954,7 +4714,7 @@ impl IronMonitorApp {
 
         // Header row - use exact same allocation method as data rows for perfect alignment
         // Must account for: 1px stroke + 12px inner_margin from each card's Frame
-        const CARD_LEFT_OFFSET: f32 = 13.0;
+        const CARD_LEFT_OFFSET: f32 = cards::MARGIN as f32 + 1.0;
 
         // The same widths the cards below will compute, from the same number:
         // each card's interior is the available width less its border and margin
@@ -5140,586 +4900,568 @@ impl IronMonitorApp {
             .map(format_bytes)
             .unwrap_or_else(|| "N/A".to_string());
 
-        egui::Frame::NONE
-            .stroke(egui::Stroke::new(1.0_f32, disk_color.gamma_multiply(0.4)))
-            .corner_radius(6)
-            .inner_margin(12.0)
-            .show(ui, |ui| {
-                const ROW_HEIGHT: f32 = 45.0;
+        cards::frame(&palette_ctx).show(ui, |ui| {
+            const ROW_HEIGHT: f32 = 45.0;
 
-                // Proportioned to this card's interior rather than fixed, so the
-                // right-hand columns stay inside the window at any width.
-                let cols = DiskColumns::for_width(ui.available_width());
+            // Proportioned to this card's interior rather than fixed, so the
+            // right-hand columns stay inside the window at any width.
+            let cols = DiskColumns::for_width(ui.available_width());
 
-                // Row 1: Use exact size allocation to guarantee column widths
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = DiskColumns::SPACING;
+            // Row 1: Use exact size allocation to guarantee column widths
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = DiskColumns::SPACING;
 
-                    // Column 1: Icon + Model - use exact size
-                    let (model_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cols.model, ROW_HEIGHT),
-                        egui::Sense::hover(),
+                // Column 1: Icon + Model - use exact size
+                let (model_rect, _) = ui
+                    .allocate_exact_size(egui::vec2(cols.model, ROW_HEIGHT), egui::Sense::hover());
+                if ui.is_rect_visible(model_rect) {
+                    // Draw icon
+                    let icon_pos = model_rect.left_center() + egui::vec2(14.0, 0.0);
+                    ui.painter().text(
+                        icon_pos,
+                        egui::Align2::LEFT_CENTER,
+                        type_icon,
+                        egui::FontId::proportional(28.0),
+                        theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
                     );
-                    if ui.is_rect_visible(model_rect) {
-                        // Draw icon
-                        let icon_pos = model_rect.left_center() + egui::vec2(14.0, 0.0);
-                        ui.painter().text(
-                            icon_pos,
-                            egui::Align2::LEFT_CENTER,
-                            type_icon,
-                            egui::FontId::proportional(28.0),
-                            theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
-                        );
 
-                        // Draw model name
-                        let name_pos = model_rect.left_center() + egui::vec2(50.0, -8.0);
-                        ui.painter().text(
-                            name_pos,
-                            egui::Align2::LEFT_CENTER,
-                            &model_name,
-                            egui::FontId::proportional(18.0),
-                            disk_color,
-                        );
-
-                        // Draw disk name
-                        let disk_name_pos = model_rect.left_center() + egui::vec2(50.0, 10.0);
-                        ui.painter().text(
-                            disk_name_pos,
-                            egui::Align2::LEFT_CENTER,
-                            &disk_name,
-                            egui::FontId::monospace(13.0),
-                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                        );
-                    }
-
-                    // Column 2: Interface - exact size, centered
-                    let (iface_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cols.interface, ROW_HEIGHT),
-                        egui::Sense::hover(),
+                    // Draw model name
+                    let name_pos = model_rect.left_center() + egui::vec2(50.0, -8.0);
+                    ui.painter().text(
+                        name_pos,
+                        egui::Align2::LEFT_CENTER,
+                        &model_name,
+                        egui::FontId::proportional(18.0),
+                        disk_color,
                     );
-                    if ui.is_rect_visible(iface_rect) {
-                        ui.painter().text(
-                            iface_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &interface,
-                            egui::FontId::proportional(16.0),
-                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
-                        );
-                    }
 
-                    // Column 3: Capacity - exact size, centered
-                    let (cap_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cols.capacity, ROW_HEIGHT),
-                        egui::Sense::hover(),
+                    // Draw disk name
+                    let disk_name_pos = model_rect.left_center() + egui::vec2(50.0, 10.0);
+                    ui.painter().text(
+                        disk_name_pos,
+                        egui::Align2::LEFT_CENTER,
+                        &disk_name,
+                        egui::FontId::monospace(13.0),
+                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                     );
-                    if ui.is_rect_visible(cap_rect) {
-                        ui.painter().text(
-                            cap_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &capacity,
-                            egui::FontId::proportional(18.0),
-                            theme::color(&palette_ctx, CyberColors::CYAN),
-                        );
-                    }
-
-                    // Column 4: Read - exact size, centered
-                    let (read_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cols.read, ROW_HEIGHT),
-                        egui::Sense::hover(),
-                    );
-                    if ui.is_rect_visible(read_rect) {
-                        ui.painter().text(
-                            read_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &read_bytes,
-                            egui::FontId::proportional(16.0),
-                            theme::color(&palette_ctx, CyberColors::NEON_GREEN),
-                        );
-                    }
-
-                    // Column 5: Write - exact size, centered
-                    let (write_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cols.write, ROW_HEIGHT),
-                        egui::Sense::hover(),
-                    );
-                    if ui.is_rect_visible(write_rect) {
-                        ui.painter().text(
-                            write_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &write_bytes,
-                            egui::FontId::proportional(16.0),
-                            theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
-                        );
-                    }
-
-                    // Column 6: Health - right aligned within its own column.
-                    //
-                    // `with_layout` here took the remaining space, and "remaining"
-                    // in an advanced `horizontal` is not bounded by the window —
-                    // the badge anchored itself 17 to 35 px past the right edge
-                    // whatever the width. Allocating the column first gives the
-                    // right-to-left layout an edge that exists.
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(cols.health, ROW_HEIGHT),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if let Some(h) = &health {
-                                let (text, color) = match h {
-                                    crate::disk::DiskHealth::Healthy => (
-                                        "✓ Healthy",
-                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN),
-                                    ),
-                                    crate::disk::DiskHealth::Warning => (
-                                        "⚠ Warning",
-                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
-                                    ),
-                                    crate::disk::DiskHealth::Critical
-                                    | crate::disk::DiskHealth::Failed => (
-                                        "✗ Critical",
-                                        theme::color(&palette_ctx, CyberColors::NEON_RED),
-                                    ),
-                                    crate::disk::DiskHealth::Unknown => (
-                                        "Unknown",
-                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                                    ),
-                                };
-                                // Right-aligned by measuring and padding, not by
-                                // a right-to-left layout.
-                                //
-                                // **Correction.** This was written to fix a 35 px
-                                // overrun the headless guard reported at every
-                                // width. That overrun was the guard composing a
-                                // text's rectangle from `TextShape::pos`, which
-                                // for a right-aligned galley is an anchor rather
-                                // than a left edge — the badge's pixels were
-                                // inside the card throughout. The guard measures
-                                // painted ink now.
-                                //
-                                // The *columns* on this tab did overflow, and
-                                // that was real: see `DiskColumns`. This badge is
-                                // measured rather than anchored because the
-                                // column widths are now computed anyway, so it
-                                // costs nothing to place it explicitly.
-                                const BADGE_MARGIN: egui::Vec2 = egui::vec2(10.0, 4.0);
-                                let galley = ui.painter().layout_no_wrap(
-                                    text.to_owned(),
-                                    egui::FontId::proportional(14.0),
-                                    color,
-                                );
-                                let badge_width = galley.size().x + BADGE_MARGIN.x * 2.0;
-                                ui.add_space((cols.health - badge_width).max(0.0));
-                                egui::Frame::NONE
-                                    .fill(color.gamma_multiply(0.15))
-                                    .corner_radius(4)
-                                    .inner_margin(BADGE_MARGIN)
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(text)
-                                                .color(theme::color(&palette_ctx, color))
-                                                .size(14.0),
-                                        );
-                                    });
-                            }
-                        },
-                    );
-                });
-
-                // Row 2: Partitions with aligned columns (use cached filesystem data)
-                let filesystems = &cached.filesystems;
-                if !filesystems.is_empty() {
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    for fs in filesystems.iter().take(3) {
-                        // An unread filesystem draws no bar at all and labels
-                        // itself `--%`. The old `unwrap_or(0.0)` drew an empty
-                        // track, which reads as 0% used. The red/orange
-                        // thresholds are judgements about a reading and there
-                        // is nothing here to judge.
-                        let pct = fs.usage_percent();
-                        let color = match pct {
-                            Some(p) if p > 90.0 => {
-                                theme::color(&palette_ctx, CyberColors::NEON_RED)
-                            }
-                            Some(p) if p > 75.0 => {
-                                theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
-                            }
-                            Some(_) => theme::color(&palette_ctx, CyberColors::NEON_GREEN),
-                            None => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                        };
-                        let pct_label = match pct {
-                            Some(p) => format!("{:.0}%", p),
-                            None => "--%".to_string(),
-                        };
-
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 20.0; // Even spacing
-
-                            // Mount point (fixed width 50px)
-                            ui.allocate_ui(egui::vec2(50.0, 22.0), |ui| {
-                                let mount = fs.mount_point.to_string_lossy();
-                                ui.label(
-                                    RichText::new(mount.as_ref())
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::TEXT_PRIMARY,
-                                        ))
-                                        .size(15.0)
-                                        .monospace(),
-                                );
-                            });
-
-                            // Filesystem type (fixed width 60px)
-                            ui.allocate_ui(egui::vec2(60.0, 22.0), |ui| {
-                                ui.label(
-                                    RichText::new(if fs.fs_type.is_empty() {
-                                        "unknown"
-                                    } else {
-                                        fs.fs_type.as_str()
-                                    })
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                    .size(13.0),
-                                );
-                            });
-
-                            // Progress bar (fixed width 180px)
-                            let bar_w = 180.0;
-                            let bar_h = 18.0;
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(bar_w, bar_h),
-                                egui::Sense::hover(),
-                            );
-                            if ui.is_rect_visible(rect) {
-                                // No track or fill without a reading; the label
-                                // below carries the `--%`.
-                                if let Some(fraction) = pct {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        3.0,
-                                        theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK),
-                                    );
-                                    let w = rect.width() * fraction / 100.0;
-                                    ui.painter().rect_filled(
-                                        egui::Rect::from_min_size(
-                                            rect.min,
-                                            egui::vec2(w, rect.height()),
-                                        ),
-                                        3.0,
-                                        color.gamma_multiply(0.8),
-                                    );
-                                }
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    pct_label.clone(),
-                                    egui::FontId::proportional(12.0),
-                                    theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
-                                );
-                            }
-
-                            // Used / Total (fixed width)
-                            ui.allocate_ui(egui::vec2(180.0, 22.0), |ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} / {}",
-                                        format_bytes_opt(fs.used_size),
-                                        format_bytes_opt(fs.total_size)
-                                    ))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                                    .size(14.0),
-                                );
-                            });
-                        });
-                        ui.add_space(2.0); // Space between partition rows
-                    }
-                    if filesystems.len() > 3 {
-                        ui.label(
-                            RichText::new(format!("+{} more partitions", filesystems.len() - 3))
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .size(12.0),
-                        );
-                    }
                 }
+
+                // Column 2: Interface - exact size, centered
+                let (iface_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(cols.interface, ROW_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                if ui.is_rect_visible(iface_rect) {
+                    ui.painter().text(
+                        iface_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &interface,
+                        egui::FontId::proportional(16.0),
+                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
+                    );
+                }
+
+                // Column 3: Capacity - exact size, centered
+                let (cap_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(cols.capacity, ROW_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                if ui.is_rect_visible(cap_rect) {
+                    ui.painter().text(
+                        cap_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &capacity,
+                        egui::FontId::proportional(18.0),
+                        theme::color(&palette_ctx, CyberColors::CYAN),
+                    );
+                }
+
+                // Column 4: Read - exact size, centered
+                let (read_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(cols.read, ROW_HEIGHT), egui::Sense::hover());
+                if ui.is_rect_visible(read_rect) {
+                    ui.painter().text(
+                        read_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &read_bytes,
+                        egui::FontId::proportional(16.0),
+                        theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                    );
+                }
+
+                // Column 5: Write - exact size, centered
+                let (write_rect, _) = ui
+                    .allocate_exact_size(egui::vec2(cols.write, ROW_HEIGHT), egui::Sense::hover());
+                if ui.is_rect_visible(write_rect) {
+                    ui.painter().text(
+                        write_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &write_bytes,
+                        egui::FontId::proportional(16.0),
+                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                    );
+                }
+
+                // Column 6: Health - right aligned within its own column.
+                //
+                // `with_layout` here took the remaining space, and "remaining"
+                // in an advanced `horizontal` is not bounded by the window —
+                // the badge anchored itself 17 to 35 px past the right edge
+                // whatever the width. Allocating the column first gives the
+                // right-to-left layout an edge that exists.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(cols.health, ROW_HEIGHT),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if let Some(h) = &health {
+                            let (text, color) = match h {
+                                crate::disk::DiskHealth::Healthy => (
+                                    "✓ Healthy",
+                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                ),
+                                crate::disk::DiskHealth::Warning => (
+                                    "⚠ Warning",
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                ),
+                                crate::disk::DiskHealth::Critical
+                                | crate::disk::DiskHealth::Failed => (
+                                    "✗ Critical",
+                                    theme::color(&palette_ctx, CyberColors::NEON_RED),
+                                ),
+                                crate::disk::DiskHealth::Unknown => (
+                                    "Unknown",
+                                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                ),
+                            };
+                            // Right-aligned by measuring and padding, not by
+                            // a right-to-left layout.
+                            //
+                            // **Correction.** This was written to fix a 35 px
+                            // overrun the headless guard reported at every
+                            // width. That overrun was the guard composing a
+                            // text's rectangle from `TextShape::pos`, which
+                            // for a right-aligned galley is an anchor rather
+                            // than a left edge — the badge's pixels were
+                            // inside the card throughout. The guard measures
+                            // painted ink now.
+                            //
+                            // The *columns* on this tab did overflow, and
+                            // that was real: see `DiskColumns`. This badge is
+                            // measured rather than anchored because the
+                            // column widths are now computed anyway, so it
+                            // costs nothing to place it explicitly.
+                            const BADGE_MARGIN: egui::Vec2 = egui::vec2(10.0, 4.0);
+                            let galley = ui.painter().layout_no_wrap(
+                                text.to_owned(),
+                                egui::FontId::proportional(14.0),
+                                color,
+                            );
+                            let badge_width = galley.size().x + BADGE_MARGIN.x * 2.0;
+                            ui.add_space((cols.health - badge_width).max(0.0));
+                            egui::Frame::NONE
+                                .fill(color.gamma_multiply(0.15))
+                                .corner_radius(4)
+                                .inner_margin(BADGE_MARGIN)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(text)
+                                            .color(theme::color(&palette_ctx, color))
+                                            .size(14.0),
+                                    );
+                                });
+                        }
+                    },
+                );
             });
+
+            // Row 2: Partitions with aligned columns (use cached filesystem data)
+            let filesystems = &cached.filesystems;
+            if !filesystems.is_empty() {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                for fs in filesystems.iter().take(3) {
+                    // An unread filesystem draws no bar at all and labels
+                    // itself `--%`. The old `unwrap_or(0.0)` drew an empty
+                    // track, which reads as 0% used. The red/orange
+                    // thresholds are judgements about a reading and there
+                    // is nothing here to judge.
+                    let pct = fs.usage_percent();
+                    let color = match pct {
+                        Some(p) if p > 90.0 => theme::color(&palette_ctx, CyberColors::NEON_RED),
+                        Some(p) if p > 75.0 => theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                        Some(_) => theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                        None => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                    };
+                    let pct_label = match pct {
+                        Some(p) => format!("{:.0}%", p),
+                        None => "--%".to_string(),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 20.0; // Even spacing
+
+                        // Mount point (fixed width 50px)
+                        ui.allocate_ui(egui::vec2(50.0, 22.0), |ui| {
+                            let mount = fs.mount_point.to_string_lossy();
+                            ui.label(
+                                RichText::new(mount.as_ref())
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
+                                    .size(15.0)
+                                    .monospace(),
+                            );
+                        });
+
+                        // Filesystem type (fixed width 60px)
+                        ui.allocate_ui(egui::vec2(60.0, 22.0), |ui| {
+                            ui.label(
+                                RichText::new(if fs.fs_type.is_empty() {
+                                    "unknown"
+                                } else {
+                                    fs.fs_type.as_str()
+                                })
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .size(13.0),
+                            );
+                        });
+
+                        // Progress bar (fixed width 180px)
+                        let bar_w = 180.0;
+                        let bar_h = 18.0;
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+                        if ui.is_rect_visible(rect) {
+                            // No track or fill without a reading; the label
+                            // below carries the `--%`.
+                            if let Some(fraction) = pct {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    3.0,
+                                    theme::color(&palette_ctx, CyberColors::BACKGROUND_DARK),
+                                );
+                                let w = rect.width() * fraction / 100.0;
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        rect.min,
+                                        egui::vec2(w, rect.height()),
+                                    ),
+                                    3.0,
+                                    color.gamma_multiply(0.8),
+                                );
+                            }
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                pct_label.clone(),
+                                egui::FontId::proportional(12.0),
+                                theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY),
+                            );
+                        }
+
+                        // Used / Total (fixed width)
+                        ui.allocate_ui(egui::vec2(180.0, 22.0), |ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} / {}",
+                                    format_bytes_opt(fs.used_size),
+                                    format_bytes_opt(fs.total_size)
+                                ))
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
+                                .size(14.0),
+                            );
+                        });
+                    });
+                    ui.add_space(2.0); // Space between partition rows
+                }
+                if filesystems.len() > 3 {
+                    ui.label(
+                        RichText::new(format!("+{} more partitions", filesystems.len() - 3))
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                            .size(12.0),
+                    );
+                }
+            }
+        });
     }
 
     fn draw_connections_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
         let t = super::widgets::domain_section_title("network", "Connections (netstat)");
-        ui.add(SectionHeader::new(&t).icon("📡"));
-
-        // Filter bar
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("🔍").color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.connection_filter)
-                    .hint_text("Filter by address or process...")
-                    .desired_width(200.0),
-            );
-
-            ui.separator();
-
-            // Protocol filter
-            ui.label(
-                RichText::new("Protocol:")
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-            );
-            if ui
-                .selectable_label(self.connection_protocol_filter.is_none(), "All")
-                .clicked()
-            {
-                self.connection_protocol_filter = None;
-            }
-            if ui
-                .selectable_label(
-                    self.connection_protocol_filter == Some(Protocol::Tcp),
-                    "TCP",
-                )
-                .clicked()
-            {
-                self.connection_protocol_filter = Some(Protocol::Tcp);
-            }
-            if ui
-                .selectable_label(
-                    self.connection_protocol_filter == Some(Protocol::Udp),
-                    "UDP",
-                )
-                .clicked()
-            {
-                self.connection_protocol_filter = Some(Protocol::Udp);
-            }
-
-            ui.separator();
-
-            // State filter
-            ui.label(
-                RichText::new("State:")
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-            );
-            if ui
-                .selectable_label(self.connection_state_filter.is_none(), "All")
-                .clicked()
-            {
-                self.connection_state_filter = None;
-            }
-            if ui
-                .selectable_label(
-                    self.connection_state_filter == Some(ConnectionState::Established),
-                    "ESTABLISHED",
-                )
-                .clicked()
-            {
-                self.connection_state_filter = Some(ConnectionState::Established);
-            }
-            if ui
-                .selectable_label(
-                    self.connection_state_filter == Some(ConnectionState::Listen),
-                    "LISTEN",
-                )
-                .clicked()
-            {
-                self.connection_state_filter = Some(ConnectionState::Listen);
-            }
-
-            ui.label(
-                RichText::new(format!("Total: {}", self.connections.len()))
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-            );
-        });
-
-        ui.add_space(8.0);
-
-        // Connection table
-        ScrollArea::vertical().show(ui, |ui| {
-            let mut connections = self.connections.clone();
-
-            // Apply protocol filter
-            if let Some(proto) = self.connection_protocol_filter {
-                connections.retain(|c| {
-                    c.protocol == proto
-                        || (proto == Protocol::Tcp && c.protocol == Protocol::Tcp6)
-                        || (proto == Protocol::Udp && c.protocol == Protocol::Udp6)
-                });
-            }
-
-            // Apply state filter
-            if let Some(state) = self.connection_state_filter {
-                connections.retain(|c| c.state == state);
-            }
-
-            // Apply text filter
-            if !self.connection_filter.is_empty() {
-                let filter = self.connection_filter.to_lowercase();
-                connections.retain(|c| {
-                    c.local_address.to_lowercase().contains(&filter)
-                        || c.remote_address
-                            .as_ref()
-                            .map(|r| r.to_lowercase().contains(&filter))
-                            .unwrap_or(false)
-                        || c.process_name
-                            .as_ref()
-                            .map(|p| p.to_lowercase().contains(&filter))
-                            .unwrap_or(false)
-                });
-            }
-
-            // Table header
+        cards::section(ui, SectionHeader::new(&t).icon("📡"), |ui| {
+            // Filter bar
             ui.horizontal(|ui| {
-                ui.set_min_height(24.0);
-                ui.add_sized(
-                    Vec2::new(60.0, 20.0),
-                    egui::Label::new(
-                        RichText::new("Proto")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    ),
-                );
-                ui.add_sized(
-                    Vec2::new(200.0, 20.0),
-                    egui::Label::new(
-                        RichText::new("Local Address")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    ),
-                );
-                ui.add_sized(
-                    Vec2::new(200.0, 20.0),
-                    egui::Label::new(
-                        RichText::new("Remote Address")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    ),
-                );
-                ui.add_sized(
-                    Vec2::new(100.0, 20.0),
-                    egui::Label::new(
-                        RichText::new("State")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    ),
-                );
-                ui.add_sized(
-                    Vec2::new(60.0, 20.0),
-                    egui::Label::new(
-                        RichText::new("PID")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
-                    ),
-                );
                 ui.label(
-                    RichText::new("Process")
-                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                        .strong(),
+                    RichText::new("🔍")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.connection_filter)
+                        .hint_text("Filter by address or process...")
+                        .desired_width(200.0),
+                );
+
+                ui.separator();
+
+                // Protocol filter
+                ui.label(
+                    RichText::new("Protocol:")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                );
+                if ui
+                    .selectable_label(self.connection_protocol_filter.is_none(), "All")
+                    .clicked()
+                {
+                    self.connection_protocol_filter = None;
+                }
+                if ui
+                    .selectable_label(
+                        self.connection_protocol_filter == Some(Protocol::Tcp),
+                        "TCP",
+                    )
+                    .clicked()
+                {
+                    self.connection_protocol_filter = Some(Protocol::Tcp);
+                }
+                if ui
+                    .selectable_label(
+                        self.connection_protocol_filter == Some(Protocol::Udp),
+                        "UDP",
+                    )
+                    .clicked()
+                {
+                    self.connection_protocol_filter = Some(Protocol::Udp);
+                }
+
+                ui.separator();
+
+                // State filter
+                ui.label(
+                    RichText::new("State:")
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
+                );
+                if ui
+                    .selectable_label(self.connection_state_filter.is_none(), "All")
+                    .clicked()
+                {
+                    self.connection_state_filter = None;
+                }
+                if ui
+                    .selectable_label(
+                        self.connection_state_filter == Some(ConnectionState::Established),
+                        "ESTABLISHED",
+                    )
+                    .clicked()
+                {
+                    self.connection_state_filter = Some(ConnectionState::Established);
+                }
+                if ui
+                    .selectable_label(
+                        self.connection_state_filter == Some(ConnectionState::Listen),
+                        "LISTEN",
+                    )
+                    .clicked()
+                {
+                    self.connection_state_filter = Some(ConnectionState::Listen);
+                }
+
+                ui.label(
+                    RichText::new(format!("Total: {}", self.connections.len()))
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                 );
             });
-            ui.separator();
 
-            // Connection rows
-            for conn in connections.iter().take(200) {
-                let proto_color = match conn.protocol {
-                    Protocol::Tcp | Protocol::Tcp6 => {
-                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                    }
-                    Protocol::Udp | Protocol::Udp6 => {
-                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                    }
-                };
+            ui.add_space(8.0);
 
-                let state_color = match conn.state {
-                    ConnectionState::Established => {
-                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                    }
-                    ConnectionState::Listen => theme::color(&palette_ctx, CyberColors::CYAN),
-                    ConnectionState::TimeWait | ConnectionState::CloseWait => {
-                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
-                    }
-                    ConnectionState::Stateless => {
-                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
-                    }
-                    _ => theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
-                };
+            // Connection table
+            ScrollArea::vertical().show(ui, |ui| {
+                let mut connections = self.connections.clone();
 
+                // Apply protocol filter
+                if let Some(proto) = self.connection_protocol_filter {
+                    connections.retain(|c| {
+                        c.protocol == proto
+                            || (proto == Protocol::Tcp && c.protocol == Protocol::Tcp6)
+                            || (proto == Protocol::Udp && c.protocol == Protocol::Udp6)
+                    });
+                }
+
+                // Apply state filter
+                if let Some(state) = self.connection_state_filter {
+                    connections.retain(|c| c.state == state);
+                }
+
+                // Apply text filter
+                if !self.connection_filter.is_empty() {
+                    let filter = self.connection_filter.to_lowercase();
+                    connections.retain(|c| {
+                        c.local_address.to_lowercase().contains(&filter)
+                            || c.remote_address
+                                .as_ref()
+                                .map(|r| r.to_lowercase().contains(&filter))
+                                .unwrap_or(false)
+                            || c.process_name
+                                .as_ref()
+                                .map(|p| p.to_lowercase().contains(&filter))
+                                .unwrap_or(false)
+                    });
+                }
+
+                // Table header
                 ui.horizontal(|ui| {
-                    ui.set_min_height(18.0);
-
-                    // Protocol
+                    ui.set_min_height(24.0);
                     ui.add_sized(
-                        Vec2::new(60.0, 18.0),
+                        Vec2::new(60.0, 20.0),
                         egui::Label::new(
-                            RichText::new(format!("{}", conn.protocol))
-                                .color(theme::color(&palette_ctx, proto_color))
-                                .monospace(),
+                            RichText::new("Proto")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
                         ),
                     );
-
-                    // Local Address
                     ui.add_sized(
-                        Vec2::new(200.0, 18.0),
+                        Vec2::new(200.0, 20.0),
                         egui::Label::new(
-                            RichText::new(&conn.local_address)
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
-                                .monospace(),
+                            RichText::new("Local Address")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
                         ),
                     );
-
-                    // Remote Address
-                    // `*` is netstat's wildcard for a listener. An unread
-                    // address is unknown, not a wildcard.
-                    let remote = conn.remote_address.as_deref().unwrap_or("—");
                     ui.add_sized(
-                        Vec2::new(200.0, 18.0),
+                        Vec2::new(200.0, 20.0),
                         egui::Label::new(
-                            RichText::new(remote)
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
-                                .monospace(),
+                            RichText::new("Remote Address")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
                         ),
                     );
-
-                    // State
                     ui.add_sized(
-                        Vec2::new(100.0, 18.0),
+                        Vec2::new(100.0, 20.0),
                         egui::Label::new(
-                            RichText::new(format!("{}", conn.state))
-                                .color(theme::color(&palette_ctx, state_color))
-                                .monospace(),
+                            RichText::new("State")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
                         ),
                     );
-
-                    // PID
-                    let pid_str = conn
-                        .pid
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "-".to_string());
                     ui.add_sized(
-                        Vec2::new(60.0, 18.0),
+                        Vec2::new(60.0, 20.0),
                         egui::Label::new(
-                            RichText::new(pid_str)
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .monospace(),
+                            RichText::new("PID")
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                .strong(),
                         ),
                     );
-
-                    // Process name
-                    let proc_name = conn.process_name.as_deref().unwrap_or("-");
                     ui.label(
-                        RichText::new(proc_name)
-                            .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
+                        RichText::new("Process")
+                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                            .strong(),
                     );
                 });
-            }
+                ui.separator();
 
-            if connections.len() > 200 {
-                ui.label(
-                    RichText::new(format!(
-                        "... and {} more connections",
-                        connections.len() - 200
-                    ))
-                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                );
-            }
+                // Connection rows
+                for conn in connections.iter().take(200) {
+                    let proto_color = match conn.protocol {
+                        Protocol::Tcp | Protocol::Tcp6 => {
+                            theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                        }
+                        Protocol::Udp | Protocol::Udp6 => {
+                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                        }
+                    };
+
+                    let state_color = match conn.state {
+                        ConnectionState::Established => {
+                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                        }
+                        ConnectionState::Listen => theme::color(&palette_ctx, CyberColors::CYAN),
+                        ConnectionState::TimeWait | ConnectionState::CloseWait => {
+                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
+                        }
+                        ConnectionState::Stateless => {
+                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
+                        }
+                        _ => theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(18.0);
+
+                        // Protocol
+                        ui.add_sized(
+                            Vec2::new(60.0, 18.0),
+                            egui::Label::new(
+                                RichText::new(format!("{}", conn.protocol))
+                                    .color(theme::color(&palette_ctx, proto_color))
+                                    .monospace(),
+                            ),
+                        );
+
+                        // Local Address
+                        ui.add_sized(
+                            Vec2::new(200.0, 18.0),
+                            egui::Label::new(
+                                RichText::new(&conn.local_address)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY))
+                                    .monospace(),
+                            ),
+                        );
+
+                        // Remote Address
+                        // `*` is netstat's wildcard for a listener. An unread
+                        // address is unknown, not a wildcard.
+                        let remote = conn.remote_address.as_deref().unwrap_or("—");
+                        ui.add_sized(
+                            Vec2::new(200.0, 18.0),
+                            egui::Label::new(
+                                RichText::new(remote)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY))
+                                    .monospace(),
+                            ),
+                        );
+
+                        // State
+                        ui.add_sized(
+                            Vec2::new(100.0, 18.0),
+                            egui::Label::new(
+                                RichText::new(format!("{}", conn.state))
+                                    .color(theme::color(&palette_ctx, state_color))
+                                    .monospace(),
+                            ),
+                        );
+
+                        // PID
+                        let pid_str = conn
+                            .pid
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        ui.add_sized(
+                            Vec2::new(60.0, 18.0),
+                            egui::Label::new(
+                                RichText::new(pid_str)
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .monospace(),
+                            ),
+                        );
+
+                        // Process name
+                        let proc_name = conn.process_name.as_deref().unwrap_or("-");
+                        ui.label(
+                            RichText::new(proc_name)
+                                .color(theme::color(&palette_ctx, CyberColors::MAGENTA)),
+                        );
+                    });
+                }
+
+                if connections.len() > 200 {
+                    ui.label(
+                        RichText::new(format!(
+                            "... and {} more connections",
+                            connections.len() - 200
+                        ))
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                    );
+                }
+            });
         });
     }
 
@@ -5730,311 +5472,310 @@ impl IronMonitorApp {
 
         ScrollArea::vertical().show(ui, |ui| {
             let t = super::widgets::domain_section_title("system", "Information");
-            ui.add(SectionHeader::new(&t));
+            cards::section(ui, SectionHeader::new(&t), |ui| {
+                // Show loading indicator if still loading
+                if self.system_info_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Loading detailed system information...")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                    });
+                    ui.add_space(8.0);
+                }
 
-            // Show loading indicator if still loading
-            if self.system_info_loading {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(
-                        RichText::new("Loading detailed system information...")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                });
-                ui.add_space(8.0);
-            }
-
-            // Always show basic system info from environment
-            egui::Grid::new("basic_system_info_grid")
-                .num_columns(2)
-                .spacing([40.0, 8.0])
-                .show(ui, |ui| {
-                    // Hostname
-                    ui.label(
-                        RichText::new("Hostname:")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                    ui.label(
-                        RichText::new(&self.hostname)
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
-                    );
-                    ui.end_row();
-
-                    // OS from environment
-                    ui.label(
-                        RichText::new("Platform:")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                    ui.label(
-                        RichText::new(std::env::consts::OS)
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                    );
-                    ui.end_row();
-
-                    // Architecture
-                    ui.label(
-                        RichText::new("Architecture:")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                    ui.label(
-                        RichText::new(std::env::consts::ARCH)
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                    );
-                    ui.end_row();
-
-                    // Uptime
-                    let uptime = self.start_time.elapsed();
-                    let hours = uptime.as_secs() / 3600;
-                    let mins = (uptime.as_secs() % 3600) / 60;
-                    let secs = uptime.as_secs() % 60;
-                    ui.label(
-                        RichText::new("App Uptime:")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                    ui.label(
-                        RichText::new(format!("{:02}:{:02}:{:02}", hours, mins, secs))
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                    );
-                    ui.end_row();
-                });
-
-            ui.add_space(16.0);
-            super::system_summary::draw(ui, &self.snapshot);
-
-            // System Info Section from WMI (if available)
-            if let Some(ref info) = self.system_info {
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("Operating System"));
-
-                egui::Grid::new("system_info_grid")
+                // Always show basic system info from environment
+                egui::Grid::new("basic_system_info_grid")
                     .num_columns(2)
                     .spacing([40.0, 8.0])
                     .show(ui, |ui| {
-                        // OS Information
+                        // Hostname
                         ui.label(
-                            RichText::new("Operating System:")
+                            RichText::new("Hostname:")
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
-                        // Without a version the row shows the name alone. A name
-                        // that was not read is shown as unknown, not left blank.
-                        let os_name = info.os_name.as_deref().unwrap_or("Unknown");
-                        let os_label = match &info.os_version {
-                            Some(version) => format!("{} {}", os_name, version),
-                            None => os_name.to_string(),
-                        };
                         ui.label(
-                            RichText::new(os_label)
+                            RichText::new(&self.hostname)
                                 .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                         );
                         ui.end_row();
 
-                        if let Some(ref kernel) = info.kernel_version {
-                            ui.label(
-                                RichText::new("Kernel:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(kernel)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref hostname) = info.hostname {
-                            ui.label(
-                                RichText::new("Computer Name:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(hostname)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-                    });
-
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("Hardware"));
-
-                egui::Grid::new("hardware_info_grid")
-                    .num_columns(2)
-                    .spacing([40.0, 8.0])
-                    .show(ui, |ui| {
-                        if let Some(ref manufacturer) = info.manufacturer {
-                            ui.label(
-                                RichText::new("Manufacturer:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(manufacturer)
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref product) = info.product_name {
-                            ui.label(
-                                RichText::new("Product:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(product)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref serial) = info.serial_number {
-                            ui.label(
-                                RichText::new("Serial:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(serial)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.end_row();
-                        }
-
-                        // Motherboard
-                        if let Some(ref vendor) = info.board_vendor {
-                            ui.label(
-                                RichText::new("Board Vendor:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(vendor)
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref name) = info.board_name {
-                            ui.label(
-                                RichText::new("Board Model:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(name)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref version) = info.board_version {
-                            ui.label(
-                                RichText::new("Board Version:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(version)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        // CPU
-                        if let Some(ref cpu_name) = info.cpu_name {
-                            ui.label(
-                                RichText::new("CPU:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(cpu_name)
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let (Some(cores), Some(threads)) = (info.cpu_cores, info.cpu_threads) {
-                            ui.label(
-                                RichText::new("CPU Config:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(format!("{} Cores / {} Threads", cores, threads))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-                    });
-
-                // BIOS/UEFI Section
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("BIOS / UEFI"));
-
-                egui::Grid::new("bios_info_grid")
-                    .num_columns(2)
-                    .spacing([40.0, 8.0])
-                    .show(ui, |ui| {
-                        let bios = &info.bios;
-
+                        // OS from environment
                         ui.label(
-                            RichText::new("Firmware Type:")
+                            RichText::new("Platform:")
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                         ui.label(
-                            RichText::new(format!("{:?}", bios.firmware_type))
+                            RichText::new(std::env::consts::OS)
                                 .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
                         );
                         ui.end_row();
 
-                        if let Some(ref vendor) = bios.vendor {
-                            ui.label(
-                                RichText::new("BIOS Vendor:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(vendor)
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_PURPLE)),
-                            );
-                            ui.end_row();
-                        }
+                        // Architecture
+                        ui.label(
+                            RichText::new("Architecture:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                        ui.label(
+                            RichText::new(std::env::consts::ARCH)
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                        );
+                        ui.end_row();
 
-                        if let Some(ref version) = bios.version {
-                            ui.label(
-                                RichText::new("BIOS Version:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(version)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(ref date) = bios.release_date {
-                            ui.label(
-                                RichText::new("Release Date:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            ui.label(
-                                RichText::new(date)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.end_row();
-                        }
-
-                        if let Some(secure_boot) = bios.secure_boot {
-                            ui.label(
-                                RichText::new("Secure Boot:")
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                            );
-                            let (text, color) = if secure_boot {
-                                (
-                                    "Enabled",
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN),
-                                )
-                            } else {
-                                (
-                                    "Disabled",
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
-                                )
-                            };
-                            ui.label(RichText::new(text).color(theme::color(&palette_ctx, color)));
-                            ui.end_row();
-                        }
+                        // Uptime
+                        let uptime = self.start_time.elapsed();
+                        let hours = uptime.as_secs() / 3600;
+                        let mins = (uptime.as_secs() % 3600) / 60;
+                        let secs = uptime.as_secs() % 60;
+                        ui.label(
+                            RichText::new("App Uptime:")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{:02}:{:02}:{:02}", hours, mins, secs))
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                        );
+                        ui.end_row();
                     });
+            });
+            // System Info Section from WMI (if available)
+            if let Some(ref info) = self.system_info {
+                cards::section(ui, SectionHeader::new("Operating System"), |ui| {
+                    egui::Grid::new("system_info_grid")
+                        .num_columns(2)
+                        .spacing([40.0, 8.0])
+                        .show(ui, |ui| {
+                            // OS Information
+                            ui.label(
+                                RichText::new("Operating System:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            // Without a version the row shows the name alone. A name
+                            // that was not read is shown as unknown, not left blank.
+                            let os_name = info.os_name.as_deref().unwrap_or("Unknown");
+                            let os_label = match &info.os_version {
+                                Some(version) => format!("{} {}", os_name, version),
+                                None => os_name.to_string(),
+                            };
+                            ui.label(
+                                RichText::new(os_label)
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                            );
+                            ui.end_row();
+
+                            if let Some(ref kernel) = info.kernel_version {
+                                ui.label(
+                                    RichText::new("Kernel:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(kernel).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
+                cards::section(ui, SectionHeader::new("Hardware"), |ui| {
+                    egui::Grid::new("hardware_info_grid")
+                        .num_columns(2)
+                        .spacing([40.0, 8.0])
+                        .show(ui, |ui| {
+                            if let Some(ref manufacturer) = info.manufacturer {
+                                ui.label(
+                                    RichText::new("Manufacturer:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(manufacturer).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::NEON_PURPLE,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref product) = info.product_name {
+                                ui.label(
+                                    RichText::new("Product:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(product).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref serial) = info.serial_number {
+                                ui.label(
+                                    RichText::new("Serial:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(serial)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.end_row();
+                            }
+
+                            // Motherboard
+                            if let Some(ref vendor) = info.board_vendor {
+                                ui.label(
+                                    RichText::new("Board Vendor:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(vendor).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::NEON_ORANGE,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref name) = info.board_name {
+                                ui.label(
+                                    RichText::new("Board Model:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref version) = info.board_version {
+                                ui.label(
+                                    RichText::new("Board Version:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(RichText::new(version).color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
+                                ui.end_row();
+                            }
+
+                            // CPU
+                            if let Some(ref cpu_name) = info.cpu_name {
+                                ui.label(
+                                    RichText::new("CPU:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(cpu_name)
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let (Some(cores), Some(threads)) = (info.cpu_cores, info.cpu_threads)
+                            {
+                                ui.label(
+                                    RichText::new("CPU Config:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{} Cores / {} Threads", cores, threads))
+                                        .color(theme::color(
+                                            &palette_ctx,
+                                            CyberColors::TEXT_PRIMARY,
+                                        )),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
+                // BIOS/UEFI Section
+                cards::section(ui, SectionHeader::new("BIOS / UEFI"), |ui| {
+                    egui::Grid::new("bios_info_grid")
+                        .num_columns(2)
+                        .spacing([40.0, 8.0])
+                        .show(ui, |ui| {
+                            let bios = &info.bios;
+
+                            ui.label(
+                                RichText::new("Firmware Type:")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:?}", bios.firmware_type))
+                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                            );
+                            ui.end_row();
+
+                            if let Some(ref vendor) = bios.vendor {
+                                ui.label(
+                                    RichText::new("BIOS Vendor:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(vendor).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::NEON_PURPLE,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref version) = bios.version {
+                                ui.label(
+                                    RichText::new("BIOS Version:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(
+                                    RichText::new(version).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+                                ui.end_row();
+                            }
+
+                            if let Some(ref date) = bios.release_date {
+                                ui.label(
+                                    RichText::new("Release Date:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.label(RichText::new(date).color(theme::color(
+                                    &palette_ctx,
+                                    CyberColors::TEXT_SECONDARY,
+                                )));
+                                ui.end_row();
+                            }
+
+                            if let Some(secure_boot) = bios.secure_boot {
+                                ui.label(
+                                    RichText::new("Secure Boot:")
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                let (text, color) = if secure_boot {
+                                    (
+                                        "Enabled",
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                    )
+                                } else {
+                                    (
+                                        "Disabled",
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                    )
+                                };
+                                ui.label(
+                                    RichText::new(text).color(theme::color(&palette_ctx, color)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
             } else if !self.system_info_loading {
                 // Only show error if we're done loading and still have no data
                 ui.add_space(16.0);
@@ -6047,447 +5788,352 @@ impl IronMonitorApp {
             }
 
             // Motherboard Sensors Section
-            ui.add_space(16.0);
-            ui.add(SectionHeader::new("🌡️ System Temperatures"));
+            cards::section(ui, SectionHeader::new("🌡️ System Temperatures"), |ui| {
+                // Collect all available temperatures from various sources
+                let mut all_temps: Vec<(String, f32, &str)> = Vec::new();
 
-            // Collect all available temperatures from various sources
-            let mut all_temps: Vec<(String, f32, &str)> = Vec::new();
-
-            // Get motherboard sensor data
-            let mut has_mb_sensors = false;
-            for sensor_device in &self.motherboard_sensors {
-                let temps = sensor_device.temperature_sensors().unwrap_or_default();
-                if !temps.is_empty() {
-                    has_mb_sensors = true;
-                    for temp in temps {
-                        // A sensor with no reading is not charted as a
-                        // temperature; it has none to chart.
-                        if let Some(celsius) = temp.temperature {
-                            all_temps.push((temp.label.clone(), celsius, "Motherboard"));
+                // Get motherboard sensor data
+                let mut has_mb_sensors = false;
+                for sensor_device in &self.motherboard_sensors {
+                    let temps = sensor_device.temperature_sensors().unwrap_or_default();
+                    if !temps.is_empty() {
+                        has_mb_sensors = true;
+                        for temp in temps {
+                            // A sensor with no reading is not charted as a
+                            // temperature; it has none to chart.
+                            if let Some(celsius) = temp.temperature {
+                                all_temps.push((temp.label.clone(), celsius, "Motherboard"));
+                            }
                         }
                     }
                 }
-            }
 
-            // Get GPU temperatures
-            for (i, info) in self.gpu_dynamic_info.iter().enumerate() {
-                if let Some(temp) = info.thermal.temperature {
-                    let gpu_name = self
-                        .gpu_static_info
-                        .get(i)
-                        .map(|s| s.name.clone())
-                        .unwrap_or_else(|| format!("GPU {}", i));
-                    all_temps.push((gpu_name, temp as f32, "GPU"));
+                // Accelerator temperatures are the Accelerators tab's, beside
+                // each device's other readings; they are not repeated here.
+
+                // Disk temperatures come from the refresher thread, already sampled.
+                for disk in &self.cached_disk_data {
+                    if let Some(temp) = disk.temperature {
+                        all_temps.push((disk.name.clone(), temp, "Storage"));
+                    }
                 }
-            }
 
-            // Disk temperatures come from the refresher thread, already sampled.
-            for disk in &self.cached_disk_data {
-                if let Some(temp) = disk.temperature {
-                    all_temps.push((disk.name.clone(), temp, "Storage"));
-                }
-            }
-
-            if all_temps.is_empty() {
-                // No temperatures available at all
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("ℹ️").size(16.0));
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("No temperature sensors detected")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                        );
-                        ui.label(
-                            RichText::new(
-                                "Windows WMI doesn't expose CPU temperatures on most systems.",
-                            )
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .small(),
-                        );
-                    });
-                });
-                ui.add_space(8.0);
-
-                // LHM download link
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("💡").size(14.0));
-                    ui.label(
-                        RichText::new("For full sensor support, run ")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                    );
-                    ui.hyperlink_to(
-                        RichText::new("LibreHardwareMonitor")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN)),
-                        "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
-                    );
-                });
-                ui.label(
-                    RichText::new("IronMonitor will auto-detect LHM sensors when it's running.")
-                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                        .small(),
-                );
-            } else {
-                // Show all temperatures in a nice grid
-                egui::Grid::new("all_temps_grid")
-                    .num_columns(3)
-                    .spacing([40.0, 8.0])
-                    .show(ui, |ui| {
-                        for (name, temp, source) in &all_temps {
-                            ui.label(
-                                RichText::new(name)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.label(
-                                RichText::new(format!("{:.1}°C", temp))
-                                    .color(theme::color(
-                                        ui.ctx(),
-                                        theme::temperature_color(*temp as u32),
-                                    ))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new(*source)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                    .small(),
-                            );
-                            ui.end_row();
-                        }
-                    });
-
-                // Show note if we only have GPU temps (no motherboard)
-                if !has_mb_sensors {
+                if all_temps.is_empty() {
+                    // No temperatures available at all
                     ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("ℹ️").size(16.0));
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new("No temperature sensors detected")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Windows WMI doesn't expose CPU temperatures on most systems.",
+                                )
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .small(),
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+
+                    // LHM download link
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("💡").size(14.0));
                         ui.label(
-                            RichText::new("CPU temps: Install ")
-                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                .small(),
+                            RichText::new("For full sensor support, run ")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
                         );
                         ui.hyperlink_to(
                             RichText::new("LibreHardwareMonitor")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .small(),
+                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                             "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
                         );
                     });
-                }
-            }
-
-            // Show voltages and fans if available (from motherboard sensors)
-            for sensor_device in &self.motherboard_sensors {
-                let voltages = sensor_device.voltage_rails().unwrap_or_default();
-                let fans = sensor_device.fans().unwrap_or_default();
-
-                if !voltages.is_empty() {
-                    ui.add_space(12.0);
                     ui.label(
-                        RichText::new("⚡ Voltages")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .strong(),
+                        RichText::new(
+                            "IronMonitor will auto-detect LHM sensors when it's running.",
+                        )
+                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                        .small(),
                     );
-                    egui::Grid::new(format!("volts_{}", sensor_device.name()))
-                        .num_columns(2)
-                        .spacing([20.0, 4.0])
+                } else {
+                    // Show all temperatures in a nice grid
+                    egui::Grid::new("all_temps_grid")
+                        .num_columns(3)
+                        .spacing([40.0, 8.0])
                         .show(ui, |ui| {
-                            for volt in &voltages {
-                                ui.label(RichText::new(&volt.label).color(theme::color(
+                            for (name, temp, source) in &all_temps {
+                                ui.label(RichText::new(name).color(theme::color(
                                     &palette_ctx,
                                     CyberColors::TEXT_SECONDARY,
                                 )));
                                 ui.label(
-                                    RichText::new(match volt.voltage {
-                                        Some(v) => format!("{v:.3}V"),
-                                        None => "unavailable".to_string(),
-                                    })
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                                    RichText::new(format!("{:.1}°C", temp))
+                                        .color(theme::color(
+                                            ui.ctx(),
+                                            theme::temperature_color(*temp as u32),
+                                        ))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(*source)
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                        .small(),
                                 );
                                 ui.end_row();
                             }
                         });
+
+                    // Show note if we only have GPU temps (no motherboard)
+                    if !has_mb_sensors {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("💡").size(14.0));
+                            ui.label(
+                                RichText::new("CPU temps: Install ")
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                    .small(),
+                            );
+                            ui.hyperlink_to(
+                                RichText::new("LibreHardwareMonitor")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .small(),
+                                "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
+                            );
+                        });
+                    }
                 }
 
-                if !fans.is_empty() {
-                    ui.add_space(12.0);
-                    ui.label(
-                        RichText::new("🌀 Fans")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .strong(),
-                    );
-                    egui::Grid::new(format!("fans_{}", sensor_device.name()))
-                        .num_columns(2)
+                // Show voltages and fans if available (from motherboard sensors)
+                for sensor_device in &self.motherboard_sensors {
+                    let voltages = sensor_device.voltage_rails().unwrap_or_default();
+                    let fans = sensor_device.fans().unwrap_or_default();
+
+                    if !voltages.is_empty() {
+                        ui.add_space(12.0);
+                        ui.label(
+                            RichText::new("⚡ Voltages")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .strong(),
+                        );
+                        egui::Grid::new(format!("volts_{}", sensor_device.name()))
+                            .num_columns(2)
+                            .spacing([20.0, 4.0])
+                            .show(ui, |ui| {
+                                for volt in &voltages {
+                                    ui.label(RichText::new(&volt.label).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
+                                    ui.label(
+                                        RichText::new(match volt.voltage {
+                                            Some(v) => format!("{v:.3}V"),
+                                            None => "unavailable".to_string(),
+                                        })
+                                        .color(
+                                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                        ),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    }
+
+                    if !fans.is_empty() {
+                        ui.add_space(12.0);
+                        ui.label(
+                            RichText::new("🌀 Fans")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .strong(),
+                        );
+                        egui::Grid::new(format!("fans_{}", sensor_device.name()))
+                            .num_columns(2)
+                            .spacing([20.0, 4.0])
+                            .show(ui, |ui| {
+                                for fan in &fans {
+                                    ui.label(RichText::new(&fan.label).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
+                                    let (rpm_text, rpm_color) = match fan.rpm {
+                                        Some(0) => (
+                                            "Stopped".to_string(),
+                                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                        ),
+                                        Some(rpm) => (
+                                            format!("{} RPM", rpm),
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN),
+                                        ),
+                                        None => (
+                                            "N/A".to_string(),
+                                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                        ),
+                                    };
+                                    ui.label(
+                                        RichText::new(rpm_text)
+                                            .color(theme::color(&palette_ctx, rpm_color)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                }
+            });
+            // PCIe Devices Section
+            if !self.pcie_devices.is_empty() {
+                cards::section(ui, SectionHeader::new("🔌 PCIe Devices"), |ui| {
+                    egui::Grid::new("pcie_devices_grid")
+                        .num_columns(3)
                         .spacing([20.0, 4.0])
+                        .striped(true)
                         .show(ui, |ui| {
-                            for fan in &fans {
-                                ui.label(RichText::new(&fan.label).color(theme::color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )));
-                                let (rpm_text, rpm_color) = match fan.rpm {
-                                    Some(0) => (
-                                        "Stopped".to_string(),
-                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                                    ),
-                                    Some(rpm) => (
-                                        format!("{} RPM", rpm),
+                            // Header
+                            ui.label(
+                                RichText::new("Class")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Device")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new("Vendor")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
+                            );
+                            ui.end_row();
+
+                            for device in &self.pcie_devices {
+                                // Device class with color coding
+                                let (class_str, class_color) = match device.device_class.as_deref()
+                                {
+                                    Some("Display") => (
+                                        "Display",
                                         theme::color(&palette_ctx, CyberColors::NEON_GREEN),
                                     ),
+                                    Some("Network") => (
+                                        "Network",
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE),
+                                    ),
+                                    Some("Storage") => (
+                                        "Storage",
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
+                                    ),
+                                    Some("Audio") => (
+                                        "Audio",
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                    ),
+                                    Some("USB") => (
+                                        "USB",
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                    ),
+                                    Some(other) => (
+                                        other,
+                                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                    ),
                                     None => (
-                                        "N/A".to_string(),
+                                        "Other",
                                         theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
                                     ),
                                 };
                                 ui.label(
-                                    RichText::new(rpm_text)
-                                        .color(theme::color(&palette_ctx, rpm_color)),
+                                    RichText::new(class_str)
+                                        .color(theme::color(&palette_ctx, class_color)),
+                                );
+
+                                // Device name
+                                ui.label(
+                                    RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+
+                                // Vendor
+                                ui.label(
+                                    RichText::new(device.vendor.as_deref().unwrap_or("-")).color(
+                                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                    ),
                                 );
                                 ui.end_row();
                             }
                         });
-                }
-            }
-
-            // Storage Devices (SATA/NVMe) Section
-            if !self.sata_devices.is_empty() {
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("💾 Storage Devices"));
-
-                egui::Grid::new("sata_devices_grid")
-                    .num_columns(5)
-                    .spacing([15.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        // Header
-                        ui.label(
-                            RichText::new("Device")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Model")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Capacity")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Interface")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Type")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.end_row();
-
-                        for device in &self.sata_devices {
-                            // Device name
-                            ui.label(
-                                RichText::new(&device.name)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-
-                            // Model
-                            ui.label(
-                                RichText::new(device.model.as_deref().unwrap_or("-"))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-
-                            // Capacity
-                            let capacity = device
-                                .capacity_gb
-                                .map(|gb| {
-                                    if gb >= 1000.0 {
-                                        format!("{:.1} TB", gb / 1000.0)
-                                    } else {
-                                        format!("{:.0} GB", gb)
-                                    }
-                                })
-                                .unwrap_or_else(|| "-".to_string());
-                            ui.label(
-                                RichText::new(capacity)
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
-                            );
-
-                            // Interface
-                            ui.label(
-                                RichText::new(device.interface_speed.as_deref().unwrap_or("-"))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_BLUE)),
-                            );
-
-                            // Media type
-                            let (type_str, type_color) = match device.media_type {
-                                motherboard::SataMediaType::Ssd => {
-                                    ("SSD", theme::color(&palette_ctx, CyberColors::NEON_GREEN))
-                                }
-                                motherboard::SataMediaType::Hdd => {
-                                    ("HDD", theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                }
-                                motherboard::SataMediaType::Unknown => (
-                                    "Unknown",
-                                    theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
-                                ),
-                            };
-                            ui.label(
-                                RichText::new(type_str)
-                                    .color(theme::color(&palette_ctx, type_color)),
-                            );
-                            ui.end_row();
-                        }
-                    });
-            }
-
-            // PCIe Devices Section
-            if !self.pcie_devices.is_empty() {
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("🔌 PCIe Devices"));
-
-                egui::Grid::new("pcie_devices_grid")
-                    .num_columns(3)
-                    .spacing([20.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        // Header
-                        ui.label(
-                            RichText::new("Class")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Device")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Vendor")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.end_row();
-
-                        for device in &self.pcie_devices {
-                            // Device class with color coding
-                            let (class_str, class_color) = match device.device_class.as_deref() {
-                                Some("Display") => (
-                                    "Display",
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN),
-                                ),
-                                Some("Network") => (
-                                    "Network",
-                                    theme::color(&palette_ctx, CyberColors::NEON_BLUE),
-                                ),
-                                Some("Storage") => (
-                                    "Storage",
-                                    theme::color(&palette_ctx, CyberColors::NEON_PURPLE),
-                                ),
-                                Some("Audio") => (
-                                    "Audio",
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
-                                ),
-                                Some("USB") => {
-                                    ("USB", theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
-                                }
-                                Some(other) => (
-                                    other,
-                                    theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                                ),
-                                None => {
-                                    ("Other", theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                }
-                            };
-                            ui.label(
-                                RichText::new(class_str)
-                                    .color(theme::color(&palette_ctx, class_color)),
-                            );
-
-                            // Device name
-                            ui.label(
-                                RichText::new(&device.name)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
-                            );
-
-                            // Vendor
-                            ui.label(
-                                RichText::new(device.vendor.as_deref().unwrap_or("-"))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
-                            );
-                            ui.end_row();
-                        }
-                    });
+                });
             }
 
             // Drivers Section
             if !self.driver_info.is_empty() {
-                ui.add_space(16.0);
-                ui.add(SectionHeader::new("Installed Drivers"));
-
-                egui::Grid::new("drivers_grid")
-                    .num_columns(4)
-                    .spacing([20.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        // Header
-                        ui.label(
-                            RichText::new("Type")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Name")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Version")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Vendor")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.end_row();
-
-                        for driver in &self.driver_info {
-                            let type_color = match driver.driver_type {
-                                crate::motherboard::DriverType::Gpu => {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                }
-                                crate::motherboard::DriverType::Network => {
-                                    theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                                }
-                                crate::motherboard::DriverType::Storage => {
-                                    theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                                }
-                                _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                            };
-
+                cards::section(ui, SectionHeader::new("Installed Drivers"), |ui| {
+                    egui::Grid::new("drivers_grid")
+                        .num_columns(4)
+                        .spacing([20.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            // Header
                             ui.label(
-                                RichText::new(format!("{}", driver.driver_type))
-                                    .color(theme::color(&palette_ctx, type_color)),
+                                RichText::new("Type")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
                             );
                             ui.label(
-                                RichText::new(&driver.name)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
+                                RichText::new("Name")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
                             );
                             ui.label(
-                                RichText::new(driver.version.as_deref().unwrap_or("-"))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW)),
+                                RichText::new("Version")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
                             );
                             ui.label(
-                                RichText::new(driver.vendor.as_deref().unwrap_or("-"))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                RichText::new("Vendor")
+                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                    .strong(),
                             );
                             ui.end_row();
-                        }
-                    });
+
+                            for driver in &self.driver_info {
+                                let type_color = match driver.driver_type {
+                                    crate::motherboard::DriverType::Gpu => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    }
+                                    crate::motherboard::DriverType::Network => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                    }
+                                    crate::motherboard::DriverType::Storage => {
+                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                    }
+                                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                };
+
+                                ui.label(
+                                    RichText::new(format!("{}", driver.driver_type))
+                                        .color(theme::color(&palette_ctx, type_color)),
+                                );
+                                ui.label(
+                                    RichText::new(&driver.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
+                                );
+                                ui.label(
+                                    RichText::new(driver.version.as_deref().unwrap_or("-")).color(
+                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                    ),
+                                );
+                                ui.label(
+                                    RichText::new(driver.vendor.as_deref().unwrap_or("-"))
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
             }
         });
     }
@@ -6544,510 +6190,430 @@ impl IronMonitorApp {
         }
 
         ScrollArea::vertical().show(ui, |ui| {
-            ui.add(SectionHeader::new("🔌 Peripherals & Buses"));
-
-            // Show loading indicator if peripherals not yet loaded
-            if self.peripherals.is_none() && self.system_info_loading {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(
-                        RichText::new("Loading peripheral information...")
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
-                });
-                ui.add_space(8.0);
-            }
-
+            cards::section(ui, SectionHeader::new("🔌 Peripherals & Buses"), |ui| {
+                // Show loading indicator if peripherals not yet loaded
+                if self.peripherals.is_none() && self.system_info_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Loading peripheral information...")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                    });
+                    ui.add_space(8.0);
+                }
+            });
             if let Some(ref peripherals) = self.peripherals {
                 // USB Devices Section
                 if !peripherals.usb_devices.is_empty() {
-                    ui.add_space(8.0);
-                    ui.add(SectionHeader::new("🔗 USB Devices"));
+                    cards::section(ui, SectionHeader::new("🔗 USB Devices"), |ui| {
+                        // Group by USB version
+                        let mut usb3_devices: Vec<_> = peripherals
+                            .usb_devices
+                            .iter()
+                            .filter(|d| {
+                                matches!(
+                                    d.usb_version,
+                                    motherboard::UsbVersion::Usb3_0
+                                        | motherboard::UsbVersion::Usb3_1
+                                        | motherboard::UsbVersion::Usb3_2
+                                        | motherboard::UsbVersion::Usb4
+                                )
+                            })
+                            .collect();
+                        let mut usb2_devices: Vec<_> = peripherals
+                            .usb_devices
+                            .iter()
+                            .filter(|d| matches!(d.usb_version, motherboard::UsbVersion::Usb2_0))
+                            .collect();
+                        let mut other_usb: Vec<_> = peripherals
+                            .usb_devices
+                            .iter()
+                            .filter(|d| {
+                                matches!(
+                                    d.usb_version,
+                                    motherboard::UsbVersion::Usb1_1
+                                        | motherboard::UsbVersion::Unknown
+                                )
+                            })
+                            .collect();
 
-                    // Group by USB version
-                    let mut usb3_devices: Vec<_> = peripherals
-                        .usb_devices
-                        .iter()
-                        .filter(|d| {
-                            matches!(
-                                d.usb_version,
-                                motherboard::UsbVersion::Usb3_0
-                                    | motherboard::UsbVersion::Usb3_1
-                                    | motherboard::UsbVersion::Usb3_2
-                                    | motherboard::UsbVersion::Usb4
-                            )
-                        })
-                        .collect();
-                    let mut usb2_devices: Vec<_> = peripherals
-                        .usb_devices
-                        .iter()
-                        .filter(|d| matches!(d.usb_version, motherboard::UsbVersion::Usb2_0))
-                        .collect();
-                    let mut other_usb: Vec<_> = peripherals
-                        .usb_devices
-                        .iter()
-                        .filter(|d| {
-                            matches!(
-                                d.usb_version,
-                                motherboard::UsbVersion::Usb1_1 | motherboard::UsbVersion::Unknown
-                            )
-                        })
-                        .collect();
+                        usb3_devices.sort_by(|a, b| a.name.cmp(&b.name));
+                        usb2_devices.sort_by(|a, b| a.name.cmp(&b.name));
+                        other_usb.sort_by(|a, b| a.name.cmp(&b.name));
 
-                    usb3_devices.sort_by(|a, b| a.name.cmp(&b.name));
-                    usb2_devices.sort_by(|a, b| a.name.cmp(&b.name));
-                    other_usb.sort_by(|a, b| a.name.cmp(&b.name));
+                        egui::Grid::new("usb_devices_grid")
+                            .num_columns(4)
+                            .spacing([15.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                // Header
+                                ui.label(
+                                    RichText::new("Version")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Device")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Class")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Status")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.end_row();
 
-                    egui::Grid::new("usb_devices_grid")
-                        .num_columns(4)
-                        .spacing([15.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            // Header
-                            ui.label(
-                                RichText::new("Version")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Device")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Class")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Status")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.end_row();
-
-                            // USB 3.x devices first (fastest)
-                            for device in &usb3_devices {
-                                let version_color = match device.usb_version {
-                                    motherboard::UsbVersion::Usb4 => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                                    }
-                                    motherboard::UsbVersion::Usb3_2 => {
+                                // USB 3.x devices first (fastest)
+                                for device in &usb3_devices {
+                                    let version_color = match device.usb_version {
+                                        motherboard::UsbVersion::Usb4 => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                        }
+                                        motherboard::UsbVersion::Usb3_2 => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                        }
+                                        motherboard::UsbVersion::Usb3_1 => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                        }
+                                        motherboard::UsbVersion::Usb3_0 => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                        }
+                                        _ => {
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
+                                        }
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("{}", device.usb_version))
+                                            .color(theme::color(&palette_ctx, version_color)),
+                                    );
+                                    ui.label(RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )));
+                                    ui.label(
+                                        RichText::new(
+                                            device.device_class.as_deref().unwrap_or("-"),
+                                        )
+                                        .color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                        ),
+                                    );
+                                    let status_color = if device.status.as_deref() == Some("OK") {
                                         theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                    }
-                                    motherboard::UsbVersion::Usb3_1 => {
+                                    } else {
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
+                                    };
+                                    ui.label(
+                                        RichText::new(device.status.as_deref().unwrap_or("-"))
+                                            .color(theme::color(&palette_ctx, status_color)),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                // USB 2.0 devices
+                                for device in &usb2_devices {
+                                    ui.label(
+                                        RichText::new(format!("{}", device.usb_version)).color(
+                                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
+                                        ),
+                                    );
+                                    ui.label(RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )));
+                                    ui.label(
+                                        RichText::new(
+                                            device.device_class.as_deref().unwrap_or("-"),
+                                        )
+                                        .color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                        ),
+                                    );
+                                    let status_color = if device.status.as_deref() == Some("OK") {
                                         theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                    }
-                                    motherboard::UsbVersion::Usb3_0 => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                                    }
-                                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                                };
-                                ui.label(
-                                    RichText::new(format!("{}", device.usb_version))
-                                        .color(theme::color(&palette_ctx, version_color)),
-                                );
-                                ui.label(
-                                    RichText::new(&device.name).color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_PRIMARY,
-                                    )),
-                                );
-                                ui.label(
-                                    RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::TEXT_SECONDARY,
-                                        )),
-                                );
-                                let status_color = if device.status.as_deref() == Some("OK") {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                } else {
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
-                                };
-                                ui.label(
-                                    RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, status_color)),
-                                );
-                                ui.end_row();
-                            }
+                                    } else {
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
+                                    };
+                                    ui.label(
+                                        RichText::new(device.status.as_deref().unwrap_or("-"))
+                                            .color(theme::color(&palette_ctx, status_color)),
+                                    );
+                                    ui.end_row();
+                                }
 
-                            // USB 2.0 devices
-                            for device in &usb2_devices {
-                                ui.label(
-                                    RichText::new(format!("{}", device.usb_version)).color(
-                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
-                                    ),
-                                );
-                                ui.label(
-                                    RichText::new(&device.name).color(theme::color(
+                                // Other USB devices
+                                for device in &other_usb {
+                                    ui.label(
+                                        RichText::new(format!("{}", device.usb_version)).color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED),
+                                        ),
+                                    );
+                                    ui.label(RichText::new(&device.name).color(theme::color(
                                         &palette_ctx,
                                         CyberColors::TEXT_PRIMARY,
-                                    )),
-                                );
-                                ui.label(
-                                    RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::TEXT_SECONDARY,
-                                        )),
-                                );
-                                let status_color = if device.status.as_deref() == Some("OK") {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                } else {
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
-                                };
-                                ui.label(
-                                    RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, status_color)),
-                                );
-                                ui.end_row();
-                            }
+                                    )));
+                                    ui.label(
+                                        RichText::new(
+                                            device.device_class.as_deref().unwrap_or("-"),
+                                        )
+                                        .color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                        ),
+                                    );
+                                    let status_color = if device.status.as_deref() == Some("OK") {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    } else {
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
+                                    };
+                                    ui.label(
+                                        RichText::new(device.status.as_deref().unwrap_or("-"))
+                                            .color(theme::color(&palette_ctx, status_color)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
 
-                            // Other USB devices
-                            for device in &other_usb {
-                                ui.label(
-                                    RichText::new(format!("{}", device.usb_version))
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                                );
-                                ui.label(
-                                    RichText::new(&device.name).color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_PRIMARY,
-                                    )),
-                                );
-                                ui.label(
-                                    RichText::new(device.device_class.as_deref().unwrap_or("-"))
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::TEXT_SECONDARY,
-                                        )),
-                                );
-                                let status_color = if device.status.as_deref() == Some("OK") {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                } else {
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
-                                };
-                                ui.label(
-                                    RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, status_color)),
-                                );
-                                ui.end_row();
-                            }
+                        // USB summary
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Total: {} devices ({} USB 3.x, {} USB 2.0, {} other)",
+                                    peripherals.usb_devices.len(),
+                                    usb3_devices.len(),
+                                    usb2_devices.len(),
+                                    other_usb.len()
+                                ))
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
+                                .small(),
+                            );
                         });
-
-                    // USB summary
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "Total: {} devices ({} USB 3.x, {} USB 2.0, {} other)",
-                                peripherals.usb_devices.len(),
-                                usb3_devices.len(),
-                                usb2_devices.len(),
-                                other_usb.len()
-                            ))
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                            .small(),
-                        );
                     });
                 }
 
                 // Display Outputs Section
                 if !peripherals.display_outputs.is_empty() {
-                    ui.add_space(16.0);
-                    ui.add(SectionHeader::new("🖥️ Display Outputs"));
-
-                    egui::Grid::new("display_outputs_grid")
-                        .num_columns(4)
-                        .spacing([20.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            // Header
-                            ui.label(
-                                RichText::new("Type")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Name")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Resolution")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Refresh")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.end_row();
-
-                            for output in &peripherals.display_outputs {
-                                let type_color = match output.output_type {
-                                    motherboard::DisplayOutputType::Hdmi => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                                    }
-                                    motherboard::DisplayOutputType::DisplayPort => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                    }
-                                    motherboard::DisplayOutputType::Thunderbolt => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
-                                    }
-                                    motherboard::DisplayOutputType::UsbC => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                                    }
-                                    _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
-                                };
+                    cards::section(ui, SectionHeader::new("🖥️ Display Outputs"), |ui| {
+                        egui::Grid::new("display_outputs_grid")
+                            .num_columns(4)
+                            .spacing([20.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                // Header
                                 ui.label(
-                                    RichText::new(format!("{}", output.output_type))
-                                        .color(theme::color(&palette_ctx, type_color)),
+                                    RichText::new("Type")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.label(
-                                    RichText::new(&output.name).color(theme::color(
+                                    RichText::new("Name")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Resolution")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Refresh")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
+                                );
+                                ui.end_row();
+
+                                for output in &peripherals.display_outputs {
+                                    let type_color = match output.output_type {
+                                        motherboard::DisplayOutputType::Hdmi => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                        }
+                                        motherboard::DisplayOutputType::DisplayPort => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                        }
+                                        motherboard::DisplayOutputType::Thunderbolt => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
+                                        }
+                                        motherboard::DisplayOutputType::UsbC => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                        }
+                                        _ => {
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
+                                        }
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("{}", output.output_type))
+                                            .color(theme::color(&palette_ctx, type_color)),
+                                    );
+                                    ui.label(RichText::new(&output.name).color(theme::color(
                                         &palette_ctx,
                                         CyberColors::TEXT_PRIMARY,
-                                    )),
-                                );
-                                ui.label(
-                                    RichText::new(output.resolution.as_deref().unwrap_or("-"))
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::NEON_YELLOW,
-                                        )),
-                                );
-                                let refresh = output
-                                    .refresh_rate
-                                    .map(|r| format!("{} Hz", r))
-                                    .unwrap_or_else(|| "-".to_string());
-                                ui.label(RichText::new(refresh).color(theme::color(
-                                    &palette_ctx,
-                                    CyberColors::TEXT_SECONDARY,
-                                )));
-                                ui.end_row();
-                            }
-                        });
+                                    )));
+                                    ui.label(
+                                        RichText::new(output.resolution.as_deref().unwrap_or("-"))
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::NEON_YELLOW,
+                                            )),
+                                    );
+                                    let refresh = output
+                                        .refresh_rate
+                                        .map(|r| format!("{} Hz", r))
+                                        .unwrap_or_else(|| "-".to_string());
+                                    ui.label(RichText::new(refresh).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_SECONDARY,
+                                    )));
+                                    ui.end_row();
+                                }
+                            });
+                    });
                 }
 
                 // Audio Devices Section
                 if !peripherals.audio_devices.is_empty() {
-                    ui.add_space(16.0);
-                    ui.add(SectionHeader::new("🔊 Audio Devices"));
-
-                    egui::Grid::new("audio_devices_grid")
-                        .num_columns(4)
-                        .spacing([20.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            // Header
-                            ui.label(
-                                RichText::new("Type")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Device")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Manufacturer")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Status")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.end_row();
-
-                            for device in &peripherals.audio_devices {
-                                let type_color = match device.device_type {
-                                    Some(motherboard::AudioDeviceType::Output) => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                    }
-                                    Some(motherboard::AudioDeviceType::Input) => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                                    }
-                                    Some(motherboard::AudioDeviceType::OutputInput) => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                                    }
-                                    Some(motherboard::AudioDeviceType::Unknown) | None => {
-                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
-                                    }
-                                };
-                                // `None` is a direction the platform did not establish.
-                                let type_label = device
-                                    .device_type
-                                    .map_or_else(|| "unknown".to_string(), |t| t.to_string());
+                    cards::section(ui, SectionHeader::new("🔊 Audio Devices"), |ui| {
+                        egui::Grid::new("audio_devices_grid")
+                            .num_columns(4)
+                            .spacing([20.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                // Header
                                 ui.label(
-                                    RichText::new(type_label)
-                                        .color(theme::color(&palette_ctx, type_color)),
+                                    RichText::new("Type")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.label(
-                                    RichText::new(&device.name).color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_PRIMARY,
-                                    )),
+                                    RichText::new("Device")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.label(
-                                    RichText::new(device.manufacturer.as_deref().unwrap_or("-"))
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            CyberColors::TEXT_SECONDARY,
-                                        )),
+                                    RichText::new("Manufacturer")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
-                                let status_color = if device.status.as_deref() == Some("OK") {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                } else {
-                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
-                                };
                                 ui.label(
-                                    RichText::new(device.status.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, status_color)),
+                                    RichText::new("Status")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.end_row();
-                            }
-                        });
-                }
 
-                // Network Ports Section
-                if !peripherals.network_ports.is_empty() {
-                    ui.add_space(16.0);
-                    ui.add(SectionHeader::new("🌐 Network Ports"));
-
-                    egui::Grid::new("network_ports_grid")
-                        .num_columns(4)
-                        .spacing([20.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            // Header
-                            ui.label(
-                                RichText::new("Type")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Adapter")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Speed")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("MAC")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.end_row();
-
-                            for port in &peripherals.network_ports {
-                                let type_color = match port.port_type {
-                                    motherboard::NetworkPortType::Ethernet => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_BLUE)
-                                    }
-                                    motherboard::NetworkPortType::WiFi => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                    }
-                                    motherboard::NetworkPortType::Bluetooth => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
-                                    }
-                                    motherboard::NetworkPortType::Thunderbolt => {
-                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
-                                    }
-                                    motherboard::NetworkPortType::Other => {
-                                        theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
-                                    }
-                                };
-                                ui.label(
-                                    RichText::new(format!("{}", port.port_type))
-                                        .color(theme::color(&palette_ctx, type_color)),
-                                );
-                                ui.label(
-                                    RichText::new(&port.name).color(theme::color(
+                                for device in &peripherals.audio_devices {
+                                    let type_color = match device.device_type {
+                                        Some(motherboard::AudioDeviceType::Output) => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                        }
+                                        Some(motherboard::AudioDeviceType::Input) => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_BLUE)
+                                        }
+                                        Some(motherboard::AudioDeviceType::OutputInput) => {
+                                            theme::color(&palette_ctx, CyberColors::NEON_PURPLE)
+                                        }
+                                        Some(motherboard::AudioDeviceType::Unknown) | None => {
+                                            theme::color(&palette_ctx, CyberColors::TEXT_MUTED)
+                                        }
+                                    };
+                                    // `None` is a direction the platform did not establish.
+                                    let type_label = device
+                                        .device_type
+                                        .map_or_else(|| "unknown".to_string(), |t| t.to_string());
+                                    ui.label(
+                                        RichText::new(type_label)
+                                            .color(theme::color(&palette_ctx, type_color)),
+                                    );
+                                    ui.label(RichText::new(&device.name).color(theme::color(
                                         &palette_ctx,
                                         CyberColors::TEXT_PRIMARY,
-                                    )),
-                                );
-                                ui.label(
-                                    RichText::new(port.speed.as_deref().unwrap_or("-")).color(
-                                        theme::color(&palette_ctx, CyberColors::NEON_YELLOW),
-                                    ),
-                                );
-                                ui.label(
-                                    RichText::new(port.mac_address.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                        .small(),
-                                );
-                                ui.end_row();
-                            }
-                        });
+                                    )));
+                                    ui.label(
+                                        RichText::new(
+                                            device.manufacturer.as_deref().unwrap_or("-"),
+                                        )
+                                        .color(
+                                            theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
+                                        ),
+                                    );
+                                    let status_color = if device.status.as_deref() == Some("OK") {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    } else {
+                                        theme::color(&palette_ctx, CyberColors::NEON_ORANGE)
+                                    };
+                                    ui.label(
+                                        RichText::new(device.status.as_deref().unwrap_or("-"))
+                                            .color(theme::color(&palette_ctx, status_color)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
                 }
 
                 // Bluetooth Devices Section (if any)
                 if !peripherals.bluetooth_devices.is_empty() {
-                    ui.add_space(16.0);
-                    ui.add(SectionHeader::new("📶 Bluetooth Devices"));
-
-                    egui::Grid::new("bluetooth_devices_grid")
-                        .num_columns(3)
-                        .spacing([20.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("Device")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Address")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new("Status")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
-                            );
-                            ui.end_row();
-
-                            for device in &peripherals.bluetooth_devices {
+                    cards::section(ui, SectionHeader::new("📶 Bluetooth Devices"), |ui| {
+                        egui::Grid::new("bluetooth_devices_grid")
+                            .num_columns(3)
+                            .spacing([20.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
                                 ui.label(
-                                    RichText::new(&device.name).color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_PRIMARY,
-                                    )),
+                                    RichText::new("Device")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.label(
-                                    RichText::new(device.address.as_deref().unwrap_or("-"))
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                                    RichText::new("Address")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
-                                let status = if device.connected {
-                                    "Connected"
-                                } else if device.paired {
-                                    "Paired"
-                                } else {
-                                    "Available"
-                                };
-                                let status_color = if device.connected {
-                                    theme::color(&palette_ctx, CyberColors::NEON_GREEN)
-                                } else {
-                                    theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
-                                };
                                 ui.label(
-                                    RichText::new(status)
-                                        .color(theme::color(&palette_ctx, status_color)),
+                                    RichText::new("Status")
+                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
+                                        .strong(),
                                 );
                                 ui.end_row();
-                            }
-                        });
+
+                                for device in &peripherals.bluetooth_devices {
+                                    ui.label(RichText::new(&device.name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )));
+                                    ui.label(
+                                        RichText::new(device.address.as_deref().unwrap_or("-"))
+                                            .color(theme::color(
+                                                &palette_ctx,
+                                                CyberColors::TEXT_MUTED,
+                                            )),
+                                    );
+                                    let status = if device.connected {
+                                        "Connected"
+                                    } else if device.paired {
+                                        "Paired"
+                                    } else {
+                                        "Available"
+                                    };
+                                    let status_color = if device.connected {
+                                        theme::color(&palette_ctx, CyberColors::NEON_GREEN)
+                                    } else {
+                                        theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)
+                                    };
+                                    ui.label(
+                                        RichText::new(status)
+                                            .color(theme::color(&palette_ctx, status_color)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
                 }
             } else if !self.system_info_loading {
                 ui.add_space(16.0);
@@ -7064,13 +6630,14 @@ impl IronMonitorApp {
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                ui.add(SectionHeader::new("Agent Observability"));
+                cards::section(ui, SectionHeader::new("Agent Observability"), |ui| {
                 self.agent_tools.draw(ui);
+                });
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
                 // Header
-                ui.add(SectionHeader::new("🔧 Network Diagnostic Tools"));
+                cards::section(ui, SectionHeader::new("🔧 Network Diagnostic Tools"), |ui| {
                 ui.label(
                     RichText::new("nmap • traceroute • ping • netcat style utilities")
                         .color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)),
@@ -7247,6 +6814,7 @@ impl IronMonitorApp {
                     );
                 }
 
+                });
                 ui.add_space(15.0);
                 ui.separator();
 
@@ -7405,8 +6973,7 @@ impl IronMonitorApp {
 
                 // Port Scan Results
                 ui.add_space(15.0);
-                ui.separator();
-                ui.add(SectionHeader::new("🔍 Port Scan Results"));
+                cards::section(ui, SectionHeader::new("🔍 Port Scan Results"), |ui| {
 
                 if !self.nettools_port_scan_results.is_empty() {
                     // Summary
@@ -7509,10 +7076,10 @@ impl IronMonitorApp {
                     );
                 }
 
+                });
                 // Nmap Scan Results Section
                 ui.add_space(15.0);
-                ui.separator();
-                ui.add(SectionHeader::new("🎯 Nmap-Style Scan Results"));
+                cards::section(ui, SectionHeader::new("🎯 Nmap-Style Scan Results"), |ui| {
 
                 if let Some(ref result) = self.nettools_nmap_result {
                     // Host info
@@ -7626,10 +7193,10 @@ impl IronMonitorApp {
                     );
                 }
 
+                });
                 // Packet Capture (tcpdump-style) Section
                 ui.add_space(15.0);
-                ui.separator();
-                ui.add(SectionHeader::new("📦 Packet Capture (tcpdump)"));
+                cards::section(ui, SectionHeader::new("📦 Packet Capture (tcpdump)"), |ui| {
 
                 // Check if capture tools are available
                 let capture_available = network_tools::is_capture_available();
@@ -7786,6 +7353,7 @@ impl IronMonitorApp {
                         • Packet Capture - Network traffic capture (like 'tcpdump/tshark')\n\n\
                         Note: Some operations may require administrator privileges or be blocked by firewalls."
                     ).color(theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY)));
+                });
                 });
             });
     }
@@ -9286,7 +8854,8 @@ mod model_listing_tests {
         app.gpu_temp_history = vec![VecDeque::new()];
         let text = crate::gui::headless::painted_blob(&ctx, |ui| app.draw_accelerators_tab(ui));
         assert!(text.contains("Apple M1 GPU"), "{text}");
-        assert!(text.contains("Utilization -"), "{text}");
+        assert!(text.contains("Utilization"), "{text}");
+        assert!(!text.contains("0.0%"), "{text}");
         assert!(
             text.contains("Live accelerator readings unavailable"),
             "{text}"
