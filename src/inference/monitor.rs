@@ -493,6 +493,7 @@ fn load_of(state: &SourceState) -> (Option<u64>, Option<u64>) {
             None,
         ),
         ProviderKind::Vllm => (gauge("num_requests_running"), gauge("num_requests_waiting")),
+        ProviderKind::Sglang => (gauge("num_running_reqs"), gauge("num_queue_reqs")),
         ProviderKind::LlamaCpp => (gauge("requests_processing"), gauge("requests_deferred")),
         _ => match serving_of(state) {
             Some(d) => (
@@ -1110,13 +1111,33 @@ fn gauges(hw: &Hardware, state: Option<&SourceState>) -> Vec<Gauge> {
     });
     // Cache use across all requests, where the engine reports it.
     if let Some(f) = answering.and_then(|s| {
-        let v = s.latest.as_ref()?.gauges.get("kv_cache_usage_perc")?;
+        let gauges = &s.latest.as_ref()?.gauges;
+        // vLLM's fraction of KV cache blocks; SGLang's fraction of its token pool.
+        let v = gauges
+            .get("kv_cache_usage_perc")
+            .or_else(|| gauges.get("token_usage"))?;
         Some(v.clamp(0.0, 1.0))
     }) {
         out.push(Gauge {
             label: "KV cache",
             text: format!("{:.0}%", f * 100.0),
             ratio: Some(f),
+        });
+    }
+    // SGLang reports its prefix-cache hit rate itself, as a current fraction.
+    if let Some(s) = answering.filter(|s| s.kind == ProviderKind::Sglang) {
+        let r = s
+            .latest
+            .as_ref()
+            .and_then(|l| l.gauges.get("cache_hit_rate"))
+            .map(|v| v.clamp(0.0, 1.0));
+        out.push(Gauge {
+            label: "Prefix cache hits",
+            text: r.map_or_else(
+                || "SGLang did not report cache_hit_rate".into(),
+                |r| format!("{:.1}%", r * 100.0),
+            ),
+            ratio: r,
         });
     }
     if let Some(s) = answering {

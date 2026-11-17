@@ -3084,6 +3084,64 @@ fn push_local_sample(
                 RATE_NEEDS_TWO,
             ));
         }
+        K::Sglang => {
+            push_opt(
+                out,
+                "inference.sglang.model",
+                text(&sample.identity.model),
+                Some(Unit::Text),
+                NOT_REPORTED,
+            );
+            for (id, name) in [
+                (
+                    "inference.sglang.prompt_tokens_total",
+                    "prompt_tokens_total",
+                ),
+                (
+                    "inference.sglang.generation_tokens_total",
+                    "generation_tokens_total",
+                ),
+            ] {
+                push_opt(out, id, counter(name), Some(Unit::Count), NOT_REPORTED);
+            }
+            for (id, name) in [
+                ("inference.sglang.requests_running", "num_running_reqs"),
+                ("inference.sglang.requests_waiting", "num_queue_reqs"),
+            ] {
+                push_opt(out, id, gauge_count(name), Some(Unit::Count), NOT_REPORTED);
+            }
+            // SGLang reports fractions; these ids are percentages.
+            for (id, name) in [
+                ("inference.sglang.token_usage", "token_usage"),
+                ("inference.sglang.cache_hit_rate", "cache_hit_rate"),
+            ] {
+                push_opt(
+                    out,
+                    id,
+                    sample.gauges.get(name).map(|f| json!(f * 100.0)),
+                    Some(Unit::Percent),
+                    NOT_REPORTED,
+                );
+            }
+            push_opt(
+                out,
+                "inference.sglang.gen_throughput",
+                sample.gauges.get("gen_throughput").map(|v| json!(v)),
+                Some(Unit::TokensPerSecond),
+                NOT_REPORTED,
+            );
+            push_energy(out, kind, sample);
+            out.push(Reading::unavailable(
+                "inference.sglang.generation_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+            out.push(Reading::unavailable(
+                "inference.sglang.prompt_tok_s",
+                Some(Unit::TokensPerSecond),
+                RATE_NEEDS_TWO,
+            ));
+        }
         K::IronWorks | K::OpenAi | K::Anthropic => {}
     }
 }

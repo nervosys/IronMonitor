@@ -3331,6 +3331,107 @@ impl Ontology {
             true,
             "Generated tokens per second over the window between two samples: the change in predicted_tokens_total over the observation window. Absent in a single-shot read.",
         ).derived(&["inference.llamacpp.predicted_tokens_total"]));
+        // SGLang: read from /metrics, served when it starts with --enable-metrics:
+        // https://docs.sglang.io/references/production_metrics.html
+        add(Entity::new(
+            "inference.sglang.<none>",
+            D::Inference,
+            K::Diagnostic,
+            None,
+            P::Unavailable,
+            true,
+            "Present when no SGLang metrics were read, carrying the reason. SGLang serves /metrics only when started with --enable-metrics.",
+        ));
+        add(Entity::new(
+            "inference.sglang.model",
+            D::Inference,
+            K::Identity,
+            Some(U::Text),
+            P::Measured,
+            true,
+            "The model SGLang serves, from the model_name label on its metrics.",
+        ));
+        add(Entity::new(
+            "inference.sglang.prompt_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative prefill tokens SGLang has processed since it started. A counter from sglang:prompt_tokens_total.",
+        ));
+        add(Entity::new(
+            "inference.sglang.generation_tokens_total",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Cumulative tokens SGLang has generated since it started. A counter from sglang:generation_tokens_total.",
+        ));
+        add(Entity::new(
+            "inference.sglang.requests_running",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests SGLang is running right now. A current figure, from sglang:num_running_reqs.",
+        ));
+        add(Entity::new(
+            "inference.sglang.requests_waiting",
+            D::Inference,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Requests waiting in SGLang's queue right now. A current figure, from sglang:num_queue_reqs.",
+        ));
+        add(Entity::new(
+            "inference.sglang.token_usage",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            "Share of SGLang's KV token pool in use right now, as a percentage. SGLang reports a fraction (sglang:token_usage); the resolver multiplies by 100.",
+        ));
+        add(Entity::new(
+            "inference.sglang.cache_hit_rate",
+            D::Inference,
+            K::Measurement,
+            Some(U::Percent),
+            P::Measured,
+            true,
+            "SGLang's prefix-cache hit rate as it reports it (sglang:cache_hit_rate), as a percentage. The engine's own figure, not derived here.",
+        ));
+        add(Entity::new(
+            "inference.sglang.gen_throughput",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Generation throughput as SGLang itself reports it (sglang:gen_throughput), in tokens per second.",
+        ));
+        add(Entity::new(
+            "inference.sglang.generation_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Generated tokens per second over the window between two samples. Absent in a single-shot read.",
+        ).derived(&["inference.sglang.generation_tokens_total"]));
+        add(Entity::new(
+            "inference.sglang.prompt_tok_s",
+            D::Inference,
+            K::Measurement,
+            Some(U::TokensPerSecond),
+            P::Measured,
+            true,
+            "Prompt tokens per second over the window between two samples. Absent in a single-shot read.",
+        ).derived(&["inference.sglang.prompt_tokens_total"]));
         add(Entity::new(
             "inference.vllm.<none>",
             D::Inference,
@@ -3548,6 +3649,10 @@ impl Ontology {
             (
                 "vllm",
                 "IRONMON_VLLM_GPUS, since vLLM's metrics do not say which GPUs it uses",
+            ),
+            (
+                "sglang",
+                "IRONMON_SGLANG_GPUS, since SGLang's metrics do not say which GPUs it uses",
             ),
         ] {
             add(Entity::new(

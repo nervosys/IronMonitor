@@ -339,6 +339,7 @@ reply from Anthropic: the parsers follow each provider's published documentation
 | Ollama | `/api/ps`, `/api/version` | `http://127.0.0.1:11434` | `IRONMON_OLLAMA_URL` |
 | llama.cpp | `/metrics` (needs `--metrics`) | `http://127.0.0.1:9931` | `IRONMON_LLAMACPP_URL` |
 | vLLM | `/metrics` | `http://127.0.0.1:8000` | `IRONMON_VLLM_URL` |
+| SGLang | `/metrics` (needs `--enable-metrics`), `/v1/models` | `http://127.0.0.1:30000` | `IRONMON_SGLANG_URL` |
 | LM Studio | `/api/v1/models` | `http://127.0.0.1:1234` | `IRONMON_LMSTUDIO_URL` |
 | MLX-LM | `/health` | `http://127.0.0.1:8082` | `IRONMON_MLX_URL` |
 | OpenAI | `/v1/models`, `/v1/organization/costs` | `https://api.openai.com` | `IRONMON_OPENAI_URL` |
@@ -353,13 +354,14 @@ For a running local engine the tabs show latency, GPU energy and energy cost bes
 throughput. Each figure is the engine's own counter divided over the window between two
 polls, so the first poll shows none of them and says so.
 
-| Figure | vLLM | llama.cpp | IronWorks | Ollama, LM Studio, MLX-LM |
-|---|---|---|---|---|
-| Time to first token, queue, prefill, decode, inter-token, end-to-end | `_sum` / `_count` of its histograms | — | not in metrics v1 | not published |
-| Prefill and decode time per token | — | `prompt_seconds_total`, `tokens_predicted_seconds_total` | not in metrics v1 | not published |
-| GPU power, joules per generated token | needs `IRONMON_VLLM_GPUS` | needs `IRONMON_LLAMACPP_GPUS` | from the GPUs it lists | — |
-| Energy cost per million tokens | needs `IRONMON_ELECTRICITY_PRICE` | same | same | — |
-| Tokenization time | not published | not published | not published | not published |
+| Figure | vLLM | SGLang | llama.cpp | IronWorks | Ollama, LM Studio, MLX-LM |
+|---|---|---|---|---|---|
+| Time to first token, queue, prefill, decode, inter-token, end-to-end | `_sum` / `_count` of its histograms | time to first token, inter-token and end-to-end only | — | not in metrics v1 | not published |
+| Prefill and decode time per token | — | — | `prompt_seconds_total`, `tokens_predicted_seconds_total` | not in metrics v1 | not published |
+| KV cache and prefix-cache hits | `kv_cache_usage_perc`; hits over the window | `token_usage`; its own `cache_hit_rate` | — | expert VRAM hits | not published |
+| GPU power, joules per generated token | needs `IRONMON_VLLM_GPUS` | needs `IRONMON_SGLANG_GPUS` | needs `IRONMON_LLAMACPP_GPUS` | from the GPUs it lists | — |
+| Energy cost per million tokens | needs `IRONMON_ELECTRICITY_PRICE` | same | same | same | — |
+| Tokenization time | not published | not published | not published | not published | not published |
 
 **Energy is the whole GPU's.** It is NVML's total energy counter (Volta and newer), so
 other work on the same GPUs in the window is counted too. It is never estimated from

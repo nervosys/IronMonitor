@@ -12,16 +12,78 @@ use ratatui::{
 
 use crate::inference::monitor::Tile;
 
-/// Headings, lit states and bars.
-pub const ACCENT: Color = Color::Rgb(46, 204, 145);
-/// Temperatures and anything asking for attention.
-pub const WARM: Color = Color::Rgb(240, 190, 80);
-/// Something past its limit.
-pub const HOT: Color = Color::Rgb(235, 95, 95);
-/// Borders, labels and figures that are not there.
-pub const DIM: Color = Color::Rgb(110, 118, 129);
-/// The unfilled part of a bar.
-pub const TRACK: Color = Color::Rgb(45, 50, 58);
+/// The colours every tab draws with, set from the selected theme each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    /// Headings, lit states and the selected tab.
+    pub accent: Color,
+    /// Bars and figures at a comfortable level.
+    pub ok: Color,
+    /// The band between comfortable and warning.
+    pub careful: Color,
+    /// Temperatures and anything asking for attention.
+    pub warm: Color,
+    /// Something past its limit.
+    pub hot: Color,
+    /// Borders, labels and figures that are not there.
+    pub dim: Color,
+    /// The unfilled part of a bar.
+    pub track: Color,
+    /// A line of detail under a figure.
+    pub detail: Color,
+}
+
+impl Palette {
+    /// The IronMonitor look: green on the terminal's own background.
+    pub const DEFAULT: Palette = Palette {
+        accent: Color::Rgb(46, 204, 145),
+        ok: Color::Rgb(46, 204, 145),
+        careful: Color::Rgb(90, 190, 220),
+        warm: Color::Rgb(240, 190, 80),
+        hot: Color::Rgb(235, 95, 95),
+        dim: Color::Rgb(110, 118, 129),
+        track: Color::Rgb(45, 50, 58),
+        detail: Color::Gray,
+    };
+}
+
+thread_local! {
+    static PALETTE: std::cell::Cell<Palette> = const { std::cell::Cell::new(Palette::DEFAULT) };
+}
+
+/// Draw with `palette` from now on; the frame sets it from the app's theme.
+pub fn set_palette(palette: Palette) {
+    PALETTE.with(|p| p.set(palette));
+}
+
+pub fn palette() -> Palette {
+    PALETTE.with(|p| p.get())
+}
+
+pub fn accent() -> Color {
+    palette().accent
+}
+pub fn ok() -> Color {
+    palette().ok
+}
+pub fn careful() -> Color {
+    palette().careful
+}
+pub fn warm() -> Color {
+    palette().warm
+}
+pub fn hot() -> Color {
+    palette().hot
+}
+pub fn dim() -> Color {
+    palette().dim
+}
+pub fn track() -> Color {
+    palette().track
+}
+pub fn detail() -> Color {
+    palette().detail
+}
 
 pub const TILE_COLUMNS: usize = 4;
 /// Border, value, detail, two rows of bars, border.
@@ -30,7 +92,7 @@ pub const TILE_HEIGHT: u16 = 6;
 pub fn heading(text: impl Into<String>) -> Span<'static> {
     Span::styled(
         text.into(),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
     )
 }
 
@@ -39,16 +101,16 @@ pub fn block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
+        .border_style(Style::default().fg(dim()))
         .padding(Padding::horizontal(1))
-        .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .title_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
 }
 
 /// A panel with a title, padded the way the tiles are.
 pub fn titled(title: impl Into<String>) -> Block<'static> {
     block().title(Span::styled(
         format!(" {} ", title.into()),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -59,7 +121,7 @@ pub fn gauge_bar(ratio: f64, width: usize, color: Color) -> Line<'static> {
         Span::styled("█".repeat(filled), Style::default().fg(color)),
         Span::styled(
             "░".repeat(width.saturating_sub(filled)),
-            Style::default().fg(TRACK),
+            Style::default().fg(track()),
         ),
     ])
 }
@@ -67,11 +129,11 @@ pub fn gauge_bar(ratio: f64, width: usize, color: Color) -> Line<'static> {
 /// Green to amber to red as a share of a limit rises.
 pub fn load_color(percent: f64) -> Color {
     if percent >= 90.0 {
-        HOT
+        hot()
     } else if percent >= 70.0 {
-        WARM
+        warm()
     } else {
-        ACCENT
+        ok()
     }
 }
 
@@ -109,14 +171,14 @@ pub fn metric_bar(
         ),
         Span::styled(
             format!("{detail:<detail_w$}  "),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(self::detail()),
         ),
     ];
     match ratio {
         Some(r) => spans.extend(gauge_bar(r, bar_w, load_color(r * 100.0)).spans),
         None => spans.push(Span::styled(
             format!("{:>bar_w$}", "no reading"),
-            Style::default().fg(DIM),
+            Style::default().fg(dim()),
         )),
     }
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
@@ -148,11 +210,11 @@ pub fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
             format!("{v} {}", tile.unit).trim_end().to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        None => Line::from(Span::styled("—", Style::default().fg(DIM))),
+        None => Line::from(Span::styled("—", Style::default().fg(dim()))),
     };
     let detail = Line::from(Span::styled(
         tile.detail.clone(),
-        Style::default().fg(Color::Gray),
+        Style::default().fg(detail()),
     ));
     let parts = Layout::default()
         .direction(Direction::Vertical)
@@ -168,9 +230,9 @@ pub fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
         return;
     }
     let color = if tile.title.contains("temp") {
-        WARM
+        warm()
     } else {
-        ACCENT
+        accent()
     };
     let rows = spark_rows(
         &spark_points(tile),
@@ -185,7 +247,7 @@ pub fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
                     .map(|(ch, present)| {
                         Span::styled(
                             ch.to_string(),
-                            Style::default().fg(if present { color } else { TRACK }),
+                            Style::default().fg(if present { color } else { track() }),
                         )
                     })
                     .collect::<Vec<_>>(),

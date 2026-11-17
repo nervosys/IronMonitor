@@ -41,6 +41,7 @@ pub enum ProviderKind {
     Ollama,
     LlamaCpp,
     Vllm,
+    Sglang,
     LmStudio,
     MlxLm,
     OpenAi,
@@ -53,6 +54,7 @@ impl ProviderKind {
         ProviderKind::Ollama,
         ProviderKind::LlamaCpp,
         ProviderKind::Vllm,
+        ProviderKind::Sglang,
         ProviderKind::LmStudio,
         ProviderKind::MlxLm,
         ProviderKind::OpenAi,
@@ -66,6 +68,7 @@ impl ProviderKind {
             Self::Ollama => "ollama",
             Self::LlamaCpp => "llamacpp",
             Self::Vllm => "vllm",
+            Self::Sglang => "sglang",
             Self::LmStudio => "lmstudio",
             Self::MlxLm => "mlx",
             Self::OpenAi => "openai",
@@ -80,6 +83,7 @@ impl ProviderKind {
             Self::Ollama => "Ollama",
             Self::LlamaCpp => "llama.cpp",
             Self::Vllm => "vLLM",
+            Self::Sglang => "SGLang",
             Self::LmStudio => "LM Studio",
             Self::MlxLm => "MLX-LM",
             Self::OpenAi => "OpenAI",
@@ -560,6 +564,15 @@ fn sample_detail(sample: &ProviderSample) -> String {
     }
     if let Some(n) = sample.gauges.get("num_requests_waiting") {
         parts.push(format!("{} waiting", *n as u64));
+    }
+    if let Some(n) = sample.gauges.get("num_running_reqs") {
+        parts.push(format!("{} running", *n as u64));
+    }
+    if let Some(n) = sample.gauges.get("num_queue_reqs") {
+        parts.push(format!("{} waiting", *n as u64));
+    }
+    if let Some(p) = sample.gauges.get("token_usage") {
+        parts.push(format!("KV cache {:.0}%", p * 100.0));
     }
     if let Some(n) = sample.gauges.get("requests_processing") {
         parts.push(format!("{} processing", *n as u64));

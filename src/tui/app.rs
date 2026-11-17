@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::inference_view::GpuRef;
+use super::style::Palette;
+use ratatui::style::Color;
 
 /// Maximum number of data points to keep in history
 const MAX_HISTORY: usize = 60;
@@ -223,27 +225,54 @@ pub enum ViewMode {
     ThemeSelection,
 }
 
-/// Available color themes
+/// The TUI colour themes: IronMonitor's own, then Rodeo's, then the classics.
+///
+/// Each resolves to a [`Palette`](super::style::Palette) every panel draws with,
+/// so switching theme recolours headings, borders, bars and status levels alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ColorTheme {
-    /// Catppuccin Mocha (default - matches GUI)
+    /// The default: green on the terminal background.
     #[default]
+    IronMonitor,
+    /// Rodeo: near-black neutral.
+    Carbon,
+    /// Rodeo: cyber cowboy sunset.
+    Rodeo,
+    /// Rodeo: minimalist grey.
+    Greyscale,
+    /// Rodeo: Ayu Mirage.
+    Ayu,
+    /// Rodeo: OpenCode OC-1 dark.
+    OpenCode,
+    /// Rodeo: Rosé Pine.
+    RosePine,
+    /// Rodeo: Kanagawa wave.
+    Kanagawa,
+    /// Catppuccin Mocha.
     CatppuccinMocha,
-    /// Catppuccin Latte (light theme)
+    /// Catppuccin Latte, for light terminals.
     CatppuccinLatte,
-    /// Classic Glances style
+    /// Classic Glances.
     Glances,
-    /// Nord theme
+    /// Nord.
     Nord,
-    /// Dracula theme
+    /// Dracula.
     Dracula,
-    /// Gruvbox Dark
+    /// Gruvbox dark.
     GruvboxDark,
 }
 
 impl ColorTheme {
     pub fn all() -> &'static [ColorTheme] {
         &[
+            ColorTheme::IronMonitor,
+            ColorTheme::Carbon,
+            ColorTheme::Rodeo,
+            ColorTheme::Greyscale,
+            ColorTheme::Ayu,
+            ColorTheme::OpenCode,
+            ColorTheme::RosePine,
+            ColorTheme::Kanagawa,
             ColorTheme::CatppuccinMocha,
             ColorTheme::CatppuccinLatte,
             ColorTheme::Glances,
@@ -255,6 +284,14 @@ impl ColorTheme {
 
     pub fn name(&self) -> &'static str {
         match self {
+            ColorTheme::IronMonitor => "IronMonitor",
+            ColorTheme::Carbon => "Carbon",
+            ColorTheme::Rodeo => "Rodeo",
+            ColorTheme::Greyscale => "Greyscale",
+            ColorTheme::Ayu => "Ayu Mirage",
+            ColorTheme::OpenCode => "OpenCode",
+            ColorTheme::RosePine => "Rosé Pine",
+            ColorTheme::Kanagawa => "Kanagawa",
             ColorTheme::CatppuccinMocha => "Catppuccin Mocha",
             ColorTheme::CatppuccinLatte => "Catppuccin Latte",
             ColorTheme::Glances => "Glances Classic",
@@ -280,91 +317,143 @@ impl ColorTheme {
         }
     }
 
-    /// Get theme colors
-    pub fn colors(&self) -> ThemeColors {
+    /// The colours this theme draws with.
+    pub fn palette(&self) -> Palette {
+        let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
         match self {
-            ColorTheme::CatppuccinMocha => ThemeColors {
-                ok: (166, 227, 161),       // green
-                careful: (137, 180, 250),  // blue
-                warning: (249, 226, 175),  // yellow
-                critical: (243, 139, 168), // red
-                title: (137, 180, 250),    // blue
-                separator: (88, 91, 112),  // surface2
-                inactive: (108, 112, 134), // overlay0
-                surface: (69, 71, 90),     // surface0
-                text: (205, 214, 244),     // text
+            ColorTheme::IronMonitor => Palette::DEFAULT,
+            ColorTheme::Carbon => Palette {
+                accent: rgb((124, 184, 255)),
+                ok: rgb((143, 199, 143)),
+                careful: rgb((124, 184, 255)),
+                warm: rgb((217, 178, 108)),
+                hot: rgb((224, 122, 122)),
+                dim: rgb((133, 133, 133)),
+                track: rgb((46, 46, 46)),
+                detail: rgb((160, 160, 160)),
             },
-            ColorTheme::CatppuccinLatte => ThemeColors {
-                ok: (64, 160, 43),
-                careful: (30, 102, 245),
-                warning: (223, 142, 29),
-                critical: (210, 15, 57),
-                title: (30, 102, 245),
-                separator: (172, 176, 190),
-                inactive: (140, 143, 161),
-                surface: (204, 208, 218),
-                text: (76, 79, 105),
+            ColorTheme::Rodeo => Palette {
+                accent: rgb((255, 106, 0)),
+                ok: rgb((100, 200, 150)),
+                careful: rgb((150, 200, 220)),
+                warm: rgb((255, 170, 0)),
+                hot: rgb((255, 80, 60)),
+                dim: rgb((130, 95, 70)),
+                track: rgb((75, 50, 35)),
+                detail: rgb((200, 175, 150)),
             },
-            ColorTheme::Glances => ThemeColors {
-                ok: (0, 255, 0),
-                careful: (0, 255, 255),
-                warning: (255, 255, 0),
-                critical: (255, 0, 0),
-                title: (0, 255, 255),
-                separator: (105, 105, 105),
-                inactive: (105, 105, 105),
-                surface: (48, 48, 48),
-                text: (255, 255, 255),
+            ColorTheme::Greyscale => Palette {
+                accent: rgb((255, 255, 255)),
+                ok: rgb((180, 220, 180)),
+                careful: rgb((160, 200, 220)),
+                warm: rgb((220, 200, 160)),
+                hot: rgb((220, 160, 160)),
+                dim: rgb((120, 120, 120)),
+                track: rgb((58, 58, 58)),
+                detail: rgb((180, 180, 180)),
             },
-            ColorTheme::Nord => ThemeColors {
-                ok: (163, 190, 140),
-                careful: (129, 161, 193),
-                warning: (235, 203, 139),
-                critical: (191, 97, 106),
-                title: (136, 192, 208),
-                separator: (76, 86, 106),
-                inactive: (76, 86, 106),
-                surface: (59, 66, 82),
-                text: (236, 239, 244),
+            ColorTheme::Ayu => Palette {
+                accent: rgb((255, 173, 96)),
+                ok: rgb((135, 195, 143)),
+                careful: rgb((115, 216, 255)),
+                warm: rgb((255, 213, 128)),
+                hot: rgb((255, 117, 117)),
+                dim: rgb((95, 97, 113)),
+                track: rgb((56, 62, 87)),
+                detail: rgb((150, 152, 168)),
             },
-            ColorTheme::Dracula => ThemeColors {
-                ok: (80, 250, 123),
-                careful: (139, 233, 253),
-                warning: (241, 250, 140),
-                critical: (255, 85, 85),
-                title: (189, 147, 249),
-                separator: (68, 71, 90),
-                inactive: (98, 114, 164),
-                surface: (68, 71, 90),
-                text: (248, 248, 242),
+            ColorTheme::OpenCode => Palette {
+                accent: rgb((250, 178, 131)),
+                ok: rgb((18, 201, 5)),
+                careful: rgb((237, 178, 241)),
+                warm: rgb((252, 213, 58)),
+                hot: rgb((252, 83, 58)),
+                dim: rgb((120, 112, 106)),
+                track: rgb((56, 50, 46)),
+                detail: rgb((180, 172, 166)),
             },
-            ColorTheme::GruvboxDark => ThemeColors {
-                ok: (184, 187, 38),
-                careful: (131, 165, 152),
-                warning: (250, 189, 47),
-                critical: (251, 73, 52),
-                title: (250, 189, 47),
-                separator: (80, 73, 69),
-                inactive: (146, 131, 116),
-                surface: (60, 56, 54),
-                text: (235, 219, 178),
+            ColorTheme::RosePine => Palette {
+                accent: rgb((196, 167, 231)),
+                ok: rgb((156, 207, 216)),
+                careful: rgb((196, 167, 231)),
+                warm: rgb((246, 193, 119)),
+                hot: rgb((235, 111, 146)),
+                dim: rgb((110, 106, 134)),
+                track: rgb((38, 35, 58)),
+                detail: rgb((144, 140, 170)),
+            },
+            ColorTheme::Kanagawa => Palette {
+                accent: rgb((127, 180, 202)),
+                ok: rgb((152, 187, 108)),
+                careful: rgb((127, 180, 202)),
+                warm: rgb((255, 169, 56)),
+                hot: rgb((195, 64, 67)),
+                dim: rgb((114, 113, 105)),
+                track: rgb((54, 54, 59)),
+                detail: rgb((200, 180, 160)),
+            },
+            ColorTheme::CatppuccinMocha => Palette {
+                accent: rgb((137, 180, 250)),
+                ok: rgb((166, 227, 161)),
+                careful: rgb((137, 180, 250)),
+                warm: rgb((249, 226, 175)),
+                hot: rgb((243, 139, 168)),
+                dim: rgb((108, 112, 134)),
+                track: rgb((69, 71, 90)),
+                detail: rgb((166, 173, 200)),
+            },
+            ColorTheme::CatppuccinLatte => Palette {
+                accent: rgb((30, 102, 245)),
+                ok: rgb((64, 160, 43)),
+                careful: rgb((30, 102, 245)),
+                warm: rgb((223, 142, 29)),
+                hot: rgb((210, 15, 57)),
+                dim: rgb((140, 143, 161)),
+                track: rgb((204, 208, 218)),
+                detail: rgb((92, 95, 119)),
+            },
+            ColorTheme::Glances => Palette {
+                accent: rgb((0, 255, 255)),
+                ok: rgb((0, 255, 0)),
+                careful: rgb((0, 255, 255)),
+                warm: rgb((255, 255, 0)),
+                hot: rgb((255, 0, 0)),
+                dim: rgb((105, 105, 105)),
+                track: rgb((48, 48, 48)),
+                detail: rgb((192, 192, 192)),
+            },
+            ColorTheme::Nord => Palette {
+                accent: rgb((136, 192, 208)),
+                ok: rgb((163, 190, 140)),
+                careful: rgb((129, 161, 193)),
+                warm: rgb((235, 203, 139)),
+                hot: rgb((191, 97, 106)),
+                dim: rgb((76, 86, 106)),
+                track: rgb((59, 66, 82)),
+                detail: rgb((216, 222, 233)),
+            },
+            ColorTheme::Dracula => Palette {
+                accent: rgb((189, 147, 249)),
+                ok: rgb((80, 250, 123)),
+                careful: rgb((139, 233, 253)),
+                warm: rgb((241, 250, 140)),
+                hot: rgb((255, 85, 85)),
+                dim: rgb((98, 114, 164)),
+                track: rgb((68, 71, 90)),
+                detail: rgb((200, 200, 210)),
+            },
+            ColorTheme::GruvboxDark => Palette {
+                accent: rgb((250, 189, 47)),
+                ok: rgb((184, 187, 38)),
+                careful: rgb((131, 165, 152)),
+                warm: rgb((250, 189, 47)),
+                hot: rgb((251, 73, 52)),
+                dim: rgb((146, 131, 116)),
+                track: rgb((60, 56, 54)),
+                detail: rgb((213, 196, 161)),
             },
         }
     }
-}
-
-/// Theme color palette
-#[derive(Clone, Copy)]
-pub struct ThemeColors {
-    pub ok: (u8, u8, u8),
-    pub careful: (u8, u8, u8),
-    pub warning: (u8, u8, u8),
-    pub critical: (u8, u8, u8),
-    pub title: (u8, u8, u8),
-    pub separator: (u8, u8, u8),
-    pub inactive: (u8, u8, u8),
-    pub surface: (u8, u8, u8),
-    pub text: (u8, u8, u8),
 }
 
 /// Cached peripheral information to avoid expensive monitor creation on every frame
@@ -3053,13 +3142,13 @@ mod tests {
 
     #[test]
     fn test_color_theme_all_count() {
-        assert_eq!(ColorTheme::all().len(), 6);
+        assert_eq!(ColorTheme::all().len(), 14);
     }
 
     #[test]
     fn test_color_theme_default() {
         let theme = ColorTheme::default();
-        assert_eq!(theme, ColorTheme::CatppuccinMocha);
+        assert_eq!(theme, ColorTheme::IronMonitor);
     }
 
     #[test]
@@ -3107,15 +3196,13 @@ mod tests {
     }
 
     #[test]
-    fn test_colors_valid_rgb() {
-        for theme in ColorTheme::all() {
-            let c = theme.colors();
-            // Just verify we can access all color fields (they're u8 so always valid)
-            let _ok = c.ok;
-            let _warn = c.warning;
-            let _crit = c.critical;
-            let _title = c.title;
-            let _text = c.text;
+    fn test_themes_have_distinct_palettes() {
+        let all = ColorTheme::all();
+        assert_eq!(all[0], ColorTheme::default());
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a.palette(), b.palette(), "{} and {}", a.name(), b.name());
+            }
         }
     }
 

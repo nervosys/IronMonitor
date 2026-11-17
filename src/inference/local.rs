@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 pub const OLLAMA_ENV: &str = "IRONMON_OLLAMA_URL";
 pub const LLAMACPP_ENV: &str = "IRONMON_LLAMACPP_URL";
 pub const VLLM_ENV: &str = "IRONMON_VLLM_URL";
+pub const SGLANG_ENV: &str = "IRONMON_SGLANG_URL";
 pub const LMSTUDIO_ENV: &str = "IRONMON_LMSTUDIO_URL";
 pub const MLX_ENV: &str = "IRONMON_MLX_URL";
 
@@ -36,6 +37,8 @@ pub const OLLAMA_DEFAULT: &str = "http://127.0.0.1:11434";
 pub const LLAMACPP_DEFAULT: &str = "http://127.0.0.1:9931";
 /// vLLM's `vllm serve` default is port 8000; its metrics are at `/metrics` on it.
 pub const VLLM_DEFAULT: &str = "http://127.0.0.1:8000";
+/// SGLang's `launch_server` port in its docs, which serve `/metrics` on it.
+pub const SGLANG_DEFAULT: &str = "http://127.0.0.1:30000";
 /// LM Studio's documented port in its REST examples.
 pub const LMSTUDIO_DEFAULT: &str = "http://127.0.0.1:1234";
 /// The MLX-LM port this repository's setup guide uses (AI_INTEGRATION.md).
@@ -48,6 +51,7 @@ pub fn env_and_default(kind: ProviderKind) -> Option<(&'static str, &'static str
         ProviderKind::Ollama => Some((OLLAMA_ENV, OLLAMA_DEFAULT)),
         ProviderKind::LlamaCpp => Some((LLAMACPP_ENV, LLAMACPP_DEFAULT)),
         ProviderKind::Vllm => Some((VLLM_ENV, VLLM_DEFAULT)),
+        ProviderKind::Sglang => Some((SGLANG_ENV, SGLANG_DEFAULT)),
         ProviderKind::LmStudio => Some((LMSTUDIO_ENV, LMSTUDIO_DEFAULT)),
         ProviderKind::MlxLm => Some((MLX_ENV, MLX_DEFAULT)),
         ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => None,
@@ -60,6 +64,7 @@ pub fn all_from_env() -> Vec<Box<dyn InferenceSource>> {
         ProviderKind::Ollama,
         ProviderKind::LlamaCpp,
         ProviderKind::Vllm,
+        ProviderKind::Sglang,
         ProviderKind::LmStudio,
         ProviderKind::MlxLm,
     ]
@@ -175,6 +180,49 @@ const VLLM_RATIOS: &[RatioDef] = &[RatioDef {
     denominator: &["prefix_cache_queries_total"],
 }];
 
+/// Counters SGLang exports under `sglang:` when started with `--enable-metrics`
+/// (https://docs.sglang.io/references/production_metrics.html). It documents no
+/// request counter, so requests are not counted.
+const SGLANG_COUNTERS: &[&str] = &[
+    "prompt_tokens_total",
+    "generation_tokens_total",
+    "time_to_first_token_seconds_count",
+    "e2e_request_latency_seconds_count",
+    "inter_token_latency_seconds_count",
+];
+const SGLANG_SECONDS: &[&str] = &[
+    "time_to_first_token_seconds_sum",
+    "e2e_request_latency_seconds_sum",
+    "inter_token_latency_seconds_sum",
+];
+const SGLANG_MEANS: &[MeanDef] = &[
+    MeanDef {
+        key: "ttft",
+        seconds: "time_to_first_token_seconds_sum",
+        count: "time_to_first_token_seconds_count",
+    },
+    MeanDef {
+        key: "inter_token",
+        seconds: "inter_token_latency_seconds_sum",
+        count: "inter_token_latency_seconds_count",
+    },
+    MeanDef {
+        key: "e2e",
+        seconds: "e2e_request_latency_seconds_sum",
+        count: "e2e_request_latency_seconds_count",
+    },
+];
+/// Current figures. `token_usage` and `cache_hit_rate` are fractions of one, and
+/// `gen_throughput` is the engine's own tokens per second.
+const SGLANG_GAUGES: &[&str] = &[
+    "num_running_reqs",
+    "num_queue_reqs",
+    "num_used_tokens",
+    "token_usage",
+    "cache_hit_rate",
+    "gen_throughput",
+];
+
 /// What one Prometheus provider exports, and what is derived from it.
 pub struct MetricSpec {
     pub prefix: &'static str,
@@ -205,6 +253,16 @@ pub const VLLM: MetricSpec = MetricSpec {
     seconds: VLLM_SECONDS,
     ratios: VLLM_RATIOS,
     means: VLLM_MEANS,
+    generated: "generation_tokens_total",
+};
+
+pub const SGLANG: MetricSpec = MetricSpec {
+    prefix: "sglang:",
+    counters: SGLANG_COUNTERS,
+    gauges: SGLANG_GAUGES,
+    seconds: SGLANG_SECONDS,
+    ratios: NO_RATIOS,
+    means: SGLANG_MEANS,
     generated: "generation_tokens_total",
 };
 
@@ -259,6 +317,19 @@ impl InferenceSource for LocalSource {
                 s.serving = vllm_serving(base, timeout);
                 s
             }),
+            ProviderKind::Sglang => poll_metrics(base, timeout, &SGLANG)
+                .map(|mut s| {
+                    s.serving = sglang_serving(base, timeout, &s);
+                    s
+                })
+                .map_err(|e| match e {
+                    // A 404 is SGLang with its metrics off only if SGLang answers
+                    // on the same port; any other server's 404 stays a status.
+                    SourceError::Status(404) if sglang_answers(base, timeout) => {
+                        SourceError::MetricsNotEnabled
+                    }
+                    other => other,
+                }),
             ProviderKind::LmStudio => poll_lmstudio(base, timeout),
             ProviderKind::MlxLm => poll_mlx(base, timeout),
             ProviderKind::IronWorks | ProviderKind::OpenAi | ProviderKind::Anthropic => Err(
@@ -287,6 +358,11 @@ pub fn reason(kind: ProviderKind, endpoint: &str, error: &SourceError) -> String
                 ""
             };
             format!("{endpoint} answered HTTP {code}, not {name} data{hint}")
+        }
+        SourceError::MetricsNotEnabled if kind == ProviderKind::Sglang => {
+            format!(
+                "{name} answered, but its metrics are not enabled; start it with --enable-metrics"
+            )
         }
         SourceError::MetricsNotEnabled => {
             format!("{name} answered, but its metrics are not enabled")
@@ -656,6 +732,38 @@ fn vllm_serving(base: &str, timeout: Duration) -> Option<ServingDetail> {
         return None;
     }
     context_only(parse_vllm_models(&reply.body))
+}
+
+/// Whether SGLang itself answers at `base`: its `GET /model_info` reply names the
+/// `model_path` it loaded. Source: sglang/srt/entrypoints/http_server.py.
+fn sglang_answers(base: &str, timeout: Duration) -> bool {
+    http::get(&format!("{base}/model_info"), timeout, &[])
+        .ok()
+        .filter(|r| r.status == 200)
+        .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.body).ok())
+        .is_some_and(|v| v.get("model_path").is_some())
+}
+
+/// SGLang's `/v1/models` cards carry `max_model_len` as vLLM's do, and its queue
+/// is a gauge. Its own state per request is not published, so none is claimed.
+/// Source: sglang/srt/entrypoints/openai/protocol.py, `ModelCard`.
+fn sglang_serving(base: &str, timeout: Duration, sample: &ProviderSample) -> Option<ServingDetail> {
+    let context = http::get(&format!("{base}/v1/models"), timeout, &[])
+        .ok()
+        .filter(|r| r.status == 200)
+        .and_then(|r| parse_vllm_models(&r.body));
+    let queued = sample
+        .gauges
+        .get("num_queue_reqs")
+        .map(|v| v.max(0.0) as u64);
+    if context.is_none() && queued.is_none() {
+        return None;
+    }
+    Some(ServingDetail {
+        context_max: context,
+        queued,
+        ..Default::default()
+    })
 }
 
 // ── LM Studio ────────────────────────────────────────────────────────────────
@@ -1067,6 +1175,39 @@ mod poll_tests {
         assert_eq!(sample.counters["generation_tokens_total"], 42);
         assert_eq!(sample.gauges["num_requests_running"], 1.0);
         assert_eq!(sample.identity.model.as_deref(), Some("m"));
+    }
+
+    /// Hand-written from SGLang's production-metrics docs.
+    const SGLANG_BODY: &str = "sglang:generation_tokens_total{model_name=\"q\"} 7\n\
+sglang:num_running_reqs{model_name=\"q\"} 2\n\
+sglang:num_queue_reqs{model_name=\"q\"} 3\n\
+sglang:token_usage{model_name=\"q\"} 0.28\n";
+
+    #[test]
+    fn sglang_metrics_from_a_loopback_server_are_read() {
+        let stub = Stub::start(200, SGLANG_BODY);
+        let source = LocalSource::new(ProviderKind::Sglang, &stub.url());
+        let sample = source.poll(WAIT);
+        stub.stop();
+        let sample = sample.expect("the metrics are read");
+        assert_eq!(sample.counters["generation_tokens_total"], 7);
+        assert_eq!(sample.gauges["num_running_reqs"], 2.0);
+        assert_eq!(sample.gauges["token_usage"], 0.28);
+        assert_eq!(sample.identity.model.as_deref(), Some("q"));
+        // The stub's /v1/models is not JSON, so no context; the queue is the gauge.
+        let serving = sample.serving.expect("the queue is reported");
+        assert_eq!(serving.queued, Some(3));
+        assert_eq!(serving.context_max, None);
+    }
+
+    /// A 404 from a server that is not SGLang is not "SGLang with metrics off".
+    #[test]
+    fn an_unrelated_404_is_not_sglang_with_metrics_off() {
+        let stub = Stub::start(404, "<html>no such page</html>");
+        let source = LocalSource::new(ProviderKind::Sglang, &stub.url());
+        let result = source.poll(WAIT);
+        stub.stop();
+        assert_eq!(result, Err(SourceError::Status(404)));
     }
 
     /// Another server on the port answers 404 with no vLLM series. It is reported

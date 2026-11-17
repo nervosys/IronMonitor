@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (TUI themes)
+
+- The `t` theme picker recolours every tab again. The restyle had fixed the colours, so
+  choosing a theme changed nothing. Rodeo's terminal themes are added: Carbon, Rodeo,
+  Greyscale, Ayu Mirage, OpenCode, Rosé Pine and Kanagawa, beside the existing six.
+  IronMonitor's green look is the default.
+
 ### Changed (HTTP surface)
 
 - The sampler reads each segment's live readers separately from its slower inventory
@@ -18,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (Inference)
 
+- SGLang is read as a local engine at `http://127.0.0.1:30000` (`IRONMON_SGLANG_URL`),
+  from the `/metrics` it serves when started with `--enable-metrics`: tokens, running
+  and queued requests, KV token-pool use, its own prefix-cache hit rate, and time to
+  first token, inter-token and end-to-end latency. Its context size comes from
+  `/v1/models`. Without the flag it is reported as running with metrics off, and the
+  reason names the flag. The ontology adds `inference.sglang.*`.
 - The Inference tab is a monitor in both the TUI and the GUI: a model-state strip
   (Idle, Reading, Generating, Queued, Error), tiles with sparklines for speed, GPU
   load, VRAM, GPU temperature, power, PCIe, CPU, disk read, latency, energy, cost and

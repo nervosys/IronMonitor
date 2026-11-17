@@ -35,43 +35,43 @@ use super::inference_view;
 
 /// Glances-style threshold colors
 mod glances_colors {
+    //! Status and title colours, read from the selected theme.
+    use super::style;
     use ratatui::style::Color;
 
     /// OK status - safe level (0-50%)
-    pub const OK: Color = super::style::ACCENT;
+    pub fn ok() -> Color {
+        style::ok()
+    }
     /// CAREFUL status - watch level (50-70%)
-    pub const CAREFUL: Color = Color::Rgb(90, 190, 220);
+    pub fn careful() -> Color {
+        style::careful()
+    }
     /// WARNING status - attention needed (70-90%)
-    pub const WARNING: Color = super::style::WARM;
+    pub fn warning() -> Color {
+        style::warm()
+    }
     /// CRITICAL status - urgent (90-100%)
-    pub const CRITICAL: Color = super::style::HOT;
-    /// Title/header color (generic)
-    pub const TITLE: Color = super::style::ACCENT;
-    /// Separator/border color
-    pub const SEPARATOR: Color = super::style::DIM;
-    /// Inactive/disabled color
-    pub const INACTIVE: Color = super::style::DIM;
-
-    // ── Device-class title colors (bright cyberpunk neon) ────────────────
-    /// CPU title color – neon cyan
-    pub const CPU_TITLE: Color = super::style::ACCENT;
-    /// Accelerator (GPU/NPU) title color – neon green
-    pub const ACCEL_TITLE: Color = super::style::ACCENT;
-    /// Memory title color – neon magenta
-    pub const MEMORY_TITLE: Color = super::style::ACCENT;
-    /// Disk title color – neon orange
-    pub const DISK_TITLE: Color = super::style::ACCENT;
-    /// Network title color – neon blue
-    pub const NETWORK_TITLE: Color = super::style::ACCENT;
+    pub fn critical() -> Color {
+        style::hot()
+    }
+    /// Titles and device-class headings.
+    pub fn title() -> Color {
+        style::accent()
+    }
+    /// Separators and inactive text.
+    pub fn inactive() -> Color {
+        style::dim()
+    }
 }
 
 /// Get color based on percentage threshold (Glances-style, generic fallback)
 fn threshold_color(percent: f32) -> Color {
     match percent {
-        p if p >= 90.0 => glances_colors::CRITICAL,
-        p if p >= 70.0 => glances_colors::WARNING,
-        p if p >= 50.0 => glances_colors::CAREFUL,
-        _ => glances_colors::OK,
+        p if p >= 90.0 => glances_colors::critical(),
+        p if p >= 70.0 => glances_colors::warning(),
+        p if p >= 50.0 => glances_colors::careful(),
+        _ => glances_colors::ok(),
     }
 }
 
@@ -217,6 +217,7 @@ fn auto_unit(bytes: u64) -> String {
 
 /// Main drawing function - tabbed layout with dedicated views per data category
 pub fn draw(f: &mut Frame, app: &App) {
+    style::set_palette(app.color_theme.palette());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -278,7 +279,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
             style::block().title(Span::styled(
                 title_text,
                 Style::default()
-                    .fg(glances_colors::TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::BOLD),
             )),
         )
@@ -287,7 +288,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
         .highlight_style(
             Style::default()
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                .fg(glances_colors::TITLE),
+                .fg(glances_colors::title()),
         )
         .divider("│");
 
@@ -432,7 +433,7 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // Detailed CPU info with per-core bars
     let mut info_lines = vec![Line::from(vec![
-        Span::styled("Name: ", Style::default().fg(glances_colors::CPU_TITLE)),
+        Span::styled("Name: ", Style::default().fg(glances_colors::title())),
         Span::raw(&app.cpu_info.name),
         // Print the physical count only when there is one. An absent count
         // prints the threads alone rather than repeating the logical figure
@@ -623,7 +624,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 "RAM:  ",
                 Style::default()
-                    .fg(glances_colors::MEMORY_TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -652,7 +653,7 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 "SWAP: ",
                 Style::default()
-                    .fg(glances_colors::MEMORY_TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -717,31 +718,34 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
 
     let mut sys_lines = vec![
         Line::from(vec![
-            Span::styled("Hostname: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled("Hostname: ", Style::default().fg(glances_colors::title())),
             Span::raw(&app.system_info.hostname),
         ]),
         Line::from(vec![
-            Span::styled("OS: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled("OS: ", Style::default().fg(glances_colors::title())),
             Span::raw(&app.system_info.os),
         ]),
         Line::from(vec![
-            Span::styled("Kernel: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled("Kernel: ", Style::default().fg(glances_colors::title())),
             Span::raw(app.system_info.kernel.as_deref().unwrap_or("--")),
         ]),
         Line::from(vec![
-            Span::styled("Uptime: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled("Uptime: ", Style::default().fg(glances_colors::title())),
             Span::raw(uptime_text),
         ]),
     ];
     if let Some(ref manufacturer) = app.system_info.manufacturer {
         sys_lines.push(Line::from(vec![
-            Span::styled("Manufacturer: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled(
+                "Manufacturer: ",
+                Style::default().fg(glances_colors::title()),
+            ),
             Span::raw(manufacturer),
         ]));
     }
     if let Some(ref model) = app.system_info.model {
         sys_lines.push(Line::from(vec![
-            Span::styled("Model: ", Style::default().fg(glances_colors::TITLE)),
+            Span::styled("Model: ", Style::default().fg(glances_colors::title())),
             Span::raw(model),
         ]));
     }
@@ -774,7 +778,7 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{}: ", disk.name),
-                    Style::default().fg(glances_colors::DISK_TITLE),
+                    Style::default().fg(glances_colors::title()),
                 ),
                 Span::styled(
                     format!(
@@ -822,14 +826,14 @@ fn draw_system_tab(f: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_default();
             // `None` is a state that was not read, not a link that is down.
             let (status, status_color) = match iface.is_up {
-                Some(true) => ("UP", glances_colors::OK),
-                Some(false) => ("DOWN", glances_colors::CRITICAL),
-                None => ("unknown", glances_colors::INACTIVE),
+                Some(true) => ("UP", glances_colors::ok()),
+                Some(false) => ("DOWN", glances_colors::critical()),
+                None => ("unknown", glances_colors::inactive()),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{}: ", iface.name),
-                    Style::default().fg(glances_colors::NETWORK_TITLE),
+                    Style::default().fg(glances_colors::title()),
                 ),
                 Span::styled(status, Style::default().fg(status_color)),
                 Span::raw(format!(
@@ -858,7 +862,7 @@ fn draw_network_context(f: &mut Frame, app: &App, area: Rect) {
     let label = |s: &str| {
         Span::styled(
             format!("{s:<9}"),
-            Style::default().fg(glances_colors::NETWORK_TITLE),
+            Style::default().fg(glances_colors::title()),
         )
     };
     let unread = |why: &str| {
@@ -1090,7 +1094,7 @@ fn draw_single_gpu(f: &mut Frame, gpu: &super::app::GpuInfo, idx: usize, area: R
     let block = style::block().title(Span::styled(
         format!("GPU {} │ {} ({})", idx, gpu.name, gpu.vendor),
         Style::default()
-            .fg(glances_colors::ACCEL_TITLE)
+            .fg(glances_colors::title())
             .add_modifier(Modifier::BOLD),
     ));
 
@@ -1638,73 +1642,73 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         "PID",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "USER",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "S",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "COMMAND",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "CPU%",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "MEM",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "DEV",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "GPU%",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "GMEM",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "GM%",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "E/D",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "TY",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                 ])
@@ -1714,49 +1718,49 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         "PID",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "USER",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "S",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "COMMAND",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "CPU%",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "MEM",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "THR",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                     Span::styled(
                         "I/O",
                         Style::default()
-                            .fg(glances_colors::TITLE)
+                            .fg(glances_colors::title())
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                 ])
@@ -1785,9 +1789,9 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
 
                     // Color GPU mem based on usage
                     let gpu_mem_color = match p.total_gpu_memory_bytes {
-                        Some(b) if b > 1024 * 1024 * 1024 => glances_colors::WARNING, // > 1GB
-                        Some(b) if b > 256 * 1024 * 1024 => glances_colors::CAREFUL,  // > 256MB
-                        Some(b) if b > 0 => glances_colors::OK,
+                        Some(b) if b > 1024 * 1024 * 1024 => glances_colors::warning(), // > 1GB
+                        Some(b) if b > 256 * 1024 * 1024 => glances_colors::careful(),  // > 256MB
+                        Some(b) if b > 0 => glances_colors::ok(),
                         // Zero reported and nothing reported both read grey
                         // here; the column below prints them differently.
                         _ => Color::DarkGray,
@@ -1795,11 +1799,11 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
 
                     // Process state color
                     let state_color = match p.state {
-                        'R' => glances_colors::OK,       // Running
-                        'S' => Color::White,             // Sleeping
-                        'D' => glances_colors::WARNING,  // Disk sleep
-                        'Z' => glances_colors::CRITICAL, // Zombie
-                        'T' => glances_colors::CAREFUL,  // Stopped
+                        'R' => glances_colors::ok(),       // Running
+                        'S' => Color::White,               // Sleeping
+                        'D' => glances_colors::warning(),  // Disk sleep
+                        'Z' => glances_colors::critical(), // Zombie
+                        'T' => glances_colors::careful(),  // Stopped
                         _ => Color::DarkGray,
                     };
 
@@ -1915,9 +1919,9 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                             Span::styled(
                                 gpu_type_str.to_string(),
                                 Style::default().fg(if p.is_gpu_process() == Some(true) {
-                                    glances_colors::CAREFUL
+                                    glances_colors::careful()
                                 } else {
-                                    glances_colors::INACTIVE
+                                    glances_colors::inactive()
                                 }),
                             ),
                         ])
@@ -1935,20 +1939,20 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         let io_color = if total_io.is_none() {
                             Color::DarkGray
                         } else if total_io.unwrap_or(0) > 1024 * 1024 * 1024 {
-                            glances_colors::WARNING // > 1GB total I/O
+                            glances_colors::warning() // > 1GB total I/O
                         } else if total_io.unwrap_or(0) > 100 * 1024 * 1024 {
-                            glances_colors::CAREFUL // > 100MB
+                            glances_colors::careful() // > 100MB
                         } else if total_io.unwrap_or(0) > 0 {
-                            glances_colors::OK
+                            glances_colors::ok()
                         } else {
                             Color::DarkGray
                         };
 
                         // Thread count coloring
                         let thread_color = if p.thread_count > 100 {
-                            glances_colors::WARNING
+                            glances_colors::warning()
                         } else if p.thread_count > 20 {
-                            glances_colors::CAREFUL
+                            glances_colors::careful()
                         } else if p.thread_count > 0 {
                             Color::White
                         } else {
@@ -2049,37 +2053,37 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "PID",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "USER",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "COMMAND",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "GPU MEM",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "GPU%",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "TYPE",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
             ])
@@ -2123,7 +2127,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(p.name.clone(), Style::default().fg(Color::White)),
                         Span::styled(format!("{:>7}", gpu_mem), Style::default().fg(gpu_clr)),
                         Span::styled(gpu_usage, Style::default().fg(gpu_clr)),
-                        Span::styled(proc_type, Style::default().fg(glances_colors::INACTIVE)),
+                        Span::styled(proc_type, Style::default().fg(glances_colors::inactive())),
                     ])
                     .style(if is_selected {
                         highlight_style
@@ -2147,7 +2151,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
         super::app::ProcessDisplayMode::Npu(_) => {
             let header = Row::new(vec![Span::styled(
                 "No NPU processes available",
-                Style::default().fg(glances_colors::INACTIVE),
+                Style::default().fg(glances_colors::inactive()),
             )]);
             let widths = vec![Constraint::Percentage(100)];
             (header, vec![], widths)
@@ -2157,37 +2161,37 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "PID",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "USER",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "COMMAND",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "ACCEL MEM",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "ACCEL%",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
                 Span::styled(
                     "TYPE",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
             ])
@@ -2230,7 +2234,7 @@ fn draw_nvtop_processes(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(p.name.clone(), Style::default().fg(Color::White)),
                         Span::styled(format!("{:>9}", accel_mem), Style::default().fg(accel_clr)),
                         Span::styled(accel_usage, Style::default().fg(accel_clr)),
-                        Span::styled(proc_type, Style::default().fg(glances_colors::INACTIVE)),
+                        Span::styled(proc_type, Style::default().fg(glances_colors::inactive())),
                     ])
                     .style(if is_selected {
                         highlight_style
@@ -2286,7 +2290,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
         let status = Paragraph::new(Line::from(vec![Span::styled(
             status_msg,
             Style::default()
-                .fg(glances_colors::OK)
+                .fg(glances_colors::ok())
                 .add_modifier(Modifier::BOLD),
         )]))
         .block(style::block())
@@ -2302,14 +2306,14 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 "Agent Query: ",
                 Style::default()
-                    .fg(glances_colors::TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(&input_text),
             Span::styled(
                 "█",
                 Style::default()
-                    .fg(glances_colors::TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ]))
@@ -2324,21 +2328,21 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             "Tab",
             Style::default()
-                .fg(glances_colors::TITLE)
+                .fg(glances_colors::title())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Navigate  "),
         Span::styled(
             "1-9 0",
             Style::default()
-                .fg(glances_colors::TITLE)
+                .fg(glances_colors::title())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Jump  "),
         Span::styled(
             "q",
             Style::default()
-                .fg(glances_colors::TITLE)
+                .fg(glances_colors::title())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Quit  "),
@@ -2352,28 +2356,28 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "↑↓",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Select  "),
                 Span::styled(
                     "Enter",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Detail  "),
                 Span::styled(
                     "p",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Filter  "),
                 Span::styled(
                     "PgUp/Dn",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Page  "),
@@ -2384,7 +2388,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "Up/Dn PgUp/Dn",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Scroll  "),
@@ -2396,14 +2400,14 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "a",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Ask  "),
                 Span::styled(
                     "v",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(
@@ -2416,7 +2420,7 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     "c",
                     Style::default()
-                        .fg(glances_colors::TITLE)
+                        .fg(glances_colors::title())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Clear  "),
@@ -2429,19 +2433,19 @@ fn draw_tab_footer(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             "t",
             Style::default()
-                .fg(glances_colors::TITLE)
+                .fg(glances_colors::title())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Theme  "),
-        Span::styled("│", Style::default().fg(glances_colors::SEPARATOR)),
+        Span::styled("│", Style::default().fg(glances_colors::inactive())),
         Span::raw(" "),
-        Span::styled("OK", Style::default().fg(glances_colors::OK)),
+        Span::styled("OK", Style::default().fg(glances_colors::ok())),
         Span::raw(" "),
-        Span::styled("CAREFUL", Style::default().fg(glances_colors::CAREFUL)),
+        Span::styled("CAREFUL", Style::default().fg(glances_colors::careful())),
         Span::raw(" "),
-        Span::styled("WARNING", Style::default().fg(glances_colors::WARNING)),
+        Span::styled("WARNING", Style::default().fg(glances_colors::warning())),
         Span::raw(" "),
-        Span::styled("CRITICAL", Style::default().fg(glances_colors::CRITICAL)),
+        Span::styled("CRITICAL", Style::default().fg(glances_colors::critical())),
     ]);
 
     let help = Paragraph::new(Line::from(help_spans))
@@ -3141,32 +3145,32 @@ fn draw_peripherals(f: &mut Frame, app: &App, area: Rect) {
 
     // Audio section (from cache)
     let audio_block =
-        style::titled("Audio Devices").border_style(Style::default().fg(glances_colors::TITLE));
+        style::titled("Audio Devices").border_style(Style::default().fg(glances_colors::title()));
     let audio_para = Paragraph::new(app.peripheral_cache.audio_info.as_str()).block(audio_block);
     f.render_widget(audio_para, chunks[0]);
 
     // Display section (from cache)
     let display_block =
-        style::titled("Displays").border_style(Style::default().fg(glances_colors::TITLE));
+        style::titled("Displays").border_style(Style::default().fg(glances_colors::title()));
     let display_para =
         Paragraph::new(app.peripheral_cache.display_info.as_str()).block(display_block);
     f.render_widget(display_para, chunks[1]);
 
     // USB section (from cache)
     let usb_block =
-        style::titled("USB Devices").border_style(Style::default().fg(glances_colors::TITLE));
+        style::titled("USB Devices").border_style(Style::default().fg(glances_colors::title()));
     let usb_para = Paragraph::new(app.peripheral_cache.usb_info.as_str()).block(usb_block);
     f.render_widget(usb_para, chunks[2]);
 
     // Bluetooth section (from cache)
     let bt_block =
-        style::titled("Bluetooth").border_style(Style::default().fg(glances_colors::TITLE));
+        style::titled("Bluetooth").border_style(Style::default().fg(glances_colors::title()));
     let bt_para = Paragraph::new(app.peripheral_cache.bluetooth_info.as_str()).block(bt_block);
     f.render_widget(bt_para, chunks[3]);
 
     // Battery section (from cache)
     let battery_block =
-        style::titled("Battery / Power").border_style(Style::default().fg(glances_colors::TITLE));
+        style::titled("Battery / Power").border_style(Style::default().fg(glances_colors::title()));
     let battery_para =
         Paragraph::new(app.peripheral_cache.battery_info.as_str()).block(battery_block);
     f.render_widget(battery_para, chunks[4]);
@@ -3367,7 +3371,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
         .select(app.profile_subsystem_idx)
         .highlight_style(
             Style::default()
-                .fg(glances_colors::TITLE)
+                .fg(glances_colors::title())
                 .add_modifier(Modifier::BOLD),
         );
     f.render_widget(sub_tabs, chunks[0]);
@@ -3377,7 +3381,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Loading hardware profile snapshot…",
-                Style::default().fg(glances_colors::TITLE),
+                Style::default().fg(glances_colors::title()),
             )),
             Line::from(""),
             Line::from("Press 'r' to fetch — initial NVML/registry/SMBIOS reads take a moment."),
@@ -3410,7 +3414,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
     };
     lines.push(Line::from(Span::styled(
         header,
-        Style::default().fg(glances_colors::CAREFUL),
+        Style::default().fg(glances_colors::careful()),
     )));
     lines.push(Line::from(""));
 
@@ -3419,7 +3423,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 "▸ ",
                 Style::default()
-                    .fg(glances_colors::TITLE)
+                    .fg(glances_colors::title())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -3429,7 +3433,7 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
             Span::raw("  "),
             Span::styled(
                 group.display_name.clone(),
-                Style::default().fg(glances_colors::CAREFUL),
+                Style::default().fg(glances_colors::careful()),
             ),
         ]));
         lines.push(Line::from(vec![
@@ -3444,9 +3448,9 @@ fn draw_profiles_tab(f: &mut Frame, app: &App, area: Rect) {
         for s in &group.settings {
             let risk_color = match s.risk {
                 crate::profile::SettingRisk::Informational => Color::Reset,
-                crate::profile::SettingRisk::Safe => glances_colors::OK,
-                crate::profile::SettingRisk::Moderate => glances_colors::WARNING,
-                crate::profile::SettingRisk::Dangerous => glances_colors::CRITICAL,
+                crate::profile::SettingRisk::Safe => glances_colors::ok(),
+                crate::profile::SettingRisk::Moderate => glances_colors::warning(),
+                crate::profile::SettingRisk::Dangerous => glances_colors::critical(),
             };
             let unit = s
                 .unit
@@ -3516,21 +3520,21 @@ fn draw_profile_deviations_overlay(f: &mut Frame, app: &App, area: Rect) {
         if devs.is_empty() {
             dev_lines.push(Line::from(Span::styled(
                 "All settings with a declared default are at their default value.",
-                Style::default().fg(glances_colors::OK),
+                Style::default().fg(glances_colors::ok()),
             )));
         } else {
             dev_lines.push(Line::from(Span::styled(
                 format!("{} deviation(s):", devs.len()),
                 Style::default()
-                    .fg(glances_colors::WARNING)
+                    .fg(glances_colors::warning())
                     .add_modifier(Modifier::BOLD),
             )));
             dev_lines.push(Line::from(""));
             for d in devs {
                 let risk_color = match d.risk {
-                    crate::profile::SettingRisk::Dangerous => glances_colors::CRITICAL,
-                    crate::profile::SettingRisk::Moderate => glances_colors::WARNING,
-                    crate::profile::SettingRisk::Safe => glances_colors::OK,
+                    crate::profile::SettingRisk::Dangerous => glances_colors::critical(),
+                    crate::profile::SettingRisk::Moderate => glances_colors::warning(),
+                    crate::profile::SettingRisk::Safe => glances_colors::ok(),
                     crate::profile::SettingRisk::Informational => Color::DarkGray,
                 };
                 dev_lines.push(Line::from(vec![
@@ -3540,7 +3544,7 @@ fn draw_profile_deviations_overlay(f: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::styled(
                         format!("[{}] ", d.subsystem.as_str()),
-                        Style::default().fg(glances_colors::TITLE),
+                        Style::default().fg(glances_colors::title()),
                     ),
                     Span::raw(format!("{} :: ", d.device)),
                     Span::styled(
@@ -3593,18 +3597,20 @@ fn draw_profile_deviations_overlay(f: &mut Frame, app: &App, area: Rect) {
         for line in tail {
             if let Ok(o) = serde_json::from_str::<crate::profile::apply::ApplyOutcome>(line) {
                 let (status_str, status_color) = match o.status {
-                    crate::profile::apply::ApplyStatus::Applied => ("applied", glances_colors::OK),
+                    crate::profile::apply::ApplyStatus::Applied => {
+                        ("applied", glances_colors::ok())
+                    }
                     crate::profile::apply::ApplyStatus::Refused => {
-                        ("refused", glances_colors::CRITICAL)
+                        ("refused", glances_colors::critical())
                     }
                     crate::profile::apply::ApplyStatus::Failed => {
-                        ("failed", glances_colors::CRITICAL)
+                        ("failed", glances_colors::critical())
                     }
                     crate::profile::apply::ApplyStatus::NotWritable => {
-                        ("not-writable", glances_colors::WARNING)
+                        ("not-writable", glances_colors::warning())
                     }
                     crate::profile::apply::ApplyStatus::NeedsConfirm => {
-                        ("needs-confirm", glances_colors::WARNING)
+                        ("needs-confirm", glances_colors::warning())
                     }
                 };
                 audit_lines.push(Line::from(vec![

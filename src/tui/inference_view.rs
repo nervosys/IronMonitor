@@ -549,7 +549,7 @@ use crate::inference::monitor::{Gauge, Monitor, Phase};
 use ratatui::layout::Alignment;
 use ratatui::widgets::Cell;
 
-use super::style::{draw_tile, gauge_bar, heading, ACCENT, DIM, TILE_COLUMNS, TILE_HEIGHT, WARM};
+use super::style::{accent, dim, draw_tile, gauge_bar, heading, warm, TILE_COLUMNS, TILE_HEIGHT};
 
 /// Providers other than the one the monitor follows: each running or failing
 /// provider on its own line, and the ones not running or not configured by name.
@@ -565,7 +565,7 @@ fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'s
         let mark = if Some(i) == focused { "▶ " } else { "  " };
         let mut line = compact_line(state);
         line.spans
-            .insert(0, Span::styled(mark, Style::default().fg(ACCENT)));
+            .insert(0, Span::styled(mark, Style::default().fg(accent())));
         lines.push(line);
     }
     for status in ["not running", "not configured"] {
@@ -577,7 +577,7 @@ fn provider_lines(states: &[SourceState], focused: Option<usize>) -> Vec<Line<'s
         if !names.is_empty() {
             lines.push(Line::from(Span::styled(
                 format!("  {status}: {}", names.join(", ")),
-                Style::default().fg(DIM),
+                Style::default().fg(dim()),
             )));
         }
     }
@@ -640,22 +640,22 @@ pub fn draw_monitor(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[Sour
     f.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(bands[1].width as usize),
-            Style::default().fg(DIM),
+            Style::default().fg(dim()),
         )),
         bands[1],
     );
     draw_state_row(f, bands[2], monitor);
     if let Some(p) = monitor.strip.progress {
         f.render_widget(
-            Paragraph::new(gauge_bar(p, bands[3].width as usize, ACCENT)),
+            Paragraph::new(gauge_bar(p, bands[3].width as usize, accent())),
             bands[3],
         );
     } else if let Some(note) = &monitor.strip.progress_note {
         // No bar rather than an empty one: an empty bar would read as 0%.
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("Progress   ", Style::default().fg(DIM)),
-                Span::styled(format!("— {note}"), Style::default().fg(DIM)),
+                Span::styled("Progress   ", Style::default().fg(dim())),
+                Span::styled(format!("— {note}"), Style::default().fg(dim())),
             ])),
             bands[3],
         );
@@ -703,7 +703,7 @@ fn draw_header(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceSta
             Line::from(vec![
                 heading(name.to_uppercase()),
                 Span::raw("   "),
-                Span::styled(endpoint.clone(), Style::default().fg(ACCENT)),
+                Span::styled(endpoint.clone(), Style::default().fg(accent())),
                 Span::raw("   "),
                 Span::styled(
                     format!("{model}{context}"),
@@ -714,13 +714,13 @@ fn draw_header(f: &mut Frame, area: Rect, monitor: &Monitor, states: &[SourceSta
         _ => Line::from(vec![
             heading("INFERENCE"),
             Span::raw("   "),
-            Span::styled(monitor.strip.engine.clone(), Style::default().fg(DIM)),
+            Span::styled(monitor.strip.engine.clone(), Style::default().fg(dim())),
         ]),
     };
     let (dot, live) = match (monitor.strip.lit, state) {
         (Some(Phase::Error), _) => (Color::Red, "[STALE]"),
-        (_, Some(s)) if s.reachable => (ACCENT, "[LIVE]"),
-        _ => (DIM, ""),
+        (_, Some(s)) if s.reachable => (accent(), "[LIVE]"),
+        _ => (dim(), ""),
     };
     let mut phase = monitor
         .strip
@@ -754,8 +754,8 @@ fn draw_state_row(f: &mut Frame, area: Rect, monitor: &Monitor) {
         if strip.lit == Some(phase) {
             let color = match phase {
                 Phase::Error => Color::Red,
-                Phase::Queued => WARM,
-                _ => ACCENT,
+                Phase::Queued => warm(),
+                _ => accent(),
             };
             spans.push(Span::styled(
                 format!("[{}]", phase.label()),
@@ -764,7 +764,7 @@ fn draw_state_row(f: &mut Frame, area: Rect, monitor: &Monitor) {
         } else {
             spans.push(Span::styled(
                 format!(" {} ", phase.label()),
-                Style::default().fg(DIM),
+                Style::default().fg(dim()),
             ));
         }
         spans.push(Span::raw("  "));
@@ -798,11 +798,11 @@ fn draw_gauges(f: &mut Frame, area: Rect, gauges: &[Gauge]) {
         ]));
         if let Some(r) = g.ratio {
             let color = if g.label == "GPU temperature" {
-                WARM
+                warm()
             } else if r > 0.92 {
                 Color::Red
             } else {
-                ACCENT
+                accent()
             };
             lines.push(gauge_bar(r, width, color));
         }
@@ -826,7 +826,7 @@ fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
                 } else {
                     format!("   {}", req.note)
                 },
-                Style::default().fg(DIM),
+                Style::default().fg(dim()),
             ),
         ])),
         parts[0],
@@ -838,7 +838,7 @@ fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     req.columns.join("   "),
-                    Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                    Style::default().fg(dim()).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
                     req.note.clone(),
@@ -876,7 +876,7 @@ fn draw_recent(f: &mut Frame, area: Rect, monitor: &Monitor) {
                     .map(|(i, v)| {
                         let line = Line::from(v.clone()).alignment(align(i));
                         if i == 1 {
-                            Cell::from(line).style(Style::default().fg(ACCENT))
+                            Cell::from(line).style(Style::default().fg(accent()))
                         } else {
                             Cell::from(line)
                         }

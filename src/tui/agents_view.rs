@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::agents::report::{Report, Section};
 
-use super::style::{ACCENT, DIM, WARM};
+use super::style::{accent, dim, warm};
 /// Columns between table cells.
 const GAP: usize = 3;
 
@@ -25,7 +25,7 @@ pub fn draw(f: &mut Frame, area: Rect, report: &Report, scroll: u16) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
+        .border_style(Style::default().fg(dim()))
         .padding(Padding::horizontal(1))
         .title(Span::styled(" Agents ", heading()));
     let inner = block.inner(area).width as usize;
@@ -50,7 +50,7 @@ pub fn to_lines_width(report: &Report, width: usize) -> Vec<Line<'static>> {
         let style = if i == 0 {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(DIM)
+            Style::default().fg(dim())
         };
         out.push(Line::from(Span::styled(s.clone(), style)));
     }
@@ -63,7 +63,7 @@ pub fn to_lines_width(report: &Report, width: usize) -> Vec<Line<'static>> {
         table_lines(section, width, &mut out);
         for row in &section.rows {
             let style = if row.starts_with("Not read") || row.starts_with("unknown") {
-                Style::default().fg(DIM)
+                Style::default().fg(dim())
             } else {
                 Style::default()
             };
@@ -75,7 +75,7 @@ pub fn to_lines_width(report: &Report, width: usize) -> Vec<Line<'static>> {
                     "… {} more not shown (the list is capped)",
                     section.not_shown
                 ),
-                Style::default().fg(DIM),
+                Style::default().fg(dim()),
             )));
         }
     }
@@ -118,7 +118,7 @@ fn table_lines(section: &Section, width: usize, out: &mut Vec<Line<'static>>) {
         }
         header.push(Span::styled(
             pad(name, i),
-            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(dim()).add_modifier(Modifier::BOLD),
         ));
     }
     out.push(clip_line(header, width));
@@ -129,10 +129,10 @@ fn table_lines(section: &Section, width: usize, out: &mut Vec<Line<'static>>) {
                 spans.push(Span::raw(gap.clone()));
             }
             let style = match (section.columns[i].0, cell.as_str()) {
-                ("STATE", "in progress") => Style::default().fg(ACCENT),
-                ("STATE", "not stated") => Style::default().fg(WARM),
-                ("STATE", _) => Style::default().fg(DIM),
-                (_, "unknown") => Style::default().fg(DIM),
+                ("STATE", "in progress") => Style::default().fg(accent()),
+                ("STATE", "not stated") => Style::default().fg(warm()),
+                ("STATE", _) => Style::default().fg(dim()),
+                (_, "unknown") => Style::default().fg(dim()),
                 ("AGENT", _) => Style::default().add_modifier(Modifier::BOLD),
                 _ => Style::default(),
             };
@@ -171,7 +171,7 @@ fn clip_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
 }
 
 fn heading() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    Style::default().fg(accent()).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
