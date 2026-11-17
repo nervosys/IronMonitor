@@ -93,8 +93,6 @@ impl IronMonitorApp {
 
         let states = self.inference.states();
         let gpus = gpu_views(&self.gpu_static_info, &self.gpu_dynamic_info);
-        let reply = self.latest_agent_reply();
-        let secondary = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
         let hardware = crate::inference::monitor::Hardware::from_snapshot(&self.snapshot);
         self.inference_history
             .record(std::time::Instant::now(), &hardware);
@@ -102,52 +100,53 @@ impl IronMonitorApp {
             .record_engine(std::time::Instant::now(), &states);
         let monitor = crate::inference::monitor::build(&states, &hardware, &self.inference_history);
 
+        // The agent chat lives on the AI tab; this tab is the monitor. It is sized
+        // to the window, and scrolls only when the window is too small for it.
+        let height = ui.available_height();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                draw_monitor(ui, &monitor);
-                ui.add_space(12.0);
-
-                ui.add(SectionHeader::new("Agent"));
-                self.draw_agent_composer(ui);
-                if let Some((text, ms)) = reply {
-                    ui.add_space(4.0);
-                    let primary = theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY);
-                    ui.label(RichText::new(text).color(primary));
-                    if let Some(ms) = ms {
-                        ui.label(RichText::new(format!("{ms} ms")).small().color(secondary));
-                    }
-                }
-                ui.add_space(12.0);
-
-                if states.is_empty() {
-                    ui.label(RichText::new("No inference engine is configured.").color(secondary));
-                }
-                // IronWorks has the full panel. Every other provider is a compact line,
-                // grouped as Local or Remote.
-                for state in states.iter().filter(|s| s.kind == ProviderKind::IronWorks) {
-                    draw_source(ui, state, &gpus);
-                    ui.add_space(12.0);
-                }
-                for (title, locality) in [
-                    ("Local providers", Locality::Local),
-                    ("Remote providers", Locality::Remote),
-                ] {
-                    let group: Vec<&SourceState> = states
-                        .iter()
-                        .filter(|s| s.kind != ProviderKind::IronWorks && s.locality == locality)
-                        .collect();
-                    if group.is_empty() {
-                        continue;
-                    }
-                    ui.add(SectionHeader::new(title));
-                    for state in group {
-                        draw_compact(ui, state);
-                    }
-                    ui.add_space(12.0);
-                }
+                draw_monitor(ui, &monitor, height, &states, &gpus);
             });
     }
+}
+
+/// The providers, one line each: the name and its state, with the reason on
+/// hover. IronWorks' full panel is behind a toggle.
+fn draw_providers(ui: &mut egui::Ui, states: &[SourceState], gpus: &[GpuView]) {
+    cards::card(ui, |ui| {
+        let ctx = ui.ctx().clone();
+        cards::heading(ui, "Providers");
+        if states.is_empty() {
+            ui.label(RichText::new("No inference engine is configured.").color(cards::muted(&ctx)));
+        }
+        ui.spacing_mut().item_spacing.y = 6.0;
+        for state in states {
+            let row = crate::inference::compact_row(state);
+            let hue = match row.status {
+                "running" => cards::good(&ctx),
+                "not answering" => cards::caution(&ctx),
+                _ => cards::muted(&ctx),
+            };
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(provider_name(state.kind))
+                        .size(14.0)
+                        .color(cards::strong(&ctx)),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(row.status).size(13.0).color(hue));
+                });
+            })
+            .response
+            .on_hover_text(&row.detail);
+            if state.kind == ProviderKind::IronWorks && state.reachable {
+                egui::CollapsingHeader::new("IronWorks details")
+                    .default_open(false)
+                    .show(ui, |ui| draw_source(ui, state, gpus));
+            }
+        }
+    });
 }
 
 /// One engine, top to bottom.
@@ -178,23 +177,6 @@ fn draw_source(ui: &mut egui::Ui, state: &SourceState, gpus: &[GpuView]) {
 
 fn provider_name(kind: ProviderKind) -> &'static str {
     kind.display_name()
-}
-
-/// A provider the tab does not draw in full: its name and state word, then its
-/// detail or reason. The detail is stacked below rather than set in a row, because
-/// a horizontal layout does not wrap and a reason can be longer than the window.
-fn draw_compact(ui: &mut egui::Ui, state: &SourceState) {
-    let row = crate::inference::compact_row(state);
-    ui.label(
-        RichText::new(format!("{}  {}", provider_name(state.kind), row.status))
-            .strong()
-            .color(theme::color(ui.ctx(), CyberColors::CYAN)),
-    );
-    ui.label(
-        RichText::new(row.detail).color(theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
-    );
-    draw_serving(ui, state, true);
-    ui.add_space(4.0);
 }
 
 /// Latency means, GPU energy, energy cost and tokenization, each with its value or
@@ -657,205 +639,266 @@ fn bytes_text(bytes: u64) -> String {
 
 // ── Monitor ──────────────────────────────────────────────────────────────────
 
+use super::cards;
 use crate::inference::monitor::{Monitor, Phase, Tile};
 
 /// Tiles per row in the monitor grid.
 const TILE_COLUMNS: usize = 4;
 
-/// The monitor: the model-state strip, the tiles, gauges beside recent requests.
-/// Built by `crate::inference::monitor`, which the TUI draws from too.
-fn draw_monitor(ui: &mut egui::Ui, monitor: &Monitor) {
+/// The monitor: the model-state card, the tiles, gauges beside recent requests.
+/// Built by `crate::inference::monitor`, which the TUI draws from too, and drawn
+/// as cards (see `super::cards`).
+fn draw_monitor(
+    ui: &mut egui::Ui,
+    monitor: &Monitor,
+    height: f32,
+    states: &[SourceState],
+    gpus: &[GpuView],
+) {
+    const GAP: f32 = 14.0;
+    ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
+    // The bottom row's height as drawn last frame, so the tiles take exactly what
+    // is left; the first frame uses a typical height.
+    let bottom_id = egui::Id::new("inference_bottom_row_height");
+    let bottom = ui
+        .ctx()
+        .data(|d| d.get_temp::<f32>(bottom_id))
+        .unwrap_or(260.0);
+    let top = ui.cursor().min.y;
     draw_strip(ui, monitor);
-    ui.add_space(8.0);
+    let strip = ui.cursor().min.y - top;
+    let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS).max(1) as f32;
+    let tile = ((height - strip - bottom - GAP * (rows + 1.0)) / rows).clamp(TILE_MIN, TILE_MAX);
     for row in monitor.tiles.chunks(TILE_COLUMNS) {
         ui.columns(TILE_COLUMNS, |cols| {
-            for (tile, col) in row.iter().zip(cols.iter_mut()) {
-                draw_tile(col, tile);
+            for (t, col) in row.iter().zip(cols.iter_mut()) {
+                draw_tile(col, t, tile);
             }
         });
-        ui.add_space(6.0);
     }
-    ui.columns(2, |cols| {
-        draw_gauges(&mut cols[0], monitor);
-        draw_recent(&mut cols[1], monitor);
-    });
+    // Three columns: the gauges, the requests table, the providers. Each is its
+    // own top-down area, so its rows stack rather than run across.
+    let width = ui.available_width();
+    let usable = (width - 2.0 * GAP).max(0.0);
+    let widths = [usable * 0.30, usable * 0.44, usable * 0.26];
+    let origin = ui.cursor().min;
+    let mut x = origin.x;
+    let mut tallest: f32 = 0.0;
+    for (i, w) in widths.into_iter().enumerate() {
+        let mut col = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(x, origin.y),
+                    egui::vec2(w, f32::INFINITY),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        col.spacing_mut().item_spacing.y = GAP;
+        match i {
+            0 => draw_gauges(&mut col, monitor),
+            1 => draw_recent(&mut col, monitor),
+            _ => draw_providers(&mut col, states, gpus),
+        }
+        tallest = tallest.max(col.min_rect().height());
+        x += w + GAP;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(bottom_id, tallest));
+    ui.allocate_space(egui::vec2(width, tallest));
 }
 
-fn panel(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        });
+fn phase_hue(ctx: &egui::Context, phase: Phase) -> egui::Color32 {
+    match phase {
+        Phase::Idle => cards::muted(ctx),
+        Phase::Reading => cards::info(ctx),
+        Phase::Generating => cards::good(ctx),
+        Phase::Queued => cards::caution(ctx),
+        Phase::Error => cards::bad(ctx),
+    }
 }
 
 fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
     let strip = &monitor.strip;
-    let secondary = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
-    panel(ui, |ui| {
+    cards::card(ui, |ui| {
+        let ctx = ui.ctx().clone();
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Model state")
-                    .strong()
-                    .size(16.0)
-                    .color(theme::color(ui.ctx(), CyberColors::CYAN)),
-            );
+            ui.spacing_mut().item_spacing.x = 10.0;
+            cards::heading(ui, "Model state");
             ui.add_space(8.0);
             for phase in Phase::ALL {
-                // The lit phase is a filled badge; the rest are muted words.
-                if strip.lit == Some(phase) {
-                    let color = match phase {
-                        Phase::Error => CyberColors::ERROR,
-                        Phase::Queued => CyberColors::WARNING,
-                        _ => CyberColors::SUCCESS,
-                    };
-                    ui.label(
-                        RichText::new(format!(" {} ", phase.label()))
-                            .strong()
-                            .color(theme::color(ui.ctx(), CyberColors::BACKGROUND))
-                            .background_color(theme::color(ui.ctx(), color)),
-                    );
-                } else {
-                    ui.label(
-                        RichText::new(phase.label())
-                            .color(theme::text_color(ui.ctx(), CyberColors::TEXT_MUTED)),
-                    );
-                }
-                ui.add_space(6.0);
+                cards::chip(
+                    ui,
+                    phase.label(),
+                    phase_hue(&ctx, phase),
+                    strip.lit == Some(phase),
+                );
             }
         });
+        ui.add_space(6.0);
         let mut engine = strip.engine.clone();
         if let Some(c) = strip.context {
             engine = format!("{engine} · {} context", crate::inference::monitor::fmt_k(c));
         }
-        ui.label(
-            RichText::new(engine).color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
-        );
-        ui.label(RichText::new(&strip.detail).color(secondary));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(engine).size(15.0).color(cards::strong(&ctx)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&strip.detail)
+                            .size(14.0)
+                            .color(cards::muted(&ctx)),
+                    )
+                    .truncate(),
+                );
+            });
+        });
+        ui.add_space(4.0);
         // How far the request in flight is, where the engine counts it.
         if let Some(p) = strip.progress {
-            ui.add(
-                egui::ProgressBar::new(p as f32)
-                    .desired_height(8.0)
-                    .fill(theme::color(ui.ctx(), CyberColors::SUCCESS)),
-            );
+            cards::thin_bar(ui, p, cards::good(&ctx));
         } else if let Some(note) = &strip.progress_note {
             // No bar rather than an empty one: an empty bar would read as 0%.
-            ui.label(RichText::new(format!("Progress — {note}")).color(secondary));
+            ui.label(
+                RichText::new(format!("Progress — {note}"))
+                    .size(13.0)
+                    .color(cards::muted(&ctx)),
+            );
         }
     });
 }
 
-fn draw_tile(ui: &mut egui::Ui, tile: &Tile) {
-    let secondary = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
-    panel(ui, |ui| {
-        ui.label(RichText::new(tile.title).color(secondary));
-        ui.horizontal(|ui| match &tile.value {
-            Some(value) => {
-                ui.label(
-                    RichText::new(value)
-                        .strong()
-                        .size(26.0)
-                        .color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
-                );
-                ui.label(RichText::new(&tile.unit).color(secondary));
-            }
-            None => {
-                ui.label(
-                    RichText::new("—")
-                        .size(26.0)
-                        .color(theme::text_color(ui.ctx(), CyberColors::TEXT_MUTED)),
-                );
-            }
-        });
-        ui.add(egui::Label::new(RichText::new(&tile.detail).small().color(secondary)).truncate())
-            .on_hover_text(&tile.detail);
-        let color = if tile.title == "GPU temp" {
-            CyberColors::NEON_ORANGE
-        } else {
-            CyberColors::SUCCESS
+/// The ring's diameter, and the bounds on a tile's height when fitting the window.
+const RING: f32 = 130.0;
+const TILE_MIN: f32 = 132.0;
+const TILE_MAX: f32 = 200.0;
+
+/// A tile `height` tall, card margins included; the sparkline takes what is left.
+fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
+    cards::card(ui, |ui| {
+        let ctx = ui.ctx().clone();
+        let inner = height - 36.0;
+        ui.set_min_height(inner);
+        ui.set_max_height(inner);
+        ui.spacing_mut().item_spacing.y = 6.0;
+        cards::title(ui, "", tile.title);
+        cards::figure(ui, tile.value.as_deref(), &tile.unit);
+        ui.add(
+            egui::Label::new(
+                RichText::new(&tile.detail)
+                    .size(13.0)
+                    .color(cards::muted(&ctx)),
+            )
+            .truncate(),
+        )
+        .on_hover_text(&tile.detail);
+        let hue = match tile.title {
+            "GPU temp" => cards::warm(&ctx),
+            "PCIe" | "Disk read" => cards::info(&ctx),
+            _ => cards::good(&ctx),
         };
-        if tile.spark.len() >= 2 {
-            let mut chart = SparklineChart::new(tile.spark.iter().map(|v| *v as f32).collect())
-                .color(theme::color(ui.ctx(), color))
-                .height(36.0)
-                .show_grid(false)
-                .show_scale(false);
-            if let Some(max) = tile.spark_max {
-                chart = chart.max_value(max as f32);
-            }
-            ui.add(chart);
-        } else {
-            ui.add_space(36.0);
-        }
+        ui.add_space(4.0);
+        let spark = (inner - 92.0).max(20.0);
+        cards::area_spark(ui, &tile.spark, tile.spark_max, hue, spark);
     });
 }
 
 fn draw_gauges(ui: &mut egui::Ui, monitor: &Monitor) {
-    let secondary = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
-    panel(ui, |ui| {
-        ui.label(
-            RichText::new("Memory and cache")
-                .strong()
-                .size(16.0)
-                .color(theme::color(ui.ctx(), CyberColors::CYAN)),
-        );
-        for g in &monitor.gauges {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(g.label)
-                        .strong()
-                        .color(theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY)),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(&g.text).color(secondary));
-                });
-            });
-            if let Some(r) = g.ratio {
-                let color = if g.label == "GPU temperature" {
-                    CyberColors::NEON_ORANGE
-                } else if r > 0.92 {
-                    CyberColors::ERROR
-                } else {
-                    CyberColors::SUCCESS
-                };
-                ui.add(
-                    egui::ProgressBar::new(r as f32)
-                        .desired_height(6.0)
-                        .fill(theme::color(ui.ctx(), color)),
+    cards::card(ui, |ui| {
+        let ctx = ui.ctx().clone();
+        let mut gauges = monitor.gauges.iter().peekable();
+        let context = gauges.next_if(|g| g.label == "Context fill");
+        cards::heading(ui, context.map_or("Memory and cache", |g| g.label));
+        ui.horizontal_top(|ui| {
+            // The context fill is the ring, the figure most worth a glance.
+            if let Some(g) = context {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(RING, 0.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        let big = g
+                            .ratio
+                            .map_or_else(|| "—".to_string(), |r| format!("{:.0}%", r * 100.0));
+                        let small = if g.ratio.is_some() {
+                            g.text.as_str()
+                        } else {
+                            ""
+                        };
+                        cards::ring(ui, g.ratio, &big, small, cards::good(&ctx), RING);
+                        if g.ratio.is_none() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&g.text).size(12.5).color(cards::muted(&ctx)),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    },
                 );
             }
-            ui.add_space(4.0);
-        }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for g in gauges {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(g.label).size(14.0).color(cards::strong(&ctx)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&g.text).size(13.0).color(cards::muted(&ctx)),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&g.text);
+                        });
+                    });
+                    if let Some(r) = g.ratio {
+                        let hue = if g.label == "GPU temperature" {
+                            cards::warm(&ctx)
+                        } else if r > 0.92 {
+                            cards::bad(&ctx)
+                        } else {
+                            cards::good(&ctx)
+                        };
+                        cards::thin_bar(ui, r, hue);
+                    }
+                    ui.add_space(8.0);
+                }
+            });
+        });
     });
 }
 
 fn draw_recent(ui: &mut egui::Ui, monitor: &Monitor) {
     let req = &monitor.requests;
-    let secondary = theme::text_color(ui.ctx(), CyberColors::TEXT_SECONDARY);
-    panel(ui, |ui| {
+    cards::card(ui, |ui| {
+        let ctx = ui.ctx().clone();
+        cards::heading(ui, "Recent requests");
         ui.label(
-            RichText::new("Recent requests")
-                .strong()
-                .size(16.0)
-                .color(theme::color(ui.ctx(), CyberColors::CYAN)),
+            RichText::new(&req.note)
+                .size(13.0)
+                .color(cards::muted(&ctx)),
         );
-        ui.label(RichText::new(&req.note).small().color(secondary));
-        if req.rows.is_empty() {
-            return;
-        }
+        ui.add_space(6.0);
+        // The columns stay on screen even when there are no rows, so every
+        // figure the table carries is named.
         egui::Grid::new("inference_recent_requests")
-            .striped(true)
-            .spacing([16.0, 4.0])
+            .striped(false)
+            .spacing([22.0, 12.0])
             .show(ui, |ui| {
                 for c in &req.columns {
-                    ui.label(RichText::new(*c).small().color(secondary));
+                    ui.label(
+                        RichText::new(c.to_uppercase())
+                            .size(12.5)
+                            .strong()
+                            .color(cards::muted(&ctx)),
+                    );
                 }
                 ui.end_row();
                 for row in &req.rows {
-                    for cell in row {
-                        ui.label(cell);
+                    for (i, cell) in row.iter().enumerate() {
+                        if i == 1 && cell != "—" {
+                            cards::status_pill(ui, cell);
+                        } else {
+                            ui.label(RichText::new(cell).size(14.5).color(cards::strong(&ctx)));
+                        }
                     }
                     ui.end_row();
                 }

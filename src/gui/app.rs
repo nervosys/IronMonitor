@@ -2638,15 +2638,6 @@ impl IronMonitorApp {
         None
     }
 
-    /// The newest assistant reply in the shared chat, with its inference time.
-    pub(super) fn latest_agent_reply(&self) -> Option<(String, Option<u64>)> {
-        self.agent_history
-            .iter()
-            .rev()
-            .find(|entry| entry.role == ChatRole::Assistant)
-            .map(|entry| (entry.content.clone(), entry.inference_time_ms))
-    }
-
     /// Whether a question can actually be sent right now.
     ///
     /// Mirrors the AI tab's gate: what stops a send is having no model to send to,
