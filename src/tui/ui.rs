@@ -424,7 +424,8 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // CPU bar gauge
             Constraint::Length(core_display_height.min(area.height.saturating_sub(11))), // Per-core
-            Constraint::Min(5),    // CPU history sparkline
+            Constraint::Length(style::HISTORY_HEIGHT), // CPU history
+            Constraint::Min(0),
         ])
         .split(area);
 
@@ -497,15 +498,13 @@ fn draw_cpu_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // CPU history sparkline
     let cpu_data: Vec<u64> = app.cpu_history.iter().copied().collect();
-    if !cpu_data.is_empty() {
-        let sparkline = Sparkline::default()
-            .block(style::titled("CPU Utilization History (60s)"))
-            .data(&cpu_data)
-            .style(
-                Style::default().fg(app.cpu_info.utilization.map_or(Color::DarkGray, cpu_color)),
-            );
-        f.render_widget(sparkline, chunks[2]);
-    }
+    style::history_panel(
+        f,
+        chunks[2],
+        "CPU utilization · last 60 s",
+        &cpu_data,
+        style::accent(),
+    );
 }
 
 /// Accelerators tab: detailed GPU/NPU info with history sparklines
@@ -530,7 +529,8 @@ fn draw_accelerators_tab(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(info_height.min(area.height.saturating_sub(8))),
-            Constraint::Min(5),
+            Constraint::Length(style::HISTORY_HEIGHT),
+            Constraint::Min(0),
         ])
         .split(area);
 
@@ -552,17 +552,8 @@ fn draw_accelerators_tab(f: &mut Frame, app: &App, area: Rect) {
         for (idx, accel) in app.accelerators.iter().enumerate() {
             if let Some(history) = app.accelerator_histories.get(idx) {
                 let data: Vec<u64> = history.iter().copied().collect();
-                if !data.is_empty() {
-                    let title = format!("{} {} History", accel.accel_type, idx);
-                    let sparkline = Sparkline::default()
-                        .block(style::block().title(title))
-                        .data(&data)
-                        .style(
-                            Style::default()
-                                .fg(accel.utilization.map_or(Color::DarkGray, accel_color)),
-                        );
-                    f.render_widget(sparkline, spark_chunks[idx]);
-                }
+                let title = format!("{} {} load · last 60 s", accel.accel_type, idx);
+                style::history_panel(f, spark_chunks[idx], &title, &data, style::accent());
             }
         }
     }
@@ -573,9 +564,10 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Memory bar gauge
-            Constraint::Length(10), // Detailed memory info
-            Constraint::Min(5),     // Memory history sparkline
+            Constraint::Length(3),                     // Memory bar gauge
+            Constraint::Length(10),                    // Detailed memory info
+            Constraint::Length(style::HISTORY_HEIGHT), // Memory history
+            Constraint::Min(0),
         ])
         .split(area);
 
@@ -687,15 +679,13 @@ fn draw_memory_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // Memory history sparkline
     let mem_data: Vec<u64> = app.memory_history.iter().copied().collect();
-    if !mem_data.is_empty() {
-        let sparkline = Sparkline::default()
-            .block(style::titled("Memory Usage History (60s)"))
-            .data(&mem_data)
-            .style(
-                Style::default().fg(mem_pct.map_or(Color::DarkGray, |p| memory_color(p as f32))),
-            );
-        f.render_widget(sparkline, chunks[2]);
-    }
+    style::history_panel(
+        f,
+        chunks[2],
+        "Memory used · last 60 s",
+        &mem_data,
+        style::accent(),
+    );
 }
 
 /// System tab: system info, disk details, and network details

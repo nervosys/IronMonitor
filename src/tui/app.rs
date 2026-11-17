@@ -1823,7 +1823,8 @@ impl App {
 
         // A sample that was not read adds nothing to the history rather than a zero.
         if let Some(utilization) = self.cpu_info.utilization {
-            self.cpu_history.push_back(utilization as u64);
+            self.cpu_history
+                .push_back(utilization.clamp(0.0, 100.0).round() as u64);
             if self.cpu_history.len() > MAX_HISTORY {
                 self.cpu_history.pop_front();
             }
@@ -1860,7 +1861,8 @@ impl App {
             .memory_info
             .used
             .zip(self.memory_info.total)
-            .and_then(|(used, total)| (used * 100).checked_div(total))
+            // Rounded to the nearest percent: 76.9% is 77, not 76.
+            .and_then(|(used, total)| (used * 100 + total / 2).checked_div(total))
         {
             self.memory_history.push_back(used_percent);
             if self.memory_history.len() > MAX_HISTORY {
@@ -1988,7 +1990,7 @@ impl App {
         for (i, accel) in self.accelerators.iter().enumerate() {
             // Nothing to plot for a device that reports no utilization.
             if let Some(u) = accel.utilization {
-                self.accelerator_histories[i].push_back(u as u64);
+                self.accelerator_histories[i].push_back(u.clamp(0.0, 100.0).round() as u64);
             }
             if self.accelerator_histories[i].len() > MAX_HISTORY {
                 self.accelerator_histories[i].pop_front();

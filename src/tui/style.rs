@@ -257,6 +257,66 @@ pub fn draw_tile(f: &mut Frame, area: Rect, tile: &Tile) {
     f.render_widget(Paragraph::new(lines), parts[2]);
 }
 
+/// Rows a history panel takes, borders included, so every history graph on
+/// every tab has the same height.
+pub const HISTORY_HEIGHT: u16 = 12;
+
+/// A titled history of percentages, drawn on a fixed 0-100% scale.
+///
+/// The scale never follows the data: a graph scaled to its own peak draws 5% as
+/// tall as 98%, which is what the old sparklines did. The newest sample is at the
+/// right edge, the axis is labelled, and the title carries the latest value.
+pub fn history_panel(f: &mut Frame, area: Rect, title: &str, points: &[u64], color: Color) {
+    let title = match points.last() {
+        Some(v) => format!("{title} · {v}% now"),
+        None => title.to_string(),
+    };
+    let panel = titled(title);
+    let inner = panel.inner(area);
+    f.render_widget(panel, area);
+    if inner.height == 0 || inner.width < 8 {
+        return;
+    }
+    if points.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled("no samples yet", Style::default().fg(dim()))),
+            inner,
+        );
+        return;
+    }
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .split(inner);
+    let height = cols[1].height as usize;
+    let mut axis = vec![Line::default(); height];
+    axis[0] = Line::from(Span::styled("100%", Style::default().fg(dim())));
+    if height > 2 {
+        axis[height / 2] = Line::from(Span::styled(" 50%", Style::default().fg(dim())));
+    }
+    if height > 1 {
+        axis[height - 1] = Line::from(Span::styled("  0%", Style::default().fg(dim())));
+    }
+    f.render_widget(Paragraph::new(axis), cols[0]);
+    let rows = spark_rows(points, cols[1].width as usize, height);
+    let lines: Vec<Line> = rows
+        .into_iter()
+        .map(|row| {
+            Line::from(
+                row.into_iter()
+                    .map(|(ch, present)| {
+                        Span::styled(
+                            ch.to_string(),
+                            Style::default().fg(if present { color } else { track() }),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), cols[1]);
+}
+
 const EIGHTHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Bars of `points` (0-100) in a box exactly `width` by `height`, top row first.
