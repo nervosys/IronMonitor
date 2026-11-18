@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (themes)
+
+- The GUI and TUI offer the same themes as Rodeo and Interlinked. The GUI gains
+  IronMonitor, Carbon, Rodeo, Greyscale, Ayu Mirage, OpenCode, Rosé Pine, Kanagawa,
+  Catppuccin Mocha and Latte, Glances Classic, Gruvbox Dark, Interlinked Nervosys,
+  VS Code Dark and Light Modern, Ayu Monokai, Solarized Dark, GitHub Light and Night
+  Owl. The TUI gains Interlinked's twelve it lacked.
+- A shared theme has the same colours on both surfaces, taken from Rodeo's
+  `src/themes.rs` and Interlinked's `shared-ui/themes.ts`. In the GUI its own green,
+  yellow and red replace the neon status colours. Dracula, One Dark Pro, Tokyo Night,
+  Nord, Monokai and GitHub Dark now use Interlinked's values; "Dark Monochrome" is
+  renamed "Monochrome".
+
 ### Changed (GUI)
 
 - Every tab is drawn in one card style: rounded cards with a heading, the same padding

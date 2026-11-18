@@ -17,6 +17,7 @@ mod cards;
 pub mod headless;
 mod inference_tab;
 mod profile_tab;
+mod schemes;
 mod soc;
 mod theme;
 pub mod widgets;

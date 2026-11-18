@@ -260,6 +260,30 @@ pub enum ColorTheme {
     Dracula,
     /// Gruvbox dark.
     GruvboxDark,
+    /// Interlinked: Interlinked Nervosys.
+    InterlinkedNervosys,
+    /// Interlinked: Monochrome.
+    Monochrome,
+    /// Interlinked: VS Code Dark Modern.
+    VsCodeDarkModern,
+    /// Interlinked: VS Code Light Modern.
+    VsCodeLightModern,
+    /// Interlinked: Ayu Monokai.
+    AyuMonokai,
+    /// Interlinked: Solarized Dark.
+    SolarizedDark,
+    /// Interlinked: One Dark Pro.
+    OneDarkPro,
+    /// Interlinked: GitHub Dark.
+    GitHubDark,
+    /// Interlinked: GitHub Light.
+    GitHubLight,
+    /// Interlinked: Tokyo Night.
+    TokyoNight,
+    /// Interlinked: Monokai.
+    Monokai,
+    /// Interlinked: Night Owl.
+    NightOwl,
 }
 
 impl ColorTheme {
@@ -279,6 +303,18 @@ impl ColorTheme {
             ColorTheme::Nord,
             ColorTheme::Dracula,
             ColorTheme::GruvboxDark,
+            ColorTheme::InterlinkedNervosys,
+            ColorTheme::Monochrome,
+            ColorTheme::VsCodeDarkModern,
+            ColorTheme::VsCodeLightModern,
+            ColorTheme::AyuMonokai,
+            ColorTheme::SolarizedDark,
+            ColorTheme::OneDarkPro,
+            ColorTheme::GitHubDark,
+            ColorTheme::GitHubLight,
+            ColorTheme::TokyoNight,
+            ColorTheme::Monokai,
+            ColorTheme::NightOwl,
         ]
     }
 
@@ -298,6 +334,18 @@ impl ColorTheme {
             ColorTheme::Nord => "Nord",
             ColorTheme::Dracula => "Dracula",
             ColorTheme::GruvboxDark => "Gruvbox Dark",
+            ColorTheme::InterlinkedNervosys => "Interlinked Nervosys",
+            ColorTheme::Monochrome => "Monochrome",
+            ColorTheme::VsCodeDarkModern => "VS Code Dark Modern",
+            ColorTheme::VsCodeLightModern => "VS Code Light Modern",
+            ColorTheme::AyuMonokai => "Ayu Monokai",
+            ColorTheme::SolarizedDark => "Solarized Dark",
+            ColorTheme::OneDarkPro => "One Dark Pro",
+            ColorTheme::GitHubDark => "GitHub Dark",
+            ColorTheme::GitHubLight => "GitHub Light",
+            ColorTheme::TokyoNight => "Tokyo Night",
+            ColorTheme::Monokai => "Monokai",
+            ColorTheme::NightOwl => "Night Owl",
         }
     }
 
@@ -451,6 +499,126 @@ impl ColorTheme {
                 dim: rgb((146, 131, 116)),
                 track: rgb((60, 56, 54)),
                 detail: rgb((213, 196, 161)),
+            },
+            ColorTheme::InterlinkedNervosys => Palette {
+                accent: rgb((255, 20, 164)),
+                ok: rgb((169, 215, 92)),
+                careful: rgb((102, 217, 239)),
+                warm: rgb((183, 92, 255)),
+                hot: rgb((255, 51, 51)),
+                dim: rgb((130, 140, 153)),
+                track: rgb((53, 53, 52)),
+                detail: rgb((189, 194, 198)),
+            },
+            ColorTheme::Monochrome => Palette {
+                accent: rgb((138, 138, 138)),
+                ok: rgb((154, 154, 154)),
+                careful: rgb((200, 200, 200)),
+                warm: rgb((192, 192, 192)),
+                hot: rgb((255, 255, 255)),
+                dim: rgb((140, 140, 140)),
+                track: rgb((51, 51, 51)),
+                detail: rgb((185, 185, 185)),
+            },
+            ColorTheme::VsCodeDarkModern => Palette {
+                accent: rgb((0, 120, 212)),
+                ok: rgb((129, 184, 139)),
+                careful: rgb((55, 148, 255)),
+                warm: rgb((204, 167, 0)),
+                hot: rgb((244, 135, 113)),
+                dim: rgb((157, 157, 157)),
+                track: rgb((57, 57, 57)),
+                detail: rgb((180, 180, 180)),
+            },
+            ColorTheme::VsCodeLightModern => Palette {
+                accent: rgb((0, 95, 184)),
+                ok: rgb((88, 124, 12)),
+                careful: rgb((49, 107, 205)),
+                warm: rgb((191, 136, 3)),
+                hot: rgb((229, 20, 0)),
+                dim: rgb((125, 125, 125)),
+                track: rgb((220, 220, 220)),
+                detail: rgb((92, 92, 92)),
+            },
+            ColorTheme::AyuMonokai => Palette {
+                accent: rgb((255, 143, 64)),
+                ok: rgb((169, 215, 92)),
+                careful: rgb((102, 217, 239)),
+                warm: rgb((255, 204, 102)),
+                hot: rgb((255, 51, 51)),
+                dim: rgb((130, 140, 153)),
+                track: rgb((64, 64, 63)),
+                detail: rgb((189, 194, 198)),
+            },
+            ColorTheme::SolarizedDark => Palette {
+                accent: rgb((38, 139, 210)),
+                ok: rgb((133, 153, 0)),
+                careful: rgb((42, 161, 152)),
+                warm: rgb((181, 137, 0)),
+                hot: rgb((220, 50, 47)),
+                dim: rgb((101, 123, 131)),
+                track: rgb((22, 61, 70)),
+                detail: rgb((124, 142, 146)),
+            },
+            ColorTheme::OneDarkPro => Palette {
+                accent: rgb((97, 175, 239)),
+                ok: rgb((152, 195, 121)),
+                careful: rgb((97, 175, 239)),
+                warm: rgb((229, 192, 123)),
+                hot: rgb((224, 108, 117)),
+                dim: rgb((107, 114, 128)),
+                track: rgb((60, 64, 73)),
+                detail: rgb((139, 146, 160)),
+            },
+            ColorTheme::GitHubDark => Palette {
+                accent: rgb((88, 166, 255)),
+                ok: rgb((86, 211, 100)),
+                careful: rgb((88, 166, 255)),
+                warm: rgb((210, 153, 34)),
+                hot: rgb((248, 81, 73)),
+                dim: rgb((125, 133, 144)),
+                track: rgb((41, 46, 52)),
+                detail: rgb((163, 171, 180)),
+            },
+            ColorTheme::GitHubLight => Palette {
+                accent: rgb((9, 105, 218)),
+                ok: rgb((45, 164, 78)),
+                careful: rgb((9, 105, 218)),
+                warm: rgb((154, 103, 0)),
+                hot: rgb((207, 34, 46)),
+                dim: rgb((87, 96, 106)),
+                track: rgb((214, 217, 220)),
+                detail: rgb((62, 68, 76)),
+            },
+            ColorTheme::TokyoNight => Palette {
+                accent: rgb((122, 162, 247)),
+                ok: rgb((158, 206, 106)),
+                careful: rgb((125, 207, 255)),
+                warm: rgb((224, 175, 104)),
+                hot: rgb((247, 118, 142)),
+                dim: rgb((120, 124, 153)),
+                track: rgb((51, 53, 69)),
+                detail: rgb((156, 163, 199)),
+            },
+            ColorTheme::Monokai => Palette {
+                accent: rgb((166, 226, 46)),
+                ok: rgb((166, 226, 46)),
+                careful: rgb((102, 217, 239)),
+                warm: rgb((230, 219, 116)),
+                hot: rgb((249, 38, 114)),
+                dim: rgb((117, 113, 94)),
+                track: rgb((70, 71, 65)),
+                detail: rgb((182, 180, 168)),
+            },
+            ColorTheme::NightOwl => Palette {
+                accent: rgb((130, 170, 255)),
+                ok: rgb((173, 219, 103)),
+                careful: rgb((130, 170, 255)),
+                warm: rgb((236, 196, 141)),
+                hot: rgb((239, 83, 80)),
+                dim: rgb((126, 151, 172)),
+                track: rgb((33, 52, 68)),
+                detail: rgb((170, 186, 204)),
             },
         }
     }
@@ -3144,7 +3312,8 @@ mod tests {
 
     #[test]
     fn test_color_theme_all_count() {
-        assert_eq!(ColorTheme::all().len(), 14);
+        // Fourteen of its own and Rodeo's, and Interlinked's twelve others.
+        assert_eq!(ColorTheme::all().len(), 26);
     }
 
     #[test]

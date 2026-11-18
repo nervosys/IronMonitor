@@ -152,7 +152,8 @@ pub fn data_font(ctx: &egui::Context, size: f32) -> FontId {
 
 /// Apply the selected palette without changing typography or widget geometry.
 pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
-    if selected == ColorTheme::Light {
+    let scheme = selected.scheme();
+    if selected == ColorTheme::Light || scheme.is_some_and(|s| s.light) {
         apply_light_theme(ctx);
     } else {
         apply_cyber_theme(ctx);
@@ -184,23 +185,13 @@ pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
             visuals.error_fg_color = Color32::from_gray(240);
             visuals.text_cursor.stroke.color = Color32::from_gray(225);
         } else {
-            // Adapt the editor palettes to the existing monitor surfaces.
-            let palette = match selected {
-                ColorTheme::Dracula => Some((0x282a36, 0x21222c, 0x343746, 0xf8f8f2)),
-                ColorTheme::OneDarkPro => Some((0x282c34, 0x21252b, 0x303640, 0xabb2bf)),
-                ColorTheme::TokyoNight => Some((0x1a1b26, 0x16161e, 0x24283b, 0xc0caf5)),
-                ColorTheme::Nord => Some((0x2e3440, 0x242933, 0x3b4252, 0xeceff4)),
-                ColorTheme::Monokai => Some((0x272822, 0x1e1f1c, 0x34352f, 0xf8f8f2)),
-                ColorTheme::GitHubDark => Some((0x0d1117, 0x010409, 0x161b22, 0xe6edf3)),
-                _ => None,
-            };
-            if let Some((background, dark, surface, foreground)) = palette {
-                let rgb =
-                    |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
-                visuals.window_fill = rgb(background);
-                visuals.panel_fill = rgb(background);
-                visuals.extreme_bg_color = rgb(dark);
-                visuals.faint_bg_color = rgb(surface);
+            // A shared theme's own surfaces, from the table in schemes.rs.
+            if let Some(s) = scheme {
+                use super::schemes::rgb;
+                visuals.window_fill = rgb(s.background);
+                visuals.panel_fill = rgb(s.background);
+                visuals.extreme_bg_color = rgb(s.dark);
+                visuals.faint_bg_color = rgb(s.surface);
                 for widget in [
                     &mut visuals.widgets.noninteractive,
                     &mut visuals.widgets.inactive,
@@ -208,10 +199,13 @@ pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
                     &mut visuals.widgets.active,
                     &mut visuals.widgets.open,
                 ] {
-                    widget.bg_fill = rgb(surface);
-                    widget.weak_bg_fill = rgb(surface);
-                    widget.fg_stroke.color = rgb(foreground);
+                    widget.bg_fill = rgb(s.surface);
+                    widget.weak_bg_fill = rgb(s.surface);
+                    widget.fg_stroke.color = rgb(s.foreground);
                 }
+                visuals.widgets.noninteractive.bg_stroke.color = rgb(s.border);
+                visuals.warn_fg_color = rgb(s.warn);
+                visuals.error_fg_color = rgb(s.err);
             }
             let accent = selected.accent_color();
             visuals.widgets.hovered.fg_stroke.color = accent;
@@ -254,6 +248,20 @@ pub fn color(ctx: &egui::Context, base: Color32) -> Color32 {
     }
     if selected == ColorTheme::Cyber {
         return base;
+    }
+    // A shared theme's status colours replace the neon ones, so its greens,
+    // yellows and reds are its own.
+    if let Some(s) = selected.scheme() {
+        use super::schemes::rgb;
+        if base == CyberColors::NEON_GREEN {
+            return rgb(s.ok);
+        }
+        if base == CyberColors::NEON_YELLOW {
+            return rgb(s.warn);
+        }
+        if base == CyberColors::NEON_RED {
+            return rgb(s.err);
+        }
     }
     let visuals = &ctx.style().visuals;
     match base {
@@ -613,6 +621,28 @@ mod tests {
     /// tab being broken rather than as a contrast bug.
     #[test]
     fn strong_text_is_legible_on_the_panel_it_is_drawn_on() {
+        // Every theme, by name: the shared ones carry their own surfaces.
+        for theme in ColorTheme::all() {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx, *theme);
+            let visuals = ctx.style().visuals.clone();
+            let name = theme.name();
+            assert!(
+                channel_distance(visuals.strong_text_color(), visuals.panel_fill) > 60,
+                "{name}: strong text is indistinguishable from the panel"
+            );
+            assert!(
+                channel_distance(visuals.text_color(), visuals.panel_fill) > 60,
+                "{name}: body text is indistinguishable from the panel"
+            );
+            assert!(
+                channel_distance(
+                    visuals.widgets.active.text_color(),
+                    visuals.widgets.active.bg_fill
+                ) > 60,
+                "{name}: pressed-widget text is indistinguishable from its fill"
+            );
+        }
         for (name, apply) in [
             ("cyber", apply_cyber_theme as fn(&egui::Context)),
             ("light", apply_light_theme as fn(&egui::Context)),

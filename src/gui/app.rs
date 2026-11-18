@@ -615,35 +615,84 @@ impl AiBackendSelection {
     }
 }
 
-/// Color theme options for the application
+/// Color theme options for the application.
+///
+/// Cyber and Light are the GUI's own, then the themes shared with the TUI and with
+/// Rodeo and Interlinked (their colours are in `schemes.rs`), then the GUI's
+/// accent-only themes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorTheme {
     #[default]
     Cyber, // Default neon cyber theme (dark)
-    Light,  // Clean light theme
-    Ocean,  // Blue/teal oceanic theme
-    Forest, // Green nature theme
-    Sunset, // Orange/red warm theme
+    Light, // Clean light theme
+    IronMonitor,
+    Carbon,
+    Rodeo,
+    Greyscale,
+    AyuMirage,
+    OpenCode,
+    RosePine,
+    Kanagawa,
+    CatppuccinMocha,
+    CatppuccinLatte,
+    GlancesClassic,
+    Nord,
+    Dracula,
+    GruvboxDark,
+    InterlinkedNervosys,
+    Monochrome,
+    VsCodeDarkModern,
+    VsCodeLightModern,
+    AyuMonokai,
+    SolarizedDark,
+    OneDarkPro,
+    GitHubDark,
+    GitHubLight,
+    TokyoNight,
+    Monokai,
+    NightOwl,
+    Ocean,
+    Forest,
+    Sunset,
     Amethyst,
     Rose,
     Ember,
     Ice,
     Aurora,
     Amber,
-    Dracula,
-    OneDarkPro,
-    TokyoNight,
-    Nord,
-    Monokai,
-    GitHubDark,
-    Monochrome, // Grayscale minimalist
 }
 
 impl ColorTheme {
-    fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &'static str {
         match self {
             ColorTheme::Cyber => "Cyber (Dark)",
             ColorTheme::Light => "Light",
+            ColorTheme::IronMonitor => "IronMonitor",
+            ColorTheme::Carbon => "Carbon",
+            ColorTheme::Rodeo => "Rodeo",
+            ColorTheme::Greyscale => "Greyscale",
+            ColorTheme::AyuMirage => "Ayu Mirage",
+            ColorTheme::OpenCode => "OpenCode",
+            ColorTheme::RosePine => "Rosé Pine",
+            ColorTheme::Kanagawa => "Kanagawa",
+            ColorTheme::CatppuccinMocha => "Catppuccin Mocha",
+            ColorTheme::CatppuccinLatte => "Catppuccin Latte",
+            ColorTheme::GlancesClassic => "Glances Classic",
+            ColorTheme::Nord => "Nord",
+            ColorTheme::Dracula => "Dracula",
+            ColorTheme::GruvboxDark => "Gruvbox Dark",
+            ColorTheme::InterlinkedNervosys => "Interlinked Nervosys",
+            ColorTheme::Monochrome => "Monochrome",
+            ColorTheme::VsCodeDarkModern => "VS Code Dark Modern",
+            ColorTheme::VsCodeLightModern => "VS Code Light Modern",
+            ColorTheme::AyuMonokai => "Ayu Monokai",
+            ColorTheme::SolarizedDark => "Solarized Dark",
+            ColorTheme::OneDarkPro => "One Dark Pro",
+            ColorTheme::GitHubDark => "GitHub Dark",
+            ColorTheme::GitHubLight => "GitHub Light",
+            ColorTheme::TokyoNight => "Tokyo Night",
+            ColorTheme::Monokai => "Monokai",
+            ColorTheme::NightOwl => "Night Owl",
             ColorTheme::Ocean => "Ocean",
             ColorTheme::Forest => "Forest",
             ColorTheme::Sunset => "Sunset",
@@ -653,20 +702,39 @@ impl ColorTheme {
             ColorTheme::Ice => "Ice",
             ColorTheme::Aurora => "Aurora",
             ColorTheme::Amber => "Amber",
-            ColorTheme::Dracula => "Dracula",
-            ColorTheme::OneDarkPro => "One Dark Pro",
-            ColorTheme::TokyoNight => "Tokyo Night",
-            ColorTheme::Nord => "Nord",
-            ColorTheme::Monokai => "Monokai",
-            ColorTheme::GitHubDark => "GitHub Dark",
-            ColorTheme::Monochrome => "Dark Monochrome",
         }
     }
 
-    fn all() -> &'static [ColorTheme] {
+    pub(crate) fn all() -> &'static [ColorTheme] {
         &[
             ColorTheme::Cyber,
             ColorTheme::Light,
+            ColorTheme::IronMonitor,
+            ColorTheme::Carbon,
+            ColorTheme::Rodeo,
+            ColorTheme::Greyscale,
+            ColorTheme::AyuMirage,
+            ColorTheme::OpenCode,
+            ColorTheme::RosePine,
+            ColorTheme::Kanagawa,
+            ColorTheme::CatppuccinMocha,
+            ColorTheme::CatppuccinLatte,
+            ColorTheme::GlancesClassic,
+            ColorTheme::Nord,
+            ColorTheme::Dracula,
+            ColorTheme::GruvboxDark,
+            ColorTheme::InterlinkedNervosys,
+            ColorTheme::Monochrome,
+            ColorTheme::VsCodeDarkModern,
+            ColorTheme::VsCodeLightModern,
+            ColorTheme::AyuMonokai,
+            ColorTheme::SolarizedDark,
+            ColorTheme::OneDarkPro,
+            ColorTheme::GitHubDark,
+            ColorTheme::GitHubLight,
+            ColorTheme::TokyoNight,
+            ColorTheme::Monokai,
+            ColorTheme::NightOwl,
             ColorTheme::Ocean,
             ColorTheme::Forest,
             ColorTheme::Sunset,
@@ -676,20 +744,15 @@ impl ColorTheme {
             ColorTheme::Ice,
             ColorTheme::Aurora,
             ColorTheme::Amber,
-            ColorTheme::Dracula,
-            ColorTheme::OneDarkPro,
-            ColorTheme::TokyoNight,
-            ColorTheme::Nord,
-            ColorTheme::Monokai,
-            ColorTheme::GitHubDark,
-            ColorTheme::Monochrome,
         ]
     }
 
     /// Get the primary accent color for this theme
     pub fn accent_color(&self) -> egui::Color32 {
+        if let Some(scheme) = self.scheme() {
+            return super::schemes::rgb(scheme.accent);
+        }
         match self {
-            ColorTheme::Cyber => CyberColors::CYAN,
             ColorTheme::Light => egui::Color32::from_rgb(59, 130, 246), // Blue
             ColorTheme::Ocean => egui::Color32::from_rgb(64, 224, 208), // Turquoise
             ColorTheme::Forest => egui::Color32::from_rgb(34, 197, 94), // Green
@@ -700,21 +763,17 @@ impl ColorTheme {
             ColorTheme::Ice => egui::Color32::from_rgb(111, 210, 255),
             ColorTheme::Aurora => egui::Color32::from_rgb(137, 245, 139),
             ColorTheme::Amber => egui::Color32::from_rgb(255, 202, 88),
-            ColorTheme::Dracula => egui::Color32::from_rgb(189, 147, 249),
-            ColorTheme::OneDarkPro => egui::Color32::from_rgb(97, 175, 239),
-            ColorTheme::TokyoNight => egui::Color32::from_rgb(122, 162, 247),
-            ColorTheme::Nord => egui::Color32::from_rgb(136, 192, 208),
-            ColorTheme::Monokai => egui::Color32::from_rgb(166, 226, 46),
-            ColorTheme::GitHubDark => egui::Color32::from_rgb(121, 192, 255),
             ColorTheme::Monochrome => egui::Color32::from_rgb(200, 200, 200), // Light gray
+            _ => CyberColors::CYAN,
         }
     }
 
     /// Get the secondary accent color for this theme
-    #[allow(dead_code)]
     pub fn secondary_color(&self) -> egui::Color32 {
+        if let Some(scheme) = self.scheme() {
+            return super::schemes::rgb(scheme.secondary);
+        }
         match self {
-            ColorTheme::Cyber => CyberColors::MAGENTA,
             ColorTheme::Light => egui::Color32::from_rgb(99, 102, 241), // Indigo
             ColorTheme::Ocean => egui::Color32::from_rgb(56, 189, 248), // Sky blue
             ColorTheme::Forest => egui::Color32::from_rgb(74, 222, 128), // Light green
@@ -725,13 +784,8 @@ impl ColorTheme {
             ColorTheme::Ice => egui::Color32::from_rgb(165, 178, 255),
             ColorTheme::Aurora => egui::Color32::from_rgb(195, 139, 255),
             ColorTheme::Amber => egui::Color32::from_rgb(255, 139, 94),
-            ColorTheme::Dracula => egui::Color32::from_rgb(255, 121, 198),
-            ColorTheme::OneDarkPro => egui::Color32::from_rgb(198, 120, 221),
-            ColorTheme::TokyoNight => egui::Color32::from_rgb(187, 154, 247),
-            ColorTheme::Nord => egui::Color32::from_rgb(180, 142, 173),
-            ColorTheme::Monokai => egui::Color32::from_rgb(249, 38, 114),
-            ColorTheme::GitHubDark => egui::Color32::from_rgb(210, 168, 255),
             ColorTheme::Monochrome => egui::Color32::from_rgb(150, 150, 150), // Medium gray
+            _ => CyberColors::MAGENTA,
         }
     }
 }
