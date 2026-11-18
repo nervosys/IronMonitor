@@ -282,35 +282,37 @@ pub fn color(ctx: &egui::Context, base: Color32) -> Color32 {
     }
 }
 
-/// Cyber color palette
+/// Cyber color palette: the default theme. Saturated neon on near-black, the
+/// palette the GUI first shipped with (pure cyan, magenta, green and yellow),
+/// with brighter text and cyan-tinted borders for contrast.
 pub struct CyberColors;
 
 impl CyberColors {
     // Primary colors
-    pub const BACKGROUND: Color32 = Color32::from_rgb(6, 8, 12);
-    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(3, 5, 8);
+    pub const BACKGROUND: Color32 = Color32::from_rgb(3, 4, 8);
+    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(0, 1, 3);
     #[allow(dead_code)]
-    pub const BACKGROUND_LIGHT: Color32 = Color32::from_rgb(10, 14, 20);
-    pub const SURFACE: Color32 = Color32::from_rgb(12, 16, 23);
-    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(20, 27, 37);
+    pub const BACKGROUND_LIGHT: Color32 = Color32::from_rgb(8, 11, 17);
+    pub const SURFACE: Color32 = Color32::from_rgb(9, 12, 19);
+    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(16, 24, 34);
 
     // Accent colors (neon)
-    pub const CYAN: Color32 = Color32::from_rgb(64, 232, 216);
-    pub const CYAN_DIM: Color32 = Color32::from_rgb(40, 159, 151);
-    pub const MAGENTA: Color32 = Color32::from_rgb(184, 140, 255);
+    pub const CYAN: Color32 = Color32::from_rgb(0, 255, 255);
+    pub const CYAN_DIM: Color32 = Color32::from_rgb(0, 170, 175);
+    pub const MAGENTA: Color32 = Color32::from_rgb(255, 0, 255);
     #[allow(dead_code)]
-    pub const MAGENTA_DIM: Color32 = Color32::from_rgb(122, 88, 181);
-    pub const NEON_GREEN: Color32 = Color32::from_rgb(87, 235, 148);
-    pub const NEON_ORANGE: Color32 = Color32::from_rgb(255, 164, 80);
-    pub const NEON_YELLOW: Color32 = Color32::from_rgb(245, 218, 102);
-    pub const NEON_RED: Color32 = Color32::from_rgb(255, 100, 119);
-    pub const NEON_BLUE: Color32 = Color32::from_rgb(78, 169, 255);
-    pub const NEON_PURPLE: Color32 = Color32::from_rgb(173, 128, 255);
+    pub const MAGENTA_DIM: Color32 = Color32::from_rgb(170, 0, 170);
+    pub const NEON_GREEN: Color32 = Color32::from_rgb(57, 255, 20);
+    pub const NEON_ORANGE: Color32 = Color32::from_rgb(255, 165, 0);
+    pub const NEON_YELLOW: Color32 = Color32::from_rgb(255, 255, 0);
+    pub const NEON_RED: Color32 = Color32::from_rgb(255, 60, 60);
+    pub const NEON_BLUE: Color32 = Color32::from_rgb(0, 150, 255);
+    pub const NEON_PURPLE: Color32 = Color32::from_rgb(180, 100, 255);
 
     // Text colors
-    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(232, 237, 245);
-    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(163, 175, 194);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(122, 138, 160);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(240, 245, 252);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(170, 184, 204);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(122, 140, 165);
 
     // Status colors
     #[allow(dead_code)]
@@ -328,8 +330,8 @@ impl CyberColors {
 
     // Grid and borders
     #[allow(dead_code)]
-    pub const GRID: Color32 = Color32::from_rgb(52, 74, 91);
-    pub const BORDER: Color32 = Color32::from_rgb(52, 74, 91);
+    pub const GRID: Color32 = Color32::from_rgb(18, 52, 62);
+    pub const BORDER: Color32 = Color32::from_rgb(22, 92, 104);
     #[allow(dead_code)]
     pub const BORDER_GLOW: Color32 = Color32::from_rgb(0, 200, 200);
 }
@@ -361,8 +363,8 @@ pub fn cpu_color(percent: f32) -> Color32 {
     match percent {
         p if p >= 90.0 => CyberColors::NEON_RED,
         p if p >= 70.0 => CyberColors::NEON_YELLOW,
-        p if p >= 50.0 => CyberColors::CYAN, // shared Overview accent
-        _ => Color32::from_rgb(64, 232, 216), // neon cyan
+        p if p >= 50.0 => Color32::from_rgb(0, 200, 200), // bright cyan
+        _ => CyberColors::CYAN,                           // neon cyan
     }
 }
 
@@ -373,7 +375,7 @@ pub fn disk_color(percent: f32) -> Color32 {
         p if p >= 90.0 => CyberColors::NEON_RED,
         p if p >= 70.0 => CyberColors::NEON_YELLOW,
         p if p >= 50.0 => CyberColors::NEON_ORANGE, // shared Overview accent
-        _ => Color32::from_rgb(255, 164, 80),       // neon orange
+        _ => CyberColors::NEON_ORANGE,              // neon orange
     }
 }
 
@@ -384,7 +386,7 @@ pub fn network_color(percent: f32) -> Color32 {
         p if p >= 90.0 => CyberColors::NEON_RED,
         p if p >= 70.0 => CyberColors::NEON_YELLOW,
         p if p >= 50.0 => CyberColors::NEON_BLUE, // shared Overview accent
-        _ => Color32::from_rgb(78, 169, 255),     // neon blue
+        _ => CyberColors::NEON_BLUE,              // neon blue
     }
 }
 

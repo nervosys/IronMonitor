@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (GUI)
+
+- The default Cyber theme is back to the saturated neon palette the GUI first
+  shipped with (pure cyan, magenta, green, yellow), on a near-black background
+  with brighter text and cyan-tinted card borders for more contrast.
+- The Inference tab is more compact and scales with the window: the tiles take
+  six, four, three or two columns depending on width, put the title and figure
+  on one line, and give up height before the tab scrolls. It fits 1920x1080,
+  1600x900, 1366x768 and 1280x800 screens without scrolling, which a headless
+  test checks.
+- The Providers card lists only providers that were found: those that answered,
+  or whose engine replied that its metrics are off. The rest are summed up in
+  one line ("7 not found", or "None found · 7 checked"), with each name and its
+  reason on hover.
+
 ### Fixed (GUI)
 
 - The Memory tab's map divides the installed total into used, reclaimable cache

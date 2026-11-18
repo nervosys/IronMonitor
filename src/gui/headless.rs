@@ -1555,6 +1555,35 @@ mod laptop_fit_tests {
             .fold(0.0, f32::max)
     }
 
+    /// The Inference tab fits common screens without scrolling: the tiles take
+    /// six columns where they can and give up height before the tab overflows.
+    /// The sizes are the content area left on a 1920x1080, 1600x900, 1366x768
+    /// and 1280x800 display once the title, tab and status bars are drawn.
+    #[test]
+    fn the_inference_tab_fits_common_screens_without_scrolling() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("inference")
+            .expect("inference is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+        let mut overflows = Vec::new();
+        for (w, h) in [
+            (1904.0, 960.0),
+            (1584.0, 780.0),
+            (1350.0, 650.0),
+            (1264.0, 680.0),
+        ] {
+            let bottom = overview_bottom(&mut app, &ctx, egui::vec2(w, h));
+            if bottom > h + 4.0 {
+                overflows.push(format!("{w:.0}x{h:.0}: painted to {bottom:.0}"));
+            }
+        }
+        assert!(
+            overflows.is_empty(),
+            "the Inference tab scrolls at {overflows:?}"
+        );
+    }
+
     /// The Overview's charts give up height before the tab scrolls, and only as
     /// much as the room requires.
     ///

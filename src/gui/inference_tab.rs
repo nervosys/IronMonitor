@@ -111,17 +111,42 @@ impl IronMonitorApp {
     }
 }
 
-/// The providers, one line each: the name and its state, with the reason on
-/// hover. IronWorks' full panel is behind a toggle.
+/// Whether a provider was found: it answered with a sample, or it answered
+/// with the reply the engine itself sends when its metrics are off. An error
+/// status or an unreadable body from its endpoint does not establish that the
+/// provider is there (another service may hold the port, or a hosted API may
+/// refuse the key), and one not running, not configured or not yet polled was
+/// not found. Those are listed by name, with their reasons, on hover.
+fn found(state: &SourceState) -> bool {
+    state.reachable
+        || state
+            .last_error
+            .as_ref()
+            .is_some_and(|f| matches!(f.error, crate::inference::SourceError::MetricsNotEnabled))
+}
+
+/// The providers that were found, one line each: the name and its state, with
+/// the reason on hover. Those not found are left out; how many were checked is
+/// said once, with their names on hover. IronWorks' full panel is behind a
+/// toggle.
 fn draw_providers(ui: &mut egui::Ui, states: &[SourceState], gpus: &[GpuView]) {
     cards::card(ui, |ui| {
         let ctx = ui.ctx().clone();
         cards::heading(ui, "Providers");
+        let (shown, missing): (Vec<&SourceState>, Vec<&SourceState>) =
+            states.iter().partition(|s| found(s));
         if states.is_empty() {
             ui.label(RichText::new("No inference engine is configured.").color(cards::muted(&ctx)));
+        } else if shown.is_empty() {
+            ui.label(
+                RichText::new(format!("None found · {} checked", states.len()))
+                    .size(13.0)
+                    .color(cards::muted(&ctx)),
+            )
+            .on_hover_text(checked_names(&missing));
         }
         ui.spacing_mut().item_spacing.y = 6.0;
-        for state in states {
+        for state in shown {
             let row = crate::inference::compact_row(state);
             let hue = match row.status {
                 "running" => cards::good(&ctx),
@@ -146,7 +171,32 @@ fn draw_providers(ui: &mut egui::Ui, states: &[SourceState], gpus: &[GpuView]) {
                     .show(ui, |ui| draw_source(ui, state, gpus));
             }
         }
+        // Said once, below the found ones; with none found it is said above.
+        if shown_any(states) && !missing.is_empty() {
+            ui.label(
+                RichText::new(format!("{} not found", missing.len()))
+                    .size(12.5)
+                    .color(cards::muted(&ctx)),
+            )
+            .on_hover_text(checked_names(&missing));
+        }
     });
+}
+
+fn shown_any(states: &[SourceState]) -> bool {
+    states.iter().any(found)
+}
+
+/// "Ollama: not running — <reason>", one per line, for a hover.
+fn checked_names(states: &[&SourceState]) -> String {
+    states
+        .iter()
+        .map(|s| {
+            let row = crate::inference::compact_row(s);
+            format!("{}: {} — {}", provider_name(s.kind), row.status, row.detail)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One engine, top to bottom.
@@ -642,8 +692,18 @@ fn bytes_text(bytes: u64) -> String {
 use super::cards;
 use crate::inference::monitor::{Monitor, Phase, Tile};
 
-/// Tiles per row in the monitor grid.
-const TILE_COLUMNS: usize = 4;
+/// The narrowest a tile may be before the grid drops a column.
+const TILE_MIN_WIDTH: f32 = 180.0;
+
+/// Tiles per row for this width: the most of 6, 4, 3 or 2 (each divides the
+/// twelve tiles into full rows) that keeps every tile at least
+/// `TILE_MIN_WIDTH` wide.
+fn tile_columns(width: f32, gap: f32) -> usize {
+    [6, 4, 3, 2]
+        .into_iter()
+        .find(|&n| (width - gap * (n as f32 - 1.0)) / n as f32 >= TILE_MIN_WIDTH)
+        .unwrap_or(2)
+}
 
 /// The monitor: the model-state card, the tiles, gauges beside recent requests.
 /// Built by `crate::inference::monitor`, which the TUI draws from too, and drawn
@@ -667,10 +727,11 @@ fn draw_monitor(
     let top = ui.cursor().min.y;
     draw_strip(ui, monitor);
     let strip = ui.cursor().min.y - top;
-    let rows = monitor.tiles.len().div_ceil(TILE_COLUMNS).max(1) as f32;
+    let columns = tile_columns(ui.available_width(), GAP);
+    let rows = monitor.tiles.len().div_ceil(columns).max(1) as f32;
     let tile = ((height - strip - bottom - GAP * (rows + 1.0)) / rows).clamp(TILE_MIN, TILE_MAX);
-    for row in monitor.tiles.chunks(TILE_COLUMNS) {
-        ui.columns(TILE_COLUMNS, |cols| {
+    for row in monitor.tiles.chunks(columns) {
+        ui.columns(columns, |cols| {
             for (t, col) in row.iter().zip(cols.iter_mut()) {
                 draw_tile(col, t, tile);
             }
@@ -728,10 +789,18 @@ fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
     let strip = &monitor.strip;
     cards::card(ui, |ui| {
         let ctx = ui.ctx().clone();
+        let mut engine = strip.engine.clone();
+        if let Some(c) = strip.context {
+            engine = format!("{engine} · {} context", crate::inference::monitor::fmt_k(c));
+        }
+        // The engine and the phase chips share a line; the detail takes the
+        // right edge, or its own line when the window is narrow.
+        let wide = ui.available_width() >= 1100.0;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             cards::heading(ui, "Model state");
-            ui.add_space(8.0);
+            ui.label(RichText::new(&engine).size(15.0).color(cards::strong(&ctx)));
+            ui.add_space(6.0);
             for phase in Phase::ALL {
                 cards::chip(
                     ui,
@@ -740,26 +809,33 @@ fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
                     strip.lit == Some(phase),
                 );
             }
+            if wide {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&strip.detail)
+                                .size(13.0)
+                                .color(cards::muted(&ctx)),
+                        )
+                        .truncate(),
+                    );
+                });
+            }
         });
-        ui.add_space(6.0);
-        let mut engine = strip.engine.clone();
-        if let Some(c) = strip.context {
-            engine = format!("{engine} · {} context", crate::inference::monitor::fmt_k(c));
-        }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(engine).size(15.0).color(cards::strong(&ctx)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&strip.detail)
-                            .size(14.0)
-                            .color(cards::muted(&ctx)),
-                    )
-                    .truncate(),
-                );
+        if !wide {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&strip.detail)
+                                .size(13.0)
+                                .color(cards::muted(&ctx)),
+                        )
+                        .truncate(),
+                    );
+                });
             });
-        });
-        ui.add_space(4.0);
+        }
         // How far the request in flight is, where the engine counts it.
         if let Some(p) = strip.progress {
             cards::thin_bar(ui, p, cards::good(&ctx));
@@ -775,9 +851,9 @@ fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
 }
 
 /// The ring's diameter, and the bounds on a tile's height when fitting the window.
-const RING: f32 = 130.0;
-const TILE_MIN: f32 = 132.0;
-const TILE_MAX: f32 = 200.0;
+const RING: f32 = 108.0;
+const TILE_MIN: f32 = 92.0;
+const TILE_MAX: f32 = 140.0;
 
 /// A tile `height` tall, card margins included; the sparkline takes what is left.
 fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
@@ -786,13 +862,41 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
         let inner = height - 2.0 * cards::MARGIN as f32;
         ui.set_min_height(inner);
         ui.set_max_height(inner);
-        ui.spacing_mut().item_spacing.y = 6.0;
-        cards::title(ui, "", tile.title);
-        cards::figure(ui, tile.value.as_deref(), &tile.unit);
+        ui.spacing_mut().item_spacing.y = 3.0;
+        // Title and figure on one line: the title left, the figure right.
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(tile.title)
+                    .size(13.5)
+                    .color(cards::muted(&ctx)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                match tile.value.as_deref() {
+                    Some(v) => {
+                        if !tile.unit.is_empty() {
+                            ui.label(
+                                RichText::new(&tile.unit)
+                                    .size(13.0)
+                                    .color(cards::muted(&ctx)),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(v)
+                                .font(theme::data_font(&ctx, 24.0))
+                                .color(cards::strong(&ctx)),
+                        );
+                    }
+                    None => {
+                        ui.label(RichText::new("—").size(24.0).color(cards::muted(&ctx)));
+                    }
+                }
+            });
+        });
         ui.add(
             egui::Label::new(
                 RichText::new(&tile.detail)
-                    .size(13.0)
+                    .size(12.5)
                     .color(cards::muted(&ctx)),
             )
             .truncate(),
@@ -803,8 +907,8 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
             "PCIe" | "Disk read" => cards::info(&ctx),
             _ => cards::good(&ctx),
         };
-        ui.add_space(4.0);
-        let spark = (inner - 92.0).max(20.0);
+        ui.add_space(2.0);
+        let spark = (inner - 52.0).max(16.0);
         cards::area_spark(ui, &tile.spark, tile.spark_max, hue, spark);
     });
 }
@@ -889,7 +993,7 @@ fn draw_recent(ui: &mut egui::Ui, monitor: &Monitor) {
         // figure the table carries is named.
         egui::Grid::new("inference_recent_requests")
             .striped(false)
-            .spacing([22.0, 12.0])
+            .spacing([16.0, 6.0])
             .show(ui, |ui| {
                 for c in &req.columns {
                     ui.label(
@@ -905,7 +1009,7 @@ fn draw_recent(ui: &mut egui::Ui, monitor: &Monitor) {
                         if i == 1 && cell != "—" {
                             cards::status_pill(ui, cell);
                         } else {
-                            ui.label(RichText::new(cell).size(14.5).color(cards::strong(&ctx)));
+                            ui.label(RichText::new(cell).size(13.5).color(cards::strong(&ctx)));
                         }
                     }
                     ui.end_row();
@@ -1019,6 +1123,44 @@ mod tests {
             Some("unknown"),
             "{lines:?}"
         );
+    }
+
+    fn failed(error: SourceError) -> SourceState {
+        let mut state = reachable_state(A_NVME_CONFIGURED, |_| {});
+        state.reachable = false;
+        state.latest = None;
+        state.last_error = Some(crate::inference::Failure {
+            error,
+            at: Instant::now(),
+        });
+        state
+    }
+
+    /// Only providers that were found are listed: one that answered, or one
+    /// whose engine replied that its metrics are off.
+    #[test]
+    fn providers_not_found_are_not_listed() {
+        assert!(found(&reachable_state(A_NVME_CONFIGURED, |_| {})));
+        assert!(found(&failed(SourceError::MetricsNotEnabled)));
+        for error in [
+            SourceError::Unreachable("connection refused".into()),
+            SourceError::NotConfigured("set IRONMON_X".into()),
+            SourceError::Status(401),
+            SourceError::NotJson("<html>".into()),
+        ] {
+            let state = failed(error.clone());
+            assert!(!found(&state), "{error:?} should not count as found");
+        }
+    }
+
+    /// Six columns on a wide window, fewer as it narrows, never one.
+    #[test]
+    fn tile_columns_follow_the_width() {
+        assert_eq!(tile_columns(1880.0, 12.0), 6);
+        assert_eq!(tile_columns(1240.0, 12.0), 6);
+        assert_eq!(tile_columns(1000.0, 12.0), 4);
+        assert_eq!(tile_columns(640.0, 12.0), 3);
+        assert_eq!(tile_columns(300.0, 12.0), 2);
     }
 
     #[test]

@@ -114,40 +114,6 @@ pub fn heading(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// A tile's small title, with an optional glyph before it.
-pub fn title(ui: &mut egui::Ui, glyph: &str, text: &str) {
-    let c = muted(ui.ctx());
-    ui.horizontal(|ui| {
-        if !glyph.is_empty() {
-            ui.label(RichText::new(glyph).size(14.0).color(c));
-        }
-        ui.label(RichText::new(text).size(14.0).color(c));
-    });
-}
-
-/// A large figure with its unit set small beside it; a dash when there is none.
-pub fn figure(ui: &mut egui::Ui, value: Option<&str>, unit: &str) {
-    let ctx = ui.ctx().clone();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        match value {
-            Some(v) => {
-                ui.label(
-                    RichText::new(v)
-                        .font(theme::data_font(&ctx, 30.0))
-                        .color(strong(&ctx)),
-                );
-                if !unit.is_empty() {
-                    ui.label(RichText::new(unit).size(14.0).color(muted(&ctx)));
-                }
-            }
-            None => {
-                ui.label(RichText::new("—").size(30.0).color(muted(&ctx)));
-            }
-        }
-    });
-}
-
 /// A small coloured dot followed by text, in a soft pill of the same hue.
 ///
 /// `lit` fills the pill more strongly and keeps the text at full colour; an
