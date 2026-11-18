@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (GUI)
 
+- The Inference tab's cards form an even grid at every window size and UI
+  scale: tiles in a row are one size, the three lower cards share a width and
+  the tallest one's height, and no card overlaps another. Tiles fit their
+  content to the card, so a tile with a graph is no taller than one without.
+  Graphs grow with the display (tiles up to 280 pt, up from 140), and the line,
+  the context ring and its figure scale with their size. The requests table
+  scrolls sideways inside its card when narrow. Headless tests check the grid
+  at ten sizes, from 1440p down to 1280x800 at a UI scale of 2.
 - The default Cyber theme is back to the saturated neon palette the GUI first
   shipped with (pure cyan, magenta, green, yellow), on a near-black background
   with brighter text and cyan-tinted card borders for more contrast.

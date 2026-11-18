@@ -130,7 +130,8 @@ fn found(state: &SourceState) -> bool {
 /// said once, with their names on hover. IronWorks' full panel is behind a
 /// toggle.
 fn draw_providers(ui: &mut egui::Ui, states: &[SourceState], gpus: &[GpuView]) {
-    cards::card(ui, |ui| {
+    // The caller supplies the card, so a row of them can share a size.
+    {
         let ctx = ui.ctx().clone();
         cards::heading(ui, "Providers");
         let (shown, missing): (Vec<&SourceState>, Vec<&SourceState>) =
@@ -180,7 +181,7 @@ fn draw_providers(ui: &mut egui::Ui, states: &[SourceState], gpus: &[GpuView]) {
             )
             .on_hover_text(checked_names(&missing));
         }
-    });
+    }
 }
 
 fn shown_any(states: &[SourceState]) -> bool {
@@ -705,9 +706,13 @@ fn tile_columns(width: f32, gap: f32) -> usize {
         .unwrap_or(2)
 }
 
-/// The monitor: the model-state card, the tiles, gauges beside recent requests.
-/// Built by `crate::inference::monitor`, which the TUI draws from too, and drawn
-/// as cards (see `super::cards`).
+/// The monitor: the model-state card, the tiles, then the gauges, recent
+/// requests and providers. Built by `crate::inference::monitor`, which the TUI
+/// draws from too, and drawn as cards (see `super::cards`).
+///
+/// Every row is a grid of equal cards: the tiles share one size, and the cards
+/// below share a width and the height of the tallest. Nothing is placed by a
+/// fixed offset, so no window size or UI scale makes two cards overlap.
 fn draw_monitor(
     ui: &mut egui::Ui,
     monitor: &Monitor,
@@ -717,8 +722,8 @@ fn draw_monitor(
 ) {
     const GAP: f32 = cards::GAP;
     ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
-    // The bottom row's height as drawn last frame, so the tiles take exactly what
-    // is left; the first frame uses a typical height.
+    // The lower cards' height as drawn last frame, so the tiles take exactly
+    // what is left; the first frame uses a typical height.
     let bottom_id = egui::Id::new("inference_bottom_row_height");
     let bottom = ui
         .ctx()
@@ -727,51 +732,114 @@ fn draw_monitor(
     let top = ui.cursor().min.y;
     draw_strip(ui, monitor);
     let strip = ui.cursor().min.y - top;
-    let columns = tile_columns(ui.available_width(), GAP);
-    let rows = monitor.tiles.len().div_ceil(columns).max(1) as f32;
-    let tile = ((height - strip - bottom - GAP * (rows + 1.0)) / rows).clamp(TILE_MIN, TILE_MAX);
-    for row in monitor.tiles.chunks(columns) {
-        ui.columns(columns, |cols| {
-            for (t, col) in row.iter().zip(cols.iter_mut()) {
-                draw_tile(col, t, tile);
-            }
-        });
-    }
-    // Three columns: the gauges, the requests table, the providers. Each is its
-    // own top-down area, so its rows stack rather than run across.
+
     let width = ui.available_width();
-    // Too narrow for three columns: stack the cards instead.
-    if width < 1100.0 {
-        ui.spacing_mut().item_spacing.y = GAP;
-        draw_gauges(ui, monitor);
-        draw_recent(ui, monitor);
-        draw_providers(ui, states, gpus);
-        return;
+    let columns = tile_columns(width, GAP);
+    let rows = monitor.tiles.len().div_ceil(columns).max(1) as f32;
+    let fit = (height - strip - bottom - GAP * (rows + 1.0)) / rows;
+    let tile = fit.clamp(tile_min_height(ui.ctx()), TILE_MAX);
+    let tile_width = (width - GAP * (columns as f32 - 1.0)) / columns as f32;
+    for row in monitor.tiles.chunks(columns) {
+        let origin = ui.cursor().min;
+        for (i, t) in row.iter().enumerate() {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(origin.x + i as f32 * (tile_width + GAP), origin.y),
+                egui::vec2(tile_width, tile),
+            );
+            draw_tile(ui, t, rect);
+        }
+        ui.allocate_space(egui::vec2(width, tile));
     }
-    let usable = (width - 2.0 * GAP).max(0.0);
-    let widths = [usable * 0.30, usable * 0.44, usable * 0.26];
+
+    // The lower cards: three abreast where they fit, else gauges beside
+    // providers over a full-width table, else one above another.
+    let lower_top = ui.cursor().min.y;
+    if width >= THREE_ACROSS {
+        equal_row(
+            ui,
+            "inference_lower_3",
+            &mut [
+                &mut |ui| draw_gauges(ui, monitor),
+                &mut |ui| draw_recent(ui, monitor),
+                &mut |ui| draw_providers(ui, states, gpus),
+            ],
+        );
+    } else if width >= TWO_ACROSS {
+        equal_row(
+            ui,
+            "inference_lower_2",
+            &mut [&mut |ui| draw_gauges(ui, monitor), &mut |ui| {
+                draw_providers(ui, states, gpus)
+            }],
+        );
+        equal_row(
+            ui,
+            "inference_lower_1",
+            &mut [&mut |ui| draw_recent(ui, monitor)],
+        );
+    } else {
+        equal_row(
+            ui,
+            "inference_stack_0",
+            &mut [&mut |ui| draw_gauges(ui, monitor)],
+        );
+        equal_row(
+            ui,
+            "inference_stack_1",
+            &mut [&mut |ui| draw_recent(ui, monitor)],
+        );
+        equal_row(
+            ui,
+            "inference_stack_2",
+            &mut [&mut |ui| draw_providers(ui, states, gpus)],
+        );
+    }
+    let lower = ui.cursor().min.y - lower_top;
+    ui.ctx().data_mut(|d| d.insert_temp(bottom_id, lower));
+}
+
+/// The widths at which the lower cards go three abreast, or two.
+const THREE_ACROSS: f32 = 1240.0;
+const TWO_ACROSS: f32 = 720.0;
+
+/// Cards side by side, sharing the row's width equally and the height of the
+/// tallest. Each card's own height is measured before it is stretched and kept
+/// for the next frame, so the row settles at the tallest natural height and
+/// shrinks again when that card does.
+fn equal_row(ui: &mut egui::Ui, id: &str, draws: &mut [&mut dyn FnMut(&mut egui::Ui)]) {
+    const GAP: f32 = cards::GAP;
+    let id = egui::Id::new(id);
+    let ctx = ui.ctx().clone();
+    let target = ctx.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+    let n = draws.len().max(1) as f32;
+    let width = ui.available_width();
+    let w = ((width - GAP * (n - 1.0)) / n).max(0.0);
     let origin = ui.cursor().min;
-    let mut x = origin.x;
+    let mut natural: f32 = 0.0;
     let mut tallest: f32 = 0.0;
-    for (i, w) in widths.into_iter().enumerate() {
+    for (i, draw) in draws.iter_mut().enumerate() {
         let mut col = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(egui::Rect::from_min_size(
-                    egui::pos2(x, origin.y),
+                    egui::pos2(origin.x + i as f32 * (w + GAP), origin.y),
                     egui::vec2(w, f32::INFINITY),
                 ))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        col.spacing_mut().item_spacing.y = GAP;
-        match i {
-            0 => draw_gauges(&mut col, monitor),
-            1 => draw_recent(&mut col, monitor),
-            _ => draw_providers(&mut col, states, gpus),
-        }
-        tallest = tallest.max(col.min_rect().height());
-        x += w + GAP;
+        let frame = cards::frame(&ctx).show(&mut col, |ui| {
+            ui.set_width(ui.available_width());
+            // Reserved from the top (egui reserves from the cursor), then the
+            // card's own height measured apart from it.
+            ui.set_min_height(target);
+            ui.vertical(|ui| draw(ui)).response.rect.height()
+        });
+        natural = natural.max(frame.inner);
+        tallest = tallest.max(frame.response.rect.height());
     }
-    ui.ctx().data_mut(|d| d.insert_temp(bottom_id, tallest));
+    if (natural - target).abs() > 0.5 {
+        ctx.data_mut(|d| d.insert_temp(id, natural));
+        ctx.request_repaint();
+    }
     ui.allocate_space(egui::vec2(width, tallest));
 }
 
@@ -850,80 +918,97 @@ fn draw_strip(ui: &mut egui::Ui, monitor: &Monitor) {
     });
 }
 
-/// The ring's diameter, and the bounds on a tile's height when fitting the window.
-const RING: f32 = 108.0;
-const TILE_MIN: f32 = 92.0;
-const TILE_MAX: f32 = 140.0;
+/// The tallest a tile grows on a large display, and the shortest graph worth
+/// drawing in one.
+const TILE_MAX: f32 = 280.0;
+const SPARK_MIN: f32 = 18.0;
+const TILE_SPACING: f32 = 3.0;
 
-/// A tile `height` tall, card margins included; the sparkline takes what is left.
-fn draw_tile(ui: &mut egui::Ui, tile: &Tile, height: f32) {
-    cards::card(ui, |ui| {
-        let ctx = ui.ctx().clone();
-        let inner = height - 2.0 * cards::MARGIN as f32;
-        ui.set_min_height(inner);
-        ui.set_max_height(inner);
-        ui.spacing_mut().item_spacing.y = 3.0;
-        // Title and figure on one line: the title left, the figure right.
+/// A tile's figure: large enough to read at a glance, smaller in a narrow tile.
+fn figure_size(tile_width: f32) -> f32 {
+    (tile_width / 9.0).clamp(20.0, 30.0)
+}
+
+/// The shortest tile that holds its title, figure, detail and a graph without
+/// any of them overflowing. Derived from the fonts rather than fixed, so it
+/// stays right whatever the theme's text sizes are.
+fn tile_min_height(ctx: &egui::Context) -> f32 {
+    let figure_font = theme::data_font(ctx, figure_size(f32::INFINITY));
+    let detail_font = egui::FontId::proportional(12.5);
+    let (figure, detail) =
+        ctx.fonts_mut(|f| (f.row_height(&figure_font), f.row_height(&detail_font)));
+    2.0 * (cards::MARGIN as f32 + 1.0) + figure + detail + 2.0 * TILE_SPACING + SPARK_MIN
+}
+
+/// A tile filling `rect` exactly: the card, its title and figure, the detail,
+/// then the graph in whatever height is left. The content is fitted to the
+/// card rather than the card to the content, so every tile in a row is the
+/// same size and none spills into the next.
+fn draw_tile(ui: &mut egui::Ui, tile: &Tile, rect: egui::Rect) {
+    let ctx = ui.ctx().clone();
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let inner = rect.shrink(cards::MARGIN as f32 + 1.0);
+    cards::frame(&ctx).show(&mut child, |ui| {
+        ui.set_min_size(inner.size());
+        ui.set_max_size(inner.size());
+        ui.spacing_mut().item_spacing.y = TILE_SPACING;
+        let top = ui.cursor().min.y;
+        let size = figure_size(rect.width());
+        let muted = cards::muted(&ctx);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(tile.title)
-                    .size(13.5)
-                    .color(cards::muted(&ctx)),
-            );
+            ui.add(egui::Label::new(RichText::new(tile.title).size(13.5).color(muted)).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 match tile.value.as_deref() {
                     Some(v) => {
                         if !tile.unit.is_empty() {
-                            ui.label(
-                                RichText::new(&tile.unit)
-                                    .size(13.0)
-                                    .color(cards::muted(&ctx)),
-                            );
+                            ui.label(RichText::new(&tile.unit).size(13.0).color(muted));
                         }
                         ui.label(
                             RichText::new(v)
-                                .font(theme::data_font(&ctx, 24.0))
+                                .font(theme::data_font(&ctx, size))
                                 .color(cards::strong(&ctx)),
                         );
                     }
                     None => {
-                        ui.label(RichText::new("—").size(24.0).color(cards::muted(&ctx)));
+                        ui.label(RichText::new("—").size(size).color(muted));
                     }
                 }
             });
         });
-        ui.add(
-            egui::Label::new(
-                RichText::new(&tile.detail)
-                    .size(12.5)
-                    .color(cards::muted(&ctx)),
-            )
-            .truncate(),
-        )
-        .on_hover_text(&tile.detail);
+        ui.add(egui::Label::new(RichText::new(&tile.detail).size(12.5).color(muted)).truncate())
+            .on_hover_text(&tile.detail);
         let hue = match tile.title {
             "GPU temp" => cards::warm(&ctx),
             "PCIe" | "Disk read" => cards::info(&ctx),
             _ => cards::good(&ctx),
         };
-        ui.add_space(2.0);
-        let spark = (inner - 52.0).max(16.0);
-        cards::area_spark(ui, &tile.spark, tile.spark_max, hue, spark);
+        let left = inner.height() - (ui.cursor().min.y - top);
+        if left >= SPARK_MIN {
+            cards::area_spark(ui, &tile.spark, tile.spark_max, hue, left);
+        }
     });
 }
 
 fn draw_gauges(ui: &mut egui::Ui, monitor: &Monitor) {
-    cards::card(ui, |ui| {
+    // The caller supplies the card, so a row of them can share a size.
+    {
         let ctx = ui.ctx().clone();
         let mut gauges = monitor.gauges.iter().peekable();
         let context = gauges.next_if(|g| g.label == "Context fill");
         cards::heading(ui, context.map_or("Memory and cache", |g| g.label));
+        // The ring scales with the card, within bounds that keep its figure legible.
+        let ring_size = (ui.available_width() * 0.32).clamp(88.0, 170.0);
         ui.horizontal_top(|ui| {
             // The context fill is the ring, the figure most worth a glance.
             if let Some(g) = context {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(RING, 0.0),
+                    egui::vec2(ring_size, 0.0),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         let big = g
@@ -934,7 +1019,7 @@ fn draw_gauges(ui: &mut egui::Ui, monitor: &Monitor) {
                         } else {
                             ""
                         };
-                        cards::ring(ui, g.ratio, &big, small, cards::good(&ctx), RING);
+                        cards::ring(ui, g.ratio, &big, small, cards::good(&ctx), ring_size);
                         if g.ratio.is_none() {
                             ui.add(
                                 egui::Label::new(
@@ -975,12 +1060,13 @@ fn draw_gauges(ui: &mut egui::Ui, monitor: &Monitor) {
                 }
             });
         });
-    });
+    }
 }
 
 fn draw_recent(ui: &mut egui::Ui, monitor: &Monitor) {
     let req = &monitor.requests;
-    cards::card(ui, |ui| {
+    // The caller supplies the card, so a row of them can share a size.
+    {
         let ctx = ui.ctx().clone();
         cards::heading(ui, "Recent requests");
         ui.label(
@@ -991,31 +1077,40 @@ fn draw_recent(ui: &mut egui::Ui, monitor: &Monitor) {
         ui.add_space(6.0);
         // The columns stay on screen even when there are no rows, so every
         // figure the table carries is named.
-        egui::Grid::new("inference_recent_requests")
-            .striped(false)
-            .spacing([16.0, 6.0])
+        // A narrow card scrolls the table sideways rather than letting it run
+        // into the card beside it.
+        egui::ScrollArea::horizontal()
+            .id_salt("inference_recent_scroll")
+            .auto_shrink([false, true])
             .show(ui, |ui| {
-                for c in &req.columns {
-                    ui.label(
-                        RichText::new(c.to_uppercase())
-                            .size(12.5)
-                            .strong()
-                            .color(cards::muted(&ctx)),
-                    );
-                }
-                ui.end_row();
-                for row in &req.rows {
-                    for (i, cell) in row.iter().enumerate() {
-                        if i == 1 && cell != "—" {
-                            cards::status_pill(ui, cell);
-                        } else {
-                            ui.label(RichText::new(cell).size(13.5).color(cards::strong(&ctx)));
+                egui::Grid::new("inference_recent_requests")
+                    .striped(false)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        for c in &req.columns {
+                            ui.label(
+                                RichText::new(c.to_uppercase())
+                                    .size(11.5)
+                                    .strong()
+                                    .color(cards::muted(&ctx)),
+                            );
                         }
-                    }
-                    ui.end_row();
-                }
+                        ui.end_row();
+                        for row in &req.rows {
+                            for (i, cell) in row.iter().enumerate() {
+                                if i == 1 && cell != "—" {
+                                    cards::status_pill(ui, cell);
+                                } else {
+                                    ui.label(
+                                        RichText::new(cell).size(13.5).color(cards::strong(&ctx)),
+                                    );
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
             });
-    });
+    }
 }
 
 #[cfg(test)]

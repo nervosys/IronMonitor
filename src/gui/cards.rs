@@ -208,11 +208,14 @@ pub fn area_spark(ui: &mut egui::Ui, points: &[f64], max: Option<f64>, hue: Colo
         // A flat zero series is still a reading: a line along the floor.
         ui.painter().line_segment(
             [rect.left_bottom(), rect.right_bottom()],
-            Stroke::new(2.0_f32, hue),
+            Stroke::new(spark_stroke(height), hue),
         );
         return;
     }
     let n = points.len() - 1;
+    // The line thickens with the chart, so a tall chart on a large or zoomed
+    // display stays as easy to follow as a small one.
+    let width = spark_stroke(height);
     let pts: Vec<Pos2> = points
         .iter()
         .enumerate()
@@ -235,7 +238,12 @@ pub fn area_spark(ui: &mut egui::Ui, points: &[f64], max: Option<f64>, hue: Colo
     }
     let painter = ui.painter();
     painter.add(egui::Shape::mesh(mesh));
-    painter.add(egui::Shape::line(pts, Stroke::new(2.0_f32, hue)));
+    painter.add(egui::Shape::line(pts, Stroke::new(width, hue)));
+}
+
+/// A sparkline's line width for a chart `height` points tall.
+fn spark_stroke(height: f32) -> f32 {
+    (height / 30.0).clamp(1.5, 3.5)
 }
 
 /// A thin rounded bar of `ratio` over a pale track.
@@ -296,7 +304,10 @@ pub fn ring(
     let size = size.min(ui.available_width());
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size), Sense::hover());
     let center = Pos2::new(rect.center().x, rect.top() + size / 2.0);
-    let radius = size / 2.0 - 10.0;
+    // Track, figure and caption scale with the ring, so it can shrink to fit a
+    // narrow card or grow on a large one without its text outgrowing it.
+    let track = (size * 0.11).clamp(6.0, 18.0);
+    let radius = size / 2.0 - track * 0.75;
     // From 135° (lower left) clockwise through the top to 405° (lower right).
     let arc = |from: f32, to: f32| -> Vec<Pos2> {
         let steps = 64;
@@ -311,33 +322,30 @@ pub fn ring(
     let painter = ui.painter();
     painter.add(egui::Shape::line(
         arc(135.0, 405.0),
-        Stroke::new(14.0_f32, hairline(&ctx).gamma_multiply(0.7)),
+        Stroke::new(track, hairline(&ctx).gamma_multiply(0.7)),
     ));
     if let Some(r) = ratio {
         let r = r.clamp(0.0, 1.0) as f32;
         if r > 0.0 {
             let end = 135.0 + 270.0 * r;
-            painter.add(egui::Shape::line(
-                arc(135.0, end),
-                Stroke::new(14.0_f32, hue),
-            ));
+            painter.add(egui::Shape::line(arc(135.0, end), Stroke::new(track, hue)));
             for p in [arc(135.0, 135.0)[0], arc(end, end)[0]] {
-                painter.circle_filled(p, 7.0, hue);
+                painter.circle_filled(p, track / 2.0, hue);
             }
         }
     }
     painter.text(
-        center - Vec2::new(0.0, 8.0),
+        center - Vec2::new(0.0, size * 0.06),
         egui::Align2::CENTER_CENTER,
         big,
-        theme::data_font(&ctx, 28.0),
+        theme::data_font(&ctx, (size * 0.21).clamp(16.0, 34.0)),
         strong(&ctx),
     );
     painter.text(
-        center + Vec2::new(0.0, 18.0),
+        center + Vec2::new(0.0, size * 0.14),
         egui::Align2::CENTER_CENTER,
         small,
-        egui::FontId::proportional(13.0),
+        egui::FontId::proportional((size * 0.1).clamp(10.0, 14.0)),
         muted(&ctx),
     );
 }

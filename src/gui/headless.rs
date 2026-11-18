@@ -392,6 +392,37 @@ fn collect_shape_rects(shape: &egui::Shape, out: &mut Vec<(&'static str, egui::R
     }
 }
 
+/// Like `painted_shape_rects`, with each shape's rect also cut to the clip
+/// rect it was painted under: what a reader can actually see of it. A label
+/// inside a scroll area may extend past the area; only the visible part counts
+/// as spilling out of anything.
+pub fn painted_visible_rects(
+    ctx: &Context,
+    size: egui::Vec2,
+    mut body: impl FnMut(&mut egui::Ui),
+) -> Vec<(&'static str, egui::Rect, egui::Rect)> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    let _warmup = run_frame();
+    let settled = run_frame();
+    let mut out = Vec::new();
+    for clipped in &settled.shapes {
+        let mut rects = Vec::new();
+        collect_shape_rects(&clipped.shape, &mut rects);
+        for (kind, rect) in rects {
+            out.push((kind, rect, rect.intersect(clipped.clip_rect)));
+        }
+    }
+    out
+}
+
 /// What paints furthest past the right edge, widest first.
 ///
 /// Reports *any* shape, so the answer can be a chart or a frame rather than a
@@ -1838,5 +1869,172 @@ mod data_label_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod inference_geometry_tests {
+    use super::*;
+
+    /// Window content areas, in points, from a 1280x800 laptop to a 2560x1440
+    /// monitor, each at UI scale 1.0, and the smaller ones again at the 1.5 and
+    /// 2.0 scales a reader with low vision might choose. A scale divides the
+    /// points available, so 1920x1080 at 2.0 lays out like a 960x540 window.
+    const ROOMS: [(f32, f32); 10] = [
+        (2544.0, 1300.0),
+        (1904.0, 960.0),
+        (1584.0, 780.0),
+        (1350.0, 650.0),
+        (1264.0, 680.0),
+        (1269.0, 640.0),
+        (1056.0, 520.0),
+        (952.0, 480.0),
+        (900.0, 433.0),
+        (632.0, 340.0),
+    ];
+
+    /// The top-level cards: stroked rects not inside another stroked rect.
+    /// Chips and pills are outlines too, but sit inside the strip and tables.
+    fn cards_of(shapes: &[(&'static str, egui::Rect, egui::Rect)]) -> Vec<egui::Rect> {
+        let outlines: Vec<egui::Rect> = shapes
+            .iter()
+            .filter(|(k, r, _)| *k == "outline" && r.height() > 40.0)
+            .map(|(_, r, _)| *r)
+            .collect();
+        outlines
+            .iter()
+            .filter(|r| {
+                !outlines
+                    .iter()
+                    .any(|o| o != *r && o.expand(0.5).contains_rect(**r))
+            })
+            .copied()
+            .collect()
+    }
+
+    fn geometry_faults(
+        app: &mut crate::gui::app::IronMonitorApp,
+        ctx: &Context,
+        size: egui::Vec2,
+    ) -> Vec<String> {
+        // Card heights follow the previous frame's measurements, so let them settle.
+        for _ in 0..4 {
+            let _ = painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        }
+        let shapes = painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        let cards = cards_of(&shapes);
+        let room = format!("{:.0}x{:.0}", size.x, size.y);
+        let mut faults = Vec::new();
+        if cards.len() < 6 {
+            faults.push(format!("{room}: found only {} cards", cards.len()));
+        }
+        for (i, a) in cards.iter().enumerate() {
+            for b in &cards[i + 1..] {
+                let overlap = a.intersect(*b);
+                if overlap.is_positive() && overlap.area() > 4.0 {
+                    faults.push(format!("{room}: cards {a:?} and {b:?} overlap"));
+                }
+            }
+        }
+        // Cards whose tops align form a row; every card in a row is the same size.
+        let mut rows: Vec<Vec<egui::Rect>> = Vec::new();
+        for card in &cards {
+            match rows
+                .iter_mut()
+                .find(|r| (r[0].min.y - card.min.y).abs() < 2.0)
+            {
+                Some(row) => row.push(*card),
+                None => rows.push(vec![*card]),
+            }
+        }
+        for row in rows.iter().filter(|r| r.len() > 1) {
+            let (h0, w0) = (row[0].height(), row[0].width());
+            if row
+                .iter()
+                .any(|r| (r.height() - h0).abs() > 1.0 || (r.width() - w0).abs() > 1.0)
+            {
+                let sizes: Vec<String> = row
+                    .iter()
+                    .map(|r| format!("{:.0}x{:.0}", r.width(), r.height()))
+                    .collect();
+                faults.push(format!(
+                    "{room}: a row at y={:.0} has unequal cards {sizes:?}",
+                    row[0].min.y
+                ));
+            }
+        }
+        // What is visible of every label lies inside a card.
+        for (kind, _, seen) in &shapes {
+            if *kind != "text" || !seen.is_positive() {
+                continue;
+            }
+            if !cards.iter().any(|c| c.expand(1.0).contains_rect(*seen)) {
+                faults.push(format!("{room}: text at {seen:?} is outside every card"));
+            }
+        }
+        faults
+    }
+
+    /// The Inference tab's cards stay a grid at every size: those in a row
+    /// match, none overlap, and nothing written spills out of its card.
+    #[test]
+    fn inference_cards_keep_their_grid_at_every_size_and_scale() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("inference")
+            .expect("inference is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+        let mut faults = Vec::new();
+        for (w, h) in ROOMS {
+            faults.extend(geometry_faults(&mut app, &ctx, egui::vec2(w, h)));
+        }
+        assert!(
+            faults.is_empty(),
+            "{} faults:
+{}",
+            faults.len(),
+            faults.join(
+                "
+"
+            )
+        );
+    }
+
+    /// The height of the tiles: the first row holding more than one card.
+    fn tile_height(
+        app: &mut crate::gui::app::IronMonitorApp,
+        ctx: &Context,
+        size: egui::Vec2,
+    ) -> f32 {
+        for _ in 0..4 {
+            let _ = painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        }
+        let shapes = painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        let cards = cards_of(&shapes);
+        let mut tops: Vec<f32> = cards.iter().map(|c| c.min.y).collect();
+        tops.sort_by(f32::total_cmp);
+        let row = |y: f32| cards.iter().filter(move |c| (c.min.y - y).abs() < 2.0);
+        let y = tops
+            .into_iter()
+            .find(|&y| row(y).count() > 1)
+            .expect("a row of tiles");
+        row(y).next().expect("a tile").height()
+    }
+
+    /// The graphs grow with the display rather than stopping at a laptop's
+    /// size: a 1440p monitor gets markedly taller tiles than a 1280x800 laptop.
+    #[test]
+    fn inference_graphs_grow_with_the_display() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        app.select_tab_by_name("inference")
+            .expect("inference is a tab");
+        assert!(settle(&mut app, &ctx, Duration::from_secs(30)));
+        let laptop = tile_height(&mut app, &ctx, egui::vec2(1264.0, 680.0));
+        let monitor = tile_height(&mut app, &ctx, egui::vec2(2544.0, 1300.0));
+        assert!(
+            monitor >= laptop * 1.4,
+            "tiles are {laptop:.0} tall on a laptop and only {monitor:.0} on a 1440p monitor"
+        );
     }
 }
