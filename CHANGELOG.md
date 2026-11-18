@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   otherwise empty.
 - Profiles: the toolbar, the deviation and audit panels, and the settings tree are
   each a card.
+- Processes: the table has fixed columns shared by its header, so a long name no
+  longer pushes its row's figures out from under their headings; names that do not
+  fit end in "…" with the full name on hover. Where the platform reports no
+  per-process state (Windows), the header says so instead of "0 running, 0
+  sleeping". The sort-direction button reads Ascending/Descending; its arrow glyph
+  was missing from the font.
+- AI: the backend notice and the conversation are cards.
+- Overview: each disk is an outlined tile with a thin usage bar.
 
 ### Added (themes)
 

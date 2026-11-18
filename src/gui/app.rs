@@ -4007,14 +4007,27 @@ impl IronMonitorApp {
                             .color(theme::color(&palette_ctx, CyberColors::CYAN)),
                     );
                     ui.separator();
-                    ui.label(
-                        RichText::new(format!("{} running", running))
-                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
-                    );
-                    ui.label(
-                        RichText::new(format!("{} sleeping", sleeping))
-                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
-                    );
+                    // 'U' marks a platform that reports no per-process state
+                    // (Windows keeps it on threads). "0 running, 0 sleeping"
+                    // there would be a zero nobody measured; say so instead.
+                    if running + sleeping + disk_wait + zombie + stopped > 0 {
+                        ui.label(
+                            RichText::new(format!("{} running", running))
+                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} sleeping", sleeping))
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("process states not reported here")
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
+                        )
+                        .on_hover_text(
+                            "This platform keeps scheduling state per thread, not per process",
+                        );
+                    }
                     if disk_wait > 0 {
                         ui.label(
                             RichText::new(format!("{} D-wait", disk_wait))
@@ -4096,9 +4109,9 @@ impl IronMonitorApp {
 
                     if ui
                         .button(if self.process_sort_ascending {
-                            "↑"
+                            "Ascending"
                         } else {
-                            "↓"
+                            "Descending"
                         })
                         .clicked()
                     {
@@ -4166,50 +4179,25 @@ impl IronMonitorApp {
                 ScrollArea::vertical().show(ui, |ui| {
                     let processes = &self.processes_view_cache;
 
-                    // Table header (htop-style)
+                    // Fixed columns shared by the header and every row, with the
+                    // name taking what is left. Labels laid end to end let a long
+                    // name push its row's figures out from under their headings.
+                    let cols = ProcessColumns::fit(ui.available_width());
+                    let head = theme::color(&palette_ctx, CyberColors::TEXT_MUTED);
+                    let head_font = egui::FontId::proportional(13.0);
                     ui.horizontal(|ui| {
-                        ui.set_min_height(24.0);
-                        ui.label(
-                            RichText::new("PID")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.add_space(40.0);
-                        ui.label(
-                            RichText::new("ST")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        ); // State
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("PRI")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        ); // Priority
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("Name")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.add_space(160.0);
-                        ui.label(
-                            RichText::new("CPU %")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.add_space(30.0);
-                        ui.label(
-                            RichText::new("Memory")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
-                        ui.add_space(40.0);
-                        ui.label(
-                            RichText::new("GPU Mem")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
-                        );
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (width, text, right) in [
+                            (cols.pid, "PID", true),
+                            (cols.state, "ST", false),
+                            (cols.pri, "PRI", true),
+                            (cols.name, "Name", false),
+                            (cols.cpu, "CPU %", true),
+                            (cols.mem, "Memory", true),
+                            (cols.gpu, "GPU Mem", true),
+                        ] {
+                            table_cell(ui, width, 26.0, text, head_font.clone(), head, right);
+                        }
                     });
                     ui.separator();
 
@@ -4233,73 +4221,72 @@ impl IronMonitorApp {
                             _ => theme::color(&palette_ctx, CyberColors::TEXT_SECONDARY),
                         };
 
+                        let mono = egui::FontId::monospace(13.0);
+                        let muted = theme::color(&palette_ctx, CyberColors::TEXT_MUTED);
+                        let pri = process
+                            .priority
+                            .map_or_else(|| "-".to_string(), |p| p.to_string());
+                        let cpu = process
+                            .cpu_percent
+                            .map_or_else(|| "--".to_string(), |c| format!("{c:.1}%"));
+                        let gpu = gpu_mem_mb
+                            .filter(|m| *m > 0.1)
+                            .map(|mb| format!("{mb:.0} MB"));
                         ui.horizontal(|ui| {
-                            ui.set_min_height(20.0);
-                            ui.label(
-                                RichText::new(format!("{:>6}", process.pid))
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                    .monospace(),
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let h = 24.0;
+                            table_cell(
+                                ui,
+                                cols.pid,
+                                h,
+                                &process.pid.to_string(),
+                                mono.clone(),
+                                muted,
+                                true,
                             );
-                            ui.add_space(20.0);
-                            // State column
-                            ui.label(
-                                RichText::new(format!("{}", process.state))
-                                    .color(theme::color(&palette_ctx, state_color))
-                                    .monospace(),
+                            table_cell(
+                                ui,
+                                cols.state,
+                                h,
+                                &process.state.to_string(),
+                                mono.clone(),
+                                state_color,
+                                false,
                             );
-                            ui.add_space(8.0);
-                            // Priority/nice column
-                            let pri_str = process
-                                .priority
-                                .map(|p| format!("{:>3}", p))
-                                .unwrap_or_else(|| "  -".to_string());
-                            ui.label(
-                                RichText::new(pri_str)
-                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                    .monospace(),
+                            table_cell(ui, cols.pri, h, &pri, mono.clone(), muted, true);
+                            let name = theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY);
+                            let name_font = egui::FontId::proportional(14.0);
+                            table_cell(ui, cols.name, h, &process.name, name_font, name, false);
+                            table_cell(
+                                ui,
+                                cols.cpu,
+                                h,
+                                &cpu,
+                                mono.clone(),
+                                theme::color(&palette_ctx, cpu_color),
+                                true,
                             );
-                            ui.add_space(8.0);
-                            // Name
-                            ui.add_sized(
-                                Vec2::new(200.0, 20.0),
-                                egui::Label::new(
-                                    RichText::new(&process.name).color(theme::color(
-                                        &palette_ctx,
-                                        CyberColors::TEXT_PRIMARY,
-                                    )),
+                            table_cell(
+                                ui,
+                                cols.mem,
+                                h,
+                                &format!("{mem_mb:.1} MB"),
+                                mono.clone(),
+                                theme::color(&palette_ctx, CyberColors::MAGENTA),
+                                true,
+                            );
+                            match gpu {
+                                Some(text) => table_cell(
+                                    ui,
+                                    cols.gpu,
+                                    h,
+                                    &text,
+                                    mono,
+                                    theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
+                                    true,
                                 ),
-                            );
-                            // CPU
-                            ui.label(
-                                RichText::new(process.cpu_percent.map_or_else(
-                                    || format!("{:>6}", "--"),
-                                    |c| format!("{c:>5.1}%"),
-                                ))
-                                .color(theme::color(&palette_ctx, cpu_color))
-                                .monospace(),
-                            );
-                            ui.add_space(10.0);
-                            // Memory
-                            ui.label(
-                                RichText::new(format!("{:>8.1} MB", mem_mb))
-                                    .color(theme::color(&palette_ctx, CyberColors::MAGENTA))
-                                    .monospace(),
-                            );
-                            ui.add_space(20.0);
-                            // GPU Memory (if using GPU)
-                            if let Some(mb) = gpu_mem_mb.filter(|m| *m > 0.1) {
-                                ui.label(
-                                    RichText::new(format!("{mb:>6.0} MB"))
-                                        .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
-                                        .monospace(),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new("     -   ")
-                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED))
-                                        .monospace(),
-                                );
-                            }
+                                None => table_cell(ui, cols.gpu, h, "-", mono, muted, true),
+                            };
                         });
                     }
                 });
@@ -7604,12 +7591,11 @@ impl IronMonitorApp {
             } else {
                 theme::color(&palette_ctx, CyberColors::NEON_YELLOW)
             };
-            egui::Frame::NONE
-                .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
-                .stroke(egui::Stroke::new(1.0_f32, accent))
-                .corner_radius(6)
-                .inner_margin(10.0)
+            cards::frame(&palette_ctx)
+                .fill(accent.gamma_multiply(0.08))
+                .stroke(egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.45)))
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         if detection_in_flight {
                             ui.spinner();
@@ -7637,17 +7623,13 @@ impl IronMonitorApp {
                         }
                     });
                 });
-            ui.add_space(8.0);
+            ui.add_space(cards::GAP);
         }
 
         // Chat history area - fills available space
         let chat_height = ui.available_height() - 40.0; // Leave room for the toolbar
 
-        egui::Frame::NONE
-            .fill(theme::color(&palette_ctx, CyberColors::BACKGROUND))
-            .stroke(egui::Stroke::new(1.0_f32, theme::color(&palette_ctx, CyberColors::BORDER)))
-            .corner_radius(6)
-            .inner_margin(12.0)
+        cards::frame(&palette_ctx)
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(ui.available_width(), chat_height.max(300.0)));
 
@@ -7669,9 +7651,9 @@ impl IronMonitorApp {
 
                         // Example questions
                         egui::Frame::NONE
-                            .fill(theme::color(&palette_ctx, CyberColors::SURFACE))
-                            .corner_radius(6)
-                            .inner_margin(12.0)
+                            .stroke(egui::Stroke::new(1.0_f32, cards::hairline(&palette_ctx)))
+                            .corner_radius(10)
+                            .inner_margin(egui::Margin::symmetric(24, 14))
                             .show(ui, |ui| {
                                 ui.label(RichText::new("💡 Try asking:").color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)).size(13.0));
                                 ui.add_space(8.0);
@@ -8727,84 +8709,97 @@ fn draw_overview_disk_usage(ui: &mut egui::Ui, disks: &[crate::pipeline::DiskSna
     // additional rows or reducing the size of other Overview widgets.
     ui.columns(disks.len(), |columns| {
         for (disk, ui) in disks.iter().zip(columns) {
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                let name = if disk.mount_point != "N/A"
-                    && !disk.mount_point.is_empty()
-                    && disk.mount_point != disk.name
-                {
-                    format!("{}  {}", disk.mount_point, disk.name)
-                } else {
-                    disk.name.clone()
-                };
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&name)
-                            .strong()
-                            .color(theme::color(ui.ctx(), DeviceTitleColors::DISK)),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(&name);
-
-                // Reject impossible readings rather than painting a clamped bar.
-                let used = disk
-                    .used
-                    .filter(|used| disk.total.is_none_or(|total| *used <= total));
-                let free = disk
-                    .total
-                    .zip(used)
-                    .and_then(|(total, used)| total.checked_sub(used));
-                let size = |value: Option<u64>| {
-                    value.map_or_else(|| "unavailable".to_string(), format_disk_capacity)
-                };
-                let summary = format!(
-                    "Capacity: {}  Used: {}  Free: {}",
-                    size(disk.total),
-                    size(used),
-                    size(free),
-                );
-                let mut details = format!("{name}\n{}\n{summary}", disk.filesystem);
-                if disk.read_rate.is_some() || disk.write_rate.is_some() {
-                    let rate = |value: Option<f64>| {
-                        value.filter(|v| v.is_finite() && *v >= 0.0).map_or_else(
-                            || "unavailable".to_string(),
-                            |v| format!("{}/s", format_bytes(v)),
-                        )
+            // A tile like the metric tiles: outlined inside the card, rather
+            // than egui's group box.
+            egui::Frame::NONE
+                .stroke(egui::Stroke::new(1.0_f32, cards::hairline(ui.ctx())))
+                .corner_radius(10)
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let name = if disk.mount_point != "N/A"
+                        && !disk.mount_point.is_empty()
+                        && disk.mount_point != disk.name
+                    {
+                        format!("{}  {}", disk.mount_point, disk.name)
+                    } else {
+                        disk.name.clone()
                     };
-                    details.push_str(&format!(
-                        "\nRead: {}  Write: {}",
-                        rate(disk.read_rate),
-                        rate(disk.write_rate),
-                    ));
-                }
-                let data_font = theme::data_font(ui.ctx(), 12.0);
-                ui.add(egui::Label::new(RichText::new(summary).font(data_font.clone())).truncate())
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&name)
+                                .strong()
+                                .color(theme::color(ui.ctx(), DeviceTitleColors::DISK)),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&name);
+
+                    // Reject impossible readings rather than painting a clamped bar.
+                    let used = disk
+                        .used
+                        .filter(|used| disk.total.is_none_or(|total| *used <= total));
+                    let free = disk
+                        .total
+                        .zip(used)
+                        .and_then(|(total, used)| total.checked_sub(used));
+                    let size = |value: Option<u64>| {
+                        value.map_or_else(|| "unavailable".to_string(), format_disk_capacity)
+                    };
+                    let summary = format!(
+                        "Capacity: {}  Used: {}  Free: {}",
+                        size(disk.total),
+                        size(used),
+                        size(free),
+                    );
+                    let mut details = format!("{name}\n{}\n{summary}", disk.filesystem);
+                    if disk.read_rate.is_some() || disk.write_rate.is_some() {
+                        let rate = |value: Option<f64>| {
+                            value.filter(|v| v.is_finite() && *v >= 0.0).map_or_else(
+                                || "unavailable".to_string(),
+                                |v| format!("{}/s", format_bytes(v)),
+                            )
+                        };
+                        details.push_str(&format!(
+                            "\nRead: {}  Write: {}",
+                            rate(disk.read_rate),
+                            rate(disk.write_rate),
+                        ));
+                    }
+                    let data_font = theme::data_font(ui.ctx(), 12.0);
+                    ui.add(
+                        egui::Label::new(RichText::new(summary).font(data_font.clone())).truncate(),
+                    )
                     .on_hover_text(details);
 
-                if let Some((total, used)) = disk.total.zip(used).filter(|(total, _)| *total > 0) {
-                    let fraction = used as f64 / total as f64;
-                    let usage = format!("Space used: {:.1}%", fraction * 100.0);
-                    ui.add(
-                        egui::Label::new(RichText::new(&usage).font(data_font.clone())).truncate(),
-                    )
-                    .on_hover_text(&usage);
-                    ui.add(
-                        CyberProgressBar::new(fraction as f32)
-                            .with_threshold_color()
-                            .height(8.0)
-                            .show_percentage(false),
-                    );
-                } else {
-                    ui.add(
-                        egui::Label::new(RichText::new("Space used: unavailable").font(data_font))
+                    if let Some((total, used)) =
+                        disk.total.zip(used).filter(|(total, _)| *total > 0)
+                    {
+                        let fraction = used as f64 / total as f64;
+                        let usage = format!("Space used: {:.1}%", fraction * 100.0);
+                        ui.add(
+                            egui::Label::new(RichText::new(&usage).font(data_font.clone()))
+                                .truncate(),
+                        )
+                        .on_hover_text(&usage);
+                        ui.add_space(2.0);
+                        let hue = theme::color(
+                            ui.ctx(),
+                            theme::utilization_color((fraction * 100.0) as f32),
+                        );
+                        cards::thin_bar(ui, fraction, hue);
+                    } else {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("Space used: unavailable").font(data_font),
+                            )
                             .truncate(),
-                    );
-                    // Keep unknown and measured disks aligned without an empty
-                    // usage bar implying a measured zero.
-                    ui.allocate_space(egui::vec2(ui.available_width(), 8.0));
-                }
-            });
+                        );
+                        // Keep unknown and measured disks aligned without an empty
+                        // usage bar implying a measured zero.
+                        ui.allocate_space(egui::vec2(ui.available_width(), 8.0));
+                    }
+                });
         }
     });
 }
@@ -9218,4 +9213,76 @@ mod ui_scale_tests {
         assert_eq!(display_ui_scale(Some(400.0), 1.0), MAX_DEFAULT_UI_SCALE);
         assert_eq!(display_ui_scale(None, 1.0), 1.0);
     }
+}
+
+/// Column widths for the Processes table: fixed figures, and the name takes
+/// whatever the window leaves (never less than 160 px).
+#[derive(Clone, Copy)]
+struct ProcessColumns {
+    pid: f32,
+    state: f32,
+    pri: f32,
+    name: f32,
+    cpu: f32,
+    mem: f32,
+    gpu: f32,
+}
+
+impl ProcessColumns {
+    fn fit(width: f32) -> Self {
+        let (pid, state, pri, cpu, mem, gpu) = (72.0, 44.0, 52.0, 90.0, 120.0, 110.0);
+        let fixed = pid + state + pri + cpu + mem + gpu;
+        let name = (width - fixed - 8.0).clamp(160.0, 520.0);
+        Self {
+            pid,
+            state,
+            pri,
+            name,
+            cpu,
+            mem,
+            gpu,
+        }
+    }
+}
+
+/// One table cell of an exact width: text on one line, cut with "…" when it
+/// does not fit, left- or right-aligned with an 8 px gutter. Returns whether
+/// the text was cut.
+fn table_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    right: bool,
+) -> bool {
+    const GUTTER: f32 = 8.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return false;
+    }
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(font, color),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (width - 2.0 * GUTTER).max(1.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.painter().layout_job(job);
+    let cut = galley.elided;
+    let x = if right {
+        rect.right() - GUTTER - galley.size().x
+    } else {
+        rect.left() + GUTTER
+    };
+    let y = rect.center().y - galley.size().y / 2.0;
+    ui.painter().galley(egui::pos2(x, y), galley, color);
+    if cut {
+        response.on_hover_text(text);
+    }
+    cut
 }
