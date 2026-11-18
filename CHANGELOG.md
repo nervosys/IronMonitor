@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (GUI)
+
+- The Memory tab's map divides the installed total into used, reclaimable cache
+  and free, which sum to it. It subtracted the Buffers and Cached figures from
+  used, but every reader's used already excludes reclaimable cache (it is total
+  minus the platform's available figure), so the segments summed to about 71-88%
+  of RAM on Windows and understated used on Linux. The Cached card is unchanged;
+  it is not a share of the total (Windows' `SystemCache` includes the system
+  working set, which is in used).
+
 ### Changed (GUI appearance)
 
 - Metric tiles on the Memory, Swap and Network tabs are outlined tiles tinted with

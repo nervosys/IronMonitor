@@ -3824,53 +3824,26 @@ impl IronMonitorApp {
 
                         // How the total divides, as one bar and a legend. The
                         // bar is painted rather than drawn with block glyphs,
-                        // which the bundled fonts lack. A segment is drawn only
-                        // from a figure that was read: an unread quantity gets no
-                        // segment rather than a "0%" that reads as none, and
-                        // "used" names what it still contains.
+                        // which the bundled fonts lack. See `memory_map` for
+                        // why it is used / reclaimable / free and not the cards.
                         if total_mb > 0.0 {
-                            let mut used_net = used_mb;
-                            let mut unsplit: Vec<&str> = Vec::new();
-                            match buffers_mb {
-                                Some(b) => used_net -= b,
-                                None => unsplit.push("buffers"),
-                            }
-                            match cached_mb {
-                                Some(c) => used_net -= c,
-                                None => unsplit.push("cache"),
-                            }
                             let hue = |c: egui::Color32| theme::color(&palette_ctx, c);
-                            let used = if unsplit.is_empty() {
-                                "used".to_string()
-                            } else {
-                                format!("used, incl. unread {}", unsplit.join("/"))
-                            };
-                            let mut parts = vec![(
-                                used,
-                                used_net.max(0.0) / total_mb,
-                                hue(CyberColors::MAGENTA),
-                            )];
-                            if let Some(b) = buffers_mb {
-                                parts.push((
-                                    "buffers".into(),
-                                    b / total_mb,
-                                    hue(CyberColors::NEON_ORANGE),
-                                ));
-                            }
-                            if let Some(c) = cached_mb {
-                                parts.push((
-                                    "cache".into(),
-                                    c / total_mb,
-                                    hue(CyberColors::NEON_YELLOW),
-                                ));
-                            }
-                            if let Some(f) = free_mb {
-                                parts.push((
-                                    "free".into(),
-                                    f / total_mb,
-                                    hue(CyberColors::THRESHOLD_OK),
-                                ));
-                            }
+                            let parts: Vec<(String, f64, egui::Color32)> =
+                                memory_map(total_mb, used_mb, free_mb)
+                                    .into_iter()
+                                    .map(|(part, ratio)| {
+                                        let colour = match part {
+                                            MemoryPart::Used => hue(CyberColors::MAGENTA),
+                                            MemoryPart::Reclaimable => {
+                                                hue(CyberColors::NEON_YELLOW)
+                                            }
+                                            MemoryPart::Free | MemoryPart::Available => {
+                                                hue(CyberColors::THRESHOLD_OK)
+                                            }
+                                        };
+                                        (part.label().to_string(), ratio, colour)
+                                    })
+                                    .collect();
                             ui.add_space(8.0);
                             let segments: Vec<(f64, egui::Color32)> =
                                 parts.iter().map(|(_, r, c)| (*r, *c)).collect();
@@ -9273,4 +9246,99 @@ fn table_cell(
         response.on_hover_text(text);
     }
     cut
+}
+
+/// A share of physical memory, as the Memory tab's map draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryPart {
+    Used,
+    /// In use as cache, but counted as available: the OS reclaims it on demand.
+    Reclaimable,
+    Free,
+    /// Everything not used, where free was not read and so cannot be split out.
+    Available,
+}
+
+impl MemoryPart {
+    fn label(self) -> &'static str {
+        match self {
+            MemoryPart::Used => "used",
+            MemoryPart::Reclaimable => "reclaimable cache",
+            MemoryPart::Free => "free",
+            MemoryPart::Available => "available",
+        }
+    }
+}
+
+/// How the installed total divides, as shares that sum to it.
+///
+/// Every reader defines `used` as the total minus the platform's available
+/// figure (Linux `MemAvailable`, Windows `ullAvailPhys`, macOS active + wired +
+/// compressed), and available already includes the reclaimable cache. So the
+/// cache is the part of available that is not free: `total - used - free`.
+///
+/// This used to subtract the Buffers and Cached cards from used, which removed
+/// cache that used never contained. The segments summed to about 71% of RAM on
+/// Windows and understated used on Linux. Those cards are not shares of the
+/// total -- Windows' `SystemCache` also counts the system working set, which
+/// is in used -- so they are not segments.
+fn memory_map(total: f64, used: f64, free: Option<f64>) -> Vec<(MemoryPart, f64)> {
+    if total <= 0.0 {
+        return Vec::new();
+    }
+    let used = used.clamp(0.0, total);
+    let rest = total - used;
+    let mut parts = vec![(MemoryPart::Used, used / total)];
+    match free {
+        // A free figure larger than what is not used is not a reading to
+        // divide by; show the unsplit remainder rather than a negative share.
+        Some(free) if free >= 0.0 && free <= rest => {
+            parts.push((MemoryPart::Reclaimable, (rest - free) / total));
+            parts.push((MemoryPart::Free, free / total));
+        }
+        _ => parts.push((MemoryPart::Available, rest / total)),
+    }
+    parts
+}
+
+#[cfg(test)]
+mod memory_map_tests {
+    use super::{memory_map, MemoryPart};
+
+    fn sum(parts: &[(MemoryPart, f64)]) -> f64 {
+        parts.iter().map(|(_, r)| r).sum()
+    }
+
+    /// The Windows host this was found on: 95890 MB installed, 77892 used,
+    /// 6268 free. The old map drew 68% + 13% + 7% = 88%, and earlier 71%.
+    #[test]
+    fn the_shares_sum_to_the_installed_total() {
+        let parts = memory_map(95890.0, 77892.0, Some(6268.0));
+        assert!((sum(&parts) - 1.0).abs() < 1e-9, "{parts:?}");
+        assert_eq!(
+            parts.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+            [MemoryPart::Used, MemoryPart::Reclaimable, MemoryPart::Free]
+        );
+        // Used is drawn as read, not reduced by a cache it never held.
+        assert!((parts[0].1 - 77892.0 / 95890.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn without_a_free_reading_the_rest_is_shown_unsplit() {
+        let parts = memory_map(1000.0, 400.0, None);
+        assert_eq!(parts[1].0, MemoryPart::Available);
+        assert!((sum(&parts) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_impossible_free_reading_is_not_divided_into_a_negative_share() {
+        let parts = memory_map(1000.0, 900.0, Some(200.0));
+        assert_eq!(parts[1].0, MemoryPart::Available);
+        assert!(parts.iter().all(|(_, r)| *r >= 0.0));
+    }
+
+    #[test]
+    fn nothing_is_drawn_without_a_total() {
+        assert!(memory_map(0.0, 0.0, Some(0.0)).is_empty());
+    }
 }
