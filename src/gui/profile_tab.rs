@@ -13,66 +13,66 @@ impl IronMonitorApp {
     pub(super) fn draw_profiles_tab(&mut self, ui: &mut egui::Ui) {
         use crate::profile::Subsystem;
 
-        ui.horizontal_wrapped(|ui| {
-            ui.heading(RichText::new("🛠 Hardware Profile Inspector").color(theme::color(ui.ctx(), CyberColors::CYAN)));
-            ui.label(
-                RichText::new(
-                    "  read-only — NVIDIA Profile Inspector / Intel XTU / AMD Ryzen Master / nvme-cli",
-                )
-                .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY))
-                .italics(),
-            );
-        });
-
         // ── Toolbar (mutable borrows confined here) ───────────────────────
         let mut refresh_clicked = false;
-        ui.horizontal_wrapped(|ui| {
-            refresh_clicked = ui
-                .button(
-                    RichText::new("🔄 Refresh").color(theme::color(ui.ctx(), CyberColors::CYAN)),
-                )
-                .clicked();
-            ui.separator();
-            ui.label("Filter:");
-            ui.add(egui::TextEdit::singleline(&mut self.profile_filter).desired_width(220.0));
-            ui.separator();
+        super::cards::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+            ui.add(super::widgets::SectionHeader::new("Hardware Profile Inspector").icon("🛠"));
             ui.label(
-                RichText::new(format!(
-                    "cache: {} hit / {} miss",
-                    crate::profile::cache::CACHE_STATS.hits(),
-                    crate::profile::cache::CACHE_STATS.misses()
-                ))
-                .small()
+                RichText::new(
+                    "read-only — NVIDIA Profile Inspector / Intel XTU / AMD Ryzen Master / nvme-cli",
+                )
                 .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
             );
-            if self.profile_snapshot_loading {
+        });
+            ui.horizontal_wrapped(|ui| {
+                refresh_clicked = ui
+                    .button(
+                        RichText::new("🔄 Refresh")
+                            .color(theme::color(ui.ctx(), CyberColors::CYAN)),
+                    )
+                    .clicked();
                 ui.separator();
-                ui.spinner();
+                ui.label("Filter:");
+                ui.add(egui::TextEdit::singleline(&mut self.profile_filter).desired_width(220.0));
+                ui.separator();
                 ui.label(
-                    RichText::new("Loading…")
-                        .small()
-                        .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+                    RichText::new(format!(
+                        "cache: {} hit / {} miss",
+                        crate::profile::cache::CACHE_STATS.hits(),
+                        crate::profile::cache::CACHE_STATS.misses()
+                    ))
+                    .small()
+                    .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
                 );
-            }
-        });
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Subsystems:");
-            if ui
-                .selectable_label(self.profile_subsystem_filter.is_none(), "All")
-                .clicked()
-            {
-                self.profile_subsystem_filter = None;
-            }
-            for sub in Subsystem::ALL {
-                let selected = self.profile_subsystem_filter == Some(*sub);
-                if ui.selectable_label(selected, sub.as_str()).clicked() {
-                    self.profile_subsystem_filter = if selected { None } else { Some(*sub) };
+                if self.profile_snapshot_loading {
+                    ui.separator();
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Loading…")
+                            .small()
+                            .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+                    );
                 }
-            }
-        });
+            });
 
-        ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Subsystems:");
+                if ui
+                    .selectable_label(self.profile_subsystem_filter.is_none(), "All")
+                    .clicked()
+                {
+                    self.profile_subsystem_filter = None;
+                }
+                for sub in Subsystem::ALL {
+                    let selected = self.profile_subsystem_filter == Some(*sub);
+                    if ui.selectable_label(selected, sub.as_str()).clicked() {
+                        self.profile_subsystem_filter = if selected { None } else { Some(*sub) };
+                    }
+                }
+            });
+        });
+        ui.add_space(super::cards::GAP);
 
         // ── Trigger background load on first visit / refresh ─────────────
         if refresh_clicked {
@@ -185,147 +185,148 @@ fn draw_profile_contents(
         .id_salt("profile_contents")
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            let heading = if deviations.is_empty() {
-                RichText::new("Deviations from default · 0 — at stock".to_string())
-                    .color(theme::color(ui.ctx(), CyberColors::NEON_GREEN))
-            } else {
-                RichText::new(format!("Deviations from default · {}", deviations.len()))
-                    .color(theme::color(ui.ctx(), CyberColors::NEON_YELLOW))
-                    .strong()
-            };
-            egui::CollapsingHeader::new(heading)
-                .default_open(!deviations.is_empty())
-                .id_salt("profile_deviations_panel")
-                .show(ui, |ui| {
-                    if deviations.is_empty() {
-                        wrapped_label(
+            super::cards::card(ui, |ui| {
+                let heading = if deviations.is_empty() {
+                    RichText::new("Deviations from default · 0 — at stock".to_string())
+                        .color(theme::color(ui.ctx(), CyberColors::NEON_GREEN))
+                } else {
+                    RichText::new(format!("Deviations from default · {}", deviations.len()))
+                        .color(theme::color(ui.ctx(), CyberColors::NEON_YELLOW))
+                        .strong()
+                };
+                egui::CollapsingHeader::new(heading)
+                    .default_open(!deviations.is_empty())
+                    .id_salt("profile_deviations_panel")
+                    .show(ui, |ui| {
+                        if deviations.is_empty() {
+                            wrapped_label(
                             ui,
                             RichText::new(
                                 "All settings with a declared default are at their default value.",
                             )
                             .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
                         );
-                    } else {
-                        egui::Grid::new("profile_deviations_grid")
-                            .striped(true)
-                            .num_columns(4)
-                            .min_col_width(0.0)
-                            .max_col_width(column_width(ui, 4))
-                            .show(ui, |ui| {
-                                wrapped_label(ui, RichText::new("risk").strong());
-                                wrapped_label(ui, RichText::new("setting").strong());
-                                wrapped_label(ui, RichText::new("default").strong());
-                                wrapped_label(ui, RichText::new("current").strong());
-                                ui.end_row();
-                                for d in deviations {
-                                    let risk_color = match d.risk {
-                                        crate::profile::SettingRisk::Dangerous => {
-                                            theme::color(ui.ctx(), CyberColors::NEON_RED)
-                                        }
-                                        crate::profile::SettingRisk::Moderate => {
-                                            theme::color(ui.ctx(), CyberColors::NEON_YELLOW)
-                                        }
-                                        crate::profile::SettingRisk::Safe => {
-                                            theme::color(ui.ctx(), CyberColors::NEON_GREEN)
-                                        }
-                                        crate::profile::SettingRisk::Informational => {
-                                            theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)
-                                        }
-                                    };
-                                    wrapped_label(
-                                        ui,
-                                        RichText::new(format!("{:?}", d.risk))
-                                            .color(risk_color)
-                                            .small(),
-                                    );
-                                    wrapped_label(
-                                        ui,
-                                        RichText::new(format!(
-                                            "[{}] {} :: {}",
-                                            d.subsystem.as_str(),
-                                            d.device,
-                                            d.display_name
-                                        )),
-                                    );
-                                    wrapped_label(
-                                        ui,
-                                        RichText::new(d.default.to_string()).color(theme::color(
-                                            ui.ctx(),
-                                            CyberColors::TEXT_SECONDARY,
-                                        )),
-                                    );
-                                    wrapped_label(
-                                        ui,
-                                        RichText::new(d.current.to_string())
-                                            .strong()
-                                            .color(risk_color),
-                                    );
+                        } else {
+                            egui::Grid::new("profile_deviations_grid")
+                                .striped(true)
+                                .num_columns(4)
+                                .min_col_width(0.0)
+                                .max_col_width(column_width(ui, 4))
+                                .show(ui, |ui| {
+                                    wrapped_label(ui, RichText::new("risk").strong());
+                                    wrapped_label(ui, RichText::new("setting").strong());
+                                    wrapped_label(ui, RichText::new("default").strong());
+                                    wrapped_label(ui, RichText::new("current").strong());
                                     ui.end_row();
-                                }
-                            });
-                    }
-                });
+                                    for d in deviations {
+                                        let risk_color = match d.risk {
+                                            crate::profile::SettingRisk::Dangerous => {
+                                                theme::color(ui.ctx(), CyberColors::NEON_RED)
+                                            }
+                                            crate::profile::SettingRisk::Moderate => {
+                                                theme::color(ui.ctx(), CyberColors::NEON_YELLOW)
+                                            }
+                                            crate::profile::SettingRisk::Safe => {
+                                                theme::color(ui.ctx(), CyberColors::NEON_GREEN)
+                                            }
+                                            crate::profile::SettingRisk::Informational => {
+                                                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)
+                                            }
+                                        };
+                                        wrapped_label(
+                                            ui,
+                                            RichText::new(format!("{:?}", d.risk))
+                                                .color(risk_color)
+                                                .small(),
+                                        );
+                                        wrapped_label(
+                                            ui,
+                                            RichText::new(format!(
+                                                "[{}] {} :: {}",
+                                                d.subsystem.as_str(),
+                                                d.device,
+                                                d.display_name
+                                            )),
+                                        );
+                                        wrapped_label(
+                                            ui,
+                                            RichText::new(d.default.to_string()).color(
+                                                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                                            ),
+                                        );
+                                        wrapped_label(
+                                            ui,
+                                            RichText::new(d.current.to_string())
+                                                .strong()
+                                                .color(risk_color),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    });
 
-            // ── Audit log tail panel ─────────────────────────────────────────
-            let audit_path = crate::profile::apply::audit_log_path();
-            // The read happened when the cache was filled; a failure is carried
-            // in `audit_error`. An empty tail with no error means the log was
-            // read and was empty or absent.
-            let audit_unreadable = audit_error.is_some();
-            let audit_heading = RichText::new(if audit_unreadable {
-                "Apply audit log · not readable".to_string()
-            } else {
-                format!(
-                    "Apply audit log · last {} entr{}",
-                    audit_tail.len(),
-                    if audit_tail.len() == 1 { "y" } else { "ies" }
-                )
-            })
-            .color(theme::color(ui.ctx(), CyberColors::CYAN));
-            egui::CollapsingHeader::new(audit_heading)
-                .default_open(false)
-                .id_salt("profile_audit_panel")
-                .show(ui, |ui| {
-                    wrapped_label(
-                        ui,
-                        RichText::new(format!("source: {}", audit_path.display()))
-                            .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY))
-                            .italics()
-                            .small(),
-                    );
-                    if let Some(reason) = audit_error {
+                // ── Audit log tail panel ─────────────────────────────────────────
+                let audit_path = crate::profile::apply::audit_log_path();
+                // The read happened when the cache was filled; a failure is carried
+                // in `audit_error`. An empty tail with no error means the log was
+                // read and was empty or absent.
+                let audit_unreadable = audit_error.is_some();
+                let audit_heading = RichText::new(if audit_unreadable {
+                    "Apply audit log · not readable".to_string()
+                } else {
+                    format!(
+                        "Apply audit log · last {} entr{}",
+                        audit_tail.len(),
+                        if audit_tail.len() == 1 { "y" } else { "ies" }
+                    )
+                })
+                .color(theme::color(ui.ctx(), CyberColors::CYAN));
+                egui::CollapsingHeader::new(audit_heading)
+                    .default_open(false)
+                    .id_salt("profile_audit_panel")
+                    .show(ui, |ui| {
                         wrapped_label(
                             ui,
-                            RichText::new(format!(
-                                "not read: {} (whether apply attempts were made is unknown)",
-                                reason
-                            ))
-                            .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
+                            RichText::new(format!("source: {}", audit_path.display()))
+                                .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY))
+                                .italics()
+                                .small(),
                         );
-                    } else if audit_tail.is_empty() {
-                        wrapped_label(
-                            ui,
-                            RichText::new("(no entries — no apply attempts have been made)")
-                                .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
-                        );
-                    } else {
-                        egui::Grid::new("profile_audit_grid")
-                            .striped(true)
-                            .num_columns(4)
-                            .min_col_width(0.0)
-                            .max_col_width(column_width(ui, 4))
-                            .show(ui, |ui| {
-                                wrapped_label(ui, RichText::new("when").strong());
-                                wrapped_label(ui, RichText::new("status").strong());
-                                wrapped_label(ui, RichText::new("setting").strong());
-                                wrapped_label(ui, RichText::new("requested").strong());
-                                ui.end_row();
-                                for line in audit_tail {
-                                    if let Ok(o) = serde_json::from_str::<
-                                        crate::profile::apply::ApplyOutcome,
-                                    >(line)
-                                    {
-                                        let (status_str, status_color) = match o.status {
+                        if let Some(reason) = audit_error {
+                            wrapped_label(
+                                ui,
+                                RichText::new(format!(
+                                    "not read: {} (whether apply attempts were made is unknown)",
+                                    reason
+                                ))
+                                .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
+                            );
+                        } else if audit_tail.is_empty() {
+                            wrapped_label(
+                                ui,
+                                RichText::new("(no entries — no apply attempts have been made)")
+                                    .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+                            );
+                        } else {
+                            egui::Grid::new("profile_audit_grid")
+                                .striped(true)
+                                .num_columns(4)
+                                .min_col_width(0.0)
+                                .max_col_width(column_width(ui, 4))
+                                .show(ui, |ui| {
+                                    wrapped_label(ui, RichText::new("when").strong());
+                                    wrapped_label(ui, RichText::new("status").strong());
+                                    wrapped_label(ui, RichText::new("setting").strong());
+                                    wrapped_label(ui, RichText::new("requested").strong());
+                                    ui.end_row();
+                                    for line in audit_tail {
+                                        if let Ok(o) =
+                                            serde_json::from_str::<
+                                                crate::profile::apply::ApplyOutcome,
+                                            >(line)
+                                        {
+                                            let (status_str, status_color) = match o.status {
                                             crate::profile::apply::ApplyStatus::Applied => (
                                                 "applied",
                                                 theme::color(ui.ctx(), CyberColors::NEON_GREEN),
@@ -347,201 +348,210 @@ fn draw_profile_contents(
                                                 theme::color(ui.ctx(), CyberColors::NEON_YELLOW),
                                             ),
                                         };
-                                        wrapped_label(
-                                            ui,
-                                            RichText::new(o.timestamp.to_string())
-                                                .color(theme::color(
-                                                    ui.ctx(),
-                                                    CyberColors::TEXT_SECONDARY,
-                                                ))
-                                                .small(),
-                                        );
-                                        wrapped_label(
-                                            ui,
-                                            RichText::new(status_str).color(status_color),
-                                        );
-                                        wrapped_label(ui, RichText::new(o.setting_id).monospace());
-                                        wrapped_label(
-                                            ui,
-                                            RichText::new(o.requested.to_string()).strong(),
-                                        );
-                                        ui.end_row();
-                                    }
-                                }
-                            });
-                    }
-                });
-
-            ui.separator();
-
-            // Subsystems whose read failed have no providers entry, so they
-            // would otherwise be missing rather than shown as failed.
-            for (sub, reason) in &snapshot.errors {
-                if subsystem_filter.is_some_and(|sel| sel != *sub) {
-                    continue;
-                }
-                wrapped_label(
-                    ui,
-                    RichText::new(format!(
-                        "{} — not read: {}",
-                        sub.as_str().to_uppercase(),
-                        reason
-                    ))
-                    .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
-                );
-            }
-
-            let mut total_groups = 0usize;
-            let mut total_settings = 0usize;
-
-            for (sub, groups) in &snapshot.providers {
-                if let Some(sel) = subsystem_filter {
-                    if sel != *sub {
-                        continue;
-                    }
-                }
-                if groups.is_empty() {
-                    continue;
-                }
-                let heading = RichText::new(sub.as_str().to_uppercase())
-                    .color(theme::color(ui.ctx(), CyberColors::CYAN))
-                    .strong();
-                egui::CollapsingHeader::new(heading)
-                    .default_open(true)
-                    .id_salt(format!("profile_sub_{}", sub.as_str()))
-                    .show(ui, |ui| {
-                        for (group_index, group) in groups.iter().enumerate() {
-                            // Cheap header pass: count only when no filter is
-                            // active; otherwise the contents-collapsed body
-                            // does the work lazily when expanded.
-                            if filter_lc.is_empty() {
-                                total_groups += 1;
-                                total_settings += group.settings.len();
-                            } else {
-                                // With a filter, do a single fast scan that
-                                // doesn't allocate a Vec or format strings —
-                                // just count matches. The detailed filtered
-                                // list is built lazily inside the expanded
-                                // body.
-                                let matched: usize = group
-                                    .settings
-                                    .iter()
-                                    .filter(|s| setting_matches(s, filter_lc))
-                                    .count();
-                                if matched == 0 {
-                                    continue;
-                                }
-                                total_groups += 1;
-                                total_settings += matched;
-                            }
-
-                            let group_heading = RichText::new(format!(
-                                "{}  —  {}",
-                                group.device, group.display_name
-                            ))
-                            .strong();
-                            let full_heading = format!("{} / {}", group.device, group.display_name);
-                            let group_heading = egui::WidgetText::from(group_heading).into_galley(
-                                ui,
-                                Some(egui::TextWrapMode::Truncate),
-                                (ui.available_width() - 32.0).max(20.0),
-                                egui::TextStyle::Button,
-                            );
-                            let group_response = egui::CollapsingHeader::new(group_heading)
-                                .default_open(false)
-                                .id_salt(("profile_group", sub, group_index))
-                                .show(ui, |ui| {
-                                    wrapped_label(
-                                        ui,
-                                        RichText::new(format!("source: {}", group.source))
-                                            .color(theme::color(
-                                                ui.ctx(),
-                                                CyberColors::TEXT_SECONDARY,
-                                            ))
-                                            .italics(),
-                                    );
-                                    let grid_id = ("profile_grid", sub, group_index);
-                                    egui::Grid::new(grid_id)
-                                        .striped(true)
-                                        .num_columns(3)
-                                        .min_col_width(0.0)
-                                        .max_col_width(column_width(ui, 3))
-                                        .show(ui, |ui| {
-                                            for s in group.settings.iter().filter(|s| {
-                                                filter_lc.is_empty()
-                                                    || setting_matches(s, filter_lc)
-                                            }) {
-                                                let risk_color = match s.risk {
-                                                    SettingRisk::Informational => theme::color(
+                                            wrapped_label(
+                                                ui,
+                                                RichText::new(o.timestamp.to_string())
+                                                    .color(theme::color(
                                                         ui.ctx(),
                                                         CyberColors::TEXT_SECONDARY,
-                                                    ),
-                                                    SettingRisk::Safe => theme::color(
-                                                        ui.ctx(),
-                                                        CyberColors::NEON_GREEN,
-                                                    ),
-                                                    SettingRisk::Moderate => theme::color(
-                                                        ui.ctx(),
-                                                        CyberColors::NEON_YELLOW,
-                                                    ),
-                                                    SettingRisk::Dangerous => theme::color(
-                                                        ui.ctx(),
-                                                        CyberColors::NEON_RED,
-                                                    ),
-                                                };
-                                                wrapped_label(
-                                                    ui,
-                                                    RichText::new(&s.display_name)
-                                                        .color(risk_color),
-                                                );
-                                                let unit = s
-                                                    .unit
-                                                    .as_deref()
-                                                    .map(|u| format!(" {}", u))
-                                                    .unwrap_or_default();
-                                                wrapped_label(
-                                                    ui,
-                                                    RichText::new(format!("{}{}", s.value, unit))
-                                                        .strong(),
-                                                );
-                                                wrapped_label(
-                                                    ui,
-                                                    RichText::new(s.id.clone())
-                                                        .color(theme::color(
-                                                            ui.ctx(),
-                                                            CyberColors::TEXT_SECONDARY,
-                                                        ))
-                                                        .italics()
-                                                        .monospace(),
-                                                );
-                                                ui.end_row();
-                                            }
-                                        });
-                                    for n in &group.notes {
+                                                    ))
+                                                    .small(),
+                                            );
+                                            wrapped_label(
+                                                ui,
+                                                RichText::new(status_str).color(status_color),
+                                            );
+                                            wrapped_label(
+                                                ui,
+                                                RichText::new(o.setting_id).monospace(),
+                                            );
+                                            wrapped_label(
+                                                ui,
+                                                RichText::new(o.requested.to_string()).strong(),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        }
+                    });
+            });
+            ui.add_space(super::cards::GAP);
+            super::cards::card(ui, |ui| {
+                // Subsystems whose read failed have no providers entry, so they
+                // would otherwise be missing rather than shown as failed.
+                for (sub, reason) in &snapshot.errors {
+                    if subsystem_filter.is_some_and(|sel| sel != *sub) {
+                        continue;
+                    }
+                    wrapped_label(
+                        ui,
+                        RichText::new(format!(
+                            "{} — not read: {}",
+                            sub.as_str().to_uppercase(),
+                            reason
+                        ))
+                        .color(theme::color(ui.ctx(), CyberColors::NEON_RED)),
+                    );
+                }
+
+                let mut total_groups = 0usize;
+                let mut total_settings = 0usize;
+
+                for (sub, groups) in &snapshot.providers {
+                    if let Some(sel) = subsystem_filter {
+                        if sel != *sub {
+                            continue;
+                        }
+                    }
+                    if groups.is_empty() {
+                        continue;
+                    }
+                    let heading = RichText::new(sub.as_str().to_uppercase())
+                        .color(theme::color(ui.ctx(), CyberColors::CYAN))
+                        .strong();
+                    egui::CollapsingHeader::new(heading)
+                        .default_open(true)
+                        .id_salt(format!("profile_sub_{}", sub.as_str()))
+                        .show(ui, |ui| {
+                            for (group_index, group) in groups.iter().enumerate() {
+                                // Cheap header pass: count only when no filter is
+                                // active; otherwise the contents-collapsed body
+                                // does the work lazily when expanded.
+                                if filter_lc.is_empty() {
+                                    total_groups += 1;
+                                    total_settings += group.settings.len();
+                                } else {
+                                    // With a filter, do a single fast scan that
+                                    // doesn't allocate a Vec or format strings —
+                                    // just count matches. The detailed filtered
+                                    // list is built lazily inside the expanded
+                                    // body.
+                                    let matched: usize = group
+                                        .settings
+                                        .iter()
+                                        .filter(|s| setting_matches(s, filter_lc))
+                                        .count();
+                                    if matched == 0 {
+                                        continue;
+                                    }
+                                    total_groups += 1;
+                                    total_settings += matched;
+                                }
+
+                                let group_heading = RichText::new(format!(
+                                    "{}  —  {}",
+                                    group.device, group.display_name
+                                ))
+                                .strong();
+                                let full_heading =
+                                    format!("{} / {}", group.device, group.display_name);
+                                let group_heading = egui::WidgetText::from(group_heading)
+                                    .into_galley(
+                                        ui,
+                                        Some(egui::TextWrapMode::Truncate),
+                                        (ui.available_width() - 32.0).max(20.0),
+                                        egui::TextStyle::Button,
+                                    );
+                                let group_response = egui::CollapsingHeader::new(group_heading)
+                                    .default_open(false)
+                                    .id_salt(("profile_group", sub, group_index))
+                                    .show(ui, |ui| {
                                         wrapped_label(
                                             ui,
-                                            RichText::new(format!("• {}", n))
+                                            RichText::new(format!("source: {}", group.source))
                                                 .color(theme::color(
                                                     ui.ctx(),
                                                     CyberColors::TEXT_SECONDARY,
                                                 ))
                                                 .italics(),
                                         );
-                                    }
-                                });
-                            group_response.header_response.on_hover_text(full_heading);
-                        }
-                    });
-            }
-            ui.separator();
-            wrapped_label(
-                ui,
-                RichText::new(format!(
-                    "Showing {} group(s) · {} setting(s)",
-                    total_groups, total_settings
-                ))
-                .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
-            );
+                                        let grid_id = ("profile_grid", sub, group_index);
+                                        egui::Grid::new(grid_id)
+                                            .striped(true)
+                                            .num_columns(3)
+                                            .min_col_width(0.0)
+                                            .max_col_width(column_width(ui, 3))
+                                            .show(ui, |ui| {
+                                                for s in group.settings.iter().filter(|s| {
+                                                    filter_lc.is_empty()
+                                                        || setting_matches(s, filter_lc)
+                                                }) {
+                                                    let risk_color = match s.risk {
+                                                        SettingRisk::Informational => theme::color(
+                                                            ui.ctx(),
+                                                            CyberColors::TEXT_SECONDARY,
+                                                        ),
+                                                        SettingRisk::Safe => theme::color(
+                                                            ui.ctx(),
+                                                            CyberColors::NEON_GREEN,
+                                                        ),
+                                                        SettingRisk::Moderate => theme::color(
+                                                            ui.ctx(),
+                                                            CyberColors::NEON_YELLOW,
+                                                        ),
+                                                        SettingRisk::Dangerous => theme::color(
+                                                            ui.ctx(),
+                                                            CyberColors::NEON_RED,
+                                                        ),
+                                                    };
+                                                    wrapped_label(
+                                                        ui,
+                                                        RichText::new(&s.display_name)
+                                                            .color(risk_color),
+                                                    );
+                                                    let unit = s
+                                                        .unit
+                                                        .as_deref()
+                                                        .map(|u| format!(" {}", u))
+                                                        .unwrap_or_default();
+                                                    wrapped_label(
+                                                        ui,
+                                                        RichText::new(format!(
+                                                            "{}{}",
+                                                            s.value, unit
+                                                        ))
+                                                        .strong(),
+                                                    );
+                                                    wrapped_label(
+                                                        ui,
+                                                        RichText::new(s.id.clone())
+                                                            .color(theme::color(
+                                                                ui.ctx(),
+                                                                CyberColors::TEXT_SECONDARY,
+                                                            ))
+                                                            .italics()
+                                                            .monospace(),
+                                                    );
+                                                    ui.end_row();
+                                                }
+                                            });
+                                        for n in &group.notes {
+                                            wrapped_label(
+                                                ui,
+                                                RichText::new(format!("• {}", n))
+                                                    .color(theme::color(
+                                                        ui.ctx(),
+                                                        CyberColors::TEXT_SECONDARY,
+                                                    ))
+                                                    .italics(),
+                                            );
+                                        }
+                                    });
+                                group_response.header_response.on_hover_text(full_heading);
+                            }
+                        });
+                }
+                ui.separator();
+                wrapped_label(
+                    ui,
+                    RichText::new(format!(
+                        "Showing {} group(s) · {} setting(s)",
+                        total_groups, total_settings
+                    ))
+                    .color(theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY)),
+                );
+            });
         });
 }
 

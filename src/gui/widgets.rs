@@ -315,25 +315,27 @@ impl Widget for MetricCard<'_> {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
 
-            // Card background
-            painter.rect_filled(rect, 6.0, theme::color(ui.ctx(), CyberColors::SURFACE));
-
-            // Accent border on left
-            let accent_rect = Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
-            painter.rect_filled(
-                accent_rect,
-                egui::CornerRadius {
-                    nw: 6,
-                    sw: 6,
-                    ne: 0,
-                    se: 0,
-                },
+            // A tile inside a card: the card's surface tinted with the hue and
+            // outlined, so it reads as a tile whatever the theme's surface is.
+            // It used to paint the surface colour (invisible on a card) with a
+            // bar down its left edge.
+            let radius = egui::CornerRadius::same(10);
+            painter.rect_filled(rect, radius, widget_color.gamma_multiply(0.07));
+            painter.rect_stroke(
+                rect,
+                radius,
+                egui::Stroke::new(1.0_f32, super::cards::hairline(ui.ctx())),
+                egui::StrokeKind::Inside,
+            );
+            painter.circle_filled(
+                Pos2::new(rect.min.x + 15.0, rect.min.y + 18.0),
+                3.5,
                 widget_color,
             );
 
             // Title
             painter.text(
-                Pos2::new(rect.min.x + 12.0, rect.min.y + 12.0),
+                Pos2::new(rect.min.x + 25.0, rect.min.y + 11.0),
                 egui::Align2::LEFT_TOP,
                 self.title,
                 theme::data_font(ui.ctx(), 11.0),

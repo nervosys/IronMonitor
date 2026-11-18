@@ -25,7 +25,7 @@ fn surface(ctx: &egui::Context) -> Color32 {
 }
 
 /// A faint line for borders and bar tracks.
-fn hairline(ctx: &egui::Context) -> Color32 {
+pub(super) fn hairline(ctx: &egui::Context) -> Color32 {
     let v = &ctx.style().visuals;
     v.widgets.noninteractive.bg_stroke.color.gamma_multiply(0.6)
 }

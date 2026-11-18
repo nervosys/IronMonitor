@@ -4361,8 +4361,7 @@ impl IronMonitorApp {
                         .height(80.0)
                         .title("Download")
                         .unit("MB/s")
-                        .show_scale(true)
-                        .show_min_max(true),
+                        .show_scale(true),
                 );
 
                 ui.add_space(4.0);
@@ -4373,13 +4372,10 @@ impl IronMonitorApp {
                         .height(80.0)
                         .title("Upload")
                         .unit("MB/s")
-                        .show_scale(true)
-                        .show_min_max(true),
+                        .show_scale(true),
                 );
             });
-            ui.add_space(16.0);
             self.draw_network_context(ui);
-            ui.add_space(16.0);
 
             // Interface details
             if let Some(ref mut monitor) = self.network_monitor {
@@ -4523,7 +4519,6 @@ impl IronMonitorApp {
                                 }
                             });
                         });
-                        ui.add_space(8.0);
                     }
                 }
             } else {
@@ -4542,7 +4537,13 @@ impl IronMonitorApp {
         let muted = theme::color(&palette_ctx, CyberColors::TEXT_MUTED);
         let value = theme::color(&palette_ctx, DeviceTitleColors::NETWORK);
         let Some(context) = self.net_context.clone() else {
-            ui.label(RichText::new("Loading gateways, DNS and Wi-Fi…").color(muted));
+            cards::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Loading gateways, DNS and Wi-Fi…").color(muted));
+                });
+            });
+            ui.add_space(cards::GAP);
             return;
         };
         // Wrapped: an adapter with several addresses is wider than a narrow
@@ -5045,7 +5046,7 @@ impl IronMonitorApp {
                 // right-to-left layout an edge that exists.
                 ui.allocate_ui_with_layout(
                     egui::vec2(cols.health, ROW_HEIGHT),
-                    egui::Layout::right_to_left(egui::Align::Center),
+                    egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         if let Some(h) = &health {
                             let (text, color) = match h {
@@ -6224,9 +6225,9 @@ impl IronMonitorApp {
         }
 
         ScrollArea::vertical().show(ui, |ui| {
-            cards::section(ui, SectionHeader::new("🔌 Peripherals & Buses"), |ui| {
-                // Show loading indicator if peripherals not yet loaded
-                if self.peripherals.is_none() && self.system_info_loading {
+            // Only while loading: once loaded, each bus has its own card.
+            if self.peripherals.is_none() && self.system_info_loading {
+                cards::section(ui, SectionHeader::new("🔌 Peripherals & Buses"), |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(
@@ -6234,9 +6235,8 @@ impl IronMonitorApp {
                                 .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                     });
-                    ui.add_space(8.0);
-                }
-            });
+                });
+            }
             if let Some(ref peripherals) = self.peripherals {
                 // USB Devices Section
                 if !peripherals.usb_devices.is_empty() {
@@ -6667,9 +6667,6 @@ impl IronMonitorApp {
                 cards::section(ui, SectionHeader::new("Agent Observability"), |ui| {
                 self.agent_tools.draw(ui);
                 });
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
                 // Header
                 cards::section(ui, SectionHeader::new("🔧 Network Diagnostic Tools"), |ui| {
                 ui.label(
@@ -6849,11 +6846,9 @@ impl IronMonitorApp {
                 }
 
                 });
-                ui.add_space(15.0);
-                ui.separator();
 
                 // Results Section
-                ui.columns(2, |columns| {
+                cards::card(ui, |ui| ui.columns(2, |columns| {
                     // Left column: Ping & DNS results
                     columns[0].add(SectionHeader::new("📡 Ping Results"));
                     if let Some(ref result) = self.nettools_ping_result {
@@ -7003,10 +6998,10 @@ impl IronMonitorApp {
                             RichText::new("No traceroute results yet").color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         );
                     }
-                });
+                }));
+                ui.add_space(cards::GAP);
 
                 // Port Scan Results
-                ui.add_space(15.0);
                 cards::section(ui, SectionHeader::new("🔍 Port Scan Results"), |ui| {
 
                 if !self.nettools_port_scan_results.is_empty() {
@@ -7112,7 +7107,6 @@ impl IronMonitorApp {
 
                 });
                 // Nmap Scan Results Section
-                ui.add_space(15.0);
                 cards::section(ui, SectionHeader::new("🎯 Nmap-Style Scan Results"), |ui| {
 
                 if let Some(ref result) = self.nettools_nmap_result {
@@ -7229,7 +7223,6 @@ impl IronMonitorApp {
 
                 });
                 // Packet Capture (tcpdump-style) Section
-                ui.add_space(15.0);
                 cards::section(ui, SectionHeader::new("📦 Packet Capture (tcpdump)"), |ui| {
 
                 // Check if capture tools are available

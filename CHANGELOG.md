@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (GUI appearance)
+
+- Metric tiles on the Memory, Swap and Network tabs are outlined tiles tinted with
+  their colour, with a dot before the title. They used to paint the card's own
+  surface colour, so inside a card only their left bar showed.
+- Disk: each Health badge sits under its column header; it was drawn at the left
+  of its column.
+- Network: the gateways/DNS/Wi-Fi loading line is a card, cards are evenly spaced,
+  and the bandwidth charts drop a min/max that rounded to "min:0 max:0".
+- Tools: the Ping, DNS and Traceroute results share a card, and the separators and
+  extra gaps between cards are gone.
+- Peripherals: the "Peripherals & Buses" card shows only while loading; it was
+  otherwise empty.
+- Profiles: the toolbar, the deviation and audit panels, and the settings tree are
+  each a card.
+
 ### Added (themes)
 
 - The GUI and TUI offer the same themes as Rodeo and Interlinked. The GUI gains
