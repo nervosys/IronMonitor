@@ -8,9 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::cards;
 use super::theme::{self, threshold_color, trend_indicator, CyberColors, DeviceTitleColors};
-use super::widgets::{
-    CyberProgressBar, MetricCard, QuickLookPanel, SectionHeader, SparklineChart, ThresholdLegend,
-};
+use super::widgets::{MetricCard, QuickLookPanel, SectionHeader, SparklineChart, ThresholdLegend};
 
 use crate::ai_api::AiDataApi;
 use crate::connections::{ConnectionInfo, ConnectionState, Protocol};
@@ -3511,7 +3509,6 @@ impl IronMonitorApp {
         } else {
             65.0
         };
-        let bar_height = if device_count <= 2 { 18.0 } else { 14.0 };
         let _font_scale = if device_count <= 2 {
             1.0
         } else if device_count <= 4 {
@@ -3632,6 +3629,12 @@ impl IronMonitorApp {
                             // "VRAM 404/-MB" misdescribed it twice over.
                             let unified = static_info.integrated == Some(true)
                                 && static_info.vendor == crate::gpu::GpuVendor::Apple;
+                            // The share sits in the label: the bar under it is
+                            // too thin to carry text.
+                            let share = dynamic_info
+                                .memory
+                                .utilization
+                                .map_or_else(String::new, |pct| format!(" · {pct:.0}%"));
                             ui.label(
                                 RichText::new(if unified {
                                     format!(
@@ -3640,7 +3643,7 @@ impl IronMonitorApp {
                                     )
                                 } else {
                                     format!(
-                                        "VRAM {}/{}MB",
+                                        "VRAM {} / {} MB{share}",
                                         mb(dynamic_info.memory.used),
                                         mb(dynamic_info.memory.total)
                                     )
@@ -3652,13 +3655,11 @@ impl IronMonitorApp {
                             // draw. An empty bar and a bar at zero look the
                             // same, and only one of them is a reading.
                             if let Some(pct) = dynamic_info.memory.utilization {
-                                ui.add(
-                                    CyberProgressBar::new(pct as f32 / 100.0)
-                                        .color(theme::color(
-                                            &palette_ctx,
-                                            DeviceTitleColors::MEMORY,
-                                        ))
-                                        .height(bar_height),
+                                ui.add_space(2.0);
+                                cards::thin_bar(
+                                    ui,
+                                    f64::from(pct) / 100.0,
+                                    theme::color(&palette_ctx, DeviceTitleColors::MEMORY),
                                 );
                             }
 
@@ -5336,46 +5337,40 @@ impl IronMonitorApp {
                         Vec2::new(60.0, 20.0),
                         egui::Label::new(
                             RichText::new("Proto")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         ),
                     );
                     ui.add_sized(
                         Vec2::new(200.0, 20.0),
                         egui::Label::new(
                             RichText::new("Local Address")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         ),
                     );
                     ui.add_sized(
                         Vec2::new(200.0, 20.0),
                         egui::Label::new(
                             RichText::new("Remote Address")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         ),
                     );
                     ui.add_sized(
                         Vec2::new(100.0, 20.0),
                         egui::Label::new(
                             RichText::new("State")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         ),
                     );
                     ui.add_sized(
                         Vec2::new(60.0, 20.0),
                         egui::Label::new(
                             RichText::new("PID")
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                .strong(),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                         ),
                     );
                     ui.label(
                         RichText::new("Process")
-                            .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                            .strong(),
+                            .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
                 });
                 ui.separator();
@@ -6015,13 +6010,11 @@ impl IronMonitorApp {
                             // Header
                             ui.label(
                                 RichText::new("Class")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
                             ui.label(
                                 RichText::new("Device")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
                             ui.label(
                                 RichText::new("Vendor")
@@ -6109,8 +6102,7 @@ impl IronMonitorApp {
                             );
                             ui.label(
                                 RichText::new("Version")
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                    .strong(),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                             );
                             ui.label(
                                 RichText::new("Vendor")
@@ -6271,23 +6263,19 @@ impl IronMonitorApp {
                                 // Header
                                 ui.label(
                                     RichText::new("Version")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
                                     RichText::new("Device")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
                                     RichText::new("Class")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
                                     RichText::new("Status")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.end_row();
 
@@ -6513,8 +6501,7 @@ impl IronMonitorApp {
                                 );
                                 ui.label(
                                     RichText::new("Device")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
                                     RichText::new("Manufacturer")
@@ -6523,8 +6510,7 @@ impl IronMonitorApp {
                                 );
                                 ui.label(
                                     RichText::new("Status")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.end_row();
 
@@ -6588,8 +6574,7 @@ impl IronMonitorApp {
                             .show(ui, |ui| {
                                 ui.label(
                                     RichText::new("Device")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
                                     RichText::new("Address")
@@ -6598,8 +6583,7 @@ impl IronMonitorApp {
                                 );
                                 ui.label(
                                     RichText::new("Status")
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN))
-                                        .strong(),
+                                        .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.end_row();
 

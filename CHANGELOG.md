@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was missing from the font.
 - AI: the backend notice and the conversation are cards.
 - Overview: each disk is an outlined tile with a thin usage bar.
+- Charts set their min/max beside the current value and leave it out where it
+  would touch the title or the value; it ran into the value on narrow charts
+  ("max:100100.0%").
+- The Overview summary's CPU/MEM trends are small painted triangles after the
+  label. The font has no arrows, so they were drawn as "^", "v" and "-".
+- Accelerators: the VRAM bar is a thin bar, with the share in its label.
+- Sockets and Peripherals: table headings are muted like the other tables.
 
 ### Added (themes)
 

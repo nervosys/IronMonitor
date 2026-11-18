@@ -536,44 +536,49 @@ impl Widget for SparklineChart<'_> {
 
                 // Draw title
                 if let Some(ref title) = self.title {
-                    painter.text(
+                    let secondary = theme::legible(
+                        ui.ctx(),
+                        theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
+                    );
+                    let title_rect_text = painter.text(
                         title_rect.left_center() + Vec2::new(y_axis_width + 5.0, 0.0),
                         egui::Align2::LEFT_CENTER,
                         title,
                         theme::data_font(ui.ctx(), 13.0),
-                        theme::legible(
-                            ui.ctx(),
-                            theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
-                        ),
+                        secondary,
                     );
-
-                    // Min/max info (if enabled and data has variance)
-                    if self.show_min_max && self.data.len() > 1 && data_max > data_min {
-                        let min_max_text = format!("min:{:.0} max:{:.0}", data_min, data_max);
-                        painter.text(
-                            title_rect.center() + Vec2::new(20.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            min_max_text,
-                            theme::data_font(ui.ctx(), 10.0),
-                            theme::legible(
-                                ui.ctx(),
-                                theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
-                            ),
-                        );
-                    }
 
                     // Current value on right side of title
                     let value_text = match current_val {
                         Some(v) => format!("{:.1}{}", v, unit_str),
                         None => "-".to_string(),
                     };
-                    painter.text(
+                    let value_rect = painter.text(
                         title_rect.right_center() - Vec2::new(10.0, 0.0),
                         egui::Align2::RIGHT_CENTER,
                         value_text,
                         theme::data_font(ui.ctx(), 14.0),
                         theme::legible(ui.ctx(), widget_color),
                     );
+
+                    // Min/max (if enabled and the data varies), set just left of
+                    // the value and only where it clears both texts. It was
+                    // placed from the midpoint, so a narrow chart ran it into
+                    // the value: "max:100100.0%".
+                    if self.show_min_max && self.data.len() > 1 && data_max > data_min {
+                        const GAP: f32 = 12.0;
+                        let galley = painter.layout_no_wrap(
+                            format!("min:{:.0} max:{:.0}", data_min, data_max),
+                            theme::data_font(ui.ctx(), 10.0),
+                            secondary,
+                        );
+                        let right = value_rect.left() - GAP;
+                        let left = right - galley.size().x;
+                        if left >= title_rect_text.right() + GAP {
+                            let y = title_rect.center().y - galley.size().y / 2.0;
+                            painter.galley(egui::pos2(left, y), galley, secondary);
+                        }
+                    }
                 }
 
                 Rect::from_min_max(rect.min + Vec2::new(0.0, title_height), rect.max)
@@ -1030,23 +1035,26 @@ impl Widget for QuickLookPanel {
                 let has_bar = *label != "LOAD";
                 let x_start = rect.min.x + 4.0 + i as f32 * (section_width + 8.0);
 
-                // Label with trend
-                let label_text = if let Some(t) = trend {
-                    format!("{} {}", t, label)
-                } else {
-                    label.to_string()
-                };
-
-                painter.text(
+                // Label, then the trend as a painted marker. The UI font has
+                // no arrows, so this drew "^", "v" and "-" in front of the label.
+                let label_rect = painter.text(
                     Pos2::new(x_start, y_center - 10.0),
                     egui::Align2::LEFT_CENTER,
-                    &label_text,
+                    label,
                     theme::data_font(ui.ctx(), 10.0),
                     theme::legible(
                         ui.ctx(),
                         theme::color(ui.ctx(), CyberColors::TEXT_SECONDARY),
                     ),
                 );
+                if let Some(t) = trend {
+                    paint_trend(
+                        ui.ctx(),
+                        painter,
+                        Pos2::new(label_rect.right() + 9.0, label_rect.center().y),
+                        t,
+                    );
+                }
 
                 // Mini bar. Drawn only for a reading that has a percentage; the
                 // track of an unread metric or of LOAD is left out, not emptied.
@@ -1305,4 +1313,25 @@ mod section_header_source_tests {
             found.len()
         );
     }
+}
+
+/// A trend marker from `theme::trend_indicator`'s code: a small triangle up
+/// ("^", rising) or down ("v", falling). A steady reading ("-") draws nothing.
+fn paint_trend(ctx: &egui::Context, painter: &egui::Painter, center: Pos2, trend: &str) {
+    let (up, base) = match trend {
+        "^" => (true, CyberColors::THRESHOLD_CRITICAL),
+        "v" => (false, CyberColors::THRESHOLD_OK),
+        _ => return,
+    };
+    let (w, h) = (4.0, 3.5);
+    let tip = if up { -h } else { h };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(center.x, center.y + tip),
+            Pos2::new(center.x + w, center.y - tip),
+            Pos2::new(center.x - w, center.y - tip),
+        ],
+        theme::color(ctx, base),
+        Stroke::NONE,
+    ));
 }
