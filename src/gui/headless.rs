@@ -181,6 +181,61 @@ pub fn painted_text_rects_sized(
     out
 }
 
+/// Characters painted in a font that has no glyph for them, with the text they
+/// were in. egui draws such a character as an empty box ("◻"), which is easy to
+/// read past in a screenshot: "□ Healthy", "□ 76 KB/s".
+pub fn missing_glyphs(
+    ctx: &Context,
+    size: egui::Vec2,
+    body: impl FnMut(&mut egui::Ui),
+) -> Vec<(char, String)> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let mut body = body;
+    let mut run_frame = || {
+        ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| body(ui));
+        })
+    };
+    let _warmup = run_frame();
+    let settled = run_frame();
+    let mut galleys = Vec::new();
+    for clipped in &settled.shapes {
+        collect_galleys(&clipped.shape, &mut galleys);
+    }
+    let mut out = Vec::new();
+    for galley in galleys {
+        let job = &galley.job;
+        for section in &job.sections {
+            let text = &job.text[section.byte_range.clone()];
+            for c in text
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_control())
+            {
+                let font = section.format.font_id.clone();
+                if !ctx.fonts_mut(|f| f.has_glyph(&font, c)) {
+                    out.push((c, job.text.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_galleys(shape: &egui::Shape, out: &mut Vec<std::sync::Arc<egui::Galley>>) {
+    match shape {
+        egui::Shape::Text(text) => out.push(text.galley.clone()),
+        egui::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_galleys(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Painted strings whose box extends past `size` horizontally.
 ///
 /// Vertical overrun is not overflow here: every tab body is inside a
@@ -1052,6 +1107,38 @@ mod overflow_tests {
         "profiles",
         "ai",
     ];
+
+    /// Every tab paints only characters its fonts can draw. A missing glyph
+    /// renders as an empty box, and three tabs shipped them: Disk's "✓ Healthy",
+    /// Network's "↓ ↑" totals and the Processes sort arrows.
+    #[test]
+    fn no_tab_paints_a_glyph_its_font_lacks() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        let mut offenders = std::collections::BTreeSet::new();
+        for tab in TABS {
+            if app.select_tab_by_name(tab).is_err() {
+                continue;
+            }
+            if !settle(&mut app, &ctx, Duration::from_secs(30)) {
+                continue;
+            }
+            let size = egui::Vec2::new(1400.0, 900.0);
+            for (c, text) in missing_glyphs(&ctx, size, |ui| app.draw_current_tab(ui)) {
+                let excerpt: String = text.chars().take(60).collect();
+                offenders.insert(format!("{tab}: {c:?} (U+{:04X}) in {excerpt:?}", c as u32));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "glyphs the font cannot draw:
+{}",
+            offenders.into_iter().collect::<Vec<_>>().join(
+                "
+"
+            )
+        );
+    }
 
     /// Tabs that still paint past the right edge, pinned so the list cannot grow
     /// quietly and cannot shrink without someone noticing.

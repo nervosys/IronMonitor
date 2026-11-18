@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   label. The font has no arrows, so they were drawn as "^", "v" and "-".
 - Accelerators: the VRAM bar is a thin bar, with the share in its label.
 - Sockets and Peripherals: table headings are muted like the other tables.
+- No tab paints a character its font cannot draw. Disk's "✓ Healthy" and
+  Network's "↓ ↑" bandwidth totals rendered as empty boxes; the badges now read
+  Healthy/Warning/Critical in their colour and the totals use the monospace font
+  the per-interface rates already did. A test renders every tab and fails on any
+  such character.
+- System: values are plain text rather than a different accent colour each;
+  Secure Boot keeps its green/orange, which says whether it is on.
 
 ### Added (themes)
 

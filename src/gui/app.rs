@@ -4329,15 +4329,17 @@ impl IronMonitorApp {
                         RichText::new("Total Bandwidth:")
                             .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                     );
+                    // Monospace, like the per-interface rates below: the
+                    // proportional UI font has no arrows and drew them as boxes.
                     ui.label(
                         RichText::new(format!("↓ {}", rate_text(total_rx_rate)))
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .strong(),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN))
+                            .monospace(),
                     );
                     ui.label(
                         RichText::new(format!("↑ {}", rate_text(total_tx_rate)))
-                            .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                            .strong(),
+                            .color(theme::color(&palette_ctx, CyberColors::NEON_ORANGE))
+                            .monospace(),
                     );
                 });
                 ui.add_space(8.0);
@@ -5039,16 +5041,16 @@ impl IronMonitorApp {
                         if let Some(h) = &health {
                             let (text, color) = match h {
                                 crate::disk::DiskHealth::Healthy => (
-                                    "✓ Healthy",
+                                    "Healthy",
                                     theme::color(&palette_ctx, CyberColors::NEON_GREEN),
                                 ),
                                 crate::disk::DiskHealth::Warning => (
-                                    "⚠ Warning",
+                                    "Warning",
                                     theme::color(&palette_ctx, CyberColors::NEON_ORANGE),
                                 ),
                                 crate::disk::DiskHealth::Critical
                                 | crate::disk::DiskHealth::Failed => (
-                                    "✗ Critical",
+                                    "Critical",
                                     theme::color(&palette_ctx, CyberColors::NEON_RED),
                                 ),
                                 crate::disk::DiskHealth::Unknown => (
@@ -5514,7 +5516,7 @@ impl IronMonitorApp {
                         );
                         ui.label(
                             RichText::new(&self.hostname)
-                                .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         ui.end_row();
 
@@ -5525,7 +5527,7 @@ impl IronMonitorApp {
                         );
                         ui.label(
                             RichText::new(std::env::consts::OS)
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         ui.end_row();
 
@@ -5536,7 +5538,7 @@ impl IronMonitorApp {
                         );
                         ui.label(
                             RichText::new(std::env::consts::ARCH)
-                                .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                                .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                         );
                         ui.end_row();
 
@@ -5577,7 +5579,7 @@ impl IronMonitorApp {
                             };
                             ui.label(
                                 RichText::new(os_label)
-                                    .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                             );
                             ui.end_row();
 
@@ -5609,7 +5611,7 @@ impl IronMonitorApp {
                                 ui.label(
                                     RichText::new(manufacturer).color(theme::color(
                                         &palette_ctx,
-                                        CyberColors::NEON_PURPLE,
+                                        CyberColors::TEXT_PRIMARY,
                                     )),
                                 );
                                 ui.end_row();
@@ -5650,7 +5652,7 @@ impl IronMonitorApp {
                                 ui.label(
                                     RichText::new(vendor).color(theme::color(
                                         &palette_ctx,
-                                        CyberColors::NEON_ORANGE,
+                                        CyberColors::TEXT_PRIMARY,
                                     )),
                                 );
                                 ui.end_row();
@@ -5689,8 +5691,10 @@ impl IronMonitorApp {
                                         .color(theme::color(&palette_ctx, CyberColors::TEXT_MUTED)),
                                 );
                                 ui.label(
-                                    RichText::new(cpu_name)
-                                        .color(theme::color(&palette_ctx, CyberColors::CYAN)),
+                                    RichText::new(cpu_name).color(theme::color(
+                                        &palette_ctx,
+                                        CyberColors::TEXT_PRIMARY,
+                                    )),
                                 );
                                 ui.end_row();
                             }
@@ -5726,7 +5730,7 @@ impl IronMonitorApp {
                             );
                             ui.label(
                                 RichText::new(format!("{:?}", bios.firmware_type))
-                                    .color(theme::color(&palette_ctx, CyberColors::NEON_GREEN)),
+                                    .color(theme::color(&palette_ctx, CyberColors::TEXT_PRIMARY)),
                             );
                             ui.end_row();
 
@@ -5738,7 +5742,7 @@ impl IronMonitorApp {
                                 ui.label(
                                     RichText::new(vendor).color(theme::color(
                                         &palette_ctx,
-                                        CyberColors::NEON_PURPLE,
+                                        CyberColors::TEXT_PRIMARY,
                                     )),
                                 );
                                 ui.end_row();
