@@ -214,7 +214,13 @@ pub fn apply_theme(ctx: &egui::Context, selected: ColorTheme) {
             visuals.widgets.open.fg_stroke.color = accent;
             visuals.widgets.open.bg_stroke.color = accent.linear_multiply(0.7);
             visuals.selection.stroke.color = accent;
-            visuals.selection.bg_fill = accent.linear_multiply(0.2);
+            // Cyber keeps the selected tab to a faint wash, so the lit text
+            // marks it rather than a block of colour.
+            visuals.selection.bg_fill = accent.linear_multiply(if selected == ColorTheme::Cyber {
+                0.1
+            } else {
+                0.2
+            });
             visuals.hyperlink_color = accent;
         }
     });
@@ -227,6 +233,24 @@ fn gray(color: Color32) -> Color32 {
         + u32::from(color.b()) * 19)
         / 256) as u8;
     Color32::from_rgba_premultiplied(value, value, value, color.a())
+}
+
+/// Whether the neon treatment applies: the default Cyber theme, whose cards
+/// glow and whose headings are cyan. Every other theme keeps its own look.
+pub fn neon(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<ColorTheme>(theme_id()))
+        .unwrap_or_default()
+        == ColorTheme::Cyber
+}
+
+/// The colour section and card headings are drawn in: neon cyan under Cyber,
+/// the strong text colour elsewhere.
+pub fn heading_color(ctx: &egui::Context) -> Color32 {
+    if neon(ctx) {
+        CyberColors::CYAN
+    } else {
+        text_color(ctx, CyberColors::TEXT_PRIMARY)
+    }
 }
 
 /// Keep a fixed dark surface while respecting the monochrome palette.
@@ -289,12 +313,12 @@ pub struct CyberColors;
 
 impl CyberColors {
     // Primary colors
-    pub const BACKGROUND: Color32 = Color32::from_rgb(3, 4, 8);
-    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(0, 1, 3);
+    pub const BACKGROUND: Color32 = Color32::from_rgb(1, 1, 4);
+    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(0, 0, 2);
     #[allow(dead_code)]
     pub const BACKGROUND_LIGHT: Color32 = Color32::from_rgb(8, 11, 17);
-    pub const SURFACE: Color32 = Color32::from_rgb(9, 12, 19);
-    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(16, 24, 34);
+    pub const SURFACE: Color32 = Color32::from_rgb(4, 5, 11);
+    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(10, 16, 28);
 
     // Accent colors (neon)
     pub const CYAN: Color32 = Color32::from_rgb(0, 255, 255);
@@ -331,7 +355,7 @@ impl CyberColors {
     // Grid and borders
     #[allow(dead_code)]
     pub const GRID: Color32 = Color32::from_rgb(18, 52, 62);
-    pub const BORDER: Color32 = Color32::from_rgb(22, 92, 104);
+    pub const BORDER: Color32 = Color32::from_rgb(0, 110, 128);
     #[allow(dead_code)]
     pub const BORDER_GLOW: Color32 = Color32::from_rgb(0, 200, 200);
 }

@@ -961,7 +961,15 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, rect: egui::Rect) {
         let size = figure_size(rect.width());
         let muted = cards::muted(&ctx);
         ui.horizontal(|ui| {
-            ui.add(egui::Label::new(RichText::new(tile.title).size(13.5).color(muted)).truncate());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(tile.title)
+                        .size(12.5)
+                        .extra_letter_spacing(0.5)
+                        .color(muted),
+                )
+                .truncate(),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 match tile.value.as_deref() {

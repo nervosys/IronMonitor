@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (GUI)
 
+- The default Cyber theme is darker and sleeker: a near-black background and
+  card surface, cards edged with a thin, dim cyan line and no shadow or glow,
+  cyan headings at 15 pt with slight letter spacing, tighter corners (8 pt,
+  from 12), and quieter tile titles so the figures carry each tile. The
+  Overview summary's CPU, memory and swap bars are slim rounded 6 pt lines
+  on a dim track, from 16 pt solid blocks, and the selected tab is a faint
+  wash rather than a block of colour. Other themes keep their own look,
+  apart from the shared corner radius and heading sizes.
 - The CPU, Memory, Accelerators and Network tabs fit their charts to the
   window, as the Overview does: charts grow up to twice their height on a large
   display and give way to 0.6 on a short one or at a high UI scale, until the

@@ -319,7 +319,7 @@ impl Widget for MetricCard<'_> {
             // outlined, so it reads as a tile whatever the theme's surface is.
             // It used to paint the surface colour (invisible on a card) with a
             // bar down its left edge.
-            let radius = egui::CornerRadius::same(10);
+            let radius = egui::CornerRadius::same(8);
             painter.rect_filled(rect, radius, widget_color.gamma_multiply(0.07));
             painter.rect_stroke(
                 rect,
@@ -954,8 +954,8 @@ impl Widget for SectionHeader<'_> {
                 Pos2::new(rect.min.x, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 title_text,
-                egui::FontId::proportional(16.0),
-                theme::text_color(ui.ctx(), CyberColors::TEXT_PRIMARY),
+                egui::FontId::proportional(15.0),
+                theme::heading_color(ui.ctx()),
             );
         }
 
@@ -1013,8 +1013,11 @@ impl Widget for QuickLookPanel {
 
             // Calculate bar widths (4 equal sections)
             let section_width = rect.width() / 4.0 - 8.0;
-            let bar_height = 16.0;
+            // A slim bar: the percentage beside it carries the figure, and a
+            // thick block of solid colour outweighs everything else on the tab.
+            let bar_height = 6.0;
             let y_center = rect.center().y;
+            let text_y = y_center + 8.0;
 
             // Draw each metric
             let metrics = [
@@ -1060,13 +1063,13 @@ impl Widget for QuickLookPanel {
                 // track of an unread metric or of LOAD is left out, not emptied.
                 if let (true, Some(pct)) = (has_bar, percent) {
                     let bar_rect = Rect::from_min_size(
-                        Pos2::new(x_start, y_center),
+                        Pos2::new(x_start, text_y - bar_height / 2.0),
                         Vec2::new(section_width * 0.6, bar_height),
                     );
                     painter.rect_filled(
                         bar_rect,
-                        2.0,
-                        theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK),
+                        bar_height / 2.0,
+                        theme::color(ui.ctx(), CyberColors::TEXT_MUTED).gamma_multiply(0.22),
                     );
                     let fill_width = bar_rect.width() * (pct / 100.0);
                     if fill_width > 0.0 {
@@ -1076,7 +1079,7 @@ impl Widget for QuickLookPanel {
                         );
                         painter.rect_filled(
                             fill_rect,
-                            2.0,
+                            bar_height / 2.0,
                             theme::color(ui.ctx(), threshold_color(pct)),
                         );
                     }
@@ -1092,7 +1095,7 @@ impl Widget for QuickLookPanel {
                 };
 
                 painter.text(
-                    Pos2::new(x_start + section_width * 0.65, y_center + bar_height * 0.5),
+                    Pos2::new(x_start + section_width * 0.65, text_y),
                     egui::Align2::LEFT_CENTER,
                     percent_text,
                     theme::data_font(ui.ctx(), 13.0),

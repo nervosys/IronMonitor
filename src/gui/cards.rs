@@ -13,7 +13,7 @@ use eframe::egui::{
 use super::theme::{self, CyberColors};
 
 /// Corner radius of a card.
-const RADIUS: u8 = 12;
+const RADIUS: u8 = 8;
 /// Padding inside a card, and the gap between cards. Every tab uses these, so
 /// the tabs read as one design.
 pub const MARGIN: i8 = 14;
@@ -80,17 +80,28 @@ pub fn section<R>(
 /// The card's frame, for panes that manage their own width and contents.
 pub fn frame(ctx: &egui::Context) -> egui::Frame {
     let dark = ctx.style().visuals.dark_mode;
-    egui::Frame::new()
+    let frame = egui::Frame::new()
         .fill(surface(ctx))
-        .stroke(Stroke::new(1.0_f32, hairline(ctx)))
         .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::same(MARGIN))
+        .inner_margin(Margin::same(MARGIN));
+    if theme::neon(ctx) {
+        // Cyber: a crisp neon edge on near-black, with no glow or shadow.
+        return frame.stroke(Stroke::new(1.0_f32, neon_edge()));
+    }
+    frame
+        .stroke(Stroke::new(1.0_f32, hairline(ctx)))
         .shadow(Shadow {
             offset: [0, 2],
             blur: 12,
             spread: 0,
             color: Color32::from_black_alpha(if dark { 60 } else { 18 }),
         })
+}
+
+/// A card's edge under Cyber: cyan, bright enough to read as lit, dim enough
+/// that a grid of cards does not shout over the figures inside them.
+fn neon_edge() -> Color32 {
+    Color32::from_rgba_unmultiplied(0, 255, 255, 48)
 }
 
 /// A rounded card filling the available width.
@@ -109,8 +120,9 @@ pub fn heading(ui: &mut egui::Ui, text: &str) {
     ui.label(
         RichText::new(text)
             .strong()
-            .size(17.0)
-            .color(strong(ui.ctx())),
+            .size(15.0)
+            .extra_letter_spacing(0.6)
+            .color(theme::heading_color(ui.ctx())),
     );
 }
 
