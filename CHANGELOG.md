@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (GUI)
 
+- The CPU, Memory, Accelerators and Network tabs fit their charts to the
+  window, as the Overview does: charts grow up to twice their height on a large
+  display and give way to 0.6 on a short one or at a high UI scale, until the
+  tab fits. A tab that would scroll at any chart size keeps its charts at their
+  natural height rather than shrinking them for nothing. Per-core charts stop at
+  36 pt. The fitting is shared (`gui::chart_fit`) and settles without
+  oscillating when a chart sits beside taller content. Headless tests check
+  every tab at five sizes for overlapping cards, uneven rows and anything past
+  the right edge, and that the charts fill the room they are given.
 - The Inference tab's cards form an even grid at every window size and UI
   scale: tiles in a row are one size, the three lower cards share a width and
   the tallest one's height, and no card overlaps another. Tiles fit their

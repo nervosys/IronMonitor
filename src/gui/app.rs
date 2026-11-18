@@ -3330,7 +3330,8 @@ impl IronMonitorApp {
 
     fn draw_cpu_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        ScrollArea::vertical().show(ui, |ui| {
+        let mut fit = super::chart_fit::ChartFit::begin(ui.ctx(), "cpu");
+        let scrolled = ScrollArea::vertical().show(ui, |ui| {
             let Some(cpu) = self.cpu_stats.as_ref() else {
                 ui.label(
                     RichText::new("Unable to read CPU statistics")
@@ -3410,11 +3411,12 @@ impl IronMonitorApp {
                             }
                         });
                 };
+                let history_height = fit.chart(120.0);
                 let draw_chart = |ui: &mut egui::Ui| {
                     ui.add(
                         SparklineChart::from_history(&self.cpu_history)
                             .color(theme::color(&palette_ctx, DeviceTitleColors::CPU))
-                            .height(120.0)
+                            .height(history_height)
                             .title("CPU History")
                             .unit("%")
                             .max_value(100.0)
@@ -3446,6 +3448,9 @@ impl IronMonitorApp {
                         let num_cols =
                             ((ui.available_width() / 170.0).floor() as usize).clamp(2, 8);
                         for (row, chunk) in self.per_core_history.chunks(num_cols).enumerate() {
+                            // Per-core charts give way less than the main one:
+                            // below 36 pt their scale labels crowd the line.
+                            let core_height = fit.chart_at_least(44.0, 36.0);
                             ui.columns(num_cols, |columns| {
                                 for (j, (hist, col)) in
                                     chunk.iter().zip(columns.iter_mut()).enumerate()
@@ -3457,7 +3462,7 @@ impl IronMonitorApp {
                                     col.add(
                                         SparklineChart::from_history(hist)
                                             .color(theme::color(&palette_ctx, core_color))
-                                            .height(44.0)
+                                            .height(core_height)
                                             .title(format!("Core {}", row * num_cols + j))
                                             .unit("%")
                                             .max_value(100.0)
@@ -3476,6 +3481,11 @@ impl IronMonitorApp {
             });
             super::soc::draw_cpu_section(ui, self.silicon.get());
         });
+        fit.finish(
+            ui.ctx(),
+            scrolled.inner_rect.height(),
+            scrolled.content_size.y,
+        );
     }
 
     fn draw_accelerators_tab(&mut self, ui: &mut egui::Ui) {
@@ -3517,7 +3527,8 @@ impl IronMonitorApp {
             0.8
         };
 
-        ScrollArea::vertical().show(ui, |ui| {
+        let mut fit = super::chart_fit::ChartFit::begin(ui.ctx(), "accelerators");
+        let scrolled = ScrollArea::vertical().show(ui, |ui| {
             for (i, (static_info, dynamic_info)) in self
                 .gpu_static_info
                 .iter()
@@ -3697,6 +3708,7 @@ impl IronMonitorApp {
                             ui.set_width(ui.available_width());
 
                             if i < self.gpu_history.len() {
+                                let chart_height = fit.chart(chart_height);
                                 ui.add(
                                     SparklineChart::from_history(&self.gpu_history[i])
                                         .color(theme::color(&palette_ctx, accel_color))
@@ -3711,6 +3723,7 @@ impl IronMonitorApp {
                             ui.add_space(2.0);
 
                             if i < self.gpu_temp_history.len() {
+                                let chart_height = fit.chart(chart_height);
                                 ui.add(
                                     SparklineChart::from_history(&self.gpu_temp_history[i])
                                         .color(theme::color(&palette_ctx, CyberColors::NEON_YELLOW))
@@ -3732,11 +3745,17 @@ impl IronMonitorApp {
 
             super::soc::draw_npus(ui, silicon.get());
         });
+        fit.finish(
+            ui.ctx(),
+            scrolled.inner_rect.height(),
+            scrolled.content_size.y,
+        );
     }
 
     fn draw_memory_tab(&mut self, ui: &mut egui::Ui) {
         let palette_ctx = ui.ctx().clone();
-        ScrollArea::vertical().show(ui, |ui| {
+        let mut fit = super::chart_fit::ChartFit::begin(ui.ctx(), "memory");
+        let scrolled = ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref mem) = self.memory_stats {
                 let Some(usage) = mem.ram_usage_percent() else {
                     ui.label(
@@ -3864,11 +3883,12 @@ impl IronMonitorApp {
                 );
 
                 // Memory history
+                let history_height = fit.chart(150.0);
                 cards::card(ui, |ui| {
                     ui.add(
                         SparklineChart::from_history(&self.memory_history)
                             .color(theme::color(&palette_ctx, DeviceTitleColors::MEMORY))
-                            .height(150.0)
+                            .height(history_height)
                             .title("Memory Usage History")
                             .unit("%")
                             .max_value(100.0)
@@ -3947,6 +3967,11 @@ impl IronMonitorApp {
             }
             super::soc::draw_memory_section(ui, self.silicon.get());
         });
+        fit.finish(
+            ui.ctx(),
+            scrolled.inner_rect.height(),
+            scrolled.content_size.y,
+        );
     }
 
     fn draw_processes_tab(&mut self, ui: &mut egui::Ui) {
@@ -4273,7 +4298,8 @@ impl IronMonitorApp {
         // Clone the rates to avoid borrow conflict
         let rates = self.network_rates.clone();
 
-        ScrollArea::vertical().show(ui, |ui| {
+        let mut fit = super::chart_fit::ChartFit::begin(ui.ctx(), "network");
+        let scrolled = ScrollArea::vertical().show(ui, |ui| {
             let t = super::widgets::domain_section_title("network", "Interfaces");
             cards::section(ui, SectionHeader::new(&t).icon("🌐"), |ui| {
                 // Show total bandwidth rates at the top
@@ -4318,10 +4344,11 @@ impl IronMonitorApp {
                 ui.add_space(8.0);
 
                 // Network charts - stacked vertically, left-aligned
+                let chart_height = fit.chart(80.0);
                 ui.add(
                     SparklineChart::from_history(&self.network_rx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .height(80.0)
+                        .height(chart_height)
                         .title("Download")
                         .unit("MB/s")
                         .show_scale(true),
@@ -4329,10 +4356,11 @@ impl IronMonitorApp {
 
                 ui.add_space(4.0);
 
+                let chart_height = fit.chart(80.0);
                 ui.add(
                     SparklineChart::from_history(&self.network_tx_history)
                         .color(theme::color(&palette_ctx, DeviceTitleColors::NETWORK))
-                        .height(80.0)
+                        .height(chart_height)
                         .title("Upload")
                         .unit("MB/s")
                         .show_scale(true),
@@ -4491,6 +4519,11 @@ impl IronMonitorApp {
                 );
             }
         });
+        fit.finish(
+            ui.ctx(),
+            scrolled.inner_rect.height(),
+            scrolled.content_size.y,
+        );
     }
 
     /// Gateways, DNS and Wi-Fi: where this machine is attached, as opposed to

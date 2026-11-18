@@ -14,6 +14,7 @@ pub mod app;
 // surface an agent still could not see.
 mod agents_tab;
 mod cards;
+mod chart_fit;
 pub mod headless;
 mod inference_tab;
 mod profile_tab;

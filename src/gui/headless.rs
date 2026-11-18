@@ -2038,3 +2038,166 @@ mod inference_geometry_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod all_tab_geometry_tests {
+    use super::*;
+    use crate::gui::chart_fit::{ChartFit, MAX_SCALE, MIN_SCALE};
+
+    const TABS: [&str; 15] = [
+        "inference",
+        "agents",
+        "overview",
+        "cpu",
+        "accelerators",
+        "memory",
+        "disk",
+        "processes",
+        "network",
+        "connections",
+        "tools",
+        "peripherals",
+        "system",
+        "profiles",
+        "ai",
+    ];
+
+    /// From a 1440p monitor to a 1280x800 laptop at UI scale 2, in points.
+    const ROOMS: [(f32, f32); 5] = [
+        (2544.0, 1300.0),
+        (1584.0, 780.0),
+        (1264.0, 680.0),
+        (952.0, 480.0),
+        (632.0, 340.0),
+    ];
+
+    fn frames(
+        app: &mut crate::gui::app::IronMonitorApp,
+        ctx: &Context,
+        size: egui::Vec2,
+    ) -> Vec<(&'static str, egui::Rect, egui::Rect)> {
+        // Chart scales and row heights follow earlier frames; let them settle.
+        for _ in 0..6 {
+            let _ = painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui));
+        }
+        painted_visible_rects(ctx, size, |ui| app.draw_current_tab(ui))
+    }
+
+    /// Every tab at every size: no card overlaps another, cards side by side
+    /// are one height, and nothing is visible past the right edge.
+    #[test]
+    fn no_tab_overlaps_or_overflows_at_any_size() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        let mut faults = Vec::new();
+        for tab in TABS {
+            app.select_tab_by_name(tab).expect("a tab");
+            settle(&mut app, &ctx, Duration::from_secs(30));
+            for (w, h) in ROOMS {
+                let shapes = frames(&mut app, &ctx, egui::vec2(w, h));
+                let outlines: Vec<egui::Rect> = shapes
+                    .iter()
+                    .filter(|(k, r, _)| *k == "outline" && r.height() > 40.0)
+                    .map(|(_, r, _)| *r)
+                    .collect();
+                let cards: Vec<egui::Rect> = outlines
+                    .iter()
+                    .filter(|r| {
+                        !outlines
+                            .iter()
+                            .any(|o| o != *r && o.expand(0.5).contains_rect(**r))
+                    })
+                    .copied()
+                    .collect();
+                let at = format!("{tab} at {w:.0}x{h:.0}");
+                for (i, a) in cards.iter().enumerate() {
+                    for b in &cards[i + 1..] {
+                        let o = a.intersect(*b);
+                        if o.is_positive() && o.area() > 4.0 {
+                            faults.push(format!("{at}: cards {a:?} and {b:?} overlap"));
+                        }
+                    }
+                }
+                let mut rows: Vec<Vec<egui::Rect>> = Vec::new();
+                for card in &cards {
+                    match rows
+                        .iter_mut()
+                        .find(|r| (r[0].min.y - card.min.y).abs() < 2.0)
+                    {
+                        Some(row) => row.push(*card),
+                        None => rows.push(vec![*card]),
+                    }
+                }
+                for row in rows.iter().filter(|r| r.len() > 1) {
+                    let h0 = row[0].height();
+                    if row.iter().any(|r| (r.height() - h0).abs() > 1.0) {
+                        faults.push(format!(
+                            "{at}: cards side by side differ in height: {row:?}"
+                        ));
+                    }
+                }
+                if let Some((kind, _, seen)) = shapes
+                    .iter()
+                    .find(|(_, _, seen)| seen.is_positive() && seen.max.x > w + 1.0)
+                {
+                    faults.push(format!(
+                        "{at}: a {kind} is visible past the right edge at {seen:?}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            faults.is_empty(),
+            "{} faults:\n{}",
+            faults.len(),
+            faults.join("\n")
+        );
+    }
+
+    /// Bottom edge of everything painted.
+    fn bottom(shapes: &[(&'static str, egui::Rect, egui::Rect)]) -> f32 {
+        shapes
+            .iter()
+            .filter(|(k, _, _)| matches!(*k, "text" | "path" | "line" | "mesh" | "outline"))
+            .map(|(_, r, _)| r.max.y)
+            .fold(0.0, f32::max)
+    }
+
+    /// The charts on the CPU, Memory and Network tabs take the room the window
+    /// gives: on a large display they grow until the tab fills it (or reach
+    /// their ceiling), and on a short one they give way until it fits, unless
+    /// the tab would scroll at any chart size, when they keep their natural
+    /// height.
+    #[test]
+    fn tab_charts_fill_the_room_they_are_given() {
+        let ctx = themed_context();
+        let mut app = crate::gui::app::IronMonitorApp::with_context(&ctx);
+        let mut faults = Vec::new();
+        for tab in ["cpu", "memory", "network"] {
+            app.select_tab_by_name(tab).expect("a tab");
+            settle(&mut app, &ctx, Duration::from_secs(30));
+            for (w, h) in [(2544.0, 1300.0), (1264.0, 680.0), (952.0, 480.0)] {
+                let painted = bottom(&frames(&mut app, &ctx, egui::vec2(w, h)));
+                let scale = ChartFit::scale_of(&ctx, tab);
+                let at = format!("{tab} at {w:.0}x{h:.0}");
+                let fills = (painted - h).abs() <= 32.0;
+                let ok = if painted < h - 32.0 {
+                    // Room to spare: only the ceiling excuses not using it.
+                    (scale - MAX_SCALE).abs() < 0.01
+                } else if painted > h + 32.0 {
+                    // Overflowing: only the floor, or a tab that scrolls
+                    // whatever its charts do, excuses it.
+                    (scale - MIN_SCALE).abs() < 0.01 || (scale - 1.0).abs() < 0.01
+                } else {
+                    fills
+                };
+                if !ok {
+                    faults.push(format!(
+                        "{at}: painted to {painted:.0} with charts at scale {scale:.2}"
+                    ));
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+}
