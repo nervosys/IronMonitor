@@ -3153,7 +3153,7 @@ fn resolve_ironworks(out: &mut Vec<Reading>, base: &str) {
     use crate::inference::ironworks::{fetch, metrics_url, Tier};
     use serde_json::json;
 
-    let url = metrics_url(base);
+    let url = crate::inference::redact_urls(&metrics_url(base));
     let sample = match fetch(base, INFERENCE_SNAPSHOT_TIMEOUT) {
         Ok(metrics) => metrics.into_sample(),
         Err(e) => {

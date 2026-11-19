@@ -373,7 +373,7 @@ impl InferenceSource for RemoteSource {
     }
 
     fn endpoint(&self) -> String {
-        self.base.clone()
+        super::redact_urls(&self.base)
     }
 
     fn locality(&self) -> Locality {

@@ -565,6 +565,9 @@ pub fn fetch(base_url: &str, timeout: Duration) -> Result<MetricsV1, SourceError
 fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client, SourceError> {
     reqwest::blocking::Client::builder()
         .timeout(timeout)
+        // Not followed: a cross-host redirect would carry custom auth headers
+        // (such as `x-api-key`) to a host nobody configured.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| SourceError::Unreachable(format!("could not start an HTTP client: {e}")))
 }
@@ -584,7 +587,7 @@ fn fetch_with(
     if status == reqwest::StatusCode::NOT_FOUND {
         // The engine answers 404 with its own body when `--metrics` is off. Only
         // that body makes this the metrics-off state; another 404 is just a 404.
-        let body = response.text().unwrap_or_default();
+        let body = capped_text(response).unwrap_or_default();
         return Err(if is_metrics_disabled_body(&body) {
             SourceError::MetricsNotEnabled
         } else {
@@ -594,8 +597,29 @@ fn fetch_with(
     if status != reqwest::StatusCode::OK {
         return Err(SourceError::Status(status.as_u16()));
     }
-    let body = response.text().map_err(|e| classify(&e, timeout))?;
+    let body = capped_text(response)?;
     parse_metrics(&body)
+}
+
+/// The reply body, read no further than `http::MAX_BODY_BYTES`. This path read
+/// `response.text()` whole, bounded only by the timeout, so a process holding
+/// the IronWorks port could stream gigabytes into `ironmon serve` within it;
+/// every other engine already went through the cap in `http::get`.
+#[cfg(feature = "remote-backends")]
+fn capped_text(response: reqwest::blocking::Response) -> Result<String, SourceError> {
+    use std::io::Read;
+    let limit = super::http::MAX_BODY_BYTES;
+    let mut bytes = Vec::new();
+    response
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| SourceError::Unreachable(format!("reading the reply failed: {e}")))?;
+    if bytes.len() as u64 > limit {
+        return Err(SourceError::Rejected(format!(
+            "the reply is larger than {limit} bytes"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|e| SourceError::NotJson(e.to_string()))
 }
 
 #[cfg(feature = "remote-backends")]
@@ -644,7 +668,7 @@ impl InferenceSource for IronWorksSource {
     }
 
     fn endpoint(&self) -> String {
-        self.base.clone()
+        super::redact_urls(&self.base)
     }
 
     fn locality(&self) -> Locality {

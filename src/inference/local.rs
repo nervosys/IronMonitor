@@ -298,7 +298,7 @@ impl InferenceSource for LocalSource {
     }
 
     fn endpoint(&self) -> String {
-        self.base.clone()
+        super::redact_urls(&self.base)
     }
 
     fn locality(&self) -> Locality {
@@ -343,6 +343,10 @@ impl InferenceSource for LocalSource {
 /// naming the endpoint. Each state reads differently, so "nothing answered" is
 /// never shown as "answered".
 pub fn reason(kind: ProviderKind, endpoint: &str, error: &SourceError) -> String {
+    super::redact_urls(&reason_unredacted(kind, endpoint, error))
+}
+
+fn reason_unredacted(kind: ProviderKind, endpoint: &str, error: &SourceError) -> String {
     let name = kind.display_name();
     match error {
         SourceError::Unreachable(why) => format!("no {name} answered at {endpoint}: {why}"),

@@ -135,6 +135,7 @@ impl SourceError {
     /// naming the endpoint. The three surfaces and the ontology all use this text,
     /// so a state reads the same wherever it is shown.
     pub fn summary(&self, endpoint: &str) -> String {
+        let endpoint = &redact_urls(endpoint);
         match self {
             Self::MetricsNotEnabled => METRICS_NOT_ENABLED.to_string(),
             Self::Unreachable(why) => format!("no engine answered at {endpoint}: {why}"),
@@ -1571,5 +1572,66 @@ pub(crate) mod poller_tests {
         let exited = wait_until(Duration::from_secs(5), || weak.strong_count() == 0);
         assert!(exited, "the poller thread kept its state alive after drop");
         stub.stop();
+    }
+}
+
+/// `text` with every URL in it stripped of credentials and query string, for
+/// anything shown or served: notes, reasons, the endpoint a tab names.
+///
+/// Endpoints come from `IRONMON_*_URL` exactly as the operator wrote them, and
+/// one written as `https://user:token@host` or `https://host/?key=...` carried
+/// the secret into `/api/v1/snapshot`, the TUI and the GUI whenever the engine
+/// failed to answer. The URL used for the request keeps them; only the text
+/// does not. reqwest's own error messages name the URL too, so this scrubs
+/// whole messages rather than only the endpoint argument.
+pub fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        // The URL runs to the next whitespace, quote or closing bracket.
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>' | ']'))
+            .unwrap_or(tail.len());
+        let (url, after) = tail.split_at(end);
+        let authority_end = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let (authority, path) = url.split_at(authority_end);
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        if host.len() != authority.len() {
+            out.push_str("***@");
+        }
+        out.push_str(host);
+        let path = path.split(['?', '#']).next().unwrap_or("");
+        out.push_str(path);
+        if url[authority_end..].contains('?') {
+            out.push_str("?***");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_urls;
+
+    #[test]
+    fn credentials_and_queries_never_reach_shown_text() {
+        assert_eq!(
+            redact_urls("no vLLM answered at https://user:token@gpu-box:8000: refused"),
+            "no vLLM answered at https://***@gpu-box:8000: refused"
+        );
+        assert_eq!(
+            redact_urls("error sending request for url (http://h:1/metrics?api_key=s3cret)"),
+            "error sending request for url (http://h:1/metrics?***)"
+        );
+        let plain = "no Ollama answered at http://127.0.0.1:11434: connection refused";
+        assert_eq!(redact_urls(plain), plain);
+        assert_eq!(redact_urls("no url here"), "no url here");
+        for leaked in ["token", "s3cret", "user:"] {
+            assert!(!redact_urls("a https://user:token@x/?k=s3cret b").contains(leaked));
+        }
     }
 }

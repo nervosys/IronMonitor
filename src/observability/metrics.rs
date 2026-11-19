@@ -405,24 +405,44 @@ impl MetricCollector {
     /// the reason the collection loop can only record whole-machine metrics,
     /// and that is why the bundled dashboards see ten of the twenty-four names
     /// they query.
+    ///
+    /// Each family's series are grouped under one `# TYPE` line, sorted by name
+    /// and labels. They came out in hash-map order with no type: the text format
+    /// requires a family's lines to be contiguous, strict parsers reject them
+    /// interleaved, and an untyped family makes `rate()` warn in Prometheus 3.
+    /// Names ending `_total` are counters, as the naming convention says; every
+    /// other name here is a gauge.
     pub fn export_prometheus(&self) -> String {
-        let mut output = String::new();
-
+        let mut rows: Vec<(String, String, f64)> = Vec::new();
         if let Ok(metrics) = self.metrics.read() {
             for (key, series) in metrics.iter() {
                 let Some(value) = series.latest() else {
                     continue;
                 };
                 let (name, labels) = split_label_key(key);
-                let prom_name = name.replace(['.', '-'], "_");
-                if labels.is_empty() {
-                    output.push_str(&format!("{prom_name} {value}\n"));
-                } else {
-                    output.push_str(&format!("{prom_name}{{{labels}}} {value}\n"));
-                }
+                rows.push((name.replace(['.', '-'], "_"), labels, value));
             }
         }
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
+        let mut output = String::new();
+        let mut family: Option<&str> = None;
+        for (name, labels, value) in &rows {
+            if family != Some(name.as_str()) {
+                let kind = if name.ends_with("_total") {
+                    "counter"
+                } else {
+                    "gauge"
+                };
+                output.push_str(&format!("# TYPE {name} {kind}\n"));
+                family = Some(name.as_str());
+            }
+            if labels.is_empty() {
+                output.push_str(&format!("{name} {value}\n"));
+            } else {
+                output.push_str(&format!("{name}{{{labels}}} {value}\n"));
+            }
+        }
         output
     }
 
@@ -561,4 +581,64 @@ fn escape_label(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+#[cfg(test)]
+mod exposition_tests {
+    use super::MetricCollector;
+
+    /// What `ironmon serve` sends: every family typed once and contiguous,
+    /// counters named `_total`, gauges everything else.
+    #[test]
+    fn families_are_typed_once_and_contiguous() {
+        let collector = MetricCollector::new();
+        collector.record_with_labels(
+            "ironmon_network_rx_bytes_total",
+            10.0,
+            &[("interface", "b")],
+        );
+        collector.record("ironmon_cpu_usage_percent", 42.0);
+        collector.record_with_labels(
+            "ironmon_network_rx_bytes_total",
+            20.0,
+            &[("interface", "a")],
+        );
+        collector.record_with_labels("ironmon_disk_usage_percent", 5.0, &[("device", "C:")]);
+        let text = collector.export_prometheus();
+
+        let mut seen_families: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                let mut parts = rest.split(' ');
+                let name = parts.next().unwrap_or_default().to_string();
+                let kind = parts.next().unwrap_or_default();
+                let expected = if name.ends_with("_total") {
+                    "counter"
+                } else {
+                    "gauge"
+                };
+                assert_eq!(kind, expected, "{name} typed {kind}");
+                assert!(
+                    !seen_families.contains(&name),
+                    "{name} declared twice:\n{text}"
+                );
+                seen_families.push(name.clone());
+                current = name;
+                continue;
+            }
+            let name = line.split(['{', ' ']).next().unwrap_or_default();
+            assert_eq!(name, current, "{name} sample outside its family:\n{text}");
+        }
+        assert_eq!(seen_families.len(), 3, "{text}");
+        let rx: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("ironmon_network_rx"))
+            .collect();
+        assert_eq!(rx.len(), 2, "{text}");
+        assert!(
+            rx[0].contains("interface=\"a\""),
+            "series sorted by labels: {text}"
+        );
+    }
 }

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Dependencies updated past 23 RustSec advisories.** `cargo audit` reported
+  25 vulnerabilities in the lock file. Semver-compatible updates fix all but
+  two: `h2` 0.4.20, `openssl` 0.10.82, `rustls` 0.23.46, `rustls-webpki`
+  0.103.17, `zstd` 0.13.5 / `zstd-safe` 7.4.1 / `zstd-sys` 2.1.3, `tokio`
+  1.53.3, `arrow-*` 58.4.2 and `parquet` 58.4.2 (which brings `thrift` 0.23.0).
+  `lru` moves from 0.12 to 0.18, out of two soundness advisories. The two left
+  are in `quick-xml` 0.38, reached only through `wayland-scanner`, a proc-macro
+  that parses the Wayland protocol files bundled with it at compile time; it
+  never runs in the shipped binary, and it is fixed when `winit` moves.
+- **Credentials in an engine URL no longer reach served text.** An endpoint
+  set as `IRONMON_VLLM_URL=https://user:token@host` or with a `?key=` query was
+  quoted whole in the note an unreachable engine leaves in `/api/v1/snapshot`,
+  `ironmon get`, the TUI and the GUI. Every URL in those notes, and the
+  endpoint a source names, now shows `***@` and `?***` in their place. The
+  request itself still uses the URL as written.
+- **The IronWorks reply is read through the same 4 MiB cap as every other
+  engine.** It was read whole, bounded only by the timeout, so a process
+  holding the IronWorks port could stream gigabytes into `ironmon serve`.
+- **Redirects are no longer followed when polling engines and providers.**
+  reqwest drops `Authorization` on a cross-host redirect but not custom headers,
+  so the Anthropic `x-api-key` would have followed one to a host nobody
+  configured.
+
+### Fixed (Prometheus)
+
+- **`ironmon serve` now types and groups its exposition.** Series came out in
+  hash-map order with no `# TYPE` line, so one family's samples were scattered
+  through the scrape. The text format requires them contiguous, strict parsers
+  reject the scrape, and Prometheus 3 warns on `rate()` over an untyped
+  family. Each family is now one `# TYPE` line followed by its series, sorted;
+  names ending `_total` are counters and the rest gauges. Verified against a
+  live `ironmon serve`: the bundled dashboards' queries all match exported
+  series, except `ironmon_cpu_temperature_celsius` and the load averages, which
+  this Windows machine does not measure and so does not export.
+
 ### Changed (GUI)
 
 - The default Cyber theme is darker and sleeker: a near-black background and

@@ -37,6 +37,9 @@ pub fn get(url: &str, timeout: Duration, headers: &[(&str, &str)]) -> Result<Rep
             .spawn(move || {
                 let client = reqwest::blocking::Client::builder()
                     .timeout(timeout)
+                    // Not followed: a cross-host redirect would carry custom auth headers
+                    // (such as `x-api-key`) to a host nobody configured.
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()
                     .map_err(|_| {
                         SourceError::Unreachable("could not start an HTTP client".into())
