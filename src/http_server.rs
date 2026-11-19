@@ -190,12 +190,26 @@ pub struct HttpServer {
         allow(dead_code)
     )]
     otlp: Option<crate::otlp::Settings>,
+    /// Send system telemetry to nervosys, gated on consent before every send.
+    /// See [`crate::telemetry`].
+    #[cfg_attr(
+        not(all(feature = "cli", feature = "remote-backends")),
+        allow(dead_code)
+    )]
+    telemetry: bool,
 }
 
 impl HttpServer {
     /// Push every reading to an OTLP/HTTP collector while serving.
     pub fn with_otlp(mut self, settings: crate::otlp::Settings) -> Self {
         self.otlp = Some(settings);
+        self
+    }
+
+    /// Send system telemetry to nervosys while serving, whenever
+    /// [`crate::telemetry::enabled`] allows it at the time of the send.
+    pub fn with_telemetry(mut self) -> Self {
+        self.telemetry = true;
         self
     }
 
@@ -277,6 +291,7 @@ impl HttpServer {
             sampler: sampler::Sampler::production(),
             loopback,
             otlp: None,
+            telemetry: false,
         })
     }
 
@@ -360,10 +375,26 @@ impl HttpServer {
         #[cfg(all(feature = "cli", feature = "remote-backends"))]
         if let Some(settings) = self.otlp.clone() {
             let sampler = self.sampler.clone();
+            let push = Push {
+                settings,
+                vendor: false,
+            };
             std::thread::Builder::new()
                 .name("ironmon-otlp".into())
-                .spawn(move || otlp_export_loop(&sampler, &settings))
+                .spawn(move || otlp_export_loop(&sampler, &push))
                 .map_err(|e| crate::IronError::Other(format!("cannot start OTLP export: {e}")))?;
+        }
+        #[cfg(all(feature = "cli", feature = "remote-backends"))]
+        if self.telemetry {
+            let sampler = self.sampler.clone();
+            let push = Push {
+                settings: crate::telemetry::settings(),
+                vendor: true,
+            };
+            std::thread::Builder::new()
+                .name("ironmon-telemetry".into())
+                .spawn(move || otlp_export_loop(&sampler, &push))
+                .map_err(|e| crate::IronError::Other(format!("cannot start telemetry: {e}")))?;
         }
 
         let connection = Arc::new(Connection {
@@ -743,9 +774,28 @@ const PROMETHEUS_IDLE: std::time::Duration = std::time::Duration::from_secs(300)
 /// to [`crate::otlp::MAX_BACKOFF`] and the sampler is left idle between them; the
 /// first failure and the recovery are each reported once on stderr.
 #[cfg(all(feature = "cli", feature = "remote-backends"))]
-fn otlp_export_loop(sampler: &sampler::Sampler, settings: &crate::otlp::Settings) {
+struct Push {
+    settings: crate::otlp::Settings,
+    /// System telemetry to nervosys: consent is checked before every send, the
+    /// install id is attached, and failures go to the debug log, not stderr.
+    vendor: bool,
+}
+
+#[cfg(all(feature = "cli", feature = "remote-backends"))]
+fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
     use crate::ontology::Domain;
-    use crate::otlp::{backoff, encode, send, SendError, Timed};
+    use crate::otlp::{backoff, encode_with, send, SendError, Timed};
+
+    let settings = &push.settings;
+    let install_id = if push.vendor {
+        crate::telemetry::install_id()
+    } else {
+        None
+    };
+    let resource: Vec<(&str, String)> = install_id
+        .into_iter()
+        .map(|id| ("service.instance.id", id))
+        .collect();
 
     let start = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -757,6 +807,12 @@ fn otlp_export_loop(sampler: &sampler::Sampler, settings: &crate::otlp::Settings
 
     loop {
         std::thread::sleep(backoff(settings.interval, failures));
+        // Read consent now, not at startup, so an opt-out stops the next send.
+        // Refused, the sampler is not asked for anything.
+        if push.vendor && !crate::telemetry::enabled() {
+            failures = 0;
+            continue;
+        }
         // Export what is ready. A segment still on its first pass (a large agent
         // recording directory can take minutes) joins a later push rather than
         // holding every other reading back.
@@ -782,15 +838,15 @@ fn otlp_export_loop(sampler: &sampler::Sampler, settings: &crate::otlp::Settings
                 time_unix_nano: stamp.sampled_at_unix_nanos(),
             })
             .collect();
-        let body = encode(&rows, start);
+        let body = encode_with(&rows, start, &resource);
         match send(settings, &body) {
             Ok(accepted) => {
-                if failures > 0 {
+                if failures > 0 && !push.vendor {
                     eprintln!("[ironmon] OTLP: exporting to {shown}");
                 }
                 failures = 0;
                 last_error = None;
-                if accepted.rejected > 0 {
+                if accepted.rejected > 0 && !push.vendor {
                     eprintln!(
                         "[ironmon] OTLP: the collector rejected {} data points{}",
                         accepted.rejected,
@@ -803,7 +859,9 @@ fn otlp_export_loop(sampler: &sampler::Sampler, settings: &crate::otlp::Settings
             }
             Err(error) => {
                 failures = failures.saturating_add(1);
-                if last_error.as_ref() != Some(&error) {
+                if push.vendor {
+                    log::debug!("system telemetry to {shown} failed: {error}");
+                } else if last_error.as_ref() != Some(&error) {
                     eprintln!(
                         "[ironmon] OTLP: no export to {shown}: {error}; retrying with backoff \
                          (--no-otlp turns this off)"

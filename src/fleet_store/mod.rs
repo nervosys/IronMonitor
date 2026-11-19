@@ -5,31 +5,21 @@
 //! Read this before anything else here, because the distinction decides whether
 //! the module is allowed to exist at all.
 //!
-//! [`crate::consent`] states, in its module header and on three `ironmon
-//! privacy` screens, that *"IronMonitor collects and transmits nothing"* — and
-//! it is guarded: `granting_every_scope_still_collects_nothing` grants all five
-//! consent scopes and then asserts that every one still reports it collects
+//! [`crate::consent`] states, in its module header and on the `ironmon
+//! privacy` screens, exactly what IronMonitor sends to its authors — system
+//! telemetry from `ironmon serve`, opt-out — and it is guarded:
+//! `granting_an_unimplemented_scope_still_collects_nothing` grants every other
+//! consent scope and then asserts that each still reports it collects
 //! nothing. That test exists to force the documentation and the CLI screens to
 //! be rewritten in the same change as any real collector.
 //!
 //! **This module does not trip it, and the reason is the direction of the
-//! data.** What `consent` forbids is IronMonitor gathering facts about a user's
-//! machine and sending them somewhere the *vendor* chose; it says so plainly —
-//! "There is no endpoint." What this module does is write a machine's own
-//! metrics to a table the *operator* configured and points at, which is the same
+//! data.** What `consent` governs is IronMonitor gathering facts about a user's
+//! machine and sending them somewhere the *vendor* chose — telemetry.nervosys.ai,
+//! under its own scope. What this module does is write a machine's own metrics
+//! to a table the *operator* configured and points at, which is the same
 //! category as [`crate::tsdb`] writing a local time-series file and
-//! [`crate::prometheus`] exposing metrics for the operator's own scraper. Both
-//! of those already persist and publish metrics, and neither trips the tripwire,
-//! because neither is telemetry in the sense that matters.
-//!
-//! That said, `consent`'s wording is broad enough to be read the other way —
-//! "no code in this crate collects, aggregates or transmits telemetry" is a
-//! wider sentence than the endpoint claim underneath it. A reader who finds this
-//! module first and that sentence second is entitled to feel misled. **If this
-//! feature ships, that paragraph should be narrowed to say what it means: no
-//! vendor endpoint, no collection the operator did not configure.** Leaving the
-//! sentence as it stands and relying on this one to explain it is how a
-//! guarantee becomes folklore.
+//! [`crate::prometheus`] exposing metrics for the operator's own scraper.
 //!
 //! Three properties keep the distinction honest, and each is enforced rather
 //! than promised:

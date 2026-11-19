@@ -1,53 +1,45 @@
 //! User Consent Management
 //!
-//! # IronMonitor collects nothing and transmits nothing
+//! # IronMonitor sends system telemetry to nervosys, on by default
 //!
-//! Read this before anything else in the module, because the rest of it
-//! describes machinery that does not currently drive anything.
+//! Read this before anything else in the module.
 //!
-//! No code in this crate reports anything about a user's machine to the people
-//! who wrote it. **There is no endpoint.** No vendor receives telemetry,
-//! analytics, hardware inventory or diagnostics from this program, and there is
-//! nowhere for such a thing to go. [`ConsentScope::is_collected`] returns
-//! `false` for every scope, and it is the single place that changes if that ever
-//! stops being true.
+//! `ironmon serve` sends the readings it takes to **telemetry.nervosys.ai**
+//! every 15 minutes, as OTLP/HTTP, with a random install id. That is the
+//! [`ConsentScope::SystemTelemetry`] scope, and it is the **only** scope that
+//! collects anything. It is **on unless the user opts out**:
+//! `ironmon privacy opt-out`, `--no-telemetry`, `--offline`,
+//! `IRONMON_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`. Consent is read again before
+//! every send, so opting out stops the next one without a restart. Nothing is
+//! sent from a detected sandbox.
 //!
-//! Outbound HTTP goes to LLM backends the user configures and points at
-//! themselves, and from `ironmon serve` to an OTLP collector: by default the
-//! local one at `localhost:4318`, otherwise the endpoint the operator names.
-//! Neither is ours; [`crate::otlp`] has the details and the off switches.
+//! What is sent is everything `ironmon serve` reads: hardware models and
+//! limits, utilisation, clocks, temperatures, power, memory, disks and their
+//! mount points, network interface names and byte counters, the host name, the
+//! largest processes by name, inference engine counters and agent session
+//! counts. Every value carries its provenance. Endpoint credentials and API
+//! keys are redacted from everything served and are not sent.
 //!
-//! **"Collects nothing" means nothing leaves for us, not that nothing is ever
-//! written down.** This paragraph used to say "no code in this crate collects,
-//! aggregates or transmits telemetry", which was broader than the guarantee
-//! beneath it and was already untrue of the program as shipped: [`crate::tsdb`]
-//! records metrics to a local file, [`crate::prometheus`] publishes them for a
-//! scraper the operator runs, and the optional `fleet-store` feature appends
-//! them to an Apache Iceberg table the operator configures. Every one of those
-//! is storage the *user* asked for and controls the destination of, which is the
-//! opposite of telemetry, and none of them existed to serve anyone but them.
+//! The other five scopes describe collectors that were never built.
+//! [`ConsentScope::is_collected`] is `false` for them, and their preference is
+//! recorded but switches nothing on.
 //!
-//! The line is **who chose the destination**. If the answer is the person
-//! running the program, it is their data going where they told it to. If the
-//! answer were us, it would be telemetry, and this crate would have to say so
-//! here, on the three `ironmon privacy` screens, and in
-//! [`ConsentScope::is_collected`] — in the same change.
-//!
-//! What this module provides is the consent *record* — a persisted preference,
-//! with a timestamp, that a future collector would have to honour. Presenting
-//! it as a live privacy control would tell the user they had switched
-//! something off that was never on, which is the same defect as reporting a
-//! measurement that was never taken.
+//! **Who chose the destination** still separates telemetry from storage. The
+//! local OTLP push (`localhost:4318` by default), [`crate::tsdb`],
+//! [`crate::prometheus`] and the optional `fleet-store` write where the
+//! *operator* points them, and are the operator's data. telemetry.nervosys.ai
+//! is chosen by us, which is why it is a consent scope, disclosed here, on the
+//! `ironmon privacy` screens and in the `ironmon serve` banner.
 //!
 //! # Principles
 //!
-//! - **Denied until asked**: a scope with no consent record is not granted.
-//!   This module previously defaulted to granted while describing itself as
-//!   opt-in; the two cannot both be true, and the safe reading is the one that
-//!   does not assume permission nobody gave.
-//! - **Easy opt-out**: `ironmon privacy opt-out` records a denial for every scope
-//! - **Transparency**: the disclosure says what *would* be collected, and says
-//!   plainly that none of it is
+//! - **Defaults are stated, not implied**: [`ConsentScope::default_granted`]
+//!   is `true` for System Telemetry (opt-out) and `false` for every other
+//!   scope (denied until asked). An unanswered scope takes that default, and
+//!   `ironmon privacy status` says which it is.
+//! - **Easy opt-out**: `ironmon privacy opt-out` records a denial for every scope,
+//!   and the session flags and `DO_NOT_TRACK` override any recorded answer
+//! - **Transparency**: the disclosure says what is collected and what is not
 //! - **Auditability**: every consent decision is stored with the time it was made
 //!
 //! No claim is made here about compliance with any particular privacy
@@ -118,10 +110,33 @@ pub fn is_offline_mode() -> bool {
     std::env::var("IRONMON_OFFLINE").is_ok()
 }
 
+/// Why collection is refused for this process regardless of recorded consent,
+/// if it is: the session flags (`--no-telemetry`, `--offline`) or the
+/// `DO_NOT_TRACK` convention. `DO_NOT_TRACK` counts when set to anything but
+/// empty, `0` or `false`.
+pub fn runtime_opt_out() -> Option<&'static str> {
+    if std::env::var("IRONMON_OFFLINE").is_ok() {
+        return Some("--offline");
+    }
+    if std::env::var("IRONMON_NO_TELEMETRY").is_ok() {
+        return Some("--no-telemetry");
+    }
+    let dnt = std::env::var("DO_NOT_TRACK").unwrap_or_default();
+    let dnt = dnt.trim();
+    if !dnt.is_empty() && dnt != "0" && !dnt.eq_ignore_ascii_case("false") {
+        return Some("DO_NOT_TRACK");
+    }
+    None
+}
+
 /// Consent scopes - each represents a specific type of data collection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsentScope {
+    /// Every reading `ironmon serve` takes, sent to telemetry.nervosys.ai.
+    /// On by default; the one scope that collects.
+    SystemTelemetry,
+
     /// Basic anonymized usage telemetry (feature usage, crash reports)
     BasicTelemetry,
 
@@ -139,9 +154,26 @@ pub enum ConsentScope {
 }
 
 impl ConsentScope {
+    /// Every scope, in the order the privacy screens list them.
+    pub const ALL: [ConsentScope; 6] = [
+        ConsentScope::SystemTelemetry,
+        ConsentScope::BasicTelemetry,
+        ConsentScope::HardwareInfo,
+        ConsentScope::PerformanceMetrics,
+        ConsentScope::DetailedDiagnostics,
+        ConsentScope::Analytics,
+    ];
+
+    /// What an unanswered scope means. System Telemetry is opt-out; every other
+    /// scope is denied until the user agrees.
+    pub fn default_granted(&self) -> bool {
+        matches!(self, Self::SystemTelemetry)
+    }
+
     /// Get human-readable name
     pub fn name(&self) -> &'static str {
         match self {
+            Self::SystemTelemetry => "System Telemetry",
             Self::BasicTelemetry => "Basic Telemetry",
             Self::HardwareInfo => "Hardware Information",
             Self::PerformanceMetrics => "Performance Metrics",
@@ -153,6 +185,11 @@ impl ConsentScope {
     /// Get detailed description of what's collected
     pub fn description(&self) -> &'static str {
         match self {
+            Self::SystemTelemetry =>
+                "Everything `ironmon serve` reads, sent to telemetry.nervosys.ai every 15 minutes \
+                 with a random install id. ON BY DEFAULT: `ironmon privacy opt-out`, \
+                 --no-telemetry or DO_NOT_TRACK=1 stops it. This is not anonymous: it includes \
+                 the host name, process names, network interface names and disk mount points.",
             Self::BasicTelemetry =>
                 "Basic usage statistics and crash reports. Helps improve stability and reliability. \
                  No personally identifiable information is collected.",
@@ -182,11 +219,13 @@ impl ConsentScope {
     /// **If you add a collector, flip its scope here in the same change.**
     /// [`ConsentManager::should_collect_data`] consults this, so a scope that
     /// nothing implements cannot report that it should collect, however the
-    /// user answered. `granting_every_scope_still_collects_nothing` in this
+    /// user answered. `granting_an_unimplemented_scope_still_collects_nothing` in this
     /// module fails the moment an arm becomes `true`, which is the moment the
     /// disclosure and the CLI text need revisiting.
     pub fn is_collected(&self) -> bool {
         match self {
+            // `ironmon serve` sends this; see `crate::telemetry`.
+            Self::SystemTelemetry => true,
             Self::BasicTelemetry
             | Self::HardwareInfo
             | Self::PerformanceMetrics
@@ -199,6 +238,17 @@ impl ConsentScope {
     /// implemented. Nothing here is gathered today — see [`Self::is_collected`].
     pub fn data_points(&self) -> Vec<&'static str> {
         match self {
+            Self::SystemTelemetry => vec![
+                "A random install id and the IronMonitor version",
+                "Host name, operating system, kernel and boot details",
+                "CPU, GPU, NPU, memory, board, PCI and USB models, limits and identifiers",
+                "Utilisation, clocks, temperatures, fans and power",
+                "Disks: capacity, health, SMART counters and mount points",
+                "Network interface names and byte counters",
+                "The largest processes by name and memory",
+                "Inference engine counters and agent session counts",
+                "The provenance of every value (measured, derived, specification)",
+            ],
             Self::BasicTelemetry => vec![
                 "Application version",
                 "Operating system type (Linux/Windows/macOS)",
@@ -383,9 +433,8 @@ impl ConsentManager {
     /// Also returns `false` if the IRONMON_NO_TELEMETRY or IRONMON_OFFLINE environment
     /// variables are set (via --no-telemetry or --offline CLI flags).
     pub fn has_consent(&self, scope: ConsentScope) -> bool {
-        // CRITICAL: Check runtime opt-out flags first (set by CLI --no-telemetry or --offline)
-        if std::env::var("IRONMON_NO_TELEMETRY").is_ok() || std::env::var("IRONMON_OFFLINE").is_ok()
-        {
+        // CRITICAL: runtime opt-outs first (--no-telemetry, --offline, DO_NOT_TRACK)
+        if runtime_opt_out().is_some() {
             return false;
         }
 
@@ -395,24 +444,25 @@ impl ConsentManager {
             return false;
         }
 
-        // A scope with no record has not been consented to. This defaulted to
-        // `true` under a comment reading "opt-in by default", which is a
-        // contradiction: a default of granted is opt-out. Nothing consumed the
-        // answer, so the wrong default was inert, but it would have started
-        // granting consent nobody gave on the day a collector landed.
+        self.recorded_or_default(scope)
+    }
+
+    /// The recorded answer for `scope`, or its default when unanswered:
+    /// granted for System Telemetry (opt-out), denied for every other scope.
+    /// Ignores the environment and sandbox detection, which `has_consent` adds.
+    pub fn recorded_or_default(&self, scope: ConsentScope) -> bool {
         self.config
             .records
             .get(&scope)
             .map(|r| r.granted)
-            .unwrap_or(false)
+            .unwrap_or(scope.default_granted())
     }
 
     /// Whether data may be collected under `scope` right now.
     ///
     /// Combines consent, sandbox detection, the runtime opt-out flags, and
-    /// whether a collector for the scope exists at all. It returns `false` for
-    /// every scope today, because none is implemented — see
-    /// [`ConsentScope::is_collected`].
+    /// whether a collector for the scope exists at all. Only System Telemetry
+    /// has one — see [`ConsentScope::is_collected`].
     pub fn should_collect_data(&self, scope: ConsentScope) -> bool {
         // Nothing collects under this scope, so consent to it cannot make
         // collection appropriate. Checked first: it is the reason the answer
@@ -421,9 +471,8 @@ impl ConsentManager {
             return false;
         }
 
-        // Check runtime opt-out flags first (fastest check, set by CLI)
-        if std::env::var("IRONMON_NO_TELEMETRY").is_ok() || std::env::var("IRONMON_OFFLINE").is_ok()
-        {
+        // Check runtime opt-outs first (fastest check)
+        if runtime_opt_out().is_some() {
             return false;
         }
 
@@ -501,13 +550,7 @@ impl ConsentManager {
 
     /// Revoke all consents
     pub fn revoke_all(&mut self) -> Result<()> {
-        for scope in [
-            ConsentScope::BasicTelemetry,
-            ConsentScope::HardwareInfo,
-            ConsentScope::PerformanceMetrics,
-            ConsentScope::DetailedDiagnostics,
-            ConsentScope::Analytics,
-        ] {
+        for scope in ConsentScope::ALL {
             self.revoke_consent(scope)?;
         }
         Ok(())
@@ -544,13 +587,7 @@ impl ConsentManager {
         output.push_str("Current consents:\n");
         output.push_str("─────────────────────────────────────────\n");
 
-        for scope in [
-            ConsentScope::BasicTelemetry,
-            ConsentScope::HardwareInfo,
-            ConsentScope::PerformanceMetrics,
-            ConsentScope::DetailedDiagnostics,
-            ConsentScope::Analytics,
-        ] {
+        for scope in ConsentScope::ALL {
             let status = if self.has_consent(scope) {
                 "[+] GRANTED"
             } else {
@@ -630,16 +667,17 @@ impl ConsentManager {
         println!("\n╔════════════════════════════════════════════════════════════════╗");
         println!("║           Welcome to IronMonitor!                         ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
-        println!("This is your first time running IronMonitor.");
-        println!("We respect your privacy and will only collect data you explicitly consent to.\n");
-        println!("You'll be asked about several types of optional data collection.");
-        println!("You can say 'no' to all of them - the tool works perfectly without any data collection.\n");
+        println!("System Telemetry is ON by default: `ironmon serve` sends its readings to");
+        println!("telemetry.nervosys.ai. The other categories are off until you agree.\n");
+        println!("You'll be asked about each. You can say 'no' to all of them -");
+        println!("the tool works the same without any data collection.\n");
 
         println!("Press Enter to continue...");
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).ok();
 
         for scope in [
+            ConsentScope::SystemTelemetry,
             ConsentScope::BasicTelemetry,
             ConsentScope::HardwareInfo,
             ConsentScope::PerformanceMetrics,
@@ -722,13 +760,46 @@ mod tests {
         assert!(!scope.data_points().is_empty());
     }
 
-    const EVERY_SCOPE: [ConsentScope; 5] = [
+    /// Every scope except System Telemetry, which is the one that collects.
+    const UNIMPLEMENTED_SCOPES: [ConsentScope; 5] = [
         ConsentScope::BasicTelemetry,
         ConsentScope::HardwareInfo,
         ConsentScope::PerformanceMetrics,
         ConsentScope::DetailedDiagnostics,
         ConsentScope::Analytics,
     ];
+
+    /// System Telemetry is the one collecting scope, and it is opt-out: granted
+    /// with no record, refused once a denial is recorded. If either changes,
+    /// the module docs, `ironmon privacy` and the `ironmon serve` banner say
+    /// otherwise and must change with it.
+    #[test]
+    fn system_telemetry_is_collected_and_on_until_denied() {
+        let mut manager = ConsentManager {
+            config: ConsentConfig::default(),
+            config_path: PathBuf::from("unused-in-this-test.toml"),
+        };
+        assert!(ConsentScope::SystemTelemetry.is_collected());
+        assert!(ConsentScope::SystemTelemetry.default_granted());
+        assert!(manager.recorded_or_default(ConsentScope::SystemTelemetry));
+        manager.config.records.insert(
+            ConsentScope::SystemTelemetry,
+            ConsentRecord {
+                scope: ConsentScope::SystemTelemetry,
+                granted: false,
+                timestamp: 1,
+                prompt_version: 1,
+                ip_hash: None,
+            },
+        );
+        assert!(!manager.recorded_or_default(ConsentScope::SystemTelemetry));
+        assert!(!manager.should_collect_data(ConsentScope::SystemTelemetry));
+        assert_eq!(
+            ConsentScope::ALL.len(),
+            6,
+            "a new scope needs a default and a screen"
+        );
+    }
 
     /// The disclosure in this module, and everything `ironmon privacy` prints,
     /// says that nothing is collected. This is what makes that a checked claim
@@ -740,13 +811,13 @@ mod tests {
     /// this test to make a new collector pass would remove the only thing
     /// keeping those four in step.
     #[test]
-    fn granting_every_scope_still_collects_nothing() {
+    fn granting_an_unimplemented_scope_still_collects_nothing() {
         let mut manager = ConsentManager {
             config: ConsentConfig::default(),
             config_path: PathBuf::from("unused-in-this-test.toml"),
         };
 
-        for scope in EVERY_SCOPE {
+        for scope in UNIMPLEMENTED_SCOPES {
             manager.config.records.insert(
                 scope,
                 ConsentRecord {
@@ -759,13 +830,13 @@ mod tests {
             );
         }
 
-        for scope in EVERY_SCOPE {
+        for scope in UNIMPLEMENTED_SCOPES {
             assert!(
                 !scope.is_collected(),
                 concat!(
                     "{} claims to be collected. If that is now true, update the ",
-                    "module docs and the three `ironmon privacy` screens, which ",
-                    "all state that IronMonitor collects and transmits nothing."
+                    "module docs and the `ironmon privacy` screens, which state ",
+                    "that only System Telemetry is sent."
                 ),
                 scope.name()
             );

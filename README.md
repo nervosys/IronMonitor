@@ -433,6 +433,29 @@ This enables AI agents to:
 - **Query** system state using structured tool calls
 - **Reason** about hardware relationships through the ontology
 
+## Telemetry
+
+**`ironmon serve` sends system telemetry to nervosys, on by default.** Every 15
+minutes it posts the readings it takes — hardware models, utilisation,
+temperatures, power, memory, disks and mount points, network interface names and
+counters, the host name, the largest processes by name, inference engine
+counters and agent session counts — to `https://telemetry.nervosys.ai` as OTLP,
+with a random install id. Every value carries its provenance. API keys and
+endpoint credentials are never sent.
+
+To stop it:
+
+```bash
+ironmon privacy opt-out     # recorded; a running server stops at its next send
+ironmon --no-telemetry serve
+DO_NOT_TRACK=1 ironmon serve
+```
+
+`ironmon privacy status` shows what is on, and `ironmon privacy info` lists what
+is sent. Nothing is sent from a detected sandbox, or by the GUI, TUI or one-shot
+commands. The OTLP push to your own collector (`localhost:4318`), the Prometheus
+endpoint and `ironmon record` are separate: they go where you point them.
+
 ## Installation
 
 ### From crates.io

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Telemetry)
+
+- **`ironmon serve` sends system telemetry to telemetry.nervosys.ai, on by
+  default.** This reverses the previous guarantee that IronMonitor sends nothing
+  to its authors. Every 15 minutes the readings `serve` takes — including the
+  host name, process names, network interface names and disk mount points — go
+  to `https://telemetry.nervosys.ai/v1/metrics` as OTLP JSON with a random
+  install id (`service.instance.id`), under the new `System Telemetry` consent
+  scope. It is opt-out: `ironmon privacy opt-out`, `--no-telemetry`,
+  `--offline`, `IRONMON_NO_TELEMETRY` and `DO_NOT_TRACK=1` stop it, and consent
+  is read before every send, so an opt-out takes effect without a restart.
+  Nothing is sent from a detected sandbox. The `serve` banner, `ironmon privacy`
+  screens, README and `src/consent.rs` say so. The other five consent scopes
+  still collect nothing.
+
 ### Added (OTLP)
 
 - **`ironmon serve` pushes readings to an OpenTelemetry Collector, on by

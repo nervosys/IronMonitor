@@ -287,6 +287,15 @@ struct Mapping {
 /// `start_unix_nano` is when this exporter started: the start of every
 /// cumulative sum it reports, since the counters' own origins are not known.
 pub fn encode(readings: &[Timed], start_unix_nano: u64) -> Value {
+    encode_with(readings, start_unix_nano, &[])
+}
+
+/// [`encode`], with extra resource attributes (such as `service.instance.id`).
+pub fn encode_with(
+    readings: &[Timed],
+    start_unix_nano: u64,
+    resource_extra: &[(&str, String)],
+) -> Value {
     let ontology = crate::ontology::resolve::ontology();
     let mut metrics: BTreeMap<String, Metric> = BTreeMap::new();
     let mut host_name: Option<String> = None;
@@ -388,6 +397,9 @@ pub fn encode(readings: &[Timed], start_unix_nano: u64) -> Value {
     ];
     if let Some(host) = host_name {
         resource.push(attr(("host.name".into(), json!(host))));
+    }
+    for (key, value) in resource_extra {
+        resource.push(attr(((*key).to_string(), json!(value))));
     }
 
     json!({

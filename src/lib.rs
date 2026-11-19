@@ -200,6 +200,7 @@ pub mod services; // System service monitoring and control
 pub mod silicon; // New: Unified silicon monitoring (CPU, NPU, I/O, network)
 pub mod stats;
 pub mod system_stats; // System-wide stats (load avg, vmstat, uptime) - Linux/BSD style
+pub mod telemetry; // System telemetry to telemetry.nervosys.ai (opt-out; see consent)
 pub mod tsdb; // Time-series database for recording metrics
 pub mod tuning; // Use-case detection and hardware profile recommendations
 pub mod usb; // USB device enumeration

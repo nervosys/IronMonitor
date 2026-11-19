@@ -16,9 +16,8 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Deny every data-collection category for this session. IronMonitor collects and
-    /// transmits nothing today, so this records a denial rather than stopping
-    /// anything; see `ironmon privacy status`
+    /// Send no system telemetry to nervosys and deny every data-collection
+    /// category for this session; see `ironmon privacy status`
     #[arg(long, global = true)]
     no_telemetry: bool,
 
@@ -3393,6 +3392,12 @@ fn handle_serve_command(
     if let ironmonitor::otlp::Decision::Export(settings) = &otlp {
         server = server.with_otlp(settings.clone());
     }
+    // The push thread re-reads consent before every send, so it runs unless a
+    // session flag or DO_NOT_TRACK has ruled the whole process out.
+    let telemetry_off = ironmonitor::telemetry::off_reason();
+    if ironmonitor::consent::runtime_opt_out().is_none() {
+        server = server.with_telemetry();
+    }
     // Bind before saying anything. A taken port is an error here, not a silent move
     // to another one, and the announced port is the one really in use.
     let bound = server.bind()?;
@@ -3447,6 +3452,15 @@ fn handle_serve_command(
         ironmonitor::otlp::Decision::Off(why) => {
             eprintln!("  {} off ({why})", "OTLP:".white().bold())
         }
+    }
+    match &telemetry_off {
+        None => eprintln!(
+            "  {} sends these readings to {} every {} s; `ironmon privacy opt-out` stops it",
+            "Telemetry:".white().bold(),
+            ironmonitor::inference::redact_urls(&ironmonitor::telemetry::endpoint()),
+            ironmonitor::telemetry::settings().interval.as_secs()
+        ),
+        Some(why) => eprintln!("  {} off ({why})", "Telemetry:".white().bold()),
     }
     if cors_origins.is_empty() {
         eprintln!(
@@ -4063,53 +4077,41 @@ fn handle_record_command(action: &RecordSubcommand) -> Result<(), Box<dyn std::e
 
 /// Handle privacy subcommands for managing data collection consent
 #[cfg(feature = "cli")]
-/// Print the one fact every `ironmon privacy` screen needs to lead with.
-///
-/// The five consent categories, their descriptions and their itemised data
-/// points were written for a collector that was never built. `ConsentScope::
-/// is_collected` is `false` for all of them, `should_collect_data` has no
-/// callers outside its own module, and the crate has no telemetry endpoint —
-/// every outbound request in it goes to an LLM backend the user configured.
-///
-/// Displaying "DENIED" against a category that is not running tells the user
-/// they switched something off that was never on, and displaying "enabled"
-/// after `opt-in` is worse: it thanks them for data nobody receives.
-fn print_collects_nothing_notice() {
+/// Print the one fact every `ironmon privacy` screen needs to lead with: what
+/// is actually sent, where, and how to stop it.
+fn print_telemetry_notice() {
     println!(
         "{} {}",
         "Note:".yellow().bold(),
-        "IronMonitor collects and transmits nothing.".white().bold()
+        "`ironmon serve` sends system telemetry to telemetry.nervosys.ai, on by default."
+            .white()
+            .bold()
     );
     println!(
         "  {}",
         concat!(
-            "There is no telemetry endpoint in this program and no code that ",
-            "reports any of these categories to its authors. The settings here ",
-            "record a preference that a future collector would have to honour; ",
-            "they do not switch anything on or off today."
+            "Every reading it takes, including the host name, process names, ",
+            "network interface names and disk mount points, every 15 minutes with ",
+            "a random install id. `ironmon privacy opt-out`, --no-telemetry, ",
+            "--offline or DO_NOT_TRACK=1 stops it; the next send checks again."
         )
         .dimmed()
     );
     println!(
         "  {}",
         concat!(
-            "The only network requests IronMonitor makes are to AI backends you ",
-            "configure and point at yourself."
+            "The other categories below are not implemented: their preference is ",
+            "recorded but sends nothing."
         )
         .dimmed()
     );
-    // Said plainly, because a user who finds `ironmon record` or the Prometheus
-    // exporter after reading "collects nothing" is entitled to think this screen
-    // misled them. It did not -- those write where the user pointed them -- but
-    // the distinction has to be on the screen, not only in the source.
     println!(
         "  {}",
         concat!(
-            "Storage you set up yourself is not telemetry: `ironmon record` ",
-            "writes a local metrics file, `ironmon serve` publishes metrics for ",
-            "your own scraper, and the optional fleet store appends to a table ",
-            "you configure. You choose those destinations; nothing goes anywhere ",
-            "you did not name."
+            "Storage you set up yourself is not telemetry: `ironmon record` writes a ",
+            "local file, `ironmon serve` publishes Prometheus metrics and pushes OTLP ",
+            "to your own collector (localhost:4318 by default), and the optional fleet ",
+            "store appends to a table you configure."
         )
         .dimmed()
     );
@@ -4154,7 +4156,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
                 println!();
             }
 
-            print_collects_nothing_notice();
+            print_telemetry_notice();
 
             println!("{}", "Recorded preferences:".white().bold());
             println!("─────────────────────────────────────────────────────────────────");
@@ -4166,27 +4168,23 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             // reply "not granted" on the next line, with no way to tell that
             // a sandbox detection had overridden the choice.
             let records = manager.get_all_consents();
-            for scope in [
-                ConsentScope::BasicTelemetry,
-                ConsentScope::HardwareInfo,
-                ConsentScope::PerformanceMetrics,
-                ConsentScope::DetailedDiagnostics,
-                ConsentScope::Analytics,
-            ] {
+            for scope in ConsentScope::ALL {
                 let status = match records.get(&scope).map(|r| r.granted) {
                     Some(true) => format!("{} granted", "●".green()),
                     Some(false) => format!("{} denied", "○".red()),
+                    None if scope.default_granted() => {
+                        format!("{} on by default", "●".yellow())
+                    }
                     None => format!("{} unanswered", "·".yellow()),
                 };
                 // Printing only "granted" would imply the category is running.
-                // None of them is; the preference is recorded against a
-                // collector that does not exist yet.
-                println!(
-                    "  {:<30} {:<20}   {}",
-                    scope.name(),
-                    status,
-                    "(nothing implemented)".dimmed()
-                );
+                // Only System Telemetry is; the rest record a preference.
+                let note = if scope.is_collected() {
+                    "(sent by `ironmon serve`)"
+                } else {
+                    "(nothing implemented)"
+                };
+                println!("  {:<30} {:<20}   {}", scope.name(), status, note.dimmed());
             }
 
             println!();
@@ -4226,7 +4224,8 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             println!("  ironmon privacy info       # Show what each category would cover");
             println!();
             println!("{}", "Session Flags:".white().bold());
-            println!("  ironmon --no-telemetry     # Deny every category for one session");
+            println!("  ironmon --no-telemetry     # Send no telemetry this session");
+            println!("  DO_NOT_TRACK=1             # The same, from the environment");
             println!("  ironmon --offline          # Also keep agent backends off the network");
         }
 
@@ -4248,8 +4247,9 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             );
             println!();
             println!("A denial has been recorded for every category and saved.");
+            println!("No system telemetry will be sent; a running `ironmon serve` stops at its next send.");
             println!();
-            print_collects_nothing_notice();
+            print_telemetry_notice();
             println!("You can change these preferences at any time with:");
             println!("  ironmon privacy opt-in");
             println!("  ironmon privacy review");
@@ -4274,13 +4274,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             println!("Recording consent for every category...");
             println!();
 
-            for scope in [
-                ConsentScope::BasicTelemetry,
-                ConsentScope::HardwareInfo,
-                ConsentScope::PerformanceMetrics,
-                ConsentScope::DetailedDiagnostics,
-                ConsentScope::Analytics,
-            ] {
+            for scope in ConsentScope::ALL {
                 manager.record_consent(scope, true)?;
                 println!("  {} {} consented to", "✓".green(), scope.name());
             }
@@ -4288,9 +4282,9 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             println!();
             println!("{}", "Consent recorded for every category.".green());
             println!();
-            // Without this the user walks away believing they have just turned
-            // something on and are now sending data. They are not.
-            print_collects_nothing_notice();
+            // Only System Telemetry sends anything; say so, so consenting to
+            // the others is not mistaken for switching them on.
+            print_telemetry_notice();
             println!("You can review or change these preferences at any time with:");
             println!("  ironmon privacy status");
             println!("  ironmon privacy review");
@@ -4316,21 +4310,20 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             );
             println!();
 
-            print_collects_nothing_notice();
+            print_telemetry_notice();
 
-            for scope in [
-                ConsentScope::BasicTelemetry,
-                ConsentScope::HardwareInfo,
-                ConsentScope::PerformanceMetrics,
-                ConsentScope::DetailedDiagnostics,
-                ConsentScope::Analytics,
-            ] {
+            for scope in ConsentScope::ALL {
                 println!("{}", format!("═══ {} ═══", scope.name()).yellow().bold());
                 println!();
                 println!("{}", "Description:".white().bold());
                 println!("  {}", scope.description());
                 println!();
-                println!("{}", "Would cover:".white().bold());
+                let heading = if scope.is_collected() {
+                    "Sends:"
+                } else {
+                    "Would cover (not implemented):"
+                };
+                println!("{}", heading.white().bold());
                 for point in scope.data_points() {
                     println!("  • {}", point);
                 }

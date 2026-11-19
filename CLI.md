@@ -91,6 +91,14 @@ parent process can read the port it was given:
 Everything else (the banner, warnings, request logs) goes to stderr. If the port is
 taken, the command exits non-zero and announces nothing.
 
+#### System telemetry
+
+`ironmon serve` also sends its readings to `https://telemetry.nervosys.ai` every
+15 minutes, **on by default**, with a random install id; the banner says so on
+start. `ironmon privacy opt-out`, `--no-telemetry`, `--offline` and
+`DO_NOT_TRACK=1` stop it. Consent is read before every send. See the Telemetry
+section of the README.
+
 #### OTLP push
 
 `ironmon serve` also pushes every reading to an OpenTelemetry Collector over
@@ -595,6 +603,8 @@ ironmon cli gpu --format json
 - `RUST_LOG` - Set logging level (error, warn, info, debug, trace)
 - `IRONMON_API_KEY` - Bearer key for `ironmon serve`, as an alternative to `--api-key-file`
 - `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SDK_DISABLED` - OTLP push from `ironmon serve` (see above)
+- `DO_NOT_TRACK=1` - Send no system telemetry (same as `--no-telemetry`)
+- `IRONMON_TELEMETRY_ENDPOINT`, `IRONMON_TELEMETRY_INTERVAL` - Replace the system telemetry destination or interval (seconds), for testing or self-hosting
 
 Example:
 ```bash
