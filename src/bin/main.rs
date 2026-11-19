@@ -327,6 +327,23 @@ enum Commands {
         /// Example: --cors-origin http://localhost:5173. Wildcards are refused.
         #[arg(long = "cors-origin", value_name = "ORIGIN")]
         cors_origin: Vec<String>,
+        /// OTLP/HTTP collector to push readings to. On by default, to
+        /// http://localhost:4318; OTEL_EXPORTER_OTLP_ENDPOINT also works. A bare
+        /// scheme://host:port gets /v1/metrics appended.
+        #[arg(long, value_name = "URL")]
+        otlp_endpoint: Option<String>,
+        /// File of key=value headers (one per line) sent with each OTLP push,
+        /// such as Authorization=Bearer%20<token>. Never taken from the command
+        /// line; OTEL_EXPORTER_OTLP_HEADERS works too, not both.
+        #[arg(long, value_name = "PATH")]
+        otlp_headers_file: Option<String>,
+        /// Seconds between OTLP pushes (default 15, or OTEL_METRIC_EXPORT_INTERVAL)
+        #[arg(long, value_name = "SECS")]
+        otlp_interval: Option<u64>,
+        /// Do not push to an OTLP collector. OTEL_SDK_DISABLED=true and
+        /// OTEL_METRICS_EXPORTER=none do the same.
+        #[arg(long)]
+        no_otlp: bool,
     },
 }
 
@@ -902,13 +919,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             log_requests,
             api_key_file,
             cors_origin,
+            otlp_endpoint,
+            otlp_headers_file,
+            otlp_interval,
+            no_otlp,
         }) => {
+            let otlp = ironmonitor::otlp::Flags {
+                endpoint: otlp_endpoint.as_deref(),
+                headers_file: otlp_headers_file.as_deref(),
+                interval_secs: *otlp_interval,
+                disabled: *no_otlp,
+            };
             handle_serve_command(
                 *port,
                 bind,
                 *log_requests,
                 api_key_file.as_deref(),
                 cors_origin,
+                &otlp,
             )?;
         }
 
@@ -3334,6 +3362,7 @@ fn handle_serve_command(
     log_requests: bool,
     api_key_file: Option<&str>,
     cors_origins: &[String],
+    otlp: &ironmonitor::otlp::Flags,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ironmonitor::http_server::{
         is_loopback_address, validate_cors_origin, HttpServer, HttpServerConfig,
@@ -3345,6 +3374,9 @@ fn handle_serve_command(
     }
     let api_key = read_api_key(api_key_file)?;
     let keyed = api_key.is_some();
+    // Decided before binding, so a bad OTLP setting fails the start rather than
+    // a running server quietly not exporting.
+    let otlp = ironmonitor::otlp::decide(otlp, &|name| std::env::var(name).ok())?;
     let loopback = is_loopback_address(bind);
 
     let config = HttpServerConfig {
@@ -3357,7 +3389,10 @@ fn handle_serve_command(
         ..Default::default()
     };
 
-    let server = HttpServer::new(config)?;
+    let mut server = HttpServer::new(config)?;
+    if let ironmonitor::otlp::Decision::Export(settings) = &otlp {
+        server = server.with_otlp(settings.clone());
+    }
     // Bind before saying anything. A taken port is an error here, not a silent move
     // to another one, and the announced port is the one really in use.
     let bound = server.bind()?;
@@ -3402,6 +3437,17 @@ fn handle_serve_command(
             "none"
         }
     );
+    match &otlp {
+        ironmonitor::otlp::Decision::Export(settings) => eprintln!(
+            "  {} {} every {} s (--no-otlp to turn off)",
+            "OTLP:".white().bold(),
+            settings.display_url(),
+            settings.interval.as_secs()
+        ),
+        ironmonitor::otlp::Decision::Off(why) => {
+            eprintln!("  {} off ({why})", "OTLP:".white().bold())
+        }
+    }
     if cors_origins.is_empty() {
         eprintln!(
             "  {} off (no CORS headers are sent)",

@@ -184,9 +184,21 @@ pub struct HttpServer {
     #[cfg(feature = "cli")]
     sampler: sampler::Sampler,
     loopback: bool,
+    /// Where to push OTLP, when it is on. See [`crate::otlp`].
+    #[cfg_attr(
+        not(all(feature = "cli", feature = "remote-backends")),
+        allow(dead_code)
+    )]
+    otlp: Option<crate::otlp::Settings>,
 }
 
 impl HttpServer {
+    /// Push every reading to an OTLP/HTTP collector while serving.
+    pub fn with_otlp(mut self, settings: crate::otlp::Settings) -> Self {
+        self.otlp = Some(settings);
+        self
+    }
+
     /// Create a new HTTP server with the given configuration
     pub fn new(config: HttpServerConfig) -> crate::Result<Self> {
         // Build the schema before the first request arrives, so that request does not
@@ -264,6 +276,7 @@ impl HttpServer {
             #[cfg(feature = "cli")]
             sampler: sampler::Sampler::production(),
             loopback,
+            otlp: None,
         })
     }
 
@@ -343,6 +356,15 @@ impl HttpServer {
         tokio::spawn(async move {
             Self::metric_collection_loop(collector, interval, loop_demand).await;
         });
+
+        #[cfg(all(feature = "cli", feature = "remote-backends"))]
+        if let Some(settings) = self.otlp.clone() {
+            let sampler = self.sampler.clone();
+            std::thread::Builder::new()
+                .name("ironmon-otlp".into())
+                .spawn(move || otlp_export_loop(&sampler, &settings))
+                .map_err(|e| crate::IronError::Other(format!("cannot start OTLP export: {e}")))?;
+        }
 
         let connection = Arc::new(Connection {
             handler: self.handler.clone(),
@@ -712,6 +734,86 @@ impl HttpServer {
 /// running. Scrapes arrive every few seconds to minutes, so this is generous.
 #[cfg(feature = "cli")]
 const PROMETHEUS_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Push a snapshot to the OTLP collector every interval, for as long as the
+/// server runs.
+///
+/// Readings come from the same sampler `/api/v1/snapshot` uses, each stamped with
+/// the start of the pass that took it. While nothing answers, attempts back off
+/// to [`crate::otlp::MAX_BACKOFF`] and the sampler is left idle between them; the
+/// first failure and the recovery are each reported once on stderr.
+#[cfg(all(feature = "cli", feature = "remote-backends"))]
+fn otlp_export_loop(sampler: &sampler::Sampler, settings: &crate::otlp::Settings) {
+    use crate::ontology::Domain;
+    use crate::otlp::{backoff, encode, send, SendError, Timed};
+
+    let start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let segments: Vec<String> = Domain::ALL.iter().map(|d| d.as_str().to_string()).collect();
+    let shown = settings.display_url();
+    let mut failures: u32 = 0;
+    let mut last_error: Option<SendError> = None;
+
+    loop {
+        std::thread::sleep(backoff(settings.interval, failures));
+        // Export what is ready. A segment still on its first pass (a large agent
+        // recording directory can take minutes) joins a later push rather than
+        // holding every other reading back.
+        let samples = match sampler.sample_for(&segments, std::time::Duration::from_secs(2)) {
+            Ok(samples) => samples,
+            Err(missing) => {
+                let ready: Vec<String> = segments
+                    .iter()
+                    .filter(|s| !missing.contains(s))
+                    .cloned()
+                    .collect();
+                match sampler.sample_for(&ready, std::time::Duration::ZERO) {
+                    Ok(samples) if !samples.is_empty() => samples,
+                    _ => continue,
+                }
+            }
+        };
+        let rows: Vec<Timed> = samples
+            .iter()
+            .flat_map(|(_, sample)| sample.rows())
+            .map(|(reading, stamp)| Timed {
+                reading,
+                time_unix_nano: stamp.sampled_at_unix_nanos(),
+            })
+            .collect();
+        let body = encode(&rows, start);
+        match send(settings, &body) {
+            Ok(accepted) => {
+                if failures > 0 {
+                    eprintln!("[ironmon] OTLP: exporting to {shown}");
+                }
+                failures = 0;
+                last_error = None;
+                if accepted.rejected > 0 {
+                    eprintln!(
+                        "[ironmon] OTLP: the collector rejected {} data points{}",
+                        accepted.rejected,
+                        accepted
+                            .message
+                            .map(|m| format!(": {}", crate::inference::redact_urls(&m)))
+                            .unwrap_or_default()
+                    );
+                }
+            }
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                if last_error.as_ref() != Some(&error) {
+                    eprintln!(
+                        "[ironmon] OTLP: no export to {shown}: {error}; retrying with backoff \
+                         (--no-otlp turns this off)"
+                    );
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+}
 
 /// When the Prometheus route was last read. Shared between the connections, which
 /// set it, and the collector loop, which reads it.

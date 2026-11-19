@@ -70,6 +70,10 @@ ironmon serve --cors-origin http://localhost:5173        # allow one exact brows
 | `--api-key-file <PATH>` | Bearer key for every route except `/api/v1/health`. An empty or unreadable file is a startup error. |
 | `--cors-origin <ORIGIN>` | Repeatable. Exact origins only; `*` is refused. Default: no CORS headers. |
 | `--log-requests` | Log each request's method and path to stderr. |
+| `--otlp-endpoint <URL>` | OTLP/HTTP collector to push to (default `http://localhost:4318`). A bare `scheme://host:port` gets `/v1/metrics`. |
+| `--otlp-headers-file <PATH>` | `key=value` headers, one per line, sent with each push (e.g. `Authorization=Bearer%20<token>`). |
+| `--otlp-interval <SECS>` | Seconds between pushes (default 15). |
+| `--no-otlp` | Do not push to a collector. |
 
 The key is never a command-line value. `IRONMON_API_KEY` is the alternative to
 `--api-key-file`; set one or the other. A `--bind` to a non-loopback address without a
@@ -86,6 +90,29 @@ parent process can read the port it was given:
 
 Everything else (the banner, warnings, request logs) goes to stderr. If the port is
 taken, the command exits non-zero and announces nothing.
+
+#### OTLP push
+
+`ironmon serve` also pushes every reading to an OpenTelemetry Collector over
+OTLP/HTTP (JSON), **on by default** to `http://localhost:4318/v1/metrics` — the
+port a local Collector listens on, so the default leaves this machine only if
+you point it elsewhere. With nothing listening it prints one line and backs off
+to five minutes between attempts.
+
+The standard variables work: `OTEL_EXPORTER_OTLP_ENDPOINT` (a base;
+`/v1/metrics` is appended), `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` (used as is),
+`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_METRIC_EXPORT_INTERVAL`. `--no-otlp`,
+`OTEL_SDK_DISABLED=true`, `OTEL_METRICS_EXPORTER=none`, `--offline` and
+`--no-telemetry` each turn it off. Headers are never taken from the command line.
+
+Every data point carries `ironmon.provenance` (`measured`, `derived`,
+`specification`) and `ironmon.id`. An unavailable reading sends no point rather
+than a zero. Semantic-convention names are used where the instrument and unit
+match exactly (`system.cpu.utilization`, `system.cpu.frequency`,
+`system.memory.*`, `system.network.io`, `system.uptime`, `hw.gpu.utilization`,
+`hw.gpu.memory.*`, `hw.power`); everything else is `ironmon.<template>` with
+instance segments as attributes, e.g. `ironmon.gpu.thermal.temperature`
+`{ironmon.gpu.n="0"}`.
 
 ## Global Options
 
@@ -567,6 +594,7 @@ ironmon cli gpu --format json
 
 - `RUST_LOG` - Set logging level (error, warn, info, debug, trace)
 - `IRONMON_API_KEY` - Bearer key for `ironmon serve`, as an alternative to `--api-key-file`
+- `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SDK_DISABLED` - OTLP push from `ironmon serve` (see above)
 
 Example:
 ```bash

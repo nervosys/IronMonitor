@@ -89,6 +89,13 @@ impl Stamp {
         self.taken.elapsed().as_millis() as u64
     }
 
+    /// When the pass started, in nanoseconds since the Unix epoch, as OTLP wants it.
+    pub(crate) fn sampled_at_unix_nanos(&self) -> u64 {
+        self.sampled_at
+            .timestamp_nanos_opt()
+            .map_or(0, |n| n.max(0) as u64)
+    }
+
     pub(crate) fn sampled_at_rfc3339(&self) -> String {
         self.sampled_at.to_rfc3339_opts(SecondsFormat::Millis, true)
     }

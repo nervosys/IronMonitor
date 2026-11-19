@@ -12,8 +12,10 @@
 //! `false` for every scope, and it is the single place that changes if that ever
 //! stops being true.
 //!
-//! The only outbound HTTP in the crate goes to LLM backends the user configures
-//! and points at themselves.
+//! Outbound HTTP goes to LLM backends the user configures and points at
+//! themselves, and from `ironmon serve` to an OTLP collector: by default the
+//! local one at `localhost:4318`, otherwise the endpoint the operator names.
+//! Neither is ours; [`crate::otlp`] has the details and the off switches.
 //!
 //! **"Collects nothing" means nothing leaves for us, not that nothing is ever
 //! written down.** This paragraph used to say "no code in this crate collects,

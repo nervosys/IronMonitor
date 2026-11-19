@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (OTLP)
+
+- **`ironmon serve` pushes readings to an OpenTelemetry Collector, on by
+  default.** OTLP/HTTP with JSON encoding to `http://localhost:4318/v1/metrics`,
+  or wherever `--otlp-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` says, every 15
+  s. Auth headers come from `--otlp-headers-file` or
+  `OTEL_EXPORTER_OTLP_HEADERS`, never the command line. Every data point carries
+  `ironmon.provenance` and `ironmon.id`; unavailable readings send nothing.
+  Semantic-convention names where instrument and unit match (`system.*`,
+  `hw.gpu.*`, `hw.power`), `ironmon.<template>` otherwise. Readings come from
+  the server's tiered sampler, and segments still on their first pass join later
+  pushes rather than holding the rest back. With no collector listening it says
+  so once and backs off to five minutes. `--no-otlp`, `OTEL_SDK_DISABLED=true`,
+  `OTEL_METRICS_EXPORTER=none`, `--offline` and `--no-telemetry` turn it off.
+
 ## [7.2.0] - 2026-11-18
 
 ### Security

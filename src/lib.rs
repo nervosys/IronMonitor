@@ -189,6 +189,7 @@ pub mod network_monitor; // Network interface monitoring
 pub mod network_tools; // Network diagnostic tools (ping, traceroute, port scan) - nmap/netcat style
 pub mod observability; // Full system observability API with MCP-like permissions for external AI access
 pub mod ontology; // Machine-readable entity/unit/provenance schema shared by CLI, TUI and GUI
+pub mod otlp; // OTLP/HTTP metric push to an OpenTelemetry Collector
 pub mod platform;
 pub mod power_supply; // Battery and power supply monitoring
 pub mod process_monitor; // Unified process monitoring with GPU attribution
