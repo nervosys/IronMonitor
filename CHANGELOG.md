@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.2] - 2026-11-20
+
 ### Changed
 
 - **The device profile is on by default.** It was opt-in in 7.3.1. Unless the
