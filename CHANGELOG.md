@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chassis, battery, virtualisation, OS, locale and time zone, the local Ollama
   version and model names, and the user's account name, full name, home
   directory, shell, terminal, domain or workgroup and admin status. Values are
-  sent unhashed; identity values that are vendor placeholders are dropped.
+  sent unhashed, counts and sizes as integers, and the OS version apart from
+  its edition (`device.os_edition`); vendor placeholder serials are sent too,
+  for the server to disqualify from matching.
   Nothing is escalated: unreadable values are left out. `ironmon serve` asks
   once at an interactive terminal and records the answer; without a terminal
   it stays off. `ironmon privacy review` and `opt-out` change it, and it is

@@ -9,9 +9,10 @@
 //! until the user agrees to it ([`crate::consent`]).
 //!
 //! Nothing is escalated: a value the process cannot read is left out, never
-//! guessed, and identity values that are vendor placeholders (contract step 4)
-//! are dropped, since a constant shipped on millions of boards would merge
-//! unrelated machines into one.
+//! guessed. Identity values that are vendor placeholders (contract step 4) are
+//! still sent: the server disqualifies them from identity matching itself, and
+//! [`usable_identity`] applies the same rule here. Numeric fields are sent as
+//! integers ([`is_integer_field`]), so every client stores the same JSON type.
 //!
 //! [`ConsentScope::DeviceProfile`]: crate::consent::ConsentScope::DeviceProfile
 
@@ -84,6 +85,40 @@ pub fn mac_list(macs: impl IntoIterator<Item = String>) -> Option<String> {
     (!out.is_empty()).then(|| out.join(","))
 }
 
+/// Fields the contract requires as OTLP `intValue` rather than strings.
+pub fn is_integer_field(key: &str) -> bool {
+    const FIXED: [&str; 9] = [
+        "device.cpu_cores_physical",
+        "device.cpu_cores_logical",
+        "device.cpu_freq_max_mhz",
+        "device.ram_total_bytes",
+        "device.ram_available_bytes",
+        "device.ram_speed_mhz",
+        "device.ram_modules",
+        "device.gpu_count",
+        "device.display_count",
+    ];
+    if FIXED.contains(&key) || key == "device.battery_capacity_wh" {
+        return true;
+    }
+    let parts: Vec<&str> = key.split('.').collect();
+    match parts.as_slice() {
+        ["device", "gpu", n, "vram_bytes"]
+        | ["device", "disk", n, "size_bytes" | "free_bytes"]
+        | ["device", "display", n, "width" | "height" | "refresh_hz"] => n.parse::<u32>().is_ok(),
+        _ => false,
+    }
+}
+
+/// `0x41` -> `65`; decimal passes through. `cpu_sig` is decimal throughout.
+pub fn decimal(field: &str) -> String {
+    let f = field.trim();
+    match f.strip_prefix("0x").or_else(|| f.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16).map_or_else(|_| f.to_string(), |n| n.to_string()),
+        None => f.to_string(),
+    }
+}
+
 /// Interface or adapter names that are virtual, per the contract's list.
 pub fn is_virtual_adapter(name: &str) -> bool {
     let n = name.to_lowercase();
@@ -122,9 +157,10 @@ struct Builder {
 }
 
 impl Builder {
-    /// An identity signal, dropped if it is a placeholder.
+    /// An identity signal, sent raw (trimmed) when anything was read. A
+    /// placeholder is sent too; the server disqualifies it from matching.
     fn identity(&mut self, key: &str, raw: Option<String>) {
-        if let Some(v) = raw.as_deref().and_then(usable_identity) {
+        if let Some(v) = raw.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()) {
             self.out.push((key.to_string(), v));
         }
     }
@@ -532,7 +568,7 @@ mod platform {
                 if mwh > 0 {
                     b.put(
                         "device.battery_capacity_wh",
-                        Some(format!("{:.1}", mwh as f64 / 1000.0)),
+                        Some((mwh as f64 / 1000.0).round() as u64),
                     );
                 }
             }
@@ -541,12 +577,12 @@ mod platform {
         // OS.
         let caption = text(&os, "Caption");
         let version = text(&os, "Version");
-        let os_version = match (&caption, &version, text(&os, "BuildNumber")) {
-            (Some(c), Some(v), _) => Some(format!("{c} {v}")),
-            (None, Some(v), _) => Some(v.clone()),
-            _ => None,
-        };
-        b.put("device.os_version", os_version);
+        // Version only (`10.0.26200`); the edition goes in its own field.
+        b.put("device.os_version", version.clone());
+        b.put(
+            "device.os_edition",
+            caption.map(|c| c.trim_start_matches("Microsoft ").trim().to_string()),
+        );
         b.put("device.kernel_version", version);
         b.put("device.timezone", crate::os_info::windows_timezone_key());
         b.put("device.ui_language", ui_language());
@@ -800,16 +836,24 @@ mod platform {
                 (k.trim() == name).then(|| v.trim().to_string())
             })
         };
-        let sig = [
-            field("vendor_id"),
-            field("cpu family"),
-            field("model"),
-            field("stepping"),
+        // x86: vendor family model stepping. aarch64: implementer architecture
+        // variant part revision. Decimal, single spaces, first processor block.
+        let x86 = ["vendor_id", "cpu family", "model", "stepping"];
+        let arm = [
+            "CPU implementer",
+            "CPU architecture",
+            "CPU variant",
+            "CPU part",
+            "CPU revision",
         ];
-        if sig.iter().all(Option::is_some) {
-            let sig: Vec<String> = sig.into_iter().flatten().collect();
-            b.identity("device.cpu_sig", Some(sig.join(" ")));
-        }
+        let sig = [&x86[..], &arm[..]].into_iter().find_map(|names| {
+            let values: Option<Vec<String>> = names
+                .iter()
+                .map(|n| field(n).map(|v| super::decimal(&v)))
+                .collect();
+            values.map(|v| v.join(" "))
+        });
+        b.identity("device.cpu_sig", sig);
         let macs = fs::read_dir("/sys/class/net")
             .into_iter()
             .flatten()
@@ -972,19 +1016,21 @@ mod platform {
         if uwh > 0 {
             b.put(
                 "device.battery_capacity_wh",
-                Some(format!("{:.1}", uwh as f64 / 1_000_000.0)),
+                Some((uwh as f64 / 1_000_000.0).round() as u64),
             );
         }
 
         // OS.
         let release = read("/etc/os-release").unwrap_or_default();
-        b.put(
-            "device.os_version",
+        let os_field = |name: &str| {
             release.lines().find_map(|l| {
-                l.strip_prefix("PRETTY_NAME=")
+                l.strip_prefix(name)
+                    .and_then(|v| v.strip_prefix('='))
                     .map(|v| v.trim_matches('"').to_string())
-            }),
-        );
+            })
+        };
+        b.put("device.os_version", os_field("VERSION_ID"));
+        b.put("device.os_edition", os_field("PRETTY_NAME"));
         b.put("device.kernel_version", read("/proc/sys/kernel/osrelease"));
         b.put(
             "device.timezone",
@@ -1132,14 +1178,11 @@ mod platform {
                 "desktop"
             }),
         );
+        let product = run("/usr/bin/sw_vers", &["-productVersion"]);
+        b.put("device.os_version", product.clone());
         b.put(
-            "device.os_version",
-            run("/usr/bin/sw_vers", &["-productVersion"]).map(|v| {
-                match run("/usr/bin/sw_vers", &["-buildVersion"]) {
-                    Some(build) => format!("macOS {v} ({build})"),
-                    None => format!("macOS {v}"),
-                }
-            }),
+            "device.os_edition",
+            product.map(|v| format!("macOS {}", v.split('.').next().unwrap_or(&v))),
         );
         b.put("device.kernel_version", sysctl("kern.osrelease"));
         b.put("device.hostname", sysctl("kern.hostname"));
@@ -1189,6 +1232,65 @@ mod tests {
             usable_identity("  4C4C4544-0042-3510-8051-B4C04F4B3732 "),
             Some("4C4C4544-0042-3510-8051-B4C04F4B3732".to_string())
         );
+    }
+
+    #[test]
+    fn placeholders_are_still_sent() {
+        let mut b = Builder::default();
+        b.identity("device.bios_serial", Some(" Default string ".into()));
+        b.identity("device.board_serial", Some("   ".into()));
+        assert_eq!(
+            b.out,
+            vec![(
+                "device.bios_serial".to_string(),
+                "Default string".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_contract_integer_fields_are_recognised() {
+        for k in [
+            "device.ram_total_bytes",
+            "device.gpu.2.vram_bytes",
+            "device.disk.0.size_bytes",
+            "device.display.1.refresh_hz",
+            "device.battery_capacity_wh",
+        ] {
+            assert!(is_integer_field(k), "{k}");
+        }
+        for k in [
+            "device.gpu.0.model",
+            "device.gpu.x.vram_bytes",
+            "device.os_version",
+        ] {
+            assert!(!is_integer_field(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn cpu_sig_fields_are_decimal() {
+        assert_eq!(decimal("0x41"), "65");
+        assert_eq!(decimal("0xd0c"), "3340");
+        assert_eq!(decimal(" 151 "), "151");
+    }
+
+    #[test]
+    fn integer_fields_encode_as_int_values() {
+        let body = crate::otlp::encode_with(
+            &[],
+            0,
+            &[
+                ("device.ram_total_bytes", "100547727360".to_string()),
+                ("device.os_version", "10.0.26200".to_string()),
+            ],
+        );
+        let attrs = body["resourceMetrics"][0]["resource"]["attributes"]
+            .as_array()
+            .unwrap();
+        let get = |k: &str| attrs.iter().find(|a| a["key"] == k).unwrap()["value"].clone();
+        assert_eq!(get("device.ram_total_bytes")["intValue"], "100547727360");
+        assert_eq!(get("device.os_version")["stringValue"], "10.0.26200");
     }
 
     #[test]

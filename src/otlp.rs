@@ -399,7 +399,13 @@ pub fn encode_with(
         resource.push(attr(("host.name".into(), json!(host))));
     }
     for (key, value) in resource_extra {
-        resource.push(attr(((*key).to_string(), json!(value))));
+        // Device-profile counts and sizes go as intValue, so every client
+        // stores the same JSON type for the same field.
+        let value = match value.parse::<i64>() {
+            Ok(n) if crate::device_profile::is_integer_field(key) => json!(n),
+            _ => json!(value),
+        };
+        resource.push(attr(((*key).to_string(), value)));
     }
 
     json!({
