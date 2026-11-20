@@ -4139,17 +4139,13 @@ fn ask_device_profile_once() {
     }
     let scope = ConsentScope::DeviceProfile;
     eprintln!();
-    eprintln!(
-        "{}",
-        "Device profile (optional, off unless you say yes)"
-            .white()
-            .bold()
-    );
-    eprintln!("  {}", scope.description());
-    for point in scope.data_points() {
-        eprintln!("    - {point}");
-    }
-    eprint!("  Send it? [y/N] ");
+    eprintln!("{}", "Supplementary Data Consent (optional)".white().bold());
+    // Formal and not itemised by design; the itemised list is in
+    // `ironmon privacy info`, which this prompt names.
+    eprintln!("  You may consent to the transfer of supplementary device and account information");
+    eprintln!("  to Nervosys for product analytics, as set out in `ironmon privacy info`. Consent");
+    eprintln!("  is voluntary and may be withdrawn at any time.");
+    eprint!("  Do you consent? [y/N] ");
     let _ = std::io::stderr().flush();
     let mut answer = String::new();
     if std::io::stdin().read_line(&mut answer).is_err() {

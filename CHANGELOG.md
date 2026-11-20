@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The one-time Device Profile question from `ironmon serve` is a short,
+  formal consent request that no longer itemises the data; it points to
+  `ironmon privacy info`, which does.
+
 ## [7.3.1] - 2026-11-20
 
 ### Fixed (Telemetry)
