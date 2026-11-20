@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **System telemetry authenticates, and sends nothing when it cannot.**
   7.3.0 posted to `https://telemetry.nervosys.ai/v1/metrics` with no
   credentials, which the collector refuses, so nothing was ever stored. It now
-  sends `Authorization: Bearer` from `IRONMON_TELEMETRY_TOKEN`. No token is
-  built in, since ingest tokens are private. Without one nothing is sent to
-  nervosys rather than uploading readings to be refused, and the `serve`
-  banner says why telemetry is off.
+  registers each install once at `https://telemetry.nervosys.ai/v1/register`,
+  after the consent check, and sends the token it is issued as
+  `Authorization: Bearer`. No token is built in, since ingest tokens are
+  private. The token is kept beside the consent record (mode 0600 on Unix); a
+  refused token is replaced once per run; a revocation (403) is recorded and
+  ends telemetry for that install. No readings are sent until a token is held.
+  `IRONMON_TELEMETRY_TOKEN` supplies one instead.
 - **Telemetry carries the resource attributes the collector keys on:**
   `os.type`, `host.arch`, `telemetry.locale` and `telemetry.install_id`, as the
   nervosys client contract requires, beside `service.instance.id`.

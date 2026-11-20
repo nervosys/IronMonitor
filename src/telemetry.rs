@@ -22,26 +22,175 @@ use crate::consent::{ConsentManager, ConsentScope};
 /// Where system telemetry goes.
 pub const ENDPOINT: &str = "https://telemetry.nervosys.ai/v1/metrics";
 
-/// The bearer token the nervosys collector requires, from
-/// `IRONMON_TELEMETRY_TOKEN` at run time. None is built in: ingest tokens are
-/// private, and anything compiled from this public source would not be. Without
-/// one nothing is sent to nervosys (see [`missing_token`]).
+/// The bearer token for the collector: `IRONMON_TELEMETRY_TOKEN`, else the one
+/// this install was issued by [`ensure_token`]. None is built in: ingest tokens
+/// are private, and anything compiled from this public source would not be.
 pub fn token() -> Option<String> {
-    std::env::var("IRONMON_TELEMETRY_TOKEN")
-        .ok()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+    env_nonempty("IRONMON_TELEMETRY_TOKEN").or_else(|| {
+        let path = token_path()?;
+        let stored = std::fs::read_to_string(path).ok()?;
+        let stored = stored.trim();
+        valid_token(stored).then(|| stored.to_string())
+    })
 }
 
-/// True when telemetry would go to the nervosys collector without the token it
-/// requires. Such a push is refused with 401 after the readings have already
-/// been uploaded, so none is made. A replaced endpoint is exempt, since a
-/// self-hosted receiver need not ask for one.
-pub fn missing_token() -> bool {
-    token().is_none()
-        && std::env::var("IRONMON_TELEMETRY_ENDPOINT")
-            .map(|v| v.trim().is_empty())
-            .unwrap_or(true)
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// A token as the registration endpoint issues them: printable, no whitespace,
+/// short enough to be a header value.
+fn valid_token(t: &str) -> bool {
+    !t.is_empty() && t.len() <= 512 && t.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// Whether this install gets its token by registering: true for the nervosys
+/// collector, false when a token is supplied or the endpoint is replaced (a
+/// self-hosted receiver has its own arrangements).
+pub fn registers() -> bool {
+    env_nonempty("IRONMON_TELEMETRY_TOKEN").is_none()
+        && env_nonempty("IRONMON_TELEMETRY_ENDPOINT").is_none()
+}
+
+/// The registration endpoint beside [`ENDPOINT`].
+pub const REGISTER_URL: &str = "https://telemetry.nervosys.ai/v1/register";
+
+/// What [`ensure_token`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenState {
+    /// A token to send.
+    Ready(String),
+    /// nervosys revoked this install, or does not accept it: stop for good.
+    Revoked,
+    /// Not now (offline, rate limited, server busy): try again later.
+    Later,
+}
+
+/// The token to send, registering this install first if it has none, or if
+/// `rotate` asks for a fresh one after the collector refused the old. The call
+/// is made only after consent has been checked, so an opted-out install never
+/// contacts nervosys. A revocation is recorded and honoured from then on.
+#[cfg(feature = "remote-backends")]
+pub fn ensure_token(rotate: bool) -> TokenState {
+    if revoked() {
+        return TokenState::Revoked;
+    }
+    if !rotate {
+        if let Some(t) = token() {
+            return TokenState::Ready(t);
+        }
+    }
+    let Some(id) = install_id() else {
+        return TokenState::Later;
+    };
+    match register(&id) {
+        Registered::Token(t) => {
+            store_token(&t);
+            TokenState::Ready(t)
+        }
+        Registered::Revoked => {
+            if let Some(path) = revoked_path() {
+                let _ = std::fs::write(path, "revoked\n");
+            }
+            if let Some(path) = token_path() {
+                let _ = std::fs::remove_file(path);
+            }
+            TokenState::Revoked
+        }
+        Registered::Later => TokenState::Later,
+    }
+}
+
+#[cfg(feature = "remote-backends")]
+enum Registered {
+    Token(String),
+    Revoked,
+    Later,
+}
+
+/// One `POST /v1/register`. The body carries the install id, version and OS
+/// type and nothing else; the endpoint rejects any other field. 201 and 200
+/// carry a token, 403 means stop, and anything else means try later.
+#[cfg(feature = "remote-backends")]
+fn register(install_id: &str) -> Registered {
+    use std::io::Read;
+    let body = serde_json::json!({
+        "service.name": "ironmon",
+        "telemetry.install_id": install_id,
+        "service.version": env!("CARGO_PKG_VERSION"),
+        "os.type": std::env::consts::OS,
+    });
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return Registered::Later;
+    };
+    let Ok(response) = client.post(REGISTER_URL).json(&body).send() else {
+        return Registered::Later;
+    };
+    match response.status().as_u16() {
+        200 | 201 => {
+            let mut text = String::new();
+            if response.take(16 * 1024).read_to_string(&mut text).is_err() {
+                return Registered::Later;
+            }
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("token")?.as_str().map(str::to_string))
+                .filter(|t| valid_token(t))
+                .map_or(Registered::Later, Registered::Token)
+        }
+        403 => Registered::Revoked,
+        _ => Registered::Later,
+    }
+}
+
+fn token_path() -> Option<PathBuf> {
+    Some(
+        ConsentManager::default_path()
+            .ok()?
+            .with_file_name("telemetry_token"),
+    )
+}
+
+fn revoked_path() -> Option<PathBuf> {
+    Some(
+        ConsentManager::default_path()
+            .ok()?
+            .with_file_name("telemetry_revoked"),
+    )
+}
+
+/// Whether nervosys has revoked this install's telemetry.
+pub fn revoked() -> bool {
+    revoked_path().is_some_and(|p| p.exists())
+}
+
+/// Keep the issued token beside the consent record, readable only by its owner
+/// where the platform has such a mode (the Windows profile directory is already
+/// private to the user).
+#[cfg(feature = "remote-backends")]
+fn store_token(token: &str) {
+    let Some(path) = token_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(&path) {
+        use std::io::Write;
+        let _ = file.write_all(token.as_bytes());
+    }
 }
 
 /// How often `ironmon serve` sends it.
@@ -70,8 +219,8 @@ pub fn off_reason() -> Option<String> {
     if let Some(flag) = crate::consent::runtime_opt_out() {
         return Some(flag.to_string());
     }
-    if missing_token() {
-        return Some("this build has no telemetry token (IRONMON_TELEMETRY_TOKEN)".into());
+    if revoked() {
+        return Some("nervosys revoked this install's telemetry token".into());
     }
     match ConsentManager::load() {
         Err(_) => Some("the consent file could not be read".into()),
@@ -198,6 +347,15 @@ mod tests {
     fn the_default_destination_is_nervosys() {
         assert_eq!(ENDPOINT, "https://telemetry.nervosys.ai/v1/metrics");
         assert_eq!(INTERVAL, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn issued_tokens_are_checked_before_use() {
+        assert!(valid_token("nrvs_otlp_abc123"));
+        assert!(!valid_token(""));
+        assert!(!valid_token("has space"));
+        assert!(!valid_token("line\nbreak"));
+        assert!(!valid_token(&"x".repeat(513)));
     }
 
     #[test]

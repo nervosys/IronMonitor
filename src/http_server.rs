@@ -786,7 +786,11 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
     use crate::ontology::Domain;
     use crate::otlp::{backoff, encode_with, send, SendError, Timed};
 
-    let settings = &push.settings;
+    let mut settings = push.settings.clone();
+    // Vendor telemetry registers for its own token on first use, and once more
+    // if the collector refuses the one it holds.
+    let mut rotate = false;
+    let mut rotated = false;
     let resource: Vec<(&str, String)> = if push.vendor {
         crate::telemetry::resource_attributes(crate::telemetry::install_id())
     } else {
@@ -808,6 +812,23 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
         if push.vendor && !crate::telemetry::enabled() {
             failures = 0;
             continue;
+        }
+        if push.vendor && crate::telemetry::registers() && (settings.headers.is_empty() || rotate) {
+            match crate::telemetry::ensure_token(rotate) {
+                crate::telemetry::TokenState::Ready(token) => {
+                    settings.headers =
+                        vec![("Authorization".to_string(), format!("Bearer {token}"))];
+                    rotate = false;
+                }
+                crate::telemetry::TokenState::Revoked => {
+                    log::debug!("system telemetry stopped: nervosys revoked this install");
+                    return;
+                }
+                crate::telemetry::TokenState::Later => {
+                    failures = failures.saturating_add(1);
+                    continue;
+                }
+            }
         }
         // Export what is ready. A segment still on its first pass (a large agent
         // recording directory can take minutes) joins a later push rather than
@@ -835,7 +856,7 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
             })
             .collect();
         let body = encode_with(&rows, start, &resource);
-        match send(settings, &body) {
+        match send(&settings, &body) {
             Ok(accepted) => {
                 if failures > 0 && !push.vendor {
                     eprintln!("[ironmon] OTLP: exporting to {shown}");
@@ -855,6 +876,12 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
             }
             Err(error) => {
                 failures = failures.saturating_add(1);
+                // A refused token is replaced once per run; a second refusal
+                // backs off rather than spending the install's daily rotations.
+                if push.vendor && error == SendError::Status(401) && !rotated {
+                    rotate = true;
+                    rotated = true;
+                }
                 if push.vendor {
                     log::debug!("system telemetry to {shown} failed: {error}");
                 } else if last_error.as_ref() != Some(&error) {
