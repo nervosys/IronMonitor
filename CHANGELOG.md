@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.1] - 2026-11-20
+
 ### Fixed (Telemetry)
 
 - **System telemetry authenticates, and sends nothing when it cannot.**
