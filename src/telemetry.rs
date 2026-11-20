@@ -150,6 +150,38 @@ fn register(install_id: &str) -> Registered {
     }
 }
 
+/// The device-profile notice's version. Raise it whenever what the profile
+/// covers widens, so existing users see the notice again rather than silently
+/// inheriting the larger scope on upgrade.
+pub const DEVICE_NOTICE_VERSION: u32 = 1;
+
+fn device_notice_path() -> Option<PathBuf> {
+    Some(
+        ConsentManager::default_path()
+            .ok()?
+            .with_file_name("device_profile_notice"),
+    )
+}
+
+/// Whether this install has yet to be shown the current device-profile notice.
+pub fn device_notice_due() -> bool {
+    let shown = device_notice_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    shown < DEVICE_NOTICE_VERSION
+}
+
+/// Record that the current notice has been shown.
+pub fn mark_device_notice_shown() {
+    if let Some(path) = device_notice_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, DEVICE_NOTICE_VERSION.to_string());
+    }
+}
+
 fn token_path() -> Option<PathBuf> {
     Some(
         ConsentManager::default_path()
@@ -205,9 +237,9 @@ pub fn endpoint() -> String {
         .unwrap_or_else(|| ENDPOINT.to_string())
 }
 
-/// Whether the device profile may be sent: the opt-in
-/// [`ConsentScope::DeviceProfile`] has been granted, with the same runtime and
-/// sandbox refusals as everything else.
+/// Whether the device profile may be sent: [`ConsentScope::DeviceProfile`] is
+/// on by default and has not been denied, with the same runtime and sandbox
+/// refusals as everything else.
 pub fn device_profile_enabled() -> bool {
     ConsentManager::load()
         .map(|m| m.should_collect_data(ConsentScope::DeviceProfile))

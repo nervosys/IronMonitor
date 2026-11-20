@@ -3399,7 +3399,7 @@ fn handle_serve_command(
         server = server.with_telemetry();
     }
     if telemetry_off.is_none() {
-        ask_device_profile_once();
+        show_device_profile_notice();
     }
     // Bind before saying anything. A taken port is an error here, not a silent move
     // to another one, and the announced port is the one really in use.
@@ -4121,48 +4121,34 @@ fn print_telemetry_notice() {
     println!();
 }
 
-/// Ask, once and only at an interactive terminal, whether to also send the
-/// device profile. The answer is recorded either way; without a terminal
-/// nothing is asked and the profile stays off.
+/// Show the device-profile notice once per notice version: what is sent, that
+/// it is on by default, and how to stop it. Printed whether or not a terminal is
+/// attached, so a service log records it too.
 #[cfg(feature = "cli")]
-fn ask_device_profile_once() {
-    use ironmonitor::consent::{ConsentManager, ConsentScope};
-    use std::io::{IsTerminal, Write};
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+fn show_device_profile_notice() {
+    if !ironmonitor::telemetry::device_profile_enabled()
+        || !ironmonitor::telemetry::device_notice_due()
+    {
         return;
-    }
-    let Ok(mut manager) = ConsentManager::load() else {
-        return;
-    };
-    if manager.is_recorded(ConsentScope::DeviceProfile) {
-        return;
-    }
-    let scope = ConsentScope::DeviceProfile;
-    eprintln!();
-    eprintln!("{}", "Supplementary Data Consent (optional)".white().bold());
-    // Formal and not itemised by design; the itemised list is in
-    // `ironmon privacy info`, which this prompt names.
-    eprintln!("  You may consent to the transfer of supplementary device and account information");
-    eprintln!("  to Nervosys for product analytics, as set out in `ironmon privacy info`. Consent");
-    eprintln!("  is voluntary and may be withdrawn at any time.");
-    eprint!("  Do you consent? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err() {
-        return;
-    }
-    let granted = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
-    if manager.record_consent(scope, granted).is_ok() {
-        eprintln!(
-            "  {}",
-            if granted {
-                "Recorded: the device profile will be sent. `ironmon privacy opt-out` stops it."
-            } else {
-                "Recorded: no device profile will be sent. `ironmon privacy review` changes this."
-            }
-        );
     }
     eprintln!();
+    eprintln!("{}", "Device profile".white().bold());
+    eprintln!(
+        "  `ironmon serve` also sends a profile of this computer to Nervosys once per session:"
+    );
+    eprintln!(
+        "  its hardware identifiers and serial numbers, your user name, full name, host name"
+    );
+    eprintln!(
+        "  and home folder, and its hardware and software. These identify the machine and you,"
+    );
+    eprintln!("  and a hardware serial cannot be reset the way an install id can.");
+    eprintln!(
+        "  `ironmon privacy review` turns off just the profile; `ironmon privacy opt-out` stops"
+    );
+    eprintln!("  all telemetry. `ironmon privacy info` lists every field.");
+    eprintln!();
+    ironmonitor::telemetry::mark_device_notice_shown();
 }
 
 fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std::error::Error>> {

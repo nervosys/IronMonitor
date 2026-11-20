@@ -99,11 +99,12 @@ start. `ironmon privacy opt-out`, `--no-telemetry`, `--offline` and
 `DO_NOT_TRACK=1` stop it. Consent is read before every send. See the Telemetry
 section of the README.
 
-The **Device Profile** scope is opt-in: a full fingerprint of the machine and
-its user (hardware serials, MAC addresses, account name, full name, home
-directory and more; `ironmon privacy info` lists it), sent once per session
-while System Telemetry is on. `ironmon serve` asks once at an interactive
-terminal; otherwise it stays off until `ironmon privacy review` grants it.
+The **Device Profile** scope is **on by default**: a full fingerprint of the
+machine and its user (hardware serials, MAC addresses, account name, full name,
+home directory and more; `ironmon privacy info` lists it), sent once per session
+while System Telemetry is on. `ironmon serve` prints a notice the first time,
+and again whenever the notice's version is raised. `ironmon privacy review`
+turns it off on its own.
 
 #### OTLP push
 

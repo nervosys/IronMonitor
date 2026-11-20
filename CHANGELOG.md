@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The one-time Device Profile question from `ironmon serve` is a short,
-  formal consent request that no longer itemises the data; it points to
-  `ironmon privacy info`, which does.
+- **The device profile is on by default.** It was opt-in in 7.3.1. Unless the
+  user has answered no, `ironmon serve` now sends it once per session, and on
+  first run (and whenever the notice's version is raised) prints a notice
+  naming what is sent — hardware identifiers and serial numbers, user name,
+  full name, host name, home folder, hardware and software — that these
+  identify the machine and the user, and how to stop it. The `[y/N]` question
+  is gone. A recorded "no" from 7.3.1 still holds. `ironmon privacy review`
+  turns off just the profile; `opt-out` stops all telemetry.
 
 ## [7.3.1] - 2026-11-20
 

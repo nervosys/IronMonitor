@@ -139,7 +139,7 @@ pub enum ConsentScope {
 
     /// A full device fingerprint and profile, including hardware serials and
     /// the user's account name, full name and home directory, sent once per
-    /// `ironmon serve` session. Off until the user agrees.
+    /// `ironmon serve` session. On by default; a versioned notice says so.
     DeviceProfile,
 
     /// Basic anonymized usage telemetry (feature usage, crash reports)
@@ -170,10 +170,10 @@ impl ConsentScope {
         ConsentScope::Analytics,
     ];
 
-    /// What an unanswered scope means. System Telemetry is opt-out; every other
-    /// scope is denied until the user agrees.
+    /// What an unanswered scope means. System Telemetry and Device Profile are
+    /// opt-out; every other scope is denied until the user agrees.
     pub fn default_granted(&self) -> bool {
-        matches!(self, Self::SystemTelemetry)
+        matches!(self, Self::SystemTelemetry | Self::DeviceProfile)
     }
 
     /// Get human-readable name
@@ -200,7 +200,9 @@ impl ConsentScope {
             Self::DeviceProfile =>
                 "A full fingerprint and profile of this device, sent to telemetry.nervosys.ai once \
                  per `ironmon serve` session alongside System Telemetry, and kept by nervosys. \
-                 OFF UNTIL YOU AGREE. It identifies the machine and its user: hardware UUIDs and \
+                 ON BY DEFAULT: `ironmon privacy review` turns it off on its own, and \
+                 `ironmon privacy opt-out` stops all telemetry. It identifies the machine and its \
+                 user, and a hardware serial cannot be reset the way an install id can: hardware UUIDs and \
                  serial numbers, the Windows machine GUID or Linux machine-id, MAC addresses, \
                  your account name, full name, home directory, domain and whether you are an \
                  administrator, plus the hardware, displays, OS, and Ollama models you have pulled. \
@@ -702,8 +704,9 @@ impl ConsentManager {
         println!("\n╔════════════════════════════════════════════════════════════════╗");
         println!("║           Welcome to IronMonitor!                         ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
-        println!("System Telemetry is ON by default: `ironmon serve` sends its readings to");
-        println!("telemetry.nervosys.ai. The other categories are off until you agree.\n");
+        println!("System Telemetry and Device Profile are ON by default: `ironmon serve` sends");
+        println!("its readings and a profile of this computer to telemetry.nervosys.ai. The");
+        println!("other categories are off until you agree.\n");
         println!("You'll be asked about each. You can say 'no' to all of them -");
         println!("the tool works the same without any data collection.\n");
 
@@ -847,15 +850,26 @@ mod tests {
     /// this test to make a new collector pass would remove the only thing
     /// keeping those four in step.
     #[test]
-    fn device_profile_is_collected_but_off_until_granted() {
+    fn device_profile_is_collected_and_on_until_denied() {
         assert!(ConsentScope::DeviceProfile.is_collected());
-        assert!(!ConsentScope::DeviceProfile.default_granted());
-        let manager = ConsentManager {
+        assert!(ConsentScope::DeviceProfile.default_granted());
+        let mut manager = ConsentManager {
             config: ConsentConfig::default(),
             config_path: std::path::PathBuf::from("unused.toml"),
         };
-        assert!(!manager.recorded_or_default(ConsentScope::DeviceProfile));
+        assert!(manager.recorded_or_default(ConsentScope::DeviceProfile));
         assert!(!manager.is_recorded(ConsentScope::DeviceProfile));
+        manager.config.records.insert(
+            ConsentScope::DeviceProfile,
+            ConsentRecord {
+                scope: ConsentScope::DeviceProfile,
+                granted: false,
+                timestamp: 1,
+                prompt_version: 1,
+                ip_hash: None,
+            },
+        );
+        assert!(!manager.recorded_or_default(ConsentScope::DeviceProfile));
     }
 
     #[test]
