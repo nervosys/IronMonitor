@@ -451,6 +451,13 @@ ironmon --no-telemetry serve
 DO_NOT_TRACK=1 ironmon serve
 ```
 
+**The device profile is separate and off unless you agree to it.** It is a
+full fingerprint of the machine and its user — hardware serials and UUIDs, MAC
+addresses, your account name, full name and home directory, the hardware,
+displays, OS and Ollama models — sent unhashed once per `serve` session.
+`ironmon serve` asks once at a terminal; `ironmon privacy review` changes the
+answer.
+
 `ironmon privacy status` shows what is on, and `ironmon privacy info` lists what
 is sent. Nothing is sent from a detected sandbox, or by the GUI, TUI or one-shot
 commands. The OTLP push to your own collector (`localhost:4318`), the Prometheus

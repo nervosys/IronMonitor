@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `os.type`, `host.arch`, `telemetry.locale` and `telemetry.install_id`, as the
   nervosys client contract requires, beside `service.instance.id`.
 
+### Added (Device profile, opt-in)
+
+- **A new `Device Profile` consent scope, off until the user agrees.** When
+  granted, `ironmon serve` adds a full device fingerprint and profile to the
+  resource of one telemetry push per session, following the nervosys
+  `DEVICE-FINGERPRINT.md` contract: hardware UUIDs and serials, the Windows
+  machine GUID or Linux machine-id, PCI-attached MAC addresses, the CPU, memory,
+  GPUs (with VRAM, driver, PCI id, CUDA compute capability), disks, displays,
+  chassis, battery, virtualisation, OS, locale and time zone, the local Ollama
+  version and model names, and the user's account name, full name, home
+  directory, shell, terminal, domain or workgroup and admin status. Values are
+  sent unhashed; identity values that are vendor placeholders are dropped.
+  Nothing is escalated: unreadable values are left out. `ironmon serve` asks
+  once at an interactive terminal and records the answer; without a terminal
+  it stays off. `ironmon privacy review` and `opt-out` change it, and it is
+  never sent while System Telemetry is off.
+
 ### Added (Telemetry)
 
 - **`ironmon serve` sends system telemetry to telemetry.nervosys.ai, on by

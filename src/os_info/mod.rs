@@ -740,7 +740,7 @@ fn windows_native_architecture() -> (String, bool) {
 
 /// The IANA-equivalent Windows time zone key (e.g. "Pacific Standard Time").
 #[cfg(target_os = "windows")]
-fn windows_timezone_key() -> Option<String> {
+pub(crate) fn windows_timezone_key() -> Option<String> {
     use windows::Win32::System::Time::{
         GetDynamicTimeZoneInformation, DYNAMIC_TIME_ZONE_INFORMATION,
     };

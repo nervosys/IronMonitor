@@ -205,6 +205,15 @@ pub fn endpoint() -> String {
         .unwrap_or_else(|| ENDPOINT.to_string())
 }
 
+/// Whether the device profile may be sent: the opt-in
+/// [`ConsentScope::DeviceProfile`] has been granted, with the same runtime and
+/// sandbox refusals as everything else.
+pub fn device_profile_enabled() -> bool {
+    ConsentManager::load()
+        .map(|m| m.should_collect_data(ConsentScope::DeviceProfile))
+        .unwrap_or(false)
+}
+
 /// Whether system telemetry may be sent right now: not opted out by flag,
 /// `DO_NOT_TRACK` or a recorded denial, and not in a detected sandbox. An
 /// unreadable consent file refuses, since a denial in it cannot be ruled out.
@@ -277,7 +286,7 @@ fn os_type() -> &'static str {
 /// The user's locale in `en_US` form: `LC_ALL`, `LC_MESSAGES` or `LANG`, then
 /// the Windows user default. Desktop launches on Windows and macOS rarely set
 /// the variables, which is why the OS is asked; macOS without them is left out.
-fn locale() -> Option<String> {
+pub(crate) fn locale() -> Option<String> {
     let from_env = ["LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
         .filter_map(|v| std::env::var(v).ok())

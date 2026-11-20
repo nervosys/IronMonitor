@@ -137,6 +137,11 @@ pub enum ConsentScope {
     /// On by default; the one scope that collects.
     SystemTelemetry,
 
+    /// A full device fingerprint and profile, including hardware serials and
+    /// the user's account name, full name and home directory, sent once per
+    /// `ironmon serve` session. Off until the user agrees.
+    DeviceProfile,
+
     /// Basic anonymized usage telemetry (feature usage, crash reports)
     BasicTelemetry,
 
@@ -155,8 +160,9 @@ pub enum ConsentScope {
 
 impl ConsentScope {
     /// Every scope, in the order the privacy screens list them.
-    pub const ALL: [ConsentScope; 6] = [
+    pub const ALL: [ConsentScope; 7] = [
         ConsentScope::SystemTelemetry,
+        ConsentScope::DeviceProfile,
         ConsentScope::BasicTelemetry,
         ConsentScope::HardwareInfo,
         ConsentScope::PerformanceMetrics,
@@ -174,6 +180,7 @@ impl ConsentScope {
     pub fn name(&self) -> &'static str {
         match self {
             Self::SystemTelemetry => "System Telemetry",
+            Self::DeviceProfile => "Device Profile",
             Self::BasicTelemetry => "Basic Telemetry",
             Self::HardwareInfo => "Hardware Information",
             Self::PerformanceMetrics => "Performance Metrics",
@@ -190,6 +197,14 @@ impl ConsentScope {
                  with a random install id. ON BY DEFAULT: `ironmon privacy opt-out`, \
                  --no-telemetry or DO_NOT_TRACK=1 stops it. This is not anonymous: it includes \
                  the host name, process names, network interface names and disk mount points.",
+            Self::DeviceProfile =>
+                "A full fingerprint and profile of this device, sent to telemetry.nervosys.ai once \
+                 per `ironmon serve` session alongside System Telemetry, and kept by nervosys. \
+                 OFF UNTIL YOU AGREE. It identifies the machine and its user: hardware UUIDs and \
+                 serial numbers, the Windows machine GUID or Linux machine-id, MAC addresses, \
+                 your account name, full name, home directory, domain and whether you are an \
+                 administrator, plus the hardware, displays, OS, and Ollama models you have pulled. \
+                 Values are sent unhashed.",
             Self::BasicTelemetry =>
                 "Basic usage statistics and crash reports. Helps improve stability and reliability. \
                  No personally identifiable information is collected.",
@@ -226,6 +241,8 @@ impl ConsentScope {
         match self {
             // `ironmon serve` sends this; see `crate::telemetry`.
             Self::SystemTelemetry => true,
+            // `ironmon serve` sends this once per session; see `crate::device_profile`.
+            Self::DeviceProfile => true,
             Self::BasicTelemetry
             | Self::HardwareInfo
             | Self::PerformanceMetrics
@@ -248,6 +265,19 @@ impl ConsentScope {
                 "The largest processes by name and memory",
                 "Inference engine counters and agent session counts",
                 "The provenance of every value (measured, derived, specification)",
+            ],
+            Self::DeviceProfile => vec![
+                "Hardware identity: SMBIOS/platform UUID, board, BIOS, chassis and disk serials, \
+                 CPU id, machine GUID or machine-id, physical MAC addresses",
+                "Your account name, full name, home directory, shell, terminal, domain or \
+                 workgroup, and whether you are an administrator",
+                "Host name, OS version and build, kernel, locale, time zone, UI language",
+                "CPU model, cores, clock and instruction-set features; RAM size, speed and modules",
+                "Each GPU's vendor, model, VRAM, driver, PCI id; CUDA and ROCm versions",
+                "Each disk's model, size and kind; display resolutions and refresh rates",
+                "Chassis type, battery presence and capacity, virtual machine or container type",
+                "The local Ollama version and the names of the models you have pulled",
+                "Sent unhashed, once per `ironmon serve` session, only while System Telemetry is on",
             ],
             Self::BasicTelemetry => vec![
                 "Application version",
@@ -450,6 +480,11 @@ impl ConsentManager {
     /// The recorded answer for `scope`, or its default when unanswered:
     /// granted for System Telemetry (opt-out), denied for every other scope.
     /// Ignores the environment and sandbox detection, which `has_consent` adds.
+    /// Whether the user has answered for this scope at all.
+    pub fn is_recorded(&self, scope: ConsentScope) -> bool {
+        self.config.records.contains_key(&scope)
+    }
+
     pub fn recorded_or_default(&self, scope: ConsentScope) -> bool {
         self.config
             .records
@@ -678,6 +713,7 @@ impl ConsentManager {
 
         for scope in [
             ConsentScope::SystemTelemetry,
+            ConsentScope::DeviceProfile,
             ConsentScope::BasicTelemetry,
             ConsentScope::HardwareInfo,
             ConsentScope::PerformanceMetrics,
@@ -796,7 +832,7 @@ mod tests {
         assert!(!manager.should_collect_data(ConsentScope::SystemTelemetry));
         assert_eq!(
             ConsentScope::ALL.len(),
-            6,
+            7,
             "a new scope needs a default and a screen"
         );
     }
@@ -810,6 +846,18 @@ mod tests {
     /// `ironmon privacy opt-in` all stop being true and need rewriting. Deleting
     /// this test to make a new collector pass would remove the only thing
     /// keeping those four in step.
+    #[test]
+    fn device_profile_is_collected_but_off_until_granted() {
+        assert!(ConsentScope::DeviceProfile.is_collected());
+        assert!(!ConsentScope::DeviceProfile.default_granted());
+        let manager = ConsentManager {
+            config: ConsentConfig::default(),
+            config_path: std::path::PathBuf::from("unused.toml"),
+        };
+        assert!(!manager.recorded_or_default(ConsentScope::DeviceProfile));
+        assert!(!manager.is_recorded(ConsentScope::DeviceProfile));
+    }
+
     #[test]
     fn granting_an_unimplemented_scope_still_collects_nothing() {
         let mut manager = ConsentManager {

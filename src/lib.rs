@@ -172,6 +172,7 @@ pub mod connections; // Network connection monitoring (netstat-like)
 pub mod consent; // User consent management for ethical data collection
 pub mod core;
 pub mod cpufreq; // CPU frequency scaling and governor control
+pub mod device_profile; // Opt-in device fingerprint and profile (see consent)
 pub mod disk; // Disk/storage monitoring
 pub mod display; // Display/monitor information
 pub mod error;

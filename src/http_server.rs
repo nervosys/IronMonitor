@@ -791,6 +791,10 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
     // if the collector refuses the one it holds.
     let mut rotate = false;
     let mut rotated = false;
+    // The opt-in device profile goes on the resource of one successful push per
+    // session, collected the first time it is wanted.
+    let mut device_profile: Option<crate::device_profile::Attributes> = None;
+    let mut device_profile_sent = false;
     let resource: Vec<(&str, String)> = if push.vendor {
         crate::telemetry::resource_attributes(crate::telemetry::install_id())
     } else {
@@ -855,9 +859,19 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
                 time_unix_nano: stamp.sampled_at_unix_nanos(),
             })
             .collect();
-        let body = encode_with(&rows, start, &resource);
+        let with_profile =
+            push.vendor && !device_profile_sent && crate::telemetry::device_profile_enabled();
+        let mut attributes = resource.clone();
+        if with_profile {
+            let profile = device_profile.get_or_insert_with(crate::device_profile::collect);
+            attributes.extend(profile.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        }
+        let body = encode_with(&rows, start, &attributes);
         match send(&settings, &body) {
             Ok(accepted) => {
+                if with_profile {
+                    device_profile_sent = true;
+                }
                 if failures > 0 && !push.vendor {
                     eprintln!("[ironmon] OTLP: exporting to {shown}");
                 }

@@ -3398,6 +3398,9 @@ fn handle_serve_command(
     if ironmonitor::consent::runtime_opt_out().is_none() {
         server = server.with_telemetry();
     }
+    if telemetry_off.is_none() {
+        ask_device_profile_once();
+    }
     // Bind before saying anything. A taken port is an error here, not a silent move
     // to another one, and the announced port is the one really in use.
     let bound = server.bind()?;
@@ -4116,6 +4119,54 @@ fn print_telemetry_notice() {
         .dimmed()
     );
     println!();
+}
+
+/// Ask, once and only at an interactive terminal, whether to also send the
+/// device profile. The answer is recorded either way; without a terminal
+/// nothing is asked and the profile stays off.
+#[cfg(feature = "cli")]
+fn ask_device_profile_once() {
+    use ironmonitor::consent::{ConsentManager, ConsentScope};
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    let Ok(mut manager) = ConsentManager::load() else {
+        return;
+    };
+    if manager.is_recorded(ConsentScope::DeviceProfile) {
+        return;
+    }
+    let scope = ConsentScope::DeviceProfile;
+    eprintln!();
+    eprintln!(
+        "{}",
+        "Device profile (optional, off unless you say yes)"
+            .white()
+            .bold()
+    );
+    eprintln!("  {}", scope.description());
+    for point in scope.data_points() {
+        eprintln!("    - {point}");
+    }
+    eprint!("  Send it? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return;
+    }
+    let granted = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
+    if manager.record_consent(scope, granted).is_ok() {
+        eprintln!(
+            "  {}",
+            if granted {
+                "Recorded: the device profile will be sent. `ironmon privacy opt-out` stops it."
+            } else {
+                "Recorded: no device profile will be sent. `ironmon privacy review` changes this."
+            }
+        );
+    }
+    eprintln!();
 }
 
 fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std::error::Error>> {
