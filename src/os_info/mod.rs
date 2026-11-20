@@ -765,7 +765,7 @@ fn windows_timezone_key() -> Option<String> {
 
 /// The user's default locale name (e.g. "en-US").
 #[cfg(target_os = "windows")]
-fn windows_user_locale() -> Option<String> {
+pub(crate) fn windows_user_locale() -> Option<String> {
     use windows::Win32::Globalization::GetUserDefaultLocaleName;
 
     let mut buffer = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH

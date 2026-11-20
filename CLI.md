@@ -605,6 +605,7 @@ ironmon cli gpu --format json
 - `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SDK_DISABLED` - OTLP push from `ironmon serve` (see above)
 - `DO_NOT_TRACK=1` - Send no system telemetry (same as `--no-telemetry`)
 - `IRONMON_TELEMETRY_ENDPOINT`, `IRONMON_TELEMETRY_INTERVAL` - Replace the system telemetry destination or interval (seconds), for testing or self-hosting
+- `IRONMON_TELEMETRY_TOKEN` - Bearer token for the telemetry collector. None is built in; without one, nothing is sent to telemetry.nervosys.ai
 
 Example:
 ```bash

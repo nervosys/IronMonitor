@@ -21,6 +21,29 @@ use crate::consent::{ConsentManager, ConsentScope};
 
 /// Where system telemetry goes.
 pub const ENDPOINT: &str = "https://telemetry.nervosys.ai/v1/metrics";
+
+/// The bearer token the nervosys collector requires, from
+/// `IRONMON_TELEMETRY_TOKEN` at run time. None is built in: ingest tokens are
+/// private, and anything compiled from this public source would not be. Without
+/// one nothing is sent to nervosys (see [`missing_token`]).
+pub fn token() -> Option<String> {
+    std::env::var("IRONMON_TELEMETRY_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// True when telemetry would go to the nervosys collector without the token it
+/// requires. Such a push is refused with 401 after the readings have already
+/// been uploaded, so none is made. A replaced endpoint is exempt, since a
+/// self-hosted receiver need not ask for one.
+pub fn missing_token() -> bool {
+    token().is_none()
+        && std::env::var("IRONMON_TELEMETRY_ENDPOINT")
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+}
+
 /// How often `ironmon serve` sends it.
 pub const INTERVAL: Duration = Duration::from_secs(15 * 60);
 
@@ -47,6 +70,9 @@ pub fn off_reason() -> Option<String> {
     if let Some(flag) = crate::consent::runtime_opt_out() {
         return Some(flag.to_string());
     }
+    if missing_token() {
+        return Some("this build has no telemetry token (IRONMON_TELEMETRY_TOKEN)".into());
+    }
     match ConsentManager::load() {
         Err(_) => Some("the consent file could not be read".into()),
         Ok(m) if !m.recorded_or_default(ConsentScope::SystemTelemetry) => {
@@ -63,12 +89,62 @@ pub fn off_reason() -> Option<String> {
 pub fn settings() -> crate::otlp::Settings {
     crate::otlp::Settings {
         url: endpoint(),
-        headers: Vec::new(),
+        headers: token()
+            .map(|t| vec![("Authorization".to_string(), format!("Bearer {t}"))])
+            .unwrap_or_default(),
         interval: std::env::var("IRONMON_TELEMETRY_INTERVAL")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map_or(INTERVAL, |secs| Duration::from_secs(secs.max(10))),
     }
+}
+
+/// The resource attributes the nervosys collector's client contract requires
+/// (`otel/SEMANTIC-CONVENTIONS.md` in nervosys_v2): `os.type`, `host.arch`,
+/// `telemetry.locale` and `telemetry.install_id`, beside `service.name` and
+/// `service.version`, which the encoder adds. The install id is also sent as
+/// `service.instance.id`, its OpenTelemetry name. An attribute that cannot be
+/// read is left out rather than guessed.
+pub fn resource_attributes(install_id: Option<String>) -> Vec<(&'static str, String)> {
+    let mut out = vec![
+        ("os.type", os_type().to_string()),
+        ("host.arch", std::env::consts::ARCH.to_string()),
+    ];
+    if let Some(locale) = locale() {
+        out.push(("telemetry.locale", locale));
+    }
+    if let Some(id) = install_id {
+        out.push(("telemetry.install_id", id.clone()));
+        out.push(("service.instance.id", id));
+    }
+    out
+}
+
+/// `linux`, `windows` or `macos`, as the contract spells them.
+fn os_type() -> &'static str {
+    std::env::consts::OS
+}
+
+/// The user's locale in `en_US` form: `LC_ALL`, `LC_MESSAGES` or `LANG`, then
+/// the Windows user default. Desktop launches on Windows and macOS rarely set
+/// the variables, which is why the OS is asked; macOS without them is left out.
+fn locale() -> Option<String> {
+    let from_env = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|v| !v.trim().is_empty() && v != "C" && v != "POSIX");
+    #[cfg(target_os = "windows")]
+    let raw = from_env.or_else(crate::os_info::windows_user_locale);
+    #[cfg(not(target_os = "windows"))]
+    let raw = from_env;
+    raw.map(|r| normalize_locale(&r)).filter(|l| !l.is_empty())
+}
+
+/// `en-US`, `en_US.UTF-8` and `en_US@euro` all become `en_US`; at most 20
+/// characters, the width of the column it lands in.
+fn normalize_locale(raw: &str) -> String {
+    let base = raw.trim().split(['.', '@']).next().unwrap_or("");
+    base.replace('-', "_").chars().take(20).collect()
 }
 
 fn install_id_path() -> Option<PathBuf> {
@@ -122,6 +198,29 @@ mod tests {
     fn the_default_destination_is_nervosys() {
         assert_eq!(ENDPOINT, "https://telemetry.nervosys.ai/v1/metrics");
         assert_eq!(INTERVAL, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn locales_are_normalised_to_the_contract_form() {
+        assert_eq!(normalize_locale("en-US"), "en_US");
+        assert_eq!(normalize_locale("de_DE.UTF-8"), "de_DE");
+        assert_eq!(normalize_locale("fr_FR@euro"), "fr_FR");
+    }
+
+    #[test]
+    fn the_contract_resource_attributes_are_present() {
+        let attrs = resource_attributes(Some("ab".repeat(16)));
+        let keys: Vec<&str> = attrs.iter().map(|(k, _)| *k).collect();
+        for key in [
+            "os.type",
+            "host.arch",
+            "telemetry.install_id",
+            "service.instance.id",
+        ] {
+            assert!(keys.contains(&key), "{key} missing from {keys:?}");
+        }
+        let os = &attrs.iter().find(|(k, _)| *k == "os.type").unwrap().1;
+        assert!(["linux", "windows", "macos"].contains(&os.as_str()) || !os.is_empty());
     }
 
     #[test]

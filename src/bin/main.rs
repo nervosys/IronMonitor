@@ -3395,7 +3395,8 @@ fn handle_serve_command(
     // The push thread re-reads consent before every send, so it runs unless a
     // session flag or DO_NOT_TRACK has ruled the whole process out.
     let telemetry_off = ironmonitor::telemetry::off_reason();
-    if ironmonitor::consent::runtime_opt_out().is_none() {
+    if ironmonitor::consent::runtime_opt_out().is_none() && !ironmonitor::telemetry::missing_token()
+    {
         server = server.with_telemetry();
     }
     // Bind before saying anything. A taken port is an error here, not a silent move

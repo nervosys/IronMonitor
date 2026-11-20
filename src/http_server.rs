@@ -787,15 +787,11 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
     use crate::otlp::{backoff, encode_with, send, SendError, Timed};
 
     let settings = &push.settings;
-    let install_id = if push.vendor {
-        crate::telemetry::install_id()
+    let resource: Vec<(&str, String)> = if push.vendor {
+        crate::telemetry::resource_attributes(crate::telemetry::install_id())
     } else {
-        None
+        Vec::new()
     };
-    let resource: Vec<(&str, String)> = install_id
-        .into_iter()
-        .map(|id| ("service.instance.id", id))
-        .collect();
 
     let start = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
