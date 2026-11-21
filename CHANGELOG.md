@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux, `device.gpu_count = 0` is sent again when DRM was enumerated in
+  full and found no cards, as on a headless server: that zero is a
+  measurement. It is still left out when enumeration was not possible (no
+  DRM class, an unreadable card, or WSL2's `/dev/dxg`). 7.3.3 left out every
+  zero.
+
 ## [7.3.3] - 2026-11-20
 
 ### Fixed
