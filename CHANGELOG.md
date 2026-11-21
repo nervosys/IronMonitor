@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The device profile no longer reports `device.gpu_count = 0` when no GPU is
+  visible to the reader (as under WSL2, which exposes GPUs through `/dev/dxg`
+  rather than DRM); an unreadable count is left out, per the contract.
 - A telemetry registration refused as malformed (HTTP 400) stops telemetry
   for that run instead of being retried every cycle; retrying an identical
   request cannot succeed. The next run tries again.

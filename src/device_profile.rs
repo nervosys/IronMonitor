@@ -480,7 +480,8 @@ mod platform {
             "SELECT Name, AdapterCompatibility, AdapterRAM, DriverVersion, PNPDeviceID \
              FROM Win32_VideoController",
         );
-        b.put("device.gpu_count", Some(gpus.len()));
+        // Zero adapters means none were visible, not that there are none.
+        b.put("device.gpu_count", Some(gpus.len()).filter(|n| *n > 0));
         let pci_ids: Vec<Option<String>> = gpus
             .iter()
             .map(|g| text(g, "PNPDeviceID").as_deref().and_then(pci_id))
@@ -946,7 +947,9 @@ mod platform {
             );
             gpu += 1;
         }
-        b.put("device.gpu_count", Some(gpu));
+        // No DRM cards means none were visible (WSL2 exposes its GPUs through
+        // /dev/dxg instead), not that there are none, so zero is not sent.
+        b.put("device.gpu_count", Some(gpu).filter(|n| *n > 0));
         b.put("device.rocm_version", read("/opt/rocm/.info/version"));
 
         // Storage.
