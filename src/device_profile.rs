@@ -119,6 +119,50 @@ pub fn decimal(field: &str) -> String {
     }
 }
 
+/// A year, month and day that form a plausible calendar date. Kept loose on
+/// purpose: a BIOS date only has to be recognisable, not validated to the day.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn valid_ymd(y: u32, m: u32, d: u32) -> bool {
+    (1970..=2100).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d)
+}
+
+/// A WMI/CIM datetime (`yyyymmddHHMMSS.ffffff±UTC`) to `YYYY-MM-DD`, or None
+/// when the leading eight digits are not a plausible date.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[allow(dead_code)] // used on one platform; compiled on both for test coverage
+fn cim_date_to_iso(raw: &str) -> Option<String> {
+    let d = raw.trim();
+    if d.len() < 8 || !d.as_bytes()[..8].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let year: u32 = d[0..4].parse().ok()?;
+    let month: u32 = d[4..6].parse().ok()?;
+    let day: u32 = d[6..8].parse().ok()?;
+    valid_ymd(year, month, day).then(|| format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// An SMBIOS/DMI `bios_date` (`MM/DD/YYYY`) to `YYYY-MM-DD`.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[allow(dead_code)] // used on one platform; compiled on both for test coverage
+fn mdy_date_to_iso(raw: &str) -> Option<String> {
+    let mut parts = raw.trim().split('/');
+    let month: u32 = parts.next()?.trim().parse().ok()?;
+    let day: u32 = parts.next()?.trim().parse().ok()?;
+    let year: u32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    valid_ymd(year, month, day).then(|| format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// The value of a UEFI `SecureBoot` EFI variable: a four-byte attribute prefix
+/// then a one-byte value, enabled when that byte is 1.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[allow(dead_code)] // used on one platform; compiled on both for test coverage
+fn secure_boot_byte(data: &[u8]) -> Option<bool> {
+    data.get(4).map(|b| *b == 1)
+}
+
 /// Interface or adapter names that are virtual, per the contract's list.
 pub fn is_virtual_adapter(name: &str) -> bool {
     let n = name.to_lowercase();
@@ -403,7 +447,7 @@ mod platform {
         b.identity("device.machine_guid", machine_guid());
         let board = first(&conn, "SELECT SerialNumber FROM Win32_BaseBoard");
         b.identity("device.board_serial", text(&board, "SerialNumber"));
-        let bios = first(&conn, "SELECT SerialNumber FROM Win32_BIOS");
+        let bios = first(&conn, "SELECT SerialNumber, ReleaseDate FROM Win32_BIOS");
         b.identity("device.bios_serial", text(&bios, "SerialNumber"));
         b.identity("device.disk_serial", system_disk_serial(&conn));
         let cpus = rows(
@@ -607,6 +651,37 @@ mod platform {
             b.put("device.user_full_name", text(&account, "FullName"));
         }
         b.put("device.is_admin", is_elevated());
+
+        // Firmware and security posture.
+        b.put("device.firmware_type", firmware_type());
+        b.put("device.secure_boot", secure_boot());
+        b.put(
+            "device.bios_release_date",
+            text(&bios, "ReleaseDate").and_then(|d| super::cim_date_to_iso(&d)),
+        );
+    }
+
+    /// UEFI or legacy BIOS, from the firmware's own report.
+    fn firmware_type() -> Option<&'static str> {
+        use windows::Win32::System::SystemInformation::{GetFirmwareType, FIRMWARE_TYPE};
+        let mut kind = FIRMWARE_TYPE::default();
+        unsafe { GetFirmwareType(&mut kind) }.ok()?;
+        match kind.0 {
+            1 => Some("bios"),
+            2 => Some("uefi"),
+            _ => None,
+        }
+    }
+
+    /// Secure Boot state from its registry value, not the key's existence: a
+    /// machine can carry the key with the feature off. Absent on legacy BIOS.
+    fn secure_boot() -> Option<bool> {
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+            .open_subkey("SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State")
+            .ok()?;
+        key.get_value::<u32, _>("UEFISecureBootEnabled")
+            .ok()
+            .map(|v| v == 1)
     }
 
     fn machine_guid() -> Option<String> {
@@ -952,6 +1027,21 @@ mod platform {
         b.put("device.gpu_count", Some(gpu).filter(|n| *n > 0));
         b.put("device.rocm_version", read("/opt/rocm/.info/version"));
 
+        // Firmware and security posture.
+        b.put(
+            "device.firmware_type",
+            Some(if Path::new("/sys/firmware/efi").is_dir() {
+                "uefi"
+            } else {
+                "bios"
+            }),
+        );
+        b.put("device.secure_boot", secure_boot());
+        b.put(
+            "device.bios_release_date",
+            dmi("bios_date").and_then(|d| super::mdy_date_to_iso(&d)),
+        );
+
         // Storage.
         let mut disks: Vec<_> = fs::read_dir("/sys/block")
             .into_iter()
@@ -1064,6 +1154,17 @@ mod platform {
                 .then(|| f[4].split(',').next().unwrap_or("").to_string())
         });
         b.put("device.user_full_name", full_name);
+    }
+
+    /// Secure Boot from the EFI variable. Its name ends in a fixed GUID. Absent
+    /// on legacy BIOS, and the file is often root-only; either way it is left out.
+    fn secure_boot() -> Option<bool> {
+        let data = fs::read(
+            "/sys/firmware/efi/efivars/\
+             SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        )
+        .ok()?;
+        super::secure_boot_byte(&data)
     }
 
     fn virt_type() -> &'static str {
@@ -1332,5 +1433,37 @@ mod tests {
         ] {
             assert!(!is_virtual_adapter(p), "{p}");
         }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    fn cim_dates_parse_to_iso() {
+        assert_eq!(
+            cim_date_to_iso("20231005000000.000000+000").as_deref(),
+            Some("2023-10-05")
+        );
+        assert_eq!(cim_date_to_iso("20200229").as_deref(), Some("2020-02-29"));
+        assert_eq!(cim_date_to_iso("2023130500000000"), None); // month 13
+        assert_eq!(cim_date_to_iso("not-a-date"), None);
+        assert_eq!(cim_date_to_iso("2023"), None); // too short
+    }
+
+    #[test]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    fn mdy_dates_parse_to_iso() {
+        assert_eq!(mdy_date_to_iso("10/05/2023").as_deref(), Some("2023-10-05"));
+        assert_eq!(mdy_date_to_iso("1/2/2020").as_deref(), Some("2020-01-02"));
+        assert_eq!(mdy_date_to_iso("2023-10-05"), None); // wrong separator
+        assert_eq!(mdy_date_to_iso("10/05/2023/00"), None); // extra field
+        assert_eq!(mdy_date_to_iso("13/05/2023"), None); // month 13
+    }
+
+    #[test]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    fn secure_boot_byte_reads_the_value() {
+        assert_eq!(secure_boot_byte(&[6, 0, 0, 0, 1]), Some(true));
+        assert_eq!(secure_boot_byte(&[6, 0, 0, 0, 0]), Some(false));
+        assert_eq!(secure_boot_byte(&[6, 0, 0, 0]), None); // no value byte
+        assert_eq!(secure_boot_byte(&[]), None);
     }
 }

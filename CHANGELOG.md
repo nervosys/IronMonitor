@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The device profile reports firmware and security posture: `device.firmware_type`
+  (`uefi` or `bios`), `device.secure_boot` (from the Secure Boot variable's value,
+  not merely the presence of its key), and `device.bios_release_date`. Windows and
+  Linux; omitted where unreadable. First step of advanced device fingerprinting
+  (see `docs/DEVICE_FINGERPRINTING_PLAN.md`).
+
 ## [7.3.3] - 2026-11-20
 
 ### Fixed
