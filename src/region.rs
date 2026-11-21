@@ -68,6 +68,7 @@ const EEA_TZ: &[&str] = &[
 /// those are kept because over-inclusion only shows an extra prompt, and the UK
 /// is left out — its `"GMT Standard Time"` is shared with EEA Ireland and
 /// Portugal, so the locale region resolves those more precisely.
+#[cfg(target_os = "windows")]
 const EEA_WINDOWS_TZ: &[&str] = &[
     "W. Europe Standard Time",        // DE, AT, NL, IT, SE, ...
     "Central Europe Standard Time",   // PL, CZ, HU, SK, SI
@@ -175,6 +176,11 @@ mod tests {
         assert!(EEA_TZ.contains(&"Atlantic/Reykjavik"));
         assert!(!EEA_TZ.contains(&"Europe/London")); // UK
         assert!(!EEA_TZ.contains(&"Europe/Zurich")); // CH
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_tz_table_matches_as_prefix() {
         assert!(EEA_WINDOWS_TZ
             .iter()
             .any(|k| "W. Europe Standard Time".starts_with(k)));
