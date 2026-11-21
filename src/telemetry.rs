@@ -65,6 +65,10 @@ pub enum TokenState {
     Ready(String),
     /// nervosys revoked this install, or does not accept it: stop for good.
     Revoked,
+    /// The request was refused as malformed (400). Retrying the same request
+    /// cannot succeed, so stop for this run; the next run (often a newer
+    /// version) tries again.
+    Refused,
     /// Not now (offline, rate limited, server busy): try again later.
     Later,
 }
@@ -100,6 +104,7 @@ pub fn ensure_token(rotate: bool) -> TokenState {
             }
             TokenState::Revoked
         }
+        Registered::Refused => TokenState::Refused,
         Registered::Later => TokenState::Later,
     }
 }
@@ -108,6 +113,7 @@ pub fn ensure_token(rotate: bool) -> TokenState {
 enum Registered {
     Token(String),
     Revoked,
+    Refused,
     Later,
 }
 
@@ -146,6 +152,7 @@ fn register(install_id: &str) -> Registered {
                 .map_or(Registered::Later, Registered::Token)
         }
         403 => Registered::Revoked,
+        400 => Registered::Refused,
         _ => Registered::Later,
     }
 }

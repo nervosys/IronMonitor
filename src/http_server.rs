@@ -828,6 +828,12 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
                     log::debug!("system telemetry stopped: nervosys revoked this install");
                     return;
                 }
+                crate::telemetry::TokenState::Refused => {
+                    log::warn!(
+                        "system telemetry stopped for this run: registration was refused as                          malformed (HTTP 400)"
+                    );
+                    return;
+                }
                 crate::telemetry::TokenState::Later => {
                     failures = failures.saturating_add(1);
                     continue;

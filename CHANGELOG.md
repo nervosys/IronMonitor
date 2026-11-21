@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A telemetry registration refused as malformed (HTTP 400) stops telemetry
+  for that run instead of being retried every cycle; retrying an identical
+  request cannot succeed. The next run tries again.
+
 ## [7.3.2] - 2026-11-20
 
 ### Changed
