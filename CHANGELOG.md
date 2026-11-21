@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.3] - 2026-11-20
+
 ### Fixed
 
 - **Telemetry is sent from virtual machines.** A VM alone (WSL2, cloud
