@@ -170,10 +170,22 @@ impl ConsentScope {
         ConsentScope::Analytics,
     ];
 
-    /// What an unanswered scope means. System Telemetry and Device Profile are
-    /// opt-out; every other scope is denied until the user agrees.
+    /// What an unanswered scope means. System Telemetry is opt-out everywhere.
+    /// Device Profile is opt-out too, except in the EU/EEA, where it is opt-in
+    /// (ePrivacy Art. 5(3) requires consent before a device fingerprint is read
+    /// or stored). Every other scope is denied until the user agrees.
     pub fn default_granted(&self) -> bool {
-        matches!(self, Self::SystemTelemetry | Self::DeviceProfile)
+        self.default_granted_in(crate::region::in_eea())
+    }
+
+    /// The pure form of [`default_granted`], with EU/EEA membership supplied
+    /// rather than detected, so the rule can be tested without the environment.
+    pub fn default_granted_in(&self, in_eea: bool) -> bool {
+        match self {
+            Self::SystemTelemetry => true,
+            Self::DeviceProfile => !in_eea,
+            _ => false,
+        }
     }
 
     /// Get human-readable name
@@ -853,7 +865,11 @@ mod tests {
     #[test]
     fn device_profile_is_collected_and_on_until_denied() {
         assert!(ConsentScope::DeviceProfile.is_collected());
-        assert!(ConsentScope::DeviceProfile.default_granted());
+        // Opt-out outside the EU/EEA, opt-in within it; System Telemetry is
+        // opt-out regardless of region.
+        assert!(ConsentScope::DeviceProfile.default_granted_in(false));
+        assert!(!ConsentScope::DeviceProfile.default_granted_in(true));
+        assert!(ConsentScope::SystemTelemetry.default_granted_in(true));
         let mut manager = ConsentManager {
             config: ConsentConfig::default(),
             config_path: std::path::PathBuf::from("unused.toml"),

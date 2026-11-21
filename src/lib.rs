@@ -196,6 +196,7 @@ pub mod power_supply; // Battery and power supply monitoring
 pub mod process_monitor; // Unified process monitoring with GPU attribution
 pub mod process_tree; // Process tree visualization with container/cgroup awareness
 pub mod profile; // Hardware profile inspector (NVPI / XTU / Ryzen Master / nvme-cli style)
+pub mod region; // Rough EU/EEA detection, to make the device profile opt-in there
 pub mod sandbox; // Sandbox and VM detection for ethical data collection
 pub mod services; // System service monitoring and control
 pub mod silicon; // New: Unified silicon monitoring (CPU, NPU, I/O, network)

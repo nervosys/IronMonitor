@@ -4121,16 +4121,9 @@ fn print_telemetry_notice() {
     println!();
 }
 
-/// Show the device-profile notice once per notice version: what is sent, that
-/// it is on by default, and how to stop it. Printed whether or not a terminal is
-/// attached, so a service log records it too.
+/// The body of the device-profile notice: what is sent and why it is sensitive.
 #[cfg(feature = "cli")]
-fn show_device_profile_notice() {
-    if !ironmonitor::telemetry::device_profile_enabled()
-        || !ironmonitor::telemetry::device_notice_due()
-    {
-        return;
-    }
+fn print_device_profile_body() {
     eprintln!();
     eprintln!("{}", "Device profile".white().bold());
     eprintln!(
@@ -4143,6 +4136,64 @@ fn show_device_profile_notice() {
         "  and home folder, and its hardware and software. These identify the machine and you,"
     );
     eprintln!("  and a hardware serial cannot be reset the way an install id can.");
+}
+
+/// Show the device-profile notice once per notice version. Outside the EU/EEA
+/// the profile is on by default, so this says what is sent and how to stop it.
+/// In the EU/EEA it is opt-in (ePrivacy Art. 5(3)): the profile is OFF until the
+/// user agrees, and this informs them and — at a terminal — asks. Printed whether
+/// or not a terminal is attached, so a service log records it too.
+#[cfg(feature = "cli")]
+fn show_device_profile_notice() {
+    use ironmonitor::consent::{ConsentManager, ConsentScope};
+
+    if !ironmonitor::telemetry::device_notice_due() {
+        return;
+    }
+
+    // EU/EEA: opt-in. When the user has not answered, inform and (at a terminal)
+    // ask; nothing is sent until they opt in.
+    if ironmonitor::region::in_eea() {
+        let Ok(mut manager) = ConsentManager::load() else {
+            return;
+        };
+        if !manager.is_recorded(ConsentScope::DeviceProfile) {
+            print_device_profile_body();
+            eprintln!("  In the EU/EEA the device profile is OFF until you opt in.");
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                eprint!("  Send the device profile for this and future sessions? [y/N]: ");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                let mut line = String::new();
+                let granted = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+                    .is_ok()
+                    && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+                let _ = manager.record_consent(ConsentScope::DeviceProfile, granted);
+                eprintln!(
+                    "  {}",
+                    if granted {
+                        "Device profile enabled."
+                    } else {
+                        "Device profile stays off. Turn it on later with `ironmon privacy opt-in`."
+                    }
+                );
+            } else {
+                eprintln!(
+                    "  Enable it with `ironmon privacy opt-in`, or `ironmon privacy review` to"
+                );
+                eprintln!("  choose per category. `ironmon privacy info` lists every field.");
+            }
+            eprintln!();
+            ironmonitor::telemetry::mark_device_notice_shown();
+            return;
+        }
+    }
+
+    // Outside the EU/EEA, or once answered there: the informational notice, shown
+    // only while the profile is actually enabled.
+    if !ironmonitor::telemetry::device_profile_enabled() {
+        return;
+    }
+    print_device_profile_body();
     eprintln!(
         "  `ironmon privacy review` turns off just the profile; `ironmon privacy opt-out` stops"
     );
@@ -4221,6 +4272,20 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             }
 
             println!();
+
+            // The Device Profile default depends on region: opt-in in the EU/EEA,
+            // on by default elsewhere. Say which applies here so an "unanswered"
+            // Device Profile above is not read as "will be sent".
+            if ironmonitor::region::in_eea() {
+                println!(
+                    "  {} This machine looks EU/EEA: the Device Profile is opt-in and stays off",
+                    "⦿".yellow()
+                );
+                println!(
+                    "    until you opt in (`ironmon privacy opt-in`). A locale/time-zone guess."
+                );
+                println!();
+            }
 
             // Say plainly when something is overriding the recorded answers,
             // and what it is.

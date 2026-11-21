@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `device.disk_serial` is unchanged and remains the boot-disk identity signal. `N`
   is capped at 8 per category and is a grouping key within one payload, not an
   identifier across payloads.
+- The device profile is now **opt-in in the EU/EEA** and on by default elsewhere
+  (ePrivacy Art. 5(3)). Region is a heuristic from the system locale and time zone
+  (new `region` module), erring toward asking; `ironmon serve` informs and, at a
+  terminal, asks before sending a profile there, and `ironmon privacy status` says
+  which default applies. System Telemetry is unchanged. An explicit recorded answer
+  overrides the regional default either way.
 
 ### Fixed
 
