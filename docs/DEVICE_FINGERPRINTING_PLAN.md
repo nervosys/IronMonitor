@@ -82,16 +82,16 @@ device.tpm_ek = lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the EK 
 
 ### Phase 2: TPM (new `src/device_profile/tpm.rs`, or a submodule)
 
-- [ ] Command marshalling: `TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES, PT_FAMILY_INDICATOR, 13)` and `TPM2_ReadPublic(handle)`
-- [ ] Response parsing with bounds checks on every length field. A malformed response yields omission, never a panic.
-- [ ] Transport, Windows: TBS (`Tbsi_Context_Create`, `Tbsip_Submit_Command`). Add the `Win32_System_TpmBaseServices` feature to `windows`. Confirm a **non-elevated** process can run both commands.
-- [ ] Transport, Linux: `/dev/tpmrm0` only (resource-managed). Not `/dev/tpm0`. Permission denied (root or the `tss` group is usually required) yields omission.
-- [ ] Spec version fallback from sysfs when the device is not readable
-- [ ] TCG Vendor ID Registry table (about 30 entries, factual) for `tpm_vendor_name`
-- [ ] TPM2B_PUBLIC to SPKI DER for RSA-2048 and ECC P-256, then SHA-256 (`sha2` is already a dependency)
-- [ ] Known-answer tests: SPKI bytes and hash against fixtures produced independently by OpenSSL for one RSA and one ECC key
-- [ ] Parser tests from captured response bytes, including truncated and oversized lengths
-- [ ] Stretch: `tpm_ek_cert_sha256` via `TPM2_NV_ReadPublic` plus chunked `TPM2_NV_Read`. Profile only. Drop it if it costs more than a day.
+- [x] Command marshalling: `TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES, PT_FAMILY_INDICATOR, 13)` and `TPM2_ReadPublic(handle)`
+- [x] Response parsing with bounds checks on every length field. A malformed response yields omission, never a panic.
+- [x] Transport, Windows: TBS (`Tbsi_Context_Create`, `Tbsip_Submit_Command`). Add the `Win32_System_TpmBaseServices` feature to `windows`. Confirm a **non-elevated** process can run both commands.
+- [x] Transport, Linux: `/dev/tpmrm0` only (resource-managed). Not `/dev/tpm0`. Permission denied (root or the `tss` group is usually required) yields omission.
+- [ ] Spec version fallback from sysfs when the device is not readable (deferred; GetCapability gives it when the TPM is readable at all)
+- [x] TCG Vendor ID Registry table (about 30 entries, factual) for `tpm_vendor_name`
+- [x] TPM2B_PUBLIC to SPKI DER for RSA-2048 and ECC P-256, then SHA-256 (`sha2` is already a dependency)
+- [x] Known-answer tests: SPKI bytes and hash against fixtures produced independently by OpenSSL for one RSA and one ECC key
+- [x] Parser tests from captured response bytes, including truncated and oversized lengths
+- [~] Stretch: `tpm_ek_cert_sha256` via `TPM2_NV_ReadPublic` plus chunked `TPM2_NV_Read`. Profile only. Drop it if it costs more than a day.
 
 ### Phase 3: Peripheral identity
 
@@ -127,6 +127,7 @@ device.tpm_ek = lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the EK 
 
 - [ ] `cargo clippy -j 1 --offline --lib --bins --tests -- -D warnings`, the full test suite, and `source_hygiene`
 - [ ] Windows live: capture one push with the local sink and check every new key's presence, type and plausibility
+- [x] Windows TPM: `tpm_ek` checked against an independent Python derivation of the same EK (modulus read from the TPM, SPKI+SHA-256 rebuilt): MATCH, exponent 65537, 256-byte modulus, non-elevated. Original line follows.
 - [ ] Windows TPM: check `tpm_ek` against an independent derivation of the same EK public key (PowerShell or NCrypt `PCP_EKPUB`, hashed as SPKI outside IronMonitor). Both runs must agree.
 - [ ] Linux, WSL2: no TPM and no DRM monitors, so confirm clean omission and no zero substituted
 - [ ] CI green on Windows, Linux and macOS

@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not merely the presence of its key), and `device.bios_release_date`. Windows and
   Linux; omitted where unreadable. First step of advanced device fingerprinting
   (see `docs/DEVICE_FINGERPRINTING_PLAN.md`).
+- The device profile reports the TPM: `device.tpm_spec_version`, `device.tpm_vendor`
+  (TCG id) and `device.tpm_vendor_name`, `device.tpm_firmware_version`, and
+  `device.tpm_ek` — the SHA-256 of the DER `SubjectPublicKeyInfo` of the
+  endorsement key (`device.tpm_ek_alg` names the key: `rsa2048` or `ecc-p256`),
+  in the canonical form the server pins. Windows (TBS) and Linux (`/dev/tpmrm0`,
+  usually root-only, so most Linux installs omit it); macOS has no TPM. The EK
+  encoding is verified against OpenSSL fixtures and on real hardware.
 
 ### Fixed
 

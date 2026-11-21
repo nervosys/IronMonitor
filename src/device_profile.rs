@@ -16,6 +16,8 @@
 //!
 //! [`ConsentScope::DeviceProfile`]: crate::consent::ConsentScope::DeviceProfile
 
+mod tpm;
+
 /// Attribute name and value, in the order collected.
 pub type Attributes = Vec<(String, String)>;
 
@@ -231,6 +233,7 @@ impl Builder {
 pub fn collect() -> Attributes {
     let mut b = Builder::default();
     platform::collect(&mut b);
+    tpm::collect(&mut b);
     common(&mut b);
     b.out
 }
