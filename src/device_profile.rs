@@ -991,6 +991,7 @@ mod platform {
 
         // GPUs, from DRM.
         let mut gpu = 0;
+        let mut unreadable = false;
         let mut cards: Vec<_> = fs::read_dir("/sys/class/drm")
             .into_iter()
             .flatten()
@@ -1004,6 +1005,7 @@ mod platform {
             let vendor = read(dev.join("vendor"));
             let device = read(dev.join("device"));
             let (Some(v), Some(d)) = (vendor, device) else {
+                unreadable = true;
                 continue;
             };
             let v = v.trim_start_matches("0x").to_lowercase();
@@ -1022,9 +1024,16 @@ mod platform {
             );
             gpu += 1;
         }
-        // No DRM cards means none were visible (WSL2 exposes its GPUs through
-        // /dev/dxg instead), not that there are none, so zero is not sent.
-        b.put("device.gpu_count", Some(gpu).filter(|n| *n > 0));
+        // Zero is a measurement only when DRM could be enumerated in full: the
+        // class exists, every card was readable, and this is not WSL2, which
+        // exposes its GPUs through /dev/dxg rather than DRM. Otherwise a zero
+        // would assert something that was not observed, so it is left out.
+        let enumerable =
+            Path::new("/sys/class/drm").is_dir() && !Path::new("/dev/dxg").exists() && !unreadable;
+        b.put(
+            "device.gpu_count",
+            Some(gpu).filter(|n| *n > 0 || enumerable),
+        );
         b.put("device.rocm_version", read("/opt/rocm/.info/version"));
 
         // Firmware and security posture.
