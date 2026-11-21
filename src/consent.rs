@@ -212,13 +212,16 @@ impl ConsentScope {
             Self::DeviceProfile =>
                 "A full fingerprint and profile of this device, sent to telemetry.nervosys.ai once \
                  per `ironmon serve` session alongside System Telemetry, and kept by nervosys. \
-                 ON BY DEFAULT: `ironmon privacy review` turns it off on its own, and \
-                 `ironmon privacy opt-out` stops all telemetry. It identifies the machine and its \
-                 user, and a hardware serial cannot be reset the way an install id can: hardware UUIDs and \
-                 serial numbers, the Windows machine GUID or Linux machine-id, MAC addresses, \
-                 your account name, full name, home directory, domain and whether you are an \
-                 administrator, plus the hardware, displays, OS, and Ollama models you have pulled. \
-                 Values are sent unhashed.",
+                 ON BY DEFAULT, EXCEPT OPT-IN IN THE EU/EEA: `ironmon privacy review` turns it off \
+                 on its own, `ironmon privacy opt-in` turns it on, and `ironmon privacy opt-out` \
+                 stops all telemetry. It identifies the machine and its user, and a hardware serial \
+                 cannot be reset the way an install id can: hardware UUIDs and serial numbers \
+                 (board, BIOS, chassis, disks), a TPM endorsement-key hash, the Windows machine \
+                 GUID or Linux machine-id, MAC addresses, your account name, full name, home \
+                 directory, domain and whether you are an administrator; firmware type, Secure Boot \
+                 state and BIOS date; TPM vendor and version; each monitor's make, model, serial \
+                 and year (from EDID) and each GPU's UUID; plus the rest of the hardware, OS, and \
+                 Ollama models you have pulled. Values are sent unhashed.",
             Self::BasicTelemetry =>
                 "Basic usage statistics and crash reports. Helps improve stability and reliability. \
                  No personally identifiable information is collected.",
@@ -282,16 +285,21 @@ impl ConsentScope {
             ],
             Self::DeviceProfile => vec![
                 "Hardware identity: SMBIOS/platform UUID, board, BIOS, chassis and disk serials, \
-                 CPU id, machine GUID or machine-id, physical MAC addresses",
+                 CPU id, machine GUID or machine-id, physical MAC addresses, and a TPM \
+                 endorsement-key hash (SHA-256)",
+                "Firmware and security posture: firmware type (UEFI/BIOS), Secure Boot state, BIOS \
+                 release date, and TPM vendor, spec and firmware version",
                 "Your account name, full name, home directory, shell, terminal, domain or \
                  workgroup, and whether you are an administrator",
                 "Host name, OS version and build, kernel, locale, time zone, UI language",
                 "CPU model, cores, clock and instruction-set features; RAM size, speed and modules",
-                "Each GPU's vendor, model, VRAM, driver, PCI id; CUDA and ROCm versions",
-                "Each disk's model, size and kind; display resolutions and refresh rates",
+                "Each GPU's vendor, model, VRAM, driver, PCI id, UUID; CUDA and ROCm versions",
+                "Each disk's model, size, kind and serial; each monitor's make, model, serial and \
+                 year of manufacture (from EDID); display resolutions and refresh rates",
                 "Chassis type, battery presence and capacity, virtual machine or container type",
                 "The local Ollama version and the names of the models you have pulled",
-                "Sent unhashed, once per `ironmon serve` session, only while System Telemetry is on",
+                "Sent unhashed, once per `ironmon serve` session, only while System Telemetry is \
+                 on; opt-in in the EU/EEA, on by default elsewhere",
             ],
             Self::BasicTelemetry => vec![
                 "Application version",

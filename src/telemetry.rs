@@ -160,7 +160,7 @@ fn register(install_id: &str) -> Registered {
 /// The device-profile notice's version. Raise it whenever what the profile
 /// covers widens, so existing users see the notice again rather than silently
 /// inheriting the larger scope on upgrade.
-pub const DEVICE_NOTICE_VERSION: u32 = 1;
+pub const DEVICE_NOTICE_VERSION: u32 = 2;
 
 fn device_notice_path() -> Option<PathBuf> {
     Some(

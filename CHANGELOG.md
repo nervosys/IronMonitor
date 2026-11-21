@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal, asks before sending a profile there, and `ironmon privacy status` says
   which default applies. System Telemetry is unchanged. An explicit recorded answer
   overrides the regional default either way.
+- The device-profile disclosure now lists the signals added this release (posture,
+  TPM, peripheral serials, EDID, GPU UUID) and the EU/EEA opt-in, across the `serve`
+  notice, `ironmon privacy info`, the README and CLI.md. `DEVICE_NOTICE_VERSION` is
+  raised to 2 so `ironmon serve` shows the notice once more rather than widening the
+  profile's scope silently on upgrade.
 
 ### Fixed
 

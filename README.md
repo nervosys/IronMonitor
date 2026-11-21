@@ -451,14 +451,17 @@ ironmon --no-telemetry serve
 DO_NOT_TRACK=1 ironmon serve
 ```
 
-**`ironmon serve` also sends a device profile, on by default.** It is a full
-fingerprint of the machine and its user — hardware serials and UUIDs, MAC
-addresses, your account name, full name and home directory, the hardware,
-displays, OS and Ollama models — sent unhashed once per `serve` session. These
-values identify the machine and you, and a hardware serial cannot be reset the
-way an install id can. `serve` prints a notice saying so the first time;
-`ironmon privacy review` turns off just the profile, and `opt-out` stops
-everything.
+**`ironmon serve` also sends a device profile, on by default (opt-in in the
+EU/EEA).** It is a full fingerprint of the machine and its user — hardware
+serials and UUIDs (board, BIOS, chassis, disks), a TPM endorsement-key hash, MAC
+addresses, your account name, full name and home directory; firmware type, Secure
+Boot state and BIOS date; each monitor's make, model and serial (from EDID) and
+each GPU's UUID; plus the rest of the hardware, OS and Ollama models — sent
+unhashed once per `serve` session. These values identify the machine and you, and
+a hardware serial cannot be reset the way an install id can. In the EU/EEA the
+profile is off until you opt in, and `serve` asks at a terminal; elsewhere it is
+on by default. `serve` prints a notice the first time; `ironmon privacy review`
+turns off just the profile, `opt-in` turns it on, and `opt-out` stops everything.
 
 `ironmon privacy status` shows what is on, and `ironmon privacy info` lists what
 is sent. Nothing is sent from a detected container or app sandbox (virtual
