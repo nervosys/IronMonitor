@@ -95,12 +95,14 @@ device.tpm_ek = lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the EK 
 
 ### Phase 3: Peripheral identity
 
-- [ ] `disk.N.serial`: add `SerialNumber` to the existing `MSFT_PhysicalDisk` query. Linux reads `device/serial`, using the same `N` as the existing `disk.N.*` keys.
-- [ ] EDID parser: header check, maker PNP decode, product, serial, year, descriptor `0xFF` text. Checksum verified; on a failed checksum, keep nothing.
-- [ ] Monitors, Windows: `ROOT\WMI` `WmiMonitorID WHERE Active = TRUE` (u16 arrays to strings). Confirm it is readable without elevation.
-- [ ] Monitors, Linux: `/sys/class/drm/card*-*/edid` where `status` is `connected`
-- [ ] `gpu.N.uuid`: extend the Windows NVML matcher, add NVML on Linux under `nvidia`, and match by PCI id, never by enumeration order
-- [ ] EDID parser tests from real EDID blobs, including a bad checksum and a missing serial
+> Server rulings (nervosys-v2 98ed4c3): all profile-only; monitors never identity; decoded EDID fields, not a hashed block; omit a 0 serial, send all-same-char raw; ints are structurally non-identity server-side. **Keep the singular `device.disk_serial`** (boot-disk tier-4 contributor) alongside the indexed form. `N` <= 8, grouping key only. Verified live on Windows (disk serials, GPU UUIDs x2, monitor EDID, singular disk_serial preserved).
+
+- [x] `disk.N.serial`: add `SerialNumber` to the existing `MSFT_PhysicalDisk` query. Linux reads `device/serial`, using the same `N` as the existing `disk.N.*` keys.
+- [x] EDID parser: header check, maker PNP decode, product, serial, year, descriptor `0xFF` text. Checksum verified; on a failed checksum, keep nothing.
+- [x] Monitors, Windows: `ROOT\WMI` `WmiMonitorID WHERE Active = TRUE` (u16 arrays to strings). Confirm it is readable without elevation.
+- [x] Monitors, Linux: `/sys/class/drm/card*-*/edid` where `status` is `connected`
+- [x] `gpu.N.uuid` (+ `uuid_kind=nvml`): Windows NVML matcher by PCI id. Linux NVML deferred (DRM path has no NVML; needs the nvidia feature built on Linux) — tracked, low coverage slice.
+- [x] EDID parser tests from real EDID blobs, including a bad checksum and a missing serial
 
 ### Phase 4: Opt-in in the EU/EEA
 

@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the canonical form the server pins. Windows (TBS) and Linux (`/dev/tpmrm0`,
   usually root-only, so most Linux installs omit it); macOS has no TPM. The EK
   encoding is verified against OpenSSL fixtures and on real hardware.
+- The device profile reports peripheral identity: `device.disk.N.serial`,
+  `device.monitor.N.*` (EDID maker, product, serial, serial text and year — decoded
+  fields, never a hashed block), and `device.gpu.N.uuid` with `device.gpu.N.uuid_kind`
+  (`nvml`). All profile-only (a peripheral moves between machines). The singular
+  `device.disk_serial` is unchanged and remains the boot-disk identity signal. `N`
+  is capped at 8 per category and is a grouping key within one payload, not an
+  identifier across payloads.
 
 ### Fixed
 

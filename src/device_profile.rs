@@ -107,6 +107,7 @@ pub fn is_integer_field(key: &str) -> bool {
     match parts.as_slice() {
         ["device", "gpu", n, "vram_bytes"]
         | ["device", "disk", n, "size_bytes" | "free_bytes"]
+        | ["device", "monitor", n, "edid_product" | "edid_serial" | "edid_year"]
         | ["device", "display", n, "width" | "height" | "refresh_hz"] => n.parse::<u32>().is_ok(),
         _ => false,
     }
@@ -163,6 +164,65 @@ fn mdy_date_to_iso(raw: &str) -> Option<String> {
 #[allow(dead_code)] // used on one platform; compiled on both for test coverage
 fn secure_boot_byte(data: &[u8]) -> Option<bool> {
     data.get(4).map(|b| *b == 1)
+}
+
+/// The identifying fields of an EDID base block, decoded rather than hashed, so
+/// a firmware rewrite of unrelated bytes does not change them and the server
+/// keeps control of any identity key it derives.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct Edid {
+    maker: Option<String>,
+    product: u16,
+    serial: u32,
+    serial_text: Option<String>,
+    year: Option<u32>,
+}
+
+/// Parse a 128-byte EDID base block, rejecting it unless the header and the
+/// checksum are both valid.
+#[cfg(target_os = "linux")]
+fn parse_edid(data: &[u8]) -> Option<Edid> {
+    let block = data.get(..128)?;
+    if block[..8] != [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00] {
+        return None;
+    }
+    if block.iter().fold(0u8, |a, &b| a.wrapping_add(b)) != 0 {
+        return None;
+    }
+    // Manufacturer: bytes 8-9 big-endian, three 5-bit letters (1 = 'A').
+    let packed = u16::from_be_bytes([block[8], block[9]]);
+    let letter = |shift: u16| -> Option<char> {
+        let v = ((packed >> shift) & 0x1f) as u8;
+        (1..=26).contains(&v).then(|| (b'A' + v - 1) as char)
+    };
+    let maker = match (letter(10), letter(5), letter(0)) {
+        (Some(a), Some(b), Some(c)) => Some(format!("{a}{b}{c}")),
+        _ => None,
+    };
+    let mut edid = Edid {
+        maker,
+        product: u16::from_le_bytes([block[10], block[11]]),
+        serial: u32::from_le_bytes([block[12], block[13], block[14], block[15]]),
+        year: (block[17] != 0).then(|| 1990 + u32::from(block[17])),
+        serial_text: None,
+    };
+    // 18-byte descriptors; tag 0xFF is the serial-number string.
+    for d in [54usize, 72, 90, 108] {
+        let desc = &block[d..d + 18];
+        if desc[0..3] == [0, 0, 0] && desc[3] == 0xff && desc[4] == 0 {
+            let text: String = desc[5..18]
+                .iter()
+                .take_while(|&&c| c != 0x0a)
+                .map(|&c| c as char)
+                .collect();
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                edid.serial_text = Some(text);
+            }
+        }
+    }
+    Some(edid)
 }
 
 /// Interface or adapter names that are virtual, per the contract's list.
@@ -435,6 +495,25 @@ mod platform {
         }
     }
 
+    /// A WMI `uint16[]` character array (as `WmiMonitorID` returns EDID strings)
+    /// to a String, stopping at the first NUL.
+    fn u16_string(row: &Row, key: &str) -> Option<String> {
+        let Variant::Array(items) = row.get(key)? else {
+            return None;
+        };
+        let s: String = items
+            .iter()
+            .map_while(|v| match v {
+                Variant::UI2(n) => Some(*n),
+                _ => None,
+            })
+            .take_while(|n| *n != 0)
+            .map(|n| n as u8 as char)
+            .collect();
+        let s = s.trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+
     fn escape(s: &str) -> String {
         s.replace('\\', "\\\\").replace('\'', "\\'")
     }
@@ -560,10 +639,16 @@ mod platform {
         if let Some(storage) = connect(Some("ROOT\\Microsoft\\Windows\\Storage")) {
             let disks = rows(
                 &storage,
-                "SELECT FriendlyName, Size, MediaType, BusType FROM MSFT_PhysicalDisk",
+                "SELECT FriendlyName, SerialNumber, Size, MediaType, BusType FROM MSFT_PhysicalDisk",
             );
-            for (i, disk) in disks.iter().enumerate() {
+            // At most 8, a grouping key only; the singular device.disk_serial above
+            // stays the identity signal for the boot disk.
+            for (i, disk) in disks.iter().take(8).enumerate() {
                 b.put(format!("device.disk.{i}.model"), text(disk, "FriendlyName"));
+                b.put(
+                    format!("device.disk.{i}.serial"),
+                    text(disk, "SerialNumber"),
+                );
                 b.put(format!("device.disk.{i}.size_bytes"), num(disk, "Size"));
                 let kind = match (num(disk, "BusType"), num(disk, "MediaType")) {
                     (Some(17), _) => Some("nvme"),
@@ -572,6 +657,35 @@ mod platform {
                     _ => None,
                 };
                 b.put(format!("device.disk.{i}.kind"), kind);
+            }
+        }
+
+        // Monitors, from the active EDIDs the WMI monitor provider decodes.
+        if let Some(wmi) = connect(Some("ROOT\\WMI")) {
+            let monitors = rows(
+                &wmi,
+                "SELECT ManufacturerName, ProductCodeID, SerialNumberID, YearOfManufacture \
+                 FROM WmiMonitorID WHERE Active = TRUE",
+            );
+            for (i, mon) in monitors.iter().take(8).enumerate() {
+                b.put(
+                    format!("device.monitor.{i}.edid_maker"),
+                    u16_string(mon, "ManufacturerName"),
+                );
+                // ProductCodeID is the hex product code as text; send it as the int.
+                b.put(
+                    format!("device.monitor.{i}.edid_product"),
+                    u16_string(mon, "ProductCodeID")
+                        .and_then(|s| u16::from_str_radix(s.trim(), 16).ok()),
+                );
+                b.put(
+                    format!("device.monitor.{i}.edid_serial_text"),
+                    u16_string(mon, "SerialNumberID"),
+                );
+                b.put(
+                    format!("device.monitor.{i}.edid_year"),
+                    num(mon, "YearOfManufacture"),
+                );
             }
         }
 
@@ -765,21 +879,32 @@ mod platform {
             );
         }
         let mut capability = std::collections::HashMap::new();
+        let mut uuid = std::collections::HashMap::new();
         for index in 0..nvml.device_count().unwrap_or(0) {
             let Ok(device) = nvml.device_by_index(index) else {
                 continue;
             };
-            let (Ok(pci), Ok(cc)) = (device.pci_info(), device.cuda_compute_capability()) else {
+            let Ok(pci) = device.pci_info() else {
                 continue;
             };
             // pci_device_id packs the device id above the vendor id.
             let id = pci.pci_device_id;
             let key = format!("{:04x}:{:04x}", id & 0xffff, id >> 16);
-            capability.insert(key, format!("{}.{}", cc.major, cc.minor));
+            if let Ok(cc) = device.cuda_compute_capability() {
+                capability.insert(key.clone(), format!("{}.{}", cc.major, cc.minor));
+            }
+            if let Ok(u) = device.uuid() {
+                uuid.insert(key, u);
+            }
         }
         for (i, id) in pci_ids.iter().enumerate() {
-            if let Some(cc) = id.as_ref().and_then(|id| capability.get(id)) {
+            let id = id.as_ref();
+            if let Some(cc) = id.and_then(|id| capability.get(id)) {
                 b.put(format!("device.gpu.{i}.compute_capability"), Some(cc));
+            }
+            if let Some(u) = id.and_then(|id| uuid.get(id)) {
+                b.put(format!("device.gpu.{i}.uuid"), Some(u));
+                b.put(format!("device.gpu.{i}.uuid_kind"), Some("nvml"));
             }
         }
     }
@@ -1063,11 +1188,16 @@ mod platform {
             .filter(|n| !n.starts_with("loop") && !n.starts_with("ram") && !n.starts_with("zram"))
             .collect();
         disks.sort();
-        for (i, name) in disks.iter().enumerate() {
+        // At most 8, a grouping key only.
+        for (i, name) in disks.iter().take(8).enumerate() {
             let base = Path::new("/sys/block").join(name);
             b.put(
                 format!("device.disk.{i}.model"),
                 read(base.join("device/model")),
+            );
+            b.put(
+                format!("device.disk.{i}.serial"),
+                read(base.join("device/serial")),
             );
             b.put(
                 format!("device.disk.{i}.size_bytes"),
@@ -1085,6 +1215,50 @@ mod platform {
                 }
             };
             b.put(format!("device.disk.{i}.kind"), kind);
+        }
+
+        // Monitors, from each connected DRM connector's EDID.
+        let mut connectors: Vec<_> = fs::read_dir("/sys/class/drm")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains('-'))
+            .collect();
+        connectors.sort();
+        let mut mi = 0;
+        for conn in connectors {
+            if mi >= 8 {
+                break;
+            }
+            let base = Path::new("/sys/class/drm").join(&conn);
+            if read(base.join("status")).as_deref() != Some("connected") {
+                continue;
+            }
+            let Some(edid) = fs::read(base.join("edid"))
+                .ok()
+                .filter(|d| !d.is_empty())
+                .and_then(|d| super::parse_edid(&d))
+            else {
+                continue;
+            };
+            b.put(format!("device.monitor.{mi}.edid_maker"), edid.maker);
+            b.put(
+                format!("device.monitor.{mi}.edid_product"),
+                Some(edid.product),
+            );
+            if edid.serial != 0 {
+                b.put(
+                    format!("device.monitor.{mi}.edid_serial"),
+                    Some(edid.serial),
+                );
+            }
+            b.put(
+                format!("device.monitor.{mi}.edid_serial_text"),
+                edid.serial_text,
+            );
+            b.put(format!("device.monitor.{mi}.edid_year"), edid.year);
+            mi += 1;
         }
 
         // Chassis, power, virtualisation.
@@ -1477,5 +1651,39 @@ mod tests {
         assert_eq!(secure_boot_byte(&[6, 0, 0, 0, 0]), Some(false));
         assert_eq!(secure_boot_byte(&[6, 0, 0, 0]), None); // no value byte
         assert_eq!(secure_boot_byte(&[]), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn edid_decodes_a_known_block() {
+        // Fixture built independently (see docs/DEVICE_FINGERPRINTING_PLAN.md):
+        // Dell "DEL", product 0x4040, serial 0x01020304, year 2023, text "ABC123".
+        let hex = "00ffffffffffff0010ac4040040302010a21010400000000000000000000000000000000000000000000000000000000000000000000000000ff004142433132330a202020202020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006b";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let edid = parse_edid(&bytes).expect("valid EDID");
+        assert_eq!(edid.maker.as_deref(), Some("DEL"));
+        assert_eq!(edid.product, 0x4040);
+        assert_eq!(edid.serial, 0x0102_0304);
+        assert_eq!(edid.serial_text.as_deref(), Some("ABC123"));
+        assert_eq!(edid.year, Some(2023));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn edid_rejects_bad_header_and_checksum() {
+        assert!(parse_edid(&[0u8; 128]).is_none()); // no EDID header
+        let mut good: Vec<u8> = {
+            let hex = "00ffffffffffff0010ac4040040302010a21010400000000000000000000000000000000000000000000000000000000000000000000000000ff004142433132330a202020202020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006b";
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        good[127] ^= 0xff; // break the checksum
+        assert!(parse_edid(&good).is_none());
+        assert!(parse_edid(&[0x00, 0xff, 0xff]).is_none()); // too short
     }
 }
