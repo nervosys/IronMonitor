@@ -461,7 +461,8 @@ way an install id can. `serve` prints a notice saying so the first time;
 everything.
 
 `ironmon privacy status` shows what is on, and `ironmon privacy info` lists what
-is sent. Nothing is sent from a detected sandbox, or by the GUI, TUI or one-shot
+is sent. Nothing is sent from a detected container or app sandbox (virtual
+machines do send), or by the GUI, TUI or one-shot
 commands. The OTLP push to your own collector (`localhost:4318`), the Prometheus
 endpoint and `ironmon record` are separate: they go where you point them.
 

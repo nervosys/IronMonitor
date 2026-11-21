@@ -4225,7 +4225,7 @@ fn handle_privacy_command(action: &PrivacySubcommand) -> Result<(), Box<dyn std:
             // Say plainly when something is overriding the recorded answers,
             // and what it is.
             let sandbox = ironmonitor::sandbox::SandboxDetector::new().detect();
-            if sandbox.is_sandboxed() {
+            if sandbox.refuses_telemetry() {
                 println!(
                     concat!(
                         "{} every category is refused regardless of the answers ",

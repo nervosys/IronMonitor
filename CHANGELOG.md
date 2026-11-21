@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Telemetry is sent from virtual machines.** A VM alone (WSL2, cloud
+  instances, workstation VMs) was treated as a sandbox, so IronMonitor sent
+  nothing from any of them and `device.virt_type` could only ever read `none`.
+  Containers, Windows Sandbox, app sandboxes, Wine and an attached debugger
+  still send nothing.
 - The device profile no longer reports `device.gpu_count = 0` when no GPU is
   visible to the reader (as under WSL2, which exposes GPUs through `/dev/dxg`
   rather than DRM); an unreadable count is left out, per the contract.

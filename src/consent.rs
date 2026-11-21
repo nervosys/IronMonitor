@@ -470,9 +470,10 @@ impl ConsentManager {
             return false;
         }
 
-        // CRITICAL: Never collect data in sandboxed environments
+        // CRITICAL: Never collect data in sandboxed environments (a virtual
+        // machine alone is not one; see `SandboxInfo::refuses_telemetry`)
         let sandbox_detector = crate::sandbox::SandboxDetector::new();
-        if sandbox_detector.is_sandboxed() {
+        if sandbox_detector.refuses_telemetry() {
             return false;
         }
 
@@ -515,7 +516,7 @@ impl ConsentManager {
 
         // Check sandbox second (fast check)
         let sandbox_detector = crate::sandbox::SandboxDetector::new();
-        if sandbox_detector.is_sandboxed() {
+        if sandbox_detector.refuses_telemetry() {
             return false;
         }
 

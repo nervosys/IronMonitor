@@ -73,6 +73,19 @@ impl SandboxInfo {
             || self.is_debugged
     }
 
+    /// Whether telemetry is refused here: every sandbox indicator except a
+    /// virtual machine alone. A VM is an ordinary place to run IronMonitor (WSL2,
+    /// a cloud instance, a workstation VM), and `device.virt_type` records it,
+    /// so it no longer blocks collection; containers, Windows Sandbox, app
+    /// sandboxes, Wine and an attached debugger still do.
+    pub fn refuses_telemetry(&self) -> bool {
+        self.is_container
+            || self.is_windows_sandbox
+            || self.is_macos_sandbox
+            || self.is_wine
+            || self.is_debugged
+    }
+
     /// Get a human-readable summary
     pub fn summary(&self) -> String {
         if !self.is_sandboxed() {
@@ -143,6 +156,11 @@ impl SandboxDetector {
     /// Quick check if sandboxed (convenience method)
     pub fn is_sandboxed(&self) -> bool {
         self.detect().is_sandboxed()
+    }
+
+    /// See [`SandboxInfo::refuses_telemetry`].
+    pub fn refuses_telemetry(&self) -> bool {
+        self.detect().refuses_telemetry()
     }
 
     /// Detect virtual machine environments
@@ -437,6 +455,22 @@ impl Default for SandboxDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_virtual_machine_alone_does_not_refuse_telemetry() {
+        let vm = SandboxInfo {
+            is_vm: true,
+            ..Default::default()
+        };
+        assert!(vm.is_sandboxed());
+        assert!(!vm.refuses_telemetry());
+        let container = SandboxInfo {
+            is_vm: true,
+            is_container: true,
+            ..Default::default()
+        };
+        assert!(container.refuses_telemetry());
+    }
 
     /// `$_` is set by every POSIX shell to the last argument of the previous
     /// command. It was in this module's debugger-variable list, so any run
