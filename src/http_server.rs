@@ -830,7 +830,11 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
                 }
                 crate::telemetry::TokenState::Refused => {
                     log::warn!(
-                        "system telemetry stopped for this run: registration was refused as                          malformed (HTTP 400)"
+                        "{}",
+                        concat!(
+                            "system telemetry stopped for this run: registration was ",
+                            "refused as malformed (HTTP 400)"
+                        )
                     );
                     return;
                 }
