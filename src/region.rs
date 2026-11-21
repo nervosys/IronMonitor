@@ -69,13 +69,13 @@ const EEA_TZ: &[&str] = &[
 /// is left out — its `"GMT Standard Time"` is shared with EEA Ireland and
 /// Portugal, so the locale region resolves those more precisely.
 const EEA_WINDOWS_TZ: &[&str] = &[
-    "W. Europe Standard Time",       // DE, AT, NL, IT, SE, ...
-    "Central Europe Standard Time",  // PL, CZ, HU, SK, SI
+    "W. Europe Standard Time",        // DE, AT, NL, IT, SE, ...
+    "Central Europe Standard Time",   // PL, CZ, HU, SK, SI
     "Central European Standard Time", // HR, ...
-    "Romance Standard Time",         // FR, ES, BE
-    "E. Europe Standard Time",       // RO, ...
-    "GTB Standard Time",             // GR, RO (also TR)
-    "FLE Standard Time",             // FI, EE, LV, LT, BG (also UA)
+    "Romance Standard Time",          // FR, ES, BE
+    "E. Europe Standard Time",        // RO, ...
+    "GTB Standard Time",              // GR, RO (also TR)
+    "FLE Standard Time",              // FI, EE, LV, LT, BG (also UA)
 ];
 
 /// Whether the machine's locale or time zone places it in the EU/EEA.
@@ -175,6 +175,8 @@ mod tests {
         assert!(EEA_TZ.contains(&"Atlantic/Reykjavik"));
         assert!(!EEA_TZ.contains(&"Europe/London")); // UK
         assert!(!EEA_TZ.contains(&"Europe/Zurich")); // CH
-        assert!(EEA_WINDOWS_TZ.iter().any(|k| "W. Europe Standard Time".starts_with(k)));
+        assert!(EEA_WINDOWS_TZ
+            .iter()
+            .any(|k| "W. Europe Standard Time".starts_with(k)));
     }
 }
