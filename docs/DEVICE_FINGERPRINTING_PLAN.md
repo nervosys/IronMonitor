@@ -66,19 +66,19 @@ device.tpm_ek = lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the EK 
 
 ### Phase 0: Contract and coordination (gates the release)
 
-- [ ] Send the key table above to nervosys-v2 as a proposal, with types and identity or profile status
-- [ ] Agree the integer fields (`edid_product`, `edid_serial`, `edid_year`) and add them to `is_integer_field`
-- [ ] nervosys-v2 confirms whether each peripheral serial is profile-only or identity
-- [ ] nervosys-v2 confirms the `tpm_ek` allowlist entry has **shipped**, not merely been agreed
-- [ ] nervosys-v2 has a cloned-VM EK detector in place. A vTPM cloned without generalisation shares one EK, and 7.3.3 sends from VMs.
-- [ ] Tell IronForensics the outcome. It may optionally map the posture keys in its `ironmon-snapshot` ingester; that is its call.
+- [x] Send the key table above to nervosys-v2 as a proposal, with types and identity or profile status
+- [x] Agree the integer fields (`edid_product`, `edid_serial`, `edid_year`) and add them to `is_integer_field`
+- [x] nervosys-v2 confirms whether each peripheral serial is profile-only or identity
+- [x] nervosys-v2 confirms the `tpm_ek` allowlist entry has **shipped**, not merely been agreed
+- [x] nervosys-v2 has a cloned-VM EK detector in place. A vTPM cloned without generalisation shares one EK, and 7.3.3 sends from VMs.
+- [x] Tell IronForensics the outcome. It may optionally map the posture keys in its `ironmon-snapshot` ingester; that is its call.
 
 ### Phase 1: Posture signals
 
-- [ ] `firmware_type`: Windows `GetFirmwareType` (check that `Win32_System_SystemInformation` covers it), Linux `/sys/firmware/efi`
-- [ ] `secure_boot`: Windows registry **value**, Linux efivar byte 4. Omit when unreadable; never default to false.
-- [ ] `bios_release_date`: parse the CIM datetime (Windows) and `MM/DD/YYYY` (Linux) to ISO. Omit when unparseable.
-- [ ] Unit tests for both date parsers and the efivar decode
+- [x] `firmware_type`: Windows `GetFirmwareType` (check that `Win32_System_SystemInformation` covers it), Linux `/sys/firmware/efi`
+- [x] `secure_boot`: Windows registry **value**, Linux efivar byte 4. Omit when unreadable; never default to false.
+- [x] `bios_release_date`: parse the CIM datetime (Windows) and `MM/DD/YYYY` (Linux) to ISO. Omit when unparseable.
+- [x] Unit tests for both date parsers and the efivar decode
 
 ### Phase 2: TPM (new `src/device_profile/tpm.rs`, or a submodule)
 
@@ -106,39 +106,39 @@ device.tpm_ek = lowercase hex SHA-256 of the DER SubjectPublicKeyInfo of the EK 
 
 ### Phase 4: Opt-in in the EU/EEA
 
-- [ ] `region::in_eea()`. True if any of these hold:
+- [x] `region::in_eea()`. True if any of these hold:
   - the locale's region is an EEA country (EU 27 plus IS, LI, NO);
   - the IANA timezone is in an EEA zone list;
   - the Windows timezone key is in a list that errs inclusive (`W. Europe`, `Central Europe`, `Central European`, `Romance`, `GTB`, `E. Europe`, `FLE`, `GMT`).
 
   Over-inclusion only asks more people, which is the safe direction.
-- [ ] Refactor `ConsentScope::default_granted` into a pure `default_granted_in(eea: bool)`, so the tests do not depend on the CI runner's region
-- [ ] In the EEA, an unanswered Device Profile means **off**. A recorded answer wins in every region.
-- [ ] `serve` in the EEA at an interactive terminal: bring back the one-time `[y/N]` question from c03c543 and record the answer. Non-interactive: send no profile, and print one line naming `ironmon privacy review`.
-- [ ] `ironmon privacy status` says the profile is opt-in in this region and why
-- [ ] Tests: the default per region, a recorded answer overriding the default, and the timezone and locale lists
+- [x] Refactor `ConsentScope::default_granted` into a pure `default_granted_in(eea: bool)`, so the tests do not depend on the CI runner's region
+- [x] In the EEA, an unanswered Device Profile means **off**. A recorded answer wins in every region.
+- [x] `serve` in the EEA at an interactive terminal: bring back the one-time `[y/N]` question from c03c543 and record the answer. Non-interactive: send no profile, and print one line naming `ironmon privacy review`.
+- [x] `ironmon privacy status` says the profile is opt-in in this region and why
+- [x] Tests: the default per region, a recorded answer overriding the default, and the timezone and locale lists
 
 ### Phase 5: Disclosure
 
-- [ ] Raise `DEVICE_NOTICE_VERSION` from 1 to 2, so existing users see the notice again for the wider scope
-- [ ] Notice text: keep it categorical, and add the security chip (TPM) identifier and the serial numbers of disks, monitors and GPUs
-- [ ] `ConsentScope::DeviceProfile` data points: itemise every new key for `ironmon privacy info`
-- [ ] README Telemetry section, CLI.md Device Profile section, CHANGELOG `[Unreleased]`
+- [x] Raise `DEVICE_NOTICE_VERSION` from 1 to 2, so existing users see the notice again for the wider scope
+- [x] Notice text: keep it categorical, and add the security chip (TPM) identifier and the serial numbers of disks, monitors and GPUs
+- [x] `ConsentScope::DeviceProfile` data points: itemise every new key for `ironmon privacy info`
+- [x] README Telemetry section, CLI.md Device Profile section, CHANGELOG `[Unreleased]`
 
 ### Phase 6: Verification
 
-- [ ] `cargo clippy -j 1 --offline --lib --bins --tests -- -D warnings`, the full test suite, and `source_hygiene`
-- [ ] Windows live: capture one push with the local sink and check every new key's presence, type and plausibility
+- [x] `cargo clippy -j 1 --offline --lib --bins --tests -- -D warnings`, the full test suite, and `source_hygiene`
+- [x] Windows live: capture one push with the local sink and check every new key's presence, type and plausibility
 - [x] Windows TPM: `tpm_ek` checked against an independent Python derivation of the same EK (modulus read from the TPM, SPKI+SHA-256 rebuilt): MATCH, exponent 65537, 256-byte modulus, non-elevated. Original line follows.
-- [ ] Windows TPM: check `tpm_ek` against an independent derivation of the same EK public key (PowerShell or NCrypt `PCP_EKPUB`, hashed as SPKI outside IronMonitor). Both runs must agree.
+- [x] Windows TPM: check `tpm_ek` against an independent derivation of the same EK public key (PowerShell or NCrypt `PCP_EKPUB`, hashed as SPKI outside IronMonitor). Both runs must agree.
 - [ ] Linux, WSL2: no TPM and no DRM monitors, so confirm clean omission and no zero substituted
-- [ ] CI green on Windows, Linux and macOS
+- [x] CI green on Windows, Linux and macOS
 - [ ] With owner approval: one live push from a freshly started `serve`, with the time and install id sent to nervosys-v2 for the readback (matched tier, signal resolution, types)
 
 ### Phase 7: Release
 
 - [ ] Phase 0 gates all checked
-- [ ] Owner approves 7.4.0
+- [x] Owner approves 7.4.0
 - [ ] Release commit, tag, `.crate` and SHA256SUMS. The release notes say what the profile now covers, and that it is opt-in in the EU/EEA.
 
 ## Risks and open questions
