@@ -791,10 +791,9 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
     // if the collector refuses the one it holds.
     let mut rotate = false;
     let mut rotated = false;
-    // The opt-in device profile goes on the resource of one successful push per
-    // session, collected the first time it is wanted.
+    // The opt-in device profile rides every vendor push while consent is granted,
+    // collected once per session the first time it is wanted and cached here.
     let mut device_profile: Option<crate::device_profile::Attributes> = None;
-    let mut device_profile_sent = false;
     let resource: Vec<(&str, String)> = if push.vendor {
         crate::telemetry::resource_attributes(crate::telemetry::install_id())
     } else {
@@ -855,10 +854,13 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
                     .filter(|s| !missing.contains(s))
                     .cloned()
                     .collect();
-                match sampler.sample_for(&ready, std::time::Duration::ZERO) {
-                    Ok(samples) if !samples.is_empty() => samples,
-                    _ => continue,
-                }
+                // No `continue` on an empty result: a vendor push still has to
+                // carry the device profile and its consent state, which must not
+                // depend on any segment having data to ride on. An idle box with
+                // nothing sampled yet still reports its profile.
+                sampler
+                    .sample_for(&ready, std::time::Duration::ZERO)
+                    .unwrap_or_default()
             }
         };
         let rows: Vec<Timed> = samples
@@ -869,19 +871,31 @@ fn otlp_export_loop(sampler: &sampler::Sampler, push: &Push) {
                 time_unix_nano: stamp.sampled_at_unix_nanos(),
             })
             .collect();
-        let with_profile =
-            push.vendor && !device_profile_sent && crate::telemetry::device_profile_enabled();
         let mut attributes = resource.clone();
+        // Vendor pushes always carry the consent state, and re-send the profile
+        // on every push while granted (it is replaced, not appended, so this is
+        // idempotent and bounded by one body). "Attach once on a 2xx" was unsound:
+        // a 2xx is edge-acceptance, not storage, and a single attachment lost in
+        // transit was never resent. The profile is collected once per session.
+        let with_profile = push.vendor && crate::telemetry::device_profile_enabled();
+        if push.vendor {
+            attributes.push((
+                "device.profile_consent",
+                crate::telemetry::profile_consent().to_string(),
+            ));
+        }
         if with_profile {
             let profile = device_profile.get_or_insert_with(crate::device_profile::collect);
             attributes.extend(profile.iter().map(|(k, v)| (k.as_str(), v.clone())));
         }
+        // A non-vendor (OTLP collector) push with nothing to send is still
+        // skipped; a vendor push is never empty, it carries at least the consent.
+        if rows.is_empty() && !push.vendor {
+            continue;
+        }
         let body = encode_with(&rows, start, &attributes);
         match send(&settings, &body) {
             Ok(accepted) => {
-                if with_profile {
-                    device_profile_sent = true;
-                }
                 if failures > 0 && !push.vendor {
                     eprintln!("[ironmon] OTLP: exporting to {shown}");
                 }

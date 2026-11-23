@@ -253,6 +253,19 @@ pub fn device_profile_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// The device-profile consent state, reported on every vendor push as
+/// `device.profile_consent` so the server can tell a decline from a fault: a
+/// push that says `granted` but carries no `device.*` keys is a bug, not a
+/// privacy-respecting user, and that is the one combination worth alerting on.
+/// Carries no device data — only the state the user set. `unsupported` is never
+/// emitted by this client (every platform it runs on can produce a profile).
+pub fn profile_consent() -> &'static str {
+    match ConsentManager::load() {
+        Err(_) => "unavailable",
+        Ok(m) => m.device_profile_consent_label(),
+    }
+}
+
 /// Whether system telemetry may be sent right now: not opted out by flag,
 /// `DO_NOT_TRACK` or a recorded denial, and not in a detected sandbox. An
 /// unreadable consent file refuses, since a denial in it cannot be ruled out.
