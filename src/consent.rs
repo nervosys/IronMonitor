@@ -282,6 +282,9 @@ impl ConsentScope {
                 "The largest processes by name and memory",
                 "Inference engine counters and agent session counts",
                 "The provenance of every value (measured, derived, specification)",
+                "Whether you have granted or denied the Device Profile — the choice \
+                 itself (`device.profile_consent`), carrying no device data, so a \
+                 declined profile stays distinguishable from a failed one",
             ],
             Self::DeviceProfile => vec![
                 "Hardware identity: SMBIOS/platform UUID, board, BIOS, chassis and disk serials, \
@@ -521,6 +524,17 @@ impl ConsentManager {
     /// Combines consent, sandbox detection, the runtime opt-out flags, and
     /// whether a collector for the scope exists at all. Only System Telemetry
     /// has one — see [`ConsentScope::is_collected`].
+    /// The device-profile consent state as the `device.profile_consent` wire
+    /// label: `granted` when it may be collected right now, else `denied`. The
+    /// caller maps a failure to load the record to `unavailable`.
+    pub fn device_profile_consent_label(&self) -> &'static str {
+        if self.should_collect_data(ConsentScope::DeviceProfile) {
+            "granted"
+        } else {
+            "denied"
+        }
+    }
+
     pub fn should_collect_data(&self, scope: ConsentScope) -> bool {
         // Nothing collects under this scope, so consent to it cannot make
         // collection appropriate. Checked first: it is the reason the answer
@@ -895,6 +909,36 @@ mod tests {
             },
         );
         assert!(!manager.recorded_or_default(ConsentScope::DeviceProfile));
+    }
+
+    #[test]
+    fn device_profile_consent_label_tracks_collectability() {
+        let mut manager = ConsentManager {
+            config: ConsentConfig::default(),
+            config_path: std::path::PathBuf::from("unused.toml"),
+        };
+        manager.config.records.insert(
+            ConsentScope::DeviceProfile,
+            ConsentRecord {
+                scope: ConsentScope::DeviceProfile,
+                granted: true,
+                timestamp: 1,
+                prompt_version: 1,
+                ip_hash: None,
+            },
+        );
+        assert_eq!(manager.device_profile_consent_label(), "granted");
+        manager.config.records.insert(
+            ConsentScope::DeviceProfile,
+            ConsentRecord {
+                scope: ConsentScope::DeviceProfile,
+                granted: false,
+                timestamp: 1,
+                prompt_version: 1,
+                ip_hash: None,
+            },
+        );
+        assert_eq!(manager.device_profile_consent_label(), "denied");
     }
 
     #[test]
