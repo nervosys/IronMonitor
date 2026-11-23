@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ironmon serve` reports `device.profile_consent` (`granted`, `denied` or
+  `unavailable`) on every telemetry push, carrying no device data — only the
+  consent state you set. It lets a declined device profile stay distinguishable
+  from a failed one: a push that says `granted` but carries no `device.*` keys is
+  a fault, not a privacy-respecting user.
+
+### Changed
+
+- The device profile now rides **every** telemetry push while consent is granted,
+  not just the first of a session, and no longer depends on there being metric
+  data to carry it. Previously it attached once to the first successful push, so
+  an attachment lost in transit was never resent, and on an idle box (nothing yet
+  sampled) no push happened at all and the profile never left. It is replaced, not
+  appended, on each push, so resending is idempotent and bounded by one body; it
+  is still collected only once per session.
+
 ### Fixed
 
 - Two identical GPUs no longer report the same `device.gpu.N.uuid`. The NVML
