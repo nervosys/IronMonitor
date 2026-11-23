@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appended, on each push, so resending is idempotent and bounded by one body; it
   is still collected only once per session.
 
+### Fixed
+
+- Two identical GPUs no longer report the same `device.gpu.N.uuid`. The NVML
+  UUID was keyed by `pci_id`, which is identical for identical cards, so the
+  second card's UUID overwrote the first and every matching index read one value
+  — a UUID that was well-formed and wrong only by being shared, visible only by
+  comparing across indices. UUIDs are now handed out per `pci_id` in enumeration
+  order, so N identical cards get their N distinct UUIDs. Found on a two-card
+  machine; a single-GPU box never showed it.
+
 ## [7.4.0] - 2026-11-21
 
 ### Added

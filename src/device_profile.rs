@@ -879,7 +879,16 @@ mod platform {
             );
         }
         let mut capability = std::collections::HashMap::new();
-        let mut uuid = std::collections::HashMap::new();
+        // Two identical cards share a pci_id, so a UUID keyed by pci_id alone
+        // would let the second overwrite the first and both GPU indices would
+        // report one UUID — the one property a UUID must not have. Keep a queue
+        // of NVML UUIDs per pci_id and hand them out in enumeration order, so N
+        // identical cards get their N distinct UUIDs. (The index a given UUID
+        // lands on is enumeration-order dependent for identical cards, but the
+        // index is a within-payload grouping key, not a durable identifier, and
+        // the set of UUIDs on the NVIDIA indices is what matters.)
+        let mut uuids: std::collections::HashMap<String, std::collections::VecDeque<String>> =
+            std::collections::HashMap::new();
         for index in 0..nvml.device_count().unwrap_or(0) {
             let Ok(device) = nvml.device_by_index(index) else {
                 continue;
@@ -887,14 +896,17 @@ mod platform {
             let Ok(pci) = device.pci_info() else {
                 continue;
             };
-            // pci_device_id packs the device id above the vendor id.
+            // pci_device_id packs the device id above the vendor id. It is the
+            // same for identical cards, so it groups rather than identifies them.
             let id = pci.pci_device_id;
             let key = format!("{:04x}:{:04x}", id & 0xffff, id >> 16);
             if let Ok(cc) = device.cuda_compute_capability() {
-                capability.insert(key.clone(), format!("{}.{}", cc.major, cc.minor));
+                capability
+                    .entry(key.clone())
+                    .or_insert_with(|| format!("{}.{}", cc.major, cc.minor));
             }
             if let Ok(u) = device.uuid() {
-                uuid.insert(key, u);
+                uuids.entry(key).or_default().push_back(u);
             }
         }
         for (i, id) in pci_ids.iter().enumerate() {
@@ -902,7 +914,10 @@ mod platform {
             if let Some(cc) = id.and_then(|id| capability.get(id)) {
                 b.put(format!("device.gpu.{i}.compute_capability"), Some(cc));
             }
-            if let Some(u) = id.and_then(|id| uuid.get(id)) {
+            if let Some(u) = id
+                .and_then(|id| uuids.get_mut(id))
+                .and_then(|q| q.pop_front())
+            {
                 b.put(format!("device.gpu.{i}.uuid"), Some(u));
                 b.put(format!("device.gpu.{i}.uuid_kind"), Some("nvml"));
             }
