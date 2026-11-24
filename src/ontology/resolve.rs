@@ -2415,6 +2415,39 @@ pub fn validate(readings: &[Reading]) -> Vec<String> {
     problems
 }
 
+/// The sentinel an identifier value becomes when withheld. It is deliberately not a
+/// plausible serial: a consumer that ignores the note still cannot mistake it for a
+/// real reading.
+pub const REDACTED_IDENTIFIER: &str = "[redacted:identifier]";
+
+/// Withhold the value of every reading the ontology declares `identifying`,
+/// replacing it with [`REDACTED_IDENTIFIER`] and a note that says why and how to
+/// include it. Returns the number of readings redacted.
+///
+/// This is presentation, not resolution: the resolver still read the real value and
+/// `validate` still saw it. Provenance is left untouched — the value *was* measured;
+/// it is simply not shown — so a withheld identifier stays distinct from an
+/// `unavailable` one that could not be read at all. The classification is the
+/// entity's own `is_identifier()`, the same set `describe` publishes, so a tool that
+/// redacts from the schema and this command redact exactly the same fields.
+pub fn redact_identifiers(readings: &mut [Reading]) -> usize {
+    let ontology = ontology();
+    let mut redacted = 0;
+    for r in readings.iter_mut() {
+        if r.value.is_none() {
+            continue;
+        }
+        if lookup_template(ontology, &r.id).is_some_and(Entity::is_identifier) {
+            r.value = Some(serde_json::json!(REDACTED_IDENTIFIER));
+            r.note = Some(
+                "identifier withheld by --redact-identifiers; omit the flag to show".to_string(),
+            );
+            redacted += 1;
+        }
+    }
+    redacted
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────────
 
 /// Agent recordings: what IronObserver wrote, read from disk, metadata only.
@@ -6632,5 +6665,45 @@ mod scoped_get_tests {
             problems.len(),
             problems.join("\n")
         );
+    }
+
+    #[test]
+    fn redact_identifiers_withholds_only_identifier_values() {
+        let mut readings = vec![
+            Reading::measured(
+                "board.serial",
+                serde_json::json!("ABC-123"),
+                Some(Unit::Identifier),
+            ),
+            Reading::measured("cpu.model", serde_json::json!("Ryzen 9"), Some(Unit::Text)),
+            // An identifier that could not be read stays a gap: no value to withhold,
+            // and it must not be handed a sentinel that would read as present.
+            Reading::unavailable("gpu.0.uuid", Some(Unit::Identifier), "driver quiet"),
+        ];
+
+        let n = redact_identifiers(&mut readings);
+        assert_eq!(n, 1, "only the one identifier carrying a value is redacted");
+
+        // Identifier value replaced with the sentinel, reason attached, provenance
+        // preserved (it was measured; it is simply not shown).
+        assert_eq!(
+            readings[0].value.as_ref().unwrap(),
+            &serde_json::json!(REDACTED_IDENTIFIER)
+        );
+        assert!(readings[0]
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("identifier withheld"));
+        assert_eq!(readings[0].provenance, Provenance::Measured);
+
+        // Descriptive field untouched.
+        assert_eq!(
+            readings[1].value.as_ref().unwrap(),
+            &serde_json::json!("Ryzen 9")
+        );
+
+        // Unavailable identifier stays valueless and uncounted.
+        assert!(readings[2].value.is_none());
     }
 }

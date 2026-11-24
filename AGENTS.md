@@ -129,6 +129,47 @@ network.eth0.rx_rate     unavailable   — a rate needs two samples; this query 
                                          snapshots
 ```
 
+## Identifiers are declared, not guessed
+
+Some readings uniquely identify this machine, a person, or a specific device: a
+board or disk serial, an SMBIOS or GPU UUID, a MAC or other hardware address, the
+hostname. The schema says which — every such entity carries `identifying: true` in
+`ironmon describe`, so a tool that wants to redact them reads IronMonitor's own
+classification instead of re-deriving one by pattern-matching ids and missing, say,
+a serial typed as text:
+
+```bash
+ironmon describe --format json | jq '.entities | to_entries
+  | map(select(.value.identifying)) | map(.key)'
+```
+
+The rule is `kind == identity` **and** a final id segment that names an identifier,
+so a new identifier entity that follows the naming convention is classified without
+a code change. Descriptive identity is deliberately *not* caught — `cpu.model`,
+`system.os.name`, `board.manufacturer`, `board.firmware.boot_mode`,
+`board.tpm.version` and `board.tpm.manufacturer` describe a class of hardware, not
+this unit, and stay readable.
+
+A small curated set extends this where the segment alone cannot decide, because the
+same word is an identifier in one place and descriptive in another: a Wi‑Fi `ssid`
+and `bssid`, an interface `ipv4`/`ipv6`, a paired Bluetooth device `name`, the
+kernel `cmdline` (which carries UUIDs and hostnames), a chassis `asset_tag`, a RAID
+array `name`, a partition `mount_point`, the recordings `dir` (under the user's
+home). These too carry `identifying: true`, so reading the flag remains the one way
+to get the complete set — no consumer needs to reconstruct the exceptions.
+
+Reads are unrestricted, so a plain snapshot carries the real values. To produce one
+safe to share, withhold them:
+
+```bash
+ironmon snapshot --redact-identifiers
+```
+
+Each identifier value becomes the sentinel `[redacted:identifier]` with a reason,
+and its provenance is left untouched — a withheld identifier stays distinct from an
+`unavailable` one that could not be read. `--redact-identifiers` and any consumer
+redacting from the `identifying` flag withhold exactly the same set.
+
 ## What can be changed
 
 Reads are unrestricted; writes are not. `--writable` lists only entities backed by

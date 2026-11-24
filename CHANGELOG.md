@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The ontology declares which entities are **identifiers** — values that uniquely
+  identify this machine, a person, or a specific device (serials, SMBIOS and GPU
+  UUIDs, MACs and hardware addresses, the hostname). Each carries `identifying:
+  true` in `ironmon describe`, so a consumer redacts them against IronMonitor's own
+  classification instead of guessing from id patterns. A curated set extends the
+  rule where a segment alone cannot decide — Wi‑Fi SSID/BSSID, interface IP
+  addresses, a paired Bluetooth device name, the kernel command line, a chassis
+  asset tag, a RAID array name, a partition mount point, the recordings directory.
+  Descriptive identity (`cpu.model`, `system.os.name`, `board.manufacturer`,
+  `board.firmware.boot_mode`, `board.tpm.version`, `board.tpm.manufacturer`) is not
+  caught: it describes a class of hardware, not this unit.
+- `ironmon snapshot --redact-identifiers` withholds those values so a snapshot is
+  safe to share. Each becomes the sentinel `[redacted:identifier]` with a reason,
+  provenance preserved, so a withheld identifier stays distinct from an
+  `unavailable` one. Reads are unrestricted by default; the full snapshot still
+  carries identifiers unless the flag is given.
+
 ## [7.4.1] - 2026-11-23
 
 ### Added
