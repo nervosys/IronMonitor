@@ -2439,8 +2439,9 @@ pub fn redact_identifiers(readings: &mut [Reading]) -> usize {
         }
         if lookup_template(ontology, &r.id).is_some_and(Entity::is_identifier) {
             r.value = Some(serde_json::json!(REDACTED_IDENTIFIER));
-            r.note =
-                Some("identifier withheld by --redact-identifiers; omit the flag to show".to_string());
+            r.note = Some(
+                "identifier withheld by --redact-identifiers; omit the flag to show".to_string(),
+            );
             redacted += 1;
         }
     }
@@ -6669,7 +6670,11 @@ mod scoped_get_tests {
     #[test]
     fn redact_identifiers_withholds_only_identifier_values() {
         let mut readings = vec![
-            Reading::measured("board.serial", serde_json::json!("ABC-123"), Some(Unit::Identifier)),
+            Reading::measured(
+                "board.serial",
+                serde_json::json!("ABC-123"),
+                Some(Unit::Identifier),
+            ),
             Reading::measured("cpu.model", serde_json::json!("Ryzen 9"), Some(Unit::Text)),
             // An identifier that could not be read stays a gap: no value to withhold,
             // and it must not be handed a sentinel that would read as present.
@@ -6681,12 +6686,22 @@ mod scoped_get_tests {
 
         // Identifier value replaced with the sentinel, reason attached, provenance
         // preserved (it was measured; it is simply not shown).
-        assert_eq!(readings[0].value.as_ref().unwrap(), &serde_json::json!(REDACTED_IDENTIFIER));
-        assert!(readings[0].note.as_deref().unwrap().contains("identifier withheld"));
+        assert_eq!(
+            readings[0].value.as_ref().unwrap(),
+            &serde_json::json!(REDACTED_IDENTIFIER)
+        );
+        assert!(readings[0]
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("identifier withheld"));
         assert_eq!(readings[0].provenance, Provenance::Measured);
 
         // Descriptive field untouched.
-        assert_eq!(readings[1].value.as_ref().unwrap(), &serde_json::json!("Ryzen 9"));
+        assert_eq!(
+            readings[1].value.as_ref().unwrap(),
+            &serde_json::json!("Ryzen 9")
+        );
 
         // Unavailable identifier stays valueless and uncounted.
         assert!(readings[2].value.is_none());

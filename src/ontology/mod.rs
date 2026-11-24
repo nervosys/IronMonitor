@@ -312,27 +312,28 @@ fn id_names_an_identifier(id: &str) -> bool {
 /// to classify as identifying by `every_curated_identifier_exists`, so a rename
 /// cannot silently turn one back into a leak.
 const CURATED_IDENTIFIERS: &[&str] = &[
-    "board.chassis.asset_tag",            // owner/vendor asset tag, unique per unit
-    "system.domain",                      // AD / network domain — names the organisation
-    "system.kernel.cmdline",              // carries root=UUID=, hostnames, device paths
-    "agents.recordings.dir",              // a path under the user's home — the username
-    "network.bluetooth.device.{n}.name",  // a paired device — e.g. a person's earbuds
-    "network.bluetooth.{n}.name",         // adapter name, often defaults to the hostname
-    "disk.raid.{n}.name",                 // mdadm array names are typically "hostname:md0"
+    "board.chassis.asset_tag", // owner/vendor asset tag, unique per unit
+    "system.domain",           // AD / network domain — names the organisation
+    "system.kernel.cmdline",   // carries root=UUID=, hostnames, device paths
+    "agents.recordings.dir",   // a path under the user's home — the username
+    "network.bluetooth.device.{n}.name", // a paired device — e.g. a person's earbuds
+    "network.bluetooth.{n}.name", // adapter name, often defaults to the hostname
+    "disk.raid.{n}.name",      // mdadm array names are typically "hostname:md0"
     "disk.{n}.partition.{m}.mount_point", // can hold a username or a volume label
-    "network.wifi.{n}.ssid",              // network name — geolocatable, owner-chosen
-    "network.wifi.{n}.bssid",             // the access point's MAC — geolocatable
-    "network.{iface}.ipv4",               // IP address
-    "network.{iface}.ipv6",               // IP address
-    "system.printer.{n}.name",            // user-assigned queue name, often a person's
-    "system.printer.{n}.description",     // user-assigned queue description
+    "network.wifi.{n}.ssid",   // network name — geolocatable, owner-chosen
+    "network.wifi.{n}.bssid",  // the access point's MAC — geolocatable
+    "network.{iface}.ipv4",    // IP address
+    "network.{iface}.ipv6",    // IP address
+    "system.printer.{n}.name", // user-assigned queue name, often a person's
+    "system.printer.{n}.description", // user-assigned queue description
 ];
 
 /// The full identifier test: the generic segment rule (gated by `Identity`) or an
 /// explicit curated entry. Drives the `identifying` flag, which `describe` publishes
 /// and `ironmon snapshot --redact-identifiers` withholds.
 fn classify_identifier(id: &str, kind: EntityKind) -> bool {
-    (kind == EntityKind::Identity && id_names_an_identifier(id)) || CURATED_IDENTIFIERS.contains(&id)
+    (kind == EntityKind::Identity && id_names_an_identifier(id))
+        || CURATED_IDENTIFIERS.contains(&id)
 }
 
 impl Entity {
