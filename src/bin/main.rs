@@ -276,6 +276,14 @@ enum Commands {
         #[arg(long)]
         validate: bool,
 
+        /// Withhold identifier values (serials, UUIDs, MACs, hardware addresses,
+        /// hostname) so the snapshot is safe to share. Each is replaced with a
+        /// sentinel and a reason; `ironmon describe` lists which entities are
+        /// `identifying`. Reads are unrestricted by default, so the full
+        /// snapshot still carries them unless this flag is given.
+        #[arg(long)]
+        redact_identifiers: bool,
+
         /// Output format: text, json, or json-ld
         ///
         /// `json-ld` emits a linked-data document whose `@context` resolves
@@ -902,9 +910,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             domain,
             resolved_only,
             validate,
+            redact_identifiers,
             format,
         }) => {
-            handle_snapshot_command(domain.as_deref(), *resolved_only, *validate, format)?;
+            handle_snapshot_command(
+                domain.as_deref(),
+                *resolved_only,
+                *validate,
+                *redact_identifiers,
+                format,
+            )?;
         }
         Some(Commands::Daemon {
             config,
@@ -4534,6 +4549,7 @@ fn handle_snapshot_command(
     domain: Option<&str>,
     resolved_only: bool,
     validate: bool,
+    redact_identifiers: bool,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ironmonitor::ontology::{resolve, Domain};
@@ -4560,6 +4576,14 @@ fn handle_snapshot_command(
     } else {
         Vec::new()
     };
+
+    // Withhold identifiers last — after validation has seen the real values — so a
+    // shared snapshot carries no serials, UUIDs, MACs or addresses, while the
+    // default snapshot stays complete. The sentinel keeps the reading present (it
+    // was measured), distinct from an unavailable one.
+    if redact_identifiers {
+        resolve::redact_identifiers(&mut readings);
+    }
 
     if format.eq_ignore_ascii_case("json-ld") || format.eq_ignore_ascii_case("jsonld") {
         // Linked data: every term resolves through the `@context`, so a consumer

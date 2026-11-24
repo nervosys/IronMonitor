@@ -29,7 +29,14 @@ ironmon describe --writable         # only what can be written back
 ironmon describe --search thermal   # find ids without knowing the namespace
 ironmon get memory.total            # read one value by id
 ironmon snapshot --validate         # read everything, range-checked
+ironmon snapshot --redact-identifiers  # withhold serials, UUIDs, MACs — safe to share
 ```
+
+Entities that uniquely identify the machine, a person, or a device carry
+`identifying: true` in `ironmon describe`. Reads are unrestricted, so a plain
+snapshot includes their values; `ironmon snapshot --redact-identifiers` replaces
+each with `[redacted:identifier]` and a reason, leaving everything else intact. See
+[AGENTS.md](AGENTS.md#identifiers-are-declared-not-guessed) for the classification.
 
 `ironmon get` exits 1 for an unknown id and 2 for a known id with no value here, so a
 caller can tell "no such thing" from "nothing to report".

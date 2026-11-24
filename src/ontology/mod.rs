@@ -275,9 +275,74 @@ pub struct Entity {
     /// The `ironmon profile set` id that writes this, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub writable_via: Option<String>,
+    /// Whether this value uniquely identifies this machine, a person, or a
+    /// specific device — a serial, UUID, MAC or hardware address. Declared so a
+    /// consumer can redact identifiers from its own copy against IronMonitor's
+    /// own classification rather than re-deriving one by guessing at ids, and so
+    /// `ironmon snapshot --redact-identifiers` and any downstream tool withhold
+    /// exactly the same set. Descriptive identity (model, vendor, OS name, boot
+    /// mode, TPM spec version) is *not* identifying: it describes a class of
+    /// hardware, not this unit. Present in `describe` only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub identifying: bool,
+}
+
+/// Whether an id's final segment names a uniquely-identifying value. This is the
+/// generalizable half of the identifier test (gated by `kind == Identity`, which
+/// excludes descriptive fields like `cpu.model` or `system.os.name` that end in a
+/// non-identifier segment anyway). The vocabulary is small and stable: a new
+/// identifier entity that follows the naming convention is classified without a
+/// code change here. `hostname` is included — a hostname is frequently a person's
+/// name or a unit label — while `manufacturer`, `version`, `model` and `boot_mode`
+/// are deliberately absent: a TPM vendor or a BIOS version describes a class, not
+/// this machine.
+fn id_names_an_identifier(id: &str) -> bool {
+    matches!(
+        id.rsplit('.').next().unwrap_or(""),
+        "serial" | "serial_number" | "uuid" | "mac" | "address" | "hwaddr" | "hostname"
+    )
+}
+
+/// Identifiers the segment rule cannot recognise from the id alone, because their
+/// final segment (`name`, `dir`, `cmdline`, `ssid`, `ipv4`, …) is shared with purely
+/// descriptive fields that must stay readable. Each entry is a value that singles
+/// out this unit, its owner, its network location, or a specific device — curated
+/// explicitly and kept small so a reviewer can weigh every one. Ids are listed as
+/// declared; templates keep their `{n}` form. Every entry is asserted to exist and
+/// to classify as identifying by `every_curated_identifier_exists`, so a rename
+/// cannot silently turn one back into a leak.
+const CURATED_IDENTIFIERS: &[&str] = &[
+    "board.chassis.asset_tag",            // owner/vendor asset tag, unique per unit
+    "system.domain",                      // AD / network domain — names the organisation
+    "system.kernel.cmdline",              // carries root=UUID=, hostnames, device paths
+    "agents.recordings.dir",              // a path under the user's home — the username
+    "network.bluetooth.device.{n}.name",  // a paired device — e.g. a person's earbuds
+    "network.bluetooth.{n}.name",         // adapter name, often defaults to the hostname
+    "disk.raid.{n}.name",                 // mdadm array names are typically "hostname:md0"
+    "disk.{n}.partition.{m}.mount_point", // can hold a username or a volume label
+    "network.wifi.{n}.ssid",              // network name — geolocatable, owner-chosen
+    "network.wifi.{n}.bssid",             // the access point's MAC — geolocatable
+    "network.{iface}.ipv4",               // IP address
+    "network.{iface}.ipv6",               // IP address
+    "system.printer.{n}.name",            // user-assigned queue name, often a person's
+    "system.printer.{n}.description",     // user-assigned queue description
+];
+
+/// The full identifier test: the generic segment rule (gated by `Identity`) or an
+/// explicit curated entry. Drives the `identifying` flag, which `describe` publishes
+/// and `ironmon snapshot --redact-identifiers` withholds.
+fn classify_identifier(id: &str, kind: EntityKind) -> bool {
+    (kind == EntityKind::Identity && id_names_an_identifier(id)) || CURATED_IDENTIFIERS.contains(&id)
 }
 
 impl Entity {
+    /// Whether this value uniquely identifies the machine, a person, or a device —
+    /// see the `identifying` field. The declared classification used by
+    /// `ironmon snapshot --redact-identifiers`.
+    pub fn is_identifier(&self) -> bool {
+        self.identifying
+    }
+
     fn new(
         id: &str,
         domain: Domain,
@@ -297,6 +362,7 @@ impl Entity {
             description: description.to_string(),
             derived_from: Vec::new(),
             writable_via: None,
+            identifying: classify_identifier(id, kind),
         }
     }
 
@@ -4770,6 +4836,85 @@ mod tests {
                 "malformed id: {}",
                 e.id
             );
+        }
+    }
+
+    /// The `identifying` flag drives redaction, so a false negative leaks a serial
+    /// and a false positive hides a useful descriptive field. Pin both directions on
+    /// representative entities, and assert the structural rule: every identifying
+    /// entity is an `Identity` whose final segment names an identifier, and nothing
+    /// descriptive (model, vendor, version, OS name, boot mode) is caught.
+    #[test]
+    fn identifying_flag_catches_identifiers_and_spares_descriptive_fields() {
+        let ont = Ontology::build();
+        let id = |s: &str| ont.entities.get(s).unwrap_or_else(|| panic!("missing {s}"));
+
+        // Must be withheld: unique to this unit, a person, or a specific device.
+        // Both the generic segment rule and the curated exceptions are covered.
+        for s in [
+            // segment rule
+            "board.serial",
+            "board.chassis.serial",
+            "board.uuid",
+            "disk.{n}.serial",
+            "memory.dimm.{n}.serial_number",
+            "gpu.{n}.uuid",
+            "network.bluetooth.device.{n}.address",
+            "system.hostname",
+            // curated: segment is ambiguous but the value is an identifier
+            "network.bluetooth.device.{n}.name",
+            "network.wifi.{n}.ssid",
+            "network.wifi.{n}.bssid",
+            "network.{iface}.ipv4",
+            "board.chassis.asset_tag",
+            "system.kernel.cmdline",
+            "agents.recordings.dir",
+        ] {
+            assert!(id(s).is_identifier(), "{s} should be an identifier");
+        }
+
+        // Must stay visible: describes a class of hardware, not this machine. These
+        // are exactly the posture/identity fields a forensic consumer wants to read.
+        for s in [
+            "cpu.model",
+            "system.os.name",
+            "board.model",
+            "board.manufacturer",
+            "board.firmware.boot_mode",
+            "board.tpm.version",
+            "board.tpm.manufacturer",
+        ] {
+            assert!(!id(s).is_identifier(), "{s} should not be an identifier");
+        }
+
+        // Structural invariant across the whole ontology: every identifying entity
+        // is justified by exactly one of the two rules — the Identity-gated segment
+        // rule, or an explicit curated entry. Nothing is flagged by accident.
+        for e in ont.entities.values() {
+            if e.identifying {
+                let by_segment = e.kind == EntityKind::Identity && id_names_an_identifier(&e.id);
+                let by_curated = CURATED_IDENTIFIERS.contains(&e.id.as_str());
+                assert!(
+                    by_segment || by_curated,
+                    "{} is identifying but matches neither the segment rule nor the curated set",
+                    e.id
+                );
+            }
+        }
+    }
+
+    /// Every curated identifier must name a real entity and classify as identifying.
+    /// A typo or a rename would otherwise turn a deliberate redaction back into a
+    /// silent leak with no test failing.
+    #[test]
+    fn every_curated_identifier_exists_and_is_flagged() {
+        let ont = Ontology::build();
+        for id in CURATED_IDENTIFIERS {
+            let e = ont
+                .entities
+                .get(*id)
+                .unwrap_or_else(|| panic!("curated identifier {id} is not a declared entity"));
+            assert!(e.is_identifier(), "curated {id} is not flagged identifying");
         }
     }
 
