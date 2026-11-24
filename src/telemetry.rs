@@ -157,6 +157,91 @@ fn register(install_id: &str) -> Registered {
     }
 }
 
+/// The readback URL: the profile endpoint beside [`endpoint`]. Derived from the
+/// metrics endpoint by swapping the final path segment, so overriding the
+/// destination with `IRONMON_TELEMETRY_ENDPOINT` (a loopback stub in a test, a
+/// self-hosted receiver) moves the readback with it.
+pub fn profile_url() -> String {
+    swap_last_path_segment(&endpoint(), "profile")
+}
+
+/// Replace everything after the final `/` with `seg`. Returns the input unchanged
+/// when there is no `/`. Kept pure so the derivation is tested without the
+/// environment.
+fn swap_last_path_segment(base: &str, seg: &str) -> String {
+    match base.rsplit_once('/') {
+        Some((head, _last)) => format!("{head}/{seg}"),
+        None => base.to_string(),
+    }
+}
+
+/// What `GET /v1/profile` told us about this install's stored device profile.
+///
+/// Each variant is a distinct answer, kept apart for the same reason the rest of
+/// the contract keeps absence from fault: "nothing is stored for you" is not
+/// "we could not ask", and neither is "your token is not accepted".
+#[cfg(feature = "remote-backends")]
+#[derive(Debug)]
+pub enum Readback {
+    /// A 200 answer, verbatim JSON. Whether a profile is actually stored is the
+    /// body's own `profile` field (`stored` | `empty` | `absent`), not the status —
+    /// "nothing is linked to you" is a successful read, not an error — so the
+    /// caller inspects the body rather than the code to tell them apart.
+    Profile(serde_json::Value),
+    /// No token is available locally, so there is nothing to authenticate with —
+    /// this install never registered, or telemetry is off. Not an error.
+    NoToken,
+    /// The token was not accepted (401). Malformed and unknown tokens are returned
+    /// identically by design, so they are not distinguished here.
+    Unauthorized,
+    /// The install was revoked or disabled (403). Distinct from `Unauthorized`
+    /// because it is actionable — re-registering issues a fresh token. Carries the
+    /// `revokedAt` timestamp when the server reports one.
+    Revoked(Option<String>),
+    /// The request could not be completed, the status was unexpected (404 wrong
+    /// method, 429 rate limited, 5xx), or the answer could not be read.
+    Error(String),
+}
+
+/// Read back what nervosys has stored for this install's device profile. A single
+/// authenticated `GET`; no body is sent beyond the bearer token this install
+/// already holds. Read-only: it writes nothing and changes nothing server-side.
+#[cfg(feature = "remote-backends")]
+pub fn readback() -> Readback {
+    use std::io::Read;
+    let Some(tok) = token() else {
+        return Readback::NoToken;
+    };
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return Readback::Error("could not build an HTTP client".to_string());
+    };
+    let response = match client.get(profile_url()).bearer_auth(&tok).send() {
+        Ok(r) => r,
+        Err(e) => return Readback::Error(format!("the request did not complete: {e}")),
+    };
+    let status = response.status().as_u16();
+    let mut text = String::new();
+    let _ = response.take(256 * 1024).read_to_string(&mut text);
+    match status {
+        200 => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => Readback::Profile(v),
+            Err(e) => Readback::Error(format!("the response was not JSON: {e}")),
+        },
+        401 => Readback::Unauthorized,
+        403 => {
+            let revoked_at = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("revokedAt")?.as_str().map(str::to_string));
+            Readback::Revoked(revoked_at)
+        }
+        other => Readback::Error(format!("the server returned HTTP {other}")),
+    }
+}
+
 /// The device-profile notice's version. Raise it whenever what the profile
 /// covers widens, so existing users see the notice again rather than silently
 /// inheriting the larger scope on upgrade.
@@ -408,6 +493,23 @@ mod tests {
     fn the_default_destination_is_nervosys() {
         assert_eq!(ENDPOINT, "https://telemetry.nervosys.ai/v1/metrics");
         assert_eq!(INTERVAL, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn the_readback_url_sits_beside_the_metrics_endpoint() {
+        // The profile URL is the metrics URL with its last segment swapped, so a
+        // redirected destination (a loopback stub, a self-hosted receiver) carries
+        // the readback with it rather than always hitting the production host.
+        assert_eq!(
+            swap_last_path_segment("https://telemetry.nervosys.ai/v1/metrics", "profile"),
+            "https://telemetry.nervosys.ai/v1/profile"
+        );
+        assert_eq!(
+            swap_last_path_segment("http://127.0.0.1:19200/v1/metrics", "profile"),
+            "http://127.0.0.1:19200/v1/profile"
+        );
+        // Degenerate input is returned unchanged rather than mangled.
+        assert_eq!(swap_last_path_segment("noslash", "profile"), "noslash");
     }
 
     #[test]

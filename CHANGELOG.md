@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance preserved, so a withheld identifier stays distinct from an
   `unavailable` one. Reads are unrestricted by default; the full snapshot still
   carries identifiers unless the flag is given.
+- `ironmon verify-my-profile` reads back what nervosys has stored for this
+  install's device profile — one authenticated `GET` to the telemetry server,
+  sending only the token this install already holds. The server returns salted
+  digests (keyed on the install, non-rotating), not raw values, so the output is
+  safe to show and equal digests mean equal values. It shows the install summary,
+  the match tier, and each stored key's digest. Exit codes name the outcome: `0` a
+  profile is stored, `1` no token / telemetry off, `2` token not accepted, `3`
+  nothing linked to this install, `4` the server could not be reached, `5` this
+  install was revoked — so "nothing is stored for you" stays distinct from "we
+  could not ask" and from "your access was withdrawn".
 
 ## [7.4.1] - 2026-11-23
 

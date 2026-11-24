@@ -121,6 +121,20 @@ enum Commands {
         #[command(subcommand)]
         action: PrivacySubcommand,
     },
+    /// Read back what nervosys has stored for this install's device profile
+    ///
+    /// A trust-but-verify view: one authenticated GET to the telemetry server,
+    /// showing the record kept for this install so you can confirm it matches
+    /// what you expect — or see that nothing is stored. Sends only the token this
+    /// install already holds; the server returns salted digests, not raw values.
+    /// Exit codes: 0 a profile is stored, 1 no token/telemetry off, 2 token not
+    /// accepted, 3 nothing linked to this install, 4 could not reach the server,
+    /// 5 this install was revoked.
+    VerifyMyProfile {
+        /// Output format: text or json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
     /// Inspect hardware profiles and tunable driver settings (NVPI/XTU/Ryzen Master/nvme-cli style)
     Profile {
         #[command(subcommand)]
@@ -866,6 +880,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Privacy command - manage data collection consent
         Some(Commands::Privacy { action }) => {
             handle_privacy_command(action)?;
+        }
+
+        // Read back this install's stored device profile from the telemetry server
+        Some(Commands::VerifyMyProfile { format }) => {
+            handle_verify_my_profile_command(format);
         }
 
         // Profile command - hardware profile inspector
@@ -5275,6 +5294,192 @@ fn handle_describe_command(
     println!("Only `measured` values may be treated as live observations.");
 
     Ok(())
+}
+
+/// Read back and display this install's stored device profile. Exits directly with
+/// a code that names the outcome, in the same spirit as `ironmon get`: a caller can
+/// tell "nothing is stored" from "the server was unreachable" from "your token was
+/// refused".
+fn handle_verify_my_profile_command(format: &str) -> ! {
+    #[cfg(not(feature = "remote-backends"))]
+    {
+        let _ = format;
+        eprintln!(
+            "This build has no telemetry support compiled in, so there is no stored \
+             profile to read back."
+        );
+        std::process::exit(4);
+    }
+    #[cfg(feature = "remote-backends")]
+    {
+        use ironmonitor::telemetry::{readback, Readback};
+        let as_json = format.eq_ignore_ascii_case("json");
+        match readback() {
+            Readback::Profile(v) => {
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+                    );
+                } else {
+                    render_stored_profile(&v);
+                }
+                // "absent" is a successful read of "nothing is linked to you", so it
+                // comes back 200 — the exit code, not the status, is what tells a
+                // caller a profile is actually stored.
+                let stored = v.get("profile").and_then(|p| p.as_str()) != Some("absent");
+                std::process::exit(if stored { 0 } else { 3 });
+            }
+            Readback::NoToken => {
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "no_token",
+                            "note": "this install holds no telemetry token: it never registered, \
+                                     or telemetry is disabled"
+                        })
+                    );
+                } else {
+                    println!(
+                        "No telemetry token on this install, so there is nothing stored to read \
+                         back."
+                    );
+                    println!(
+                        "(This install has not registered with nervosys, or telemetry is \
+                         disabled.)"
+                    );
+                }
+                std::process::exit(1);
+            }
+            Readback::Unauthorized => {
+                if as_json {
+                    println!("{}", serde_json::json!({ "status": "unauthorized" }));
+                } else {
+                    eprintln!(
+                        "The telemetry server did not accept this install's token. A malformed \
+                         and an unknown token are reported the same way, so this does not say \
+                         which."
+                    );
+                }
+                std::process::exit(2);
+            }
+            Readback::Revoked(at) => {
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "status": "revoked", "revokedAt": at })
+                    );
+                } else {
+                    match &at {
+                        Some(when) => eprintln!("This install's telemetry was revoked at {when}."),
+                        None => eprintln!("This install's telemetry has been revoked."),
+                    }
+                    eprintln!(
+                        "Re-registering (the next `ironmon serve` push) issues a fresh token."
+                    );
+                }
+                std::process::exit(5);
+            }
+            Readback::Error(why) => {
+                if as_json {
+                    println!("{}", serde_json::json!({ "status": "error", "note": why }));
+                } else {
+                    eprintln!("Could not read the stored profile: {why}");
+                }
+                std::process::exit(4);
+            }
+        }
+    }
+}
+
+/// Render the `GET /v1/profile` body as text. Follows the server's contract:
+/// an `install` summary, the `profile` state, and — when a device is linked — its
+/// match tier and the per-key salted digests. A body that does not match the shape
+/// falls back to pretty JSON rather than guessing, so a contract change surfaces as
+/// visibly odd output instead of a confident mislabel.
+#[cfg(feature = "remote-backends")]
+fn render_stored_profile(v: &serde_json::Value) {
+    use serde_json::Value;
+    let Some(obj) = v.as_object() else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+        );
+        return;
+    };
+    let field = |parent: &serde_json::Map<String, Value>, k: &str| -> String {
+        match parent.get(k) {
+            None | Some(Value::Null) => "—".to_string(),
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+        }
+    };
+
+    let profile = obj.get("profile").and_then(|p| p.as_str()).unwrap_or("?");
+
+    if let Some(install) = obj.get("install").and_then(|i| i.as_object()) {
+        println!("Install (as nervosys sees it):");
+        println!("  app                {}", field(install, "appName"));
+        println!("  signals            {}", field(install, "signals"));
+        println!("  last accepted push {}", field(install, "lastSeenAt"));
+        println!(
+            "  quota today        {} / {}",
+            field(install, "quotaUsed"),
+            field(install, "quotaPerDay")
+        );
+        // registeredVersion is the version that REGISTERED, never updated — not the
+        // running version — so it is labelled as such and never as "your version".
+        println!(
+            "  registered at ver. {}",
+            field(install, "registeredVersion")
+        );
+    }
+
+    println!("\nStored device profile: {profile}");
+    match profile {
+        "absent" => {
+            // absent has three causes (incl. "stored but not linked"), so it is not
+            // rendered as "nothing kept". The server's hint names the actual cause.
+            if let Some(hint) = obj.get("hint").and_then(|h| h.as_str()) {
+                println!("  {hint}");
+            }
+            return;
+        }
+        "empty" => {
+            println!("  a device is linked to this install, but its profile carries no keys.");
+            return;
+        }
+        _ => {}
+    }
+
+    let Some(device) = obj.get("device").and_then(|d| d.as_object()) else {
+        return;
+    };
+    println!(
+        "  match tier         {} (1–4, lower is a stronger identity)",
+        field(device, "matchTier")
+    );
+    println!("  pushes resolved    {}", field(device, "seenCount"));
+    println!("  last seen          {}", field(device, "lastSeenAt"));
+    if device.get("virtType").is_some_and(|v| !v.is_null()) {
+        println!("  virtualization     {}", field(device, "virtType"));
+    }
+    if let Some(keys) = device.get("keys").and_then(|k| k.as_object()) {
+        println!(
+            "  stored keys ({}): salted digests — equal digest ⇒ equal value",
+            keys.len()
+        );
+        let mut entries: Vec<(&String, &Value)> = keys.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, digest) in entries {
+            let d = digest
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| digest.to_string());
+            println!("    {name:<28} {d}");
+        }
+    }
 }
 
 fn handle_profile_command(action: &ProfileSubcommand) -> Result<(), Box<dyn std::error::Error>> {

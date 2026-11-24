@@ -117,6 +117,15 @@ in, and `ironmon serve` asks at a terminal; elsewhere it is on by default.
 version is raised. `ironmon privacy review` turns it off on its own, and `ironmon
 privacy opt-in` turns it on.
 
+`ironmon verify-my-profile` reads back what the server has retained for this
+install — one authenticated `GET` sending only the token this install already
+holds. The server returns salted digests (keyed on the install, non-rotating), not
+raw values, so you can confirm your stored profile matches what you expect without
+exposing it, and equal digests mean equal values. Its exit code names the outcome
+(`0` a profile is stored, `1` no token / telemetry off, `2` token not accepted, `3`
+nothing linked to this install, `4` server unreachable, `5` this install revoked),
+so "nothing is stored" stays distinct from "could not reach the server".
+
 #### OTLP push
 
 `ironmon serve` also pushes every reading to an OpenTelemetry Collector over
