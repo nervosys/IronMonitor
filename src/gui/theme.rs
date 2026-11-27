@@ -13,6 +13,24 @@ fn theme_id() -> egui::Id {
     egui::Id::new("ironmonitor_color_theme")
 }
 
+fn graph_thickness_id() -> egui::Id {
+    egui::Id::new("ironmonitor_graph_line_thickness")
+}
+
+/// Record the user's configured sparkline line thickness so the chart widgets,
+/// which have no handle on app settings, can read it at paint time. Called once
+/// per frame from the app's `update`.
+pub fn set_graph_line_thickness(ctx: &egui::Context, thickness: f32) {
+    ctx.data_mut(|data| data.insert_temp(graph_thickness_id(), thickness));
+}
+
+/// The configured sparkline line thickness, defaulting to a thin, clean 1.8 px
+/// when the app has not stored one yet.
+pub fn graph_line_thickness(ctx: &egui::Context) -> f32 {
+    ctx.data(|data| data.get_temp::<f32>(graph_thickness_id()))
+        .unwrap_or(1.8)
+}
+
 /// The family data labels are painted in: a bold face, because egui's only
 /// bundled proportional font is Ubuntu Light.
 ///

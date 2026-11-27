@@ -855,7 +855,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             color_theme: ColorTheme::Cyber,
-            graph_line_thickness: 2.5,
+            graph_line_thickness: 1.8,
             show_grid_lines: true,
             animation_speed: 1.0,
             alert_settings: AlertSettings::default(),
@@ -2173,6 +2173,10 @@ impl eframe::App for IronMonitorApp {
             theme::apply_theme(ctx, want);
             self.applied_color_theme = Some(want);
         }
+        // Publish the configured graph line thickness so SparklineChart can read it
+        // at paint time; cheap enough to set every frame so slider changes take
+        // effect immediately.
+        theme::set_graph_line_thickness(ctx, self.settings.graph_line_thickness);
 
         // Alerts are derived purely from the latest snapshot, so evaluating them per
         // frame re-derived the same verdict from the same numbers and rebuilt its

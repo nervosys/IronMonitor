@@ -409,7 +409,7 @@ pub struct SparklineChart<'a> {
     show_scale: bool,
     fixed_max: Option<f32>,
     show_min_max: bool,
-    line_thickness: f32,
+    line_thickness: Option<f32>,
 }
 
 impl<'a> SparklineChart<'a> {
@@ -419,16 +419,16 @@ impl<'a> SparklineChart<'a> {
             color: CyberColors::CYAN,
             height: 70.0,
             show_grid: true,
-            show_glow: false, // Disabled - too bright
-            show_dots: false, // Disabled - cluttered
+            show_glow: false, // Hard neon glow reads as noise; the area fill gives depth instead.
+            show_dots: false, // Per-sample dots clutter; only the latest point is marked.
             smooth: true,
-            gradient_fill: false, // Disabled - cleaner look
+            gradient_fill: true, // Soft area gradient under the line — the professional default.
             title: None,
             unit: None,
             show_scale: true,
             fixed_max: None,
-            show_min_max: false, // Disabled by default - less clutter
-            line_thickness: 2.5, // Default thicker lines
+            show_min_max: false,  // Disabled by default - less clutter
+            line_thickness: None, // Falls back to the user's Graph Line Thickness setting (default 1.8).
         }
     }
 
@@ -502,7 +502,7 @@ impl<'a> SparklineChart<'a> {
     /// Set the line thickness for the sparkline
     #[allow(dead_code)]
     pub fn line_thickness(mut self, thickness: f32) -> Self {
-        self.line_thickness = thickness;
+        self.line_thickness = Some(thickness);
         self
     }
 }
@@ -586,17 +586,11 @@ impl Widget for SparklineChart<'_> {
                 rect
             };
 
-            // Deep backdrop keeps the chart line in focus.
+            // A single flat, deep panel keeps the data line in focus — no inner-shadow
+            // trickery, which only muddies a clean dark background.
+            let panel_radius = 6.0_f32;
             let muted_bg = theme::color(ui.ctx(), CyberColors::BACKGROUND_DARK);
-            painter.rect_filled(graph_rect, 6.0, muted_bg);
-
-            // Very subtle inner shadow for depth
-            let inner = graph_rect.shrink(1.0);
-            painter.rect_filled(
-                Rect::from_min_size(inner.min, Vec2::new(inner.width(), 2.0)),
-                0.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, 15),
-            );
+            painter.rect_filled(graph_rect, panel_radius, muted_bg);
 
             // Calculate the actual chart area (with room for Y-axis labels)
             let chart_rect = Rect::from_min_max(
@@ -656,26 +650,17 @@ impl Widget for SparklineChart<'_> {
                 );
             }
 
-            // Simple static grid lines
+            // Horizontal guide lines only — neutral and faint, so they orient the eye
+            // without competing with the data. Vertical time-rules are dropped for a
+            // cleaner, less busy field.
             if self.show_grid {
+                // Through theme::color so the monochrome palette greys it to pure
+                // grayscale; unchanged in every other theme.
                 let grid_color =
-                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(60, 70, 80, 40));
-
-                // Horizontal grid lines (4 lines = 5 zones for 0%, 25%, 50%, 75%, 100%)
+                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(148, 158, 173, 20));
                 for i in 1..4 {
                     let y = chart_rect.min.y + chart_rect.height() * (i as f32 / 4.0);
-                    painter.hline(chart_rect.x_range(), y, Stroke::new(0.5_f32, grid_color));
-                }
-
-                // Vertical grid lines (time markers) - very subtle
-                let num_vlines = 6;
-                for i in 1..num_vlines {
-                    let x = chart_rect.min.x + chart_rect.width() * (i as f32 / num_vlines as f32);
-                    painter.vline(
-                        x,
-                        chart_rect.y_range(),
-                        Stroke::new(0.5_f32, grid_color.linear_multiply(0.5)),
-                    );
+                    painter.hline(chart_rect.x_range(), y, Stroke::new(1.0_f32, grid_color));
                 }
             }
 
@@ -709,53 +694,46 @@ impl Widget for SparklineChart<'_> {
                     points.clone()
                 };
 
-                // Gradient fill under the line (multiple layers for depth)
-                if self.gradient_fill {
-                    let mut fill_points = smooth_points.clone();
-                    fill_points.push(Pos2::new(plot_rect.max.x, plot_rect.max.y));
-                    fill_points.push(Pos2::new(plot_rect.min.x, plot_rect.max.y));
-
-                    // Layer 1: Dark base
-                    let fill_color_dark = Color32::from_rgba_unmultiplied(
+                // Soft vertical area gradient under the curve: a gentle fill at the line
+                // fading to transparent toward the baseline. A real per-vertex gradient
+                // mesh, not stacked bands — this is what gives the chart its clean,
+                // professional depth without a hard fill edge.
+                if self.gradient_fill && smooth_points.len() >= 2 {
+                    use egui::epaint::{Mesh, Vertex, WHITE_UV};
+                    let baseline_y = plot_rect.max.y;
+                    let top = Color32::from_rgba_unmultiplied(
                         widget_color.r(),
                         widget_color.g(),
                         widget_color.b(),
-                        8,
+                        55,
                     );
-                    painter.add(egui::Shape::convex_polygon(
-                        fill_points,
-                        fill_color_dark,
-                        Stroke::NONE,
-                    ));
-
-                    // Layer 2: Gradient bands (simulated)
-                    for layer in 0..3 {
-                        let _band_height = plot_rect.height() * (0.3 - layer as f32 * 0.1);
-                        let alpha = 10 - layer * 3;
-                        let band_points: Vec<Pos2> = smooth_points
-                            .iter()
-                            .map(|p| {
-                                let y_offset = (plot_rect.max.y - p.y) * (0.3 - layer as f32 * 0.1);
-                                Pos2::new(p.x, (p.y + y_offset).min(plot_rect.max.y))
-                            })
-                            .collect();
-
-                        let mut band_fill = band_points;
-                        band_fill.push(Pos2::new(plot_rect.max.x, plot_rect.max.y));
-                        band_fill.push(Pos2::new(plot_rect.min.x, plot_rect.max.y));
-
-                        let band_color = Color32::from_rgba_unmultiplied(
-                            widget_color.r(),
-                            widget_color.g(),
-                            widget_color.b(),
-                            alpha as u8,
-                        );
-                        painter.add(egui::Shape::convex_polygon(
-                            band_fill,
-                            band_color,
-                            Stroke::NONE,
-                        ));
+                    let bottom = Color32::from_rgba_unmultiplied(
+                        widget_color.r(),
+                        widget_color.g(),
+                        widget_color.b(),
+                        0,
+                    );
+                    let mut mesh = Mesh::default();
+                    for (i, p) in smooth_points.iter().enumerate() {
+                        let v = mesh.vertices.len() as u32;
+                        mesh.vertices.push(Vertex {
+                            pos: *p,
+                            uv: WHITE_UV,
+                            color: top,
+                        });
+                        mesh.vertices.push(Vertex {
+                            pos: Pos2::new(p.x, baseline_y),
+                            uv: WHITE_UV,
+                            color: bottom,
+                        });
+                        if i > 0 {
+                            // Quad between the previous column (v-2 top, v-1 bottom) and
+                            // this one (v top, v+1 bottom), as two triangles.
+                            mesh.indices
+                                .extend_from_slice(&[v - 2, v - 1, v, v - 1, v + 1, v]);
+                        }
                     }
+                    painter.add(egui::Shape::mesh(mesh));
                 }
 
                 // Glow effect under the line (if enabled)
@@ -784,9 +762,28 @@ impl Widget for SparklineChart<'_> {
 
                 // Full saturation and opacity give a crisp line on the dark fill.
                 let line_color = widget_color;
+                let thickness = self
+                    .line_thickness
+                    .unwrap_or_else(|| theme::graph_line_thickness(ui.ctx()));
                 let main_path =
-                    PathShape::line(smooth_points, Stroke::new(self.line_thickness, line_color));
+                    PathShape::line(smooth_points.clone(), Stroke::new(thickness, line_color));
                 painter.add(main_path);
+
+                // Mark the latest sample with a small, static dot and a faint halo —
+                // enough to anchor "now" without the pulsing glow that reads as flashy.
+                if let Some(last) = smooth_points.last() {
+                    painter.circle_filled(
+                        *last,
+                        4.0,
+                        Color32::from_rgba_unmultiplied(
+                            widget_color.r(),
+                            widget_color.g(),
+                            widget_color.b(),
+                            36,
+                        ),
+                    );
+                    painter.circle_filled(*last, 2.2, widget_color);
+                }
 
                 // Data point dots (only on original points, not interpolated)
                 if self.show_dots && points.len() <= 30 {
@@ -827,13 +824,14 @@ impl Widget for SparklineChart<'_> {
                 }
             }
 
-            // Simple subtle border
+            // A hairline border at the same radius as the panel — just enough to seat
+            // the chart on the background, in a neutral tone that suits any dark theme.
             painter.rect_stroke(
-                rect,
-                4.0,
+                graph_rect,
+                panel_radius,
                 Stroke::new(
                     1.0_f32,
-                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(60, 70, 80, 80)),
+                    theme::color(ui.ctx(), Color32::from_rgba_unmultiplied(148, 158, 173, 28)),
                 ),
                 egui::StrokeKind::Middle,
             );
