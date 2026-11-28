@@ -6,11 +6,15 @@
 //!
 //! Shape of the thing:
 //!
-//! - One thread runs every pass, one pass at a time. The readers share static state
-//!   (`PREV_CPU_COUNTERS`, PDH and WMI handles), so two passes at once would corrupt
-//!   each other's rates. The Prometheus collector reads the same state, and the two
-//!   are serialised by one lock: `resolve::sample_tier` takes
-//!   `crate::pipeline::reader_pass`, as does the collector's own pass.
+//! - Passes run on one thread per [`Lane`]. Most readers share static state
+//!   (`PREV_CPU_COUNTERS`, PDH and WMI handles), so two of them at once would corrupt
+//!   each other's rates; those segments are the [`Lane::Shared`] lane, which runs one
+//!   pass at a time and holds `crate::pipeline::reader_pass`. The Prometheus collector
+//!   takes the same lock, so it and the shared lane never read that state at once.
+//!   Segments whose readers touch none of it — inference's HTTP polls, agents' file
+//!   reads — are the [`Lane::Independent`] lane: it skips the lock (see
+//!   `resolve::segment_is_independent`) and runs concurrently with the shared lane, so a
+//!   slow hardware-inventory pass no longer holds back the counters a dashboard polls.
 //! - A pass reads one [`Tier`] of one segment with [`crate::ontology::resolve::sample_tier`].
 //!   Live readers are cheap and change constantly. Inventory readers are where the time
 //!   goes, and mostly describe what the machine is. Reading them separately is what
@@ -72,6 +76,41 @@ impl Timing {
         resample_every: Duration::from_secs(2),
         inventory_every: Duration::from_secs(60),
     };
+}
+
+/// A set of segments sampled by one thread, serial within itself but concurrent
+/// with the other lanes.
+///
+/// The split exists because the hardware readers share mutable static state
+/// (`PREV_CPU_COUNTERS`, PDH and WMI handles), so two of them at once would
+/// corrupt each other's rates — those segments must stay on one lane, which is
+/// also the only lane that takes [`crate::pipeline::reader_pass`]. Segments whose
+/// readers touch none of that state (they only do network or file I/O) sample on
+/// their own lane, so a slow hardware-inventory pass can no longer hold back, say,
+/// the inference token counters a dashboard polls every few seconds.
+///
+/// `segment_is_independent` in `crate::ontology::resolve` is the single source of
+/// truth for which segments skip the reader lock; [`Lane::of`] must agree with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Lane {
+    /// Readers that share the CPU/PDH/WMI static state. Serial, holds the reader lock.
+    Shared,
+    /// Readers that touch no shared state (inference, agents). Runs concurrently.
+    Independent,
+}
+
+impl Lane {
+    const ALL: [Lane; 2] = [Lane::Shared, Lane::Independent];
+
+    /// The lane a segment belongs to. Must agree with
+    /// `crate::ontology::resolve::segment_is_independent`.
+    fn of(segment: &str) -> Lane {
+        if crate::ontology::resolve::segment_is_independent(segment) {
+            Lane::Independent
+        } else {
+            Lane::Shared
+        }
+    }
 }
 
 /// When a pass started.
@@ -147,11 +186,15 @@ struct Slot {
 
 struct State {
     slots: BTreeMap<String, Slot>,
-    started: bool,
+    /// The lanes whose thread is running. A lane is spawned at most once; a retry after a
+    /// partial spawn starts only the lanes still missing.
+    started: std::collections::BTreeSet<Lane>,
     passes: u64,
-    /// When the last inventory pass finished. A live tier older than this is owed a pass
-    /// before the next inventory pass runs.
-    last_inventory_end: Option<Instant>,
+    /// When each lane's last inventory pass finished. A live tier older than its lane's
+    /// value is owed a pass before the next inventory pass on that lane. Kept per lane
+    /// because the lanes run concurrently: one lane's inventory pass says nothing about
+    /// whether the other lane's live tiers are current.
+    last_inventory_end: BTreeMap<Lane, Instant>,
 }
 
 struct Shared {
@@ -210,9 +253,9 @@ impl Sampler {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     slots,
-                    started: false,
+                    started: std::collections::BTreeSet::new(),
                     passes: 0,
-                    last_inventory_end: None,
+                    last_inventory_end: BTreeMap::new(),
                 }),
                 changed: Condvar::new(),
                 timing,
@@ -316,19 +359,23 @@ impl Sampler {
     }
 
     fn ensure_thread(&self, state: &mut State) {
-        if state.started {
-            return;
-        }
-        let shared = Arc::clone(&self.shared);
-        // If the thread cannot be started, no sample will arrive and the waiting
-        // request answers 503 at its bound. That is the honest outcome, so the
-        // failure is not escalated further.
-        if std::thread::Builder::new()
-            .name("ironmon-sampler".into())
-            .spawn(move || run(shared))
-            .is_ok()
-        {
-            state.started = true;
+        // One thread per lane, so an independent segment samples while a hardware segment
+        // holds the reader lock. A lane already running is left alone.
+        for lane in Lane::ALL {
+            if state.started.contains(&lane) {
+                continue;
+            }
+            let shared = Arc::clone(&self.shared);
+            // If a thread cannot be started, no sample from its lane will arrive and the
+            // waiting request answers 503 at its bound. That is the honest outcome, so the
+            // failure is not escalated further; a later request retries this lane.
+            if std::thread::Builder::new()
+                .name(format!("ironmon-sampler-{lane:?}"))
+                .spawn(move || run(shared, lane))
+                .is_ok()
+            {
+                state.started.insert(lane);
+            }
         }
     }
 }
@@ -344,24 +391,42 @@ fn consider(current: &mut Option<(String, Priority)>, name: &str, key: Priority)
     }
 }
 
-/// The next pass to run, if one is due, and otherwise when one will be.
+/// How many times its own interval an inventory tier may age before it outranks due live
+/// work. Below this, a merely-due inventory tier yields to due live tiers, so the fast-
+/// moving counters a dashboard polls stay fresh; at or past it, inventory runs regardless,
+/// so a perpetually-due live tier cannot starve it.
+const INVENTORY_STALENESS_CEILING: u32 = 2;
+
+/// The next pass `lane` should run, if one is due, and otherwise when one will be.
 ///
-/// In order: a live tier that has never been read or that predates the last inventory
-/// pass, then a due inventory tier, then any other due live tier. Inventory ranks above
-/// ordinary live work so that a live tier always due cannot starve it, and the first rule
-/// then gives every wanted live tier its turn before the next inventory pass.
+/// Only this lane's segments are considered; the other lane runs on its own thread. In
+/// priority order: a live tier never read, or read before this lane's last inventory pass
+/// (`owed`); then an inventory tier never read, or stale past the ceiling (`forced`) —
+/// a first sample needs both tiers, and a slow live lane must not starve inventory
+/// forever; then any other due live tier; then a merely-due inventory tier. Ranking
+/// ordinary live above merely-due inventory is the live-priority rule, and the ceiling is
+/// what keeps it from starving inventory.
 fn choose(
     state: &State,
     timing: Timing,
     now: Instant,
+    lane: Lane,
 ) -> (Option<(String, Tier)>, Option<Instant>) {
     let mut owed = None;
-    let mut inventory = None;
+    let mut forced = None;
     let mut live = None;
+    let mut inventory = None;
     let mut wake_at: Option<Instant> = None;
     let mut wake = |at: Instant| wake_at = Some(wake_at.map_or(at, |w: Instant| w.min(at)));
+    let last_inventory_end = state.last_inventory_end.get(&lane).copied();
+    let ceiling = timing
+        .inventory_every
+        .saturating_mul(INVENTORY_STALENESS_CEILING);
 
     for (name, slot) in &state.slots {
+        if Lane::of(name) != lane {
+            continue;
+        }
         let Some(wanted) = slot.wanted_at else {
             continue;
         };
@@ -375,10 +440,7 @@ fn choose(
                 let due_at = pass.stamp.taken + timing.resample_every;
                 if due_at > now {
                     wake(due_at);
-                } else if state
-                    .last_inventory_end
-                    .is_some_and(|end| pass.stamp.taken < end)
-                {
+                } else if last_inventory_end.is_some_and(|end| pass.stamp.taken < end) {
                     consider(&mut owed, name, (true, Some(pass.stamp.taken)));
                 } else {
                     consider(&mut live, name, (true, Some(pass.stamp.taken)));
@@ -387,11 +449,13 @@ fn choose(
         }
 
         match &slot.inventory {
-            None => consider(&mut inventory, name, (false, slot.wanted_at)),
+            None => consider(&mut forced, name, (false, slot.wanted_at)),
             Some(pass) => {
                 let due_at = pass.stamp.taken + timing.inventory_every;
                 if due_at > now {
                     wake(due_at);
+                } else if now.duration_since(pass.stamp.taken) >= ceiling {
+                    consider(&mut forced, name, (true, Some(pass.stamp.taken)));
                 } else {
                     consider(&mut inventory, name, (true, Some(pass.stamp.taken)));
                 }
@@ -401,16 +465,17 @@ fn choose(
 
     let next = owed
         .map(|(name, _)| (name, Tier::Live))
-        .or(inventory.map(|(name, _)| (name, Tier::Inventory)))
-        .or(live.map(|(name, _)| (name, Tier::Live)));
+        .or(forced.map(|(name, _)| (name, Tier::Inventory)))
+        .or(live.map(|(name, _)| (name, Tier::Live)))
+        .or(inventory.map(|(name, _)| (name, Tier::Inventory)));
     (next, wake_at)
 }
 
-fn run(shared: Arc<Shared>) {
+fn run(shared: Arc<Shared>, lane: Lane) {
     let timing = shared.timing;
     let mut state = lock(&shared);
     loop {
-        let (next, wake_at) = choose(&state, timing, Instant::now());
+        let (next, wake_at) = choose(&state, timing, Instant::now(), lane);
 
         if let Some((name, tier)) = next {
             let stamp = Stamp {
@@ -425,7 +490,7 @@ fn run(shared: Arc<Shared>) {
             state = lock(&shared);
             state.passes += 1;
             if tier == Tier::Inventory {
-                state.last_inventory_end = Some(finished);
+                state.last_inventory_end.insert(lane, finished);
             }
             if let Some(slot) = state.slots.get_mut(&name) {
                 let pass = Arc::new(Pass { readings, stamp });
@@ -630,16 +695,39 @@ mod tests {
         assert_eq!(source.count("gpu"), 1, "twenty requests, one pass");
     }
 
-    /// Passes never overlap, even when several segments are wanted together.
+    /// Within one lane, passes never overlap: the shared-lane segments all serialise,
+    /// because their readers share the static state the reader lock guards.
     #[test]
     fn passes_never_run_two_at_once() {
         let source = Counting::new(Duration::from_millis(30));
         let sampler = Sampler::new(source.clone(), timing(60_000, 60_000));
 
+        // All of these are shared-lane segments.
         let all = names(&["cpu", "memory", "disk", "network", "gpu"]);
         let got = sampler.sample_for(&all, Duration::from_secs(10));
         assert_eq!(got.map(|v| v.len()), Ok(5));
         assert_eq!(source.max_in_flight.load(Ordering::SeqCst), 1);
+    }
+
+    /// Segments on different lanes sample at the same time, so a slow shared pass does not
+    /// hold back an independent one. This is what keeps the inference and agents counters a
+    /// dashboard polls fresh while hardware inventory is being read.
+    #[test]
+    fn lanes_sample_concurrently() {
+        // Passes are slow enough that if the two lanes shared a thread, the second segment
+        // would plainly wait behind the first.
+        let source = Counting::new(Duration::from_millis(80));
+        let sampler = Sampler::new(source.clone(), timing(60_000, 10));
+
+        // One shared-lane segment and one independent-lane segment, wanted together.
+        let wanted = names(&["cpu", "inference"]);
+        let got = sampler.sample_for(&wanted, Duration::from_secs(5));
+        assert_eq!(got.map(|v| v.len()), Ok(2));
+        assert_eq!(
+            source.max_in_flight.load(Ordering::SeqCst),
+            2,
+            "the two lanes never ran a pass at the same time"
+        );
     }
 
     /// A request for a segment still being sampled waits only its bound, and reports

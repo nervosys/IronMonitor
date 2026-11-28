@@ -186,9 +186,18 @@ impl Scope {
 fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
     run(scope, Tier::Live, &["cpu"], out, resolve_cpu);
     run(scope, Tier::Live, &["memory"], out, resolve_memory);
-    run(scope, Tier::Live, &["system"], out, resolve_system);
+    // OS identity (os_info: WMI + a `ver` process + the registry on Windows) and board
+    // identity (a full SMBIOS/WMI platform detection) are static, so they belong in the
+    // inventory tier. Reading them live resampled all of that every two seconds and held
+    // the reader lock while it ran, which is what made a `system` pass take tens of
+    // seconds and stalled every other live reading behind it. Only `system.uptime` from
+    // here changes; at the inventory rate its granularity is still far finer than anyone
+    // reads it. The live load average and process count come from `resolve_system_summary`
+    // below, which reads the cheap `SystemStats` (GetTickCount64 / GetPerformanceInfo, no
+    // WMI), so the system segment still has a fast-moving live tier.
+    run(scope, Tier::Inventory, &["system"], out, resolve_system);
     run(scope, Tier::Live, &["system"], out, resolve_system_summary);
-    run(scope, Tier::Live, &["board"], out, resolve_board);
+    run(scope, Tier::Inventory, &["board"], out, resolve_board);
     run(scope, Tier::Live, &["gpu"], out, resolve_gpu);
     run(scope, Tier::Live, &["disk"], out, resolve_disk);
     run(scope, Tier::Live, &["network"], out, resolve_network);
@@ -363,6 +372,20 @@ pub fn sample_segment(segment: &str) -> Vec<Reading> {
 /// read at different rates. A live pass keeps the segments its readers consume, since
 /// `resolve_inference` joins engines to the GPU rows of a live reader. Nothing reads an
 /// inventory row from the pass output, so an inventory pass needs only its own segment.
+/// Whether a segment's readers touch none of the shared mutable static state the reader
+/// lock guards (`PREV_CPU_COUNTERS`, PDH and WMI handles), and so can be sampled without
+/// taking that lock, concurrently with a segment that does.
+///
+/// This is the single source of truth for the split; the HTTP sampler's `Lane::of` reads
+/// it to decide which lane a segment runs on, so the lane a segment samples on and whether
+/// it takes the lock can never disagree. Only segments whose readers do pure network or
+/// file I/O qualify: `inference` polls engine endpoints over HTTP and `agents` reads
+/// recording files. Everything else reads hardware through the shared state and must
+/// serialise.
+pub fn segment_is_independent(segment: &str) -> bool {
+    matches!(segment, "inference" | "agents")
+}
+
 pub fn sample_tier(segment: &str, tier: Tier) -> Vec<Reading> {
     let ontology = ontology();
     let mut segments = std::collections::BTreeSet::new();
@@ -377,7 +400,13 @@ pub fn sample_tier(segment: &str, tier: Tier) -> Vec<Reading> {
         }
         close_over_consumes(&mut segments);
     }
-    let _pass = crate::pipeline::reader_pass();
+    // The independent segments take no shared state, so they skip the reader lock and can
+    // sample while a hardware segment holds it. A live `inference` pass pulls in GPU rows
+    // (see above), which are shared-state readers — but those rows are dropped by the
+    // `retain` below, and reading them without the lock races the collector, so only a
+    // segment whose whole closure is independent may skip it.
+    let independent = tier == Tier::Live && segments.iter().all(|s| segment_is_independent(s));
+    let _pass = (!independent).then(crate::pipeline::reader_pass);
     let mut out = Vec::new();
     run_readers(&mut out, &Scope::of(segments).in_tier(tier));
     gate_readings(ontology, &mut out);
