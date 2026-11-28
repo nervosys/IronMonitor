@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Ontology format version. Bump the major on any breaking id or field change.
-pub const ONTOLOGY_VERSION: &str = "1.1";
+pub const ONTOLOGY_VERSION: &str = "1.2";
 
 /// Where a value came from.
 ///
@@ -3088,6 +3088,47 @@ impl Ontology {
             true,
             "Whether Secure Boot is enforcing, read from the firmware flag itself \
              rather than inferred from the presence of the key holding it.",
+        ));
+        add(Entity::new(
+            "system.load_average.1m",
+            D::System,
+            K::Measurement,
+            None,
+            P::Measured,
+            true,
+            "System load average over the last minute — the kernel's run-queue \
+             figure, a dimensionless number and not a percentage. Null on a \
+             platform that reports no load average, such as Windows.",
+        ));
+        add(Entity::new(
+            "system.load_average.5m",
+            D::System,
+            K::Measurement,
+            None,
+            P::Measured,
+            true,
+            "System load average over the last five minutes. Dimensionless. Null \
+             on a platform that reports no load average, such as Windows.",
+        ));
+        add(Entity::new(
+            "system.load_average.15m",
+            D::System,
+            K::Measurement,
+            None,
+            P::Measured,
+            true,
+            "System load average over the last fifteen minutes. Dimensionless. \
+             Null on a platform that reports no load average, such as Windows.",
+        ));
+        add(Entity::new(
+            "system.processes.total",
+            D::System,
+            K::Measurement,
+            Some(U::Count),
+            P::Measured,
+            true,
+            "Total number of processes on the machine. Null where the platform's \
+             process total was not read — macOS does not report one here.",
         ));
         add(Entity::new(
             "board.model",

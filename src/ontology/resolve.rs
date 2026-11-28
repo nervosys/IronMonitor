@@ -187,6 +187,7 @@ fn run_readers(out: &mut Vec<Reading>, scope: &Scope) {
     run(scope, Tier::Live, &["cpu"], out, resolve_cpu);
     run(scope, Tier::Live, &["memory"], out, resolve_memory);
     run(scope, Tier::Live, &["system"], out, resolve_system);
+    run(scope, Tier::Live, &["system"], out, resolve_system_summary);
     run(scope, Tier::Live, &["board"], out, resolve_board);
     run(scope, Tier::Live, &["gpu"], out, resolve_gpu);
     run(scope, Tier::Live, &["disk"], out, resolve_disk);
@@ -991,6 +992,73 @@ fn resolve_system(out: &mut Vec<Reading>) {
                     format!("OS info reader failed: {e}"),
                 ));
             }
+        }
+    }
+}
+
+/// System-wide summary figures for an overview card: load average and the total
+/// process count. Each comes from a different field of the same reader, so one
+/// being absent does not withhold the other; a value a platform does not provide
+/// is unavailable with its reason, never a zero.
+///
+/// An active-connection count is deliberately not here yet: the only connection
+/// reader enriches every socket with its owning process name (an `OpenProcess`
+/// per row), which is far too slow for a live reading. A cheap count — the socket
+/// tables' row counts with no per-row enrichment — is a separate change.
+fn resolve_system_summary(out: &mut Vec<Reading>) {
+    const LOAD_IDS: [&str; 3] = [
+        "system.load_average.1m",
+        "system.load_average.5m",
+        "system.load_average.15m",
+    ];
+    // Load average and the process total both come from SystemStats.
+    match crate::system_stats::SystemStats::new() {
+        Ok(stats) => {
+            match stats.load_average {
+                Some(load) => {
+                    for (id, value) in LOAD_IDS
+                        .into_iter()
+                        .zip([load.one, load.five, load.fifteen])
+                    {
+                        out.push(Reading::measured(id, serde_json::json!(value), None));
+                    }
+                }
+                None => {
+                    for id in LOAD_IDS {
+                        out.push(Reading::unavailable(
+                            id,
+                            None,
+                            "this platform reports no load average",
+                        ));
+                    }
+                }
+            }
+            match stats.total_processes {
+                Some(n) => out.push(Reading::measured(
+                    "system.processes.total",
+                    serde_json::json!(n),
+                    Some(Unit::Count),
+                )),
+                None => out.push(Reading::unavailable(
+                    "system.processes.total",
+                    Some(Unit::Count),
+                    "this platform does not report a process total here",
+                )),
+            }
+        }
+        Err(e) => {
+            for id in LOAD_IDS {
+                out.push(Reading::unavailable(
+                    id,
+                    None,
+                    format!("system stats reader failed: {e}"),
+                ));
+            }
+            out.push(Reading::unavailable(
+                "system.processes.total",
+                Some(Unit::Count),
+                format!("system stats reader failed: {e}"),
+            ));
         }
     }
 }
