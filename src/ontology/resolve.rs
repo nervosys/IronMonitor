@@ -602,11 +602,15 @@ fn missing_domain_rows(ontology: &Ontology, out: &[Reading], scope: &Scope) -> V
     missing_domains
 }
 
-/// Pairs of id segments where a reader for the first reads readings of the second
-/// from the output so far. `resolve_inference` matches each engine's GPU to a `gpu.{n}`
-/// by PCI address and UUID (see [`monitor_gpus`]), so an inference id needs the GPU
-/// readers as well as its own.
-const CONSUMES: &[(&str, &str)] = &[("inference", "gpu")];
+/// Pairs of id segments where a reader for the first reads readings of the second from the
+/// output so far.
+///
+/// Empty now. `resolve_inference` once matched each engine's GPU to a `gpu.{n}` by reading
+/// the gpu rows out of this pass, which forced the gpu readers to run in an inference pass
+/// and so put inference on the hardware lane, under the reader lock. It now matches against
+/// [`cached_gpu_identity`], a snapshot the gpu readers publish out of band, so inference
+/// needs none of the gpu readers in its own pass and samples on the independent lane.
+const CONSUMES: &[(&str, &str)] = &[];
 
 fn first_segment(id: &str) -> &str {
     id.split('.').next().unwrap_or(id)
@@ -2270,6 +2274,10 @@ fn resolve_gpu(out: &mut Vec<Reading>) {
             }
         }
     }
+
+    // Publish the adapters' identifiers for the inference matcher to read out of band, so
+    // it need not pull these readers into its own pass. Same enumeration, same indices.
+    publish_gpu_identity(gpu_identities(&gpus, &monitor));
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -3564,7 +3572,7 @@ fn resolve_ironworks(out: &mut Vec<Reading>, base: &str) {
             "the engine reports no GPU that it is running on",
         )),
         Some(gpus) => {
-            let monitors = monitor_gpus(out);
+            let monitors = cached_gpu_identity();
             for gpu in gpus {
                 // The engine's device index is not used. Under CUDA_VISIBLE_DEVICES
                 // it can differ from the physical index, so the GPU is matched by
@@ -3639,41 +3647,65 @@ fn not_configured(what: &str, reason: &Option<String>) -> String {
 ///
 /// This is what an engine's GPU is joined against. The engine's own device index
 /// is not a key here: see `ironworks::match_gpu` for why.
-fn monitor_gpus(out: &[Reading]) -> Vec<crate::inference::ironworks::MonitorGpu> {
+/// IronMonitor's own GPU identifiers — the merged-backend `gpu.{n}` index paired with the
+/// adapter's PCI bus id and UUID — as last enumerated by [`resolve_gpu`].
+///
+/// inference matches an engine's reported GPU against these to find the `gpu.{n}` it is,
+/// so the row it publishes lines up with IronMonitor's own. The identifiers are static, so
+/// publishing them here (rather than having inference pull the gpu readers into its own
+/// pass) lets inference sample on the independent lane. The index is IronMonitor's merged
+/// index across every backend, never a single backend's device number, so it stays correct
+/// on a machine with GPUs from more than one vendor. Empty until the gpu segment has been
+/// sampled once; a match against an empty snapshot reports the engine GPU unmatched, as a
+/// missing identifier did before.
+static GPU_IDENTITY: std::sync::Mutex<Vec<crate::inference::ironworks::MonitorGpu>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Publish the GPU identifiers for inference to match against. Called by [`resolve_gpu`]
+/// with the identifiers of the adapters it just enumerated, replacing the previous set.
+fn publish_gpu_identity(identities: Vec<crate::inference::ironworks::MonitorGpu>) {
+    *GPU_IDENTITY.lock().unwrap_or_else(|e| e.into_inner()) = identities;
+}
+
+/// IronMonitor's GPU identifiers as last published by [`resolve_gpu`]. A brief lock, not the
+/// reader lock, so inference reads it without serialising against a hardware pass.
+fn cached_gpu_identity() -> Vec<crate::inference::ironworks::MonitorGpu> {
+    GPU_IDENTITY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// The identifiers of the adapters `resolve_gpu` enumerated, by merged `gpu.{n}` index.
+///
+/// An adapter whose live query failed still has static identity, so its identifiers are
+/// taken from the device's static info; the index is the same enumeration position the
+/// `gpu.{n}` rows use.
+fn gpu_identities(
+    gpus: &[Result<crate::gpu::GpuInfo, crate::Error>],
+    monitor: &crate::UnifiedMonitor,
+) -> Vec<crate::inference::ironworks::MonitorGpu> {
     use crate::inference::ironworks::MonitorGpu;
-    let mut by_index: std::collections::BTreeMap<usize, MonitorGpu> =
-        std::collections::BTreeMap::new();
-    for reading in out {
-        let parts: Vec<&str> = reading.id.split('.').collect();
-        let ["gpu", n, field] = parts.as_slice() else {
-            continue;
-        };
-        let Ok(index) = n.parse::<usize>() else {
-            continue;
-        };
-        if !matches!(*field, "pci_bus_id" | "uuid") {
-            continue;
-        }
-        let Some(text) = reading
-            .value
-            .as_ref()
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        let entry = by_index.entry(index).or_insert(MonitorGpu {
-            index,
-            pci_bus_id: None,
-            uuid: None,
-        });
-        if *field == "pci_bus_id" {
-            entry.pci_bus_id = Some(text);
-        } else {
-            entry.uuid = Some(text);
-        }
-    }
-    by_index.into_values().collect()
+    gpus.iter()
+        .enumerate()
+        .filter_map(|(index, gpu)| {
+            let (pci_bus_id, uuid) = match gpu {
+                Ok(g) => (g.static_info.pci_bus_id.clone(), g.static_info.uuid.clone()),
+                Err(_) => {
+                    let info = monitor.gpus().gpus().get(index)?.static_info().ok()?;
+                    (info.pci_bus_id, info.uuid)
+                }
+            };
+            if pci_bus_id.is_none() && uuid.is_none() {
+                return None;
+            }
+            Some(MonitorGpu {
+                index,
+                pci_bus_id,
+                uuid,
+            })
+        })
+        .collect()
 }
 
 /// Find the entity for a concrete id, matching `gpu.0.name` against `gpu.{n}.name`.
@@ -6373,29 +6405,40 @@ mod inference_resolve_tests {
         assert_eq!(out.len(), 1, "only the absence row is emitted: {out:?}");
     }
 
+    /// The gpu readers publish their identifiers and inference reads them back by their
+    /// merged index, so an engine's GPU can be matched to the right `gpu.{n}` without the
+    /// gpu readers running in the inference pass.
     #[test]
-    fn monitor_gpus_collects_identifiers_by_index() {
-        let out = vec![
-            Reading::measured(
-                "gpu.0.pci_bus_id",
-                serde_json::json!("0000:01:00.0"),
-                Some(Unit::Identifier),
-            ),
-            Reading::unavailable("gpu.1.uuid", Some(Unit::Identifier), "no uuid"),
-            Reading::measured(
-                "gpu.1.uuid",
-                serde_json::json!("GPU-abc"),
-                Some(Unit::Identifier),
-            ),
-            Reading::unavailable("gpu.<none>", None, "none found here"),
+    fn gpu_identity_cache_round_trips_and_matches() {
+        use crate::inference::ironworks::{match_gpu, GpuMemory, MonitorGpu};
+        let published = vec![
+            MonitorGpu {
+                index: 0,
+                pci_bus_id: Some("0000:01:00.0".into()),
+                uuid: Some("GPU-aaa".into()),
+            },
+            MonitorGpu {
+                index: 1,
+                pci_bus_id: Some("0000:02:00.0".into()),
+                uuid: Some("GPU-bbb".into()),
+            },
         ];
-        let gpus = monitor_gpus(&out);
-        assert_eq!(gpus.len(), 2);
-        assert_eq!(gpus[0].index, 0);
-        assert_eq!(gpus[0].pci_bus_id.as_deref(), Some("0000:01:00.0"));
-        assert_eq!(gpus[1].index, 1);
-        assert_eq!(gpus[1].uuid.as_deref(), Some("GPU-abc"));
-        assert_eq!(gpus[1].pci_bus_id, None);
+        publish_gpu_identity(published.clone());
+        let read_back = cached_gpu_identity();
+        assert_eq!(
+            read_back, published,
+            "the cache round-trips the identifiers"
+        );
+
+        // An engine reporting the second card's PCI address matches gpu.{1}, not its own
+        // device index.
+        let engine = GpuMemory {
+            device_index: Some(0),
+            pci_bus_id: Some("0000:02:00.0".into()),
+            uuid: None,
+            engine_vram_used_bytes: None,
+        };
+        assert_eq!(match_gpu(&engine, &read_back), Ok(1));
     }
 }
 
@@ -6545,7 +6588,7 @@ mod scoped_get_tests {
     /// An inference engine's GPUs are matched against the `gpu.{n}` readings, so an
     /// inference id needs the GPU readers too.
     #[test]
-    fn inference_ids_need_the_gpu_readers() {
+    fn inference_ids_do_not_need_the_gpu_readers() {
         let ontology = Ontology::build();
         let entity = ontology
             .entities
@@ -6554,9 +6597,13 @@ mod scoped_get_tests {
             .expect("the ontology declares inference entities");
         let needed = needed_segments(&ontology, &entity.id, entity);
         assert!(needed.contains("inference"));
+        // inference matches its engines' GPUs against the identifiers the gpu readers
+        // publish out of band (see `cached_gpu_identity`), not by pulling the gpu readers
+        // into its own pass, so an inference id needs only its own segment. That is what
+        // lets it sample on the independent lane, off the reader lock.
         assert!(
-            needed.contains("gpu"),
-            "{} needs the gpu segment to match its engine's GPUs: {needed:?}",
+            !needed.contains("gpu"),
+            "{} should not pull in the gpu readers: {needed:?}",
             entity.id
         );
     }
